@@ -1,0 +1,181 @@
+// Button lock on the Open Claude in Chrome path: the PreToolUse reasons and
+// PostToolUse notes from ocic-lock.ts, the session's tool lists, and the
+// injected page script run for real in Playwright's Chromium (never the
+// user's Chrome) against the demo store.
+import assert from "node:assert/strict";
+import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { after, before, test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { ocicLockNote, ocicLockReason, pageScript, parseRefLine, type Deps } from "../ocic-lock.ts";
+import { ALLOWED, DISALLOWED_BROWSER, navigateLockReason } from "../session.ts";
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const PW = path.join(REPO, "tests", "extension", "node_modules", "playwright", "index.mjs");
+const PLACE = "Locked: 'Place order · $14.27' can only be pressed by Clearcart after the user says yes.";
+
+type Fake = Deps & { evals: string[]; reads: string[] };
+function fake(o: { refLine?: string; evalResult?: unknown; evalThrows?: boolean; pageLocks?: unknown[] } = {}): Fake {
+  const evals: string[] = [];
+  const reads: string[] = [];
+  return {
+    evals,
+    reads,
+    readRef: async (_t, ref) => (reads.push(ref), o.refLine ?? `button "Add to cart" [${ref}] type="submit"`),
+    evalInTab: async <T,>(_t: number, code: string) => {
+      evals.push(code);
+      if (o.evalThrows) throw new Error("page script failed");
+      if (code.includes("P.listLocks(")) return (o.pageLocks ?? []) as T;
+      return (o.evalResult ?? null) as T;
+    },
+  };
+}
+
+test("the session gives Claude no page script on this path", () => {
+  assert.ok(!ALLOWED.includes("mcp__browser__javascript_tool"));
+  assert.ok(DISALLOWED_BROWSER.includes("mcp__browser__javascript_tool"));
+  assert.ok(DISALLOWED_BROWSER.includes("mcp__browser__execute_code"));
+});
+
+test("navigate: checkout pages are locked off the store, open on it", () => {
+  assert.match(navigateLockReason("https://www.aritzia.com/us/en/checkout")!, /^Locked:/);
+  assert.match(navigateLockReason("https://shop.example/checkouts/abc123")!, /^Locked:/);
+  assert.match(navigateLockReason("https://shop.example/payment")!, /^Locked:/);
+  assert.equal(navigateLockReason("http://localhost:4000/checkout"), null);
+  assert.equal(navigateLockReason("https://www.aritzia.com/us/en/cart"), null);
+  assert.equal(navigateLockReason("https://www.aritzia.com/us/en/product/checkout-tee/123"), null);
+  assert.equal(navigateLockReason("back"), null);
+});
+
+test("parseRefLine reads role, name and type", () => {
+  assert.deepEqual(parseRefLine('button "Place order · $14.27" [ref_9] type="submit"\n\nViewport: 1000x600'), { role: "button", name: "Place order · $14.27", type: "submit" });
+  assert.deepEqual(parseRefLine('  checkbox "Subscribe & Save" [ref_3] type="checkbox"'), { role: "checkbox", name: "Subscribe & Save", type: "checkbox" });
+  assert.equal(parseRefLine("Error: ref_id not found"), null);
+});
+
+test("click by ref: locked by name, or by matching the page's locked controls", async () => {
+  const byName = fake({ refLine: 'button "Place order · $14.27" [ref_9]' });
+  assert.equal(await ocicLockReason("computer", { action: "left_click", ref: "ref_9", tabId: 1 }, byName), PLACE);
+  const plain = fake();
+  assert.equal(await ocicLockReason("computer", { action: "left_click", ref: "ref_2", tabId: 1 }, plain), null);
+  // "Continue" says nothing, but the page knows it submits the card form.
+  const byPage = fake({ refLine: 'button "Continue" [ref_4]', pageLocks: [{ name: "Continue", kind: "payment-form", optin: false, checked: false }] });
+  assert.equal(await ocicLockReason("computer", { action: "double_click", ref: "ref_4", tabId: 1 }, byPage), "Locked: 'Continue' can only be pressed by Clearcart after the user says yes.");
+});
+
+test("click at coordinates: hit-tested in the page; drag start too", async () => {
+  const f = fake({ evalResult: { kind: "marked", label: "Place order · $14.27", optin: false, checked: false } });
+  assert.equal(await ocicLockReason("computer", { action: "left_click", coordinate: [500, 300], tabId: 1 }, f), PLACE);
+  assert.match(f.evals[0], /P\.lockAt\(document, 500, 300\)/);
+  const d = fake({ evalResult: null });
+  assert.equal(await ocicLockReason("computer", { action: "left_click_drag", start_coordinate: [1, 2], coordinate: [3, 4], tabId: 1 }, d), null);
+  assert.equal(d.evals.length, 2);
+});
+
+test("keys: only Enter and Space are checked; a typed newline counts as Enter", async () => {
+  const f = fake({ evalResult: { kind: "payment-form", label: "Place order", optin: false, checked: false } });
+  assert.equal(await ocicLockReason("computer", { action: "key", text: "Tab", tabId: 1 }, f), null);
+  assert.equal(f.evals.length, 0);
+  assert.match((await ocicLockReason("computer", { action: "key", text: "Tab Return", tabId: 1 }, f))!, /^Locked:/);
+  assert.match(f.evals[0], /lockForKey\(document, "Return"\)/);
+  assert.match((await ocicLockReason("computer", { action: "type", text: "1 Main St\n", tabId: 1 }, f))!, /^Locked:/);
+  assert.equal(await ocicLockReason("computer", { action: "type", text: "1 Main St", tabId: 1 }, f), null);
+});
+
+test("form_input: an opt-in may be unchecked, not checked; locked controls are refused", async () => {
+  const box = fake({ refLine: 'checkbox "Subscribe & Save: auto-deliver every 30 days (+$4.99 membership)" [ref_3] type="checkbox"' });
+  assert.equal(await ocicLockReason("form_input", { ref: "ref_3", value: false, tabId: 1 }, box), null);
+  assert.equal(await ocicLockReason("form_input", { ref: "ref_3", value: "false", tabId: 1 }, box), null);
+  assert.match((await ocicLockReason("form_input", { ref: "ref_3", value: true, tabId: 1 }, box))!, /can only be unchecked/);
+  const btn = fake({ refLine: 'button "Sign in" [ref_5]' });
+  assert.match((await ocicLockReason("form_input", { ref: "ref_5", value: "x", tabId: 1 }, btn))!, /never logs in/);
+});
+
+test("fails closed when the check cannot run", async () => {
+  const broken = fake({ evalThrows: true });
+  const msg = /^Locked: Clearcart could not check/;
+  assert.match((await ocicLockReason("computer", { action: "left_click", coordinate: [1, 1], tabId: 1 }, broken))!, msg);
+  assert.match((await ocicLockReason("computer", { action: "key", text: "Enter", tabId: 1 }, broken))!, msg);
+  assert.match((await ocicLockReason("computer", { action: "left_click", ref: "ref_1", tabId: 1 }, fake({ refLine: "Error: ref_id \"ref_1\" not found" })))!, msg);
+  assert.match((await ocicLockReason("computer", { action: "left_click", coordinate: [1, 1] }, fake()))!, msg, "no tab id");
+  // Read-only actions are never checked.
+  assert.equal(await ocicLockReason("computer", { action: "screenshot", tabId: 1 }, broken), null);
+  assert.equal(await ocicLockReason("read_page", { tabId: 1 }, broken), null);
+});
+
+test("read_page and find notes name locked and uncheck-only refs", async () => {
+  const tree = [
+    'link "Elm Street Pharmacy" [ref_1] href="http://localhost:4000/"',
+    'button "Remove" [ref_6] type="submit"',
+    'checkbox "Subscribe & Save: auto-deliver every 30 days (+$4.99 membership)" [ref_7] type="checkbox"',
+    'button "Proceed to checkout" [ref_8]',
+  ].join("\n");
+  const note = await ocicLockNote("read_page", { tabId: 1 }, tree, fake());
+  assert.match(note!, /Locked controls, never press or submit them: ref_8 "Proceed to checkout"\./);
+  assert.match(note!, /Uncheck only \(you may turn these off, never on\): ref_7/);
+  assert.doesNotMatch(note!, /ref_6|ref_1/);
+  const found = await ocicLockNote("find", { tabId: 1 }, 'Found 1 element(s) matching "place":\n\n[ref_9] button "Place order · $14.27" at (500, 300)\n', fake());
+  assert.match(found!, /ref_9 "Place order · \$14\.27"/);
+  assert.equal(await ocicLockNote("get_page_text", { tabId: 1 }, tree, fake()), null);
+  assert.equal(await ocicLockNote("read_page", { tabId: 1 }, 'button "Add to cart" [ref_2]', fake()), null);
+});
+
+// ---------------------------------------------------------------- Chromium
+const skip = !fs.existsSync(PW) && "playwright not installed in tests/extension";
+let store: ChildProcess | null = null;
+let browser: any;
+const STORE_PORT = 4400 + Math.floor(Math.random() * 400);
+const STORE = `http://localhost:${STORE_PORT}`;
+
+before(async () => {
+  if (skip) return;
+  store = spawn(process.execPath, [path.join(REPO, "store", "server.js")], { env: { ...process.env, STORE_PORT: String(STORE_PORT) }, stdio: "ignore" });
+  for (let i = 0; i < 100; i++) {
+    if (await fetch(STORE + "/").then((r) => r.ok, () => false)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const { chromium } = await import(pathToFileURL(PW).href);
+  browser = await chromium.launch({ headless: true });
+});
+after(async () => {
+  await browser?.close();
+  store?.kill();
+});
+
+test("the page script locks Place order in a real page, and a hostile global cannot swap it", { skip }, async () => {
+  await fetch(STORE + "/reset", { method: "POST", redirect: "manual" });
+  await fetch(STORE + "/cart/add", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: "product_id=cetirizine-30&quantity=1",
+    redirect: "manual",
+  });
+  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  await page.goto(STORE + "/checkout");
+  // The page tries to plant a fake classifier.
+  // (String scripts: tsx rewrites inline functions in ways the page cannot run.)
+  await page.evaluate("window.ClearcartProtect = { lockAt: function () { return null; }, lockForKey: function () { return null; }, listLocks: function () { return []; } }");
+  const deps: Deps = {
+    evalInTab: async (_t, code) => page.evaluate(code),
+    readRef: async () => 'button "Continue" [ref_1]',
+  };
+  const box = await page.evaluate("(function () { var r = document.getElementById('place-order').getBoundingClientRect(); return [Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2)]; })()");
+  const total = await page.evaluate("document.getElementById('place-order').textContent.trim()");
+  assert.equal(await ocicLockReason("computer", { action: "left_click", coordinate: box, tabId: 1 }, deps), `Locked: '${total}' can only be pressed by Clearcart after the user says yes.`);
+  assert.equal(await ocicLockReason("computer", { action: "left_click", coordinate: [5, 5], tabId: 1 }, deps), null);
+  await page.focus('[name="cc-name"]');
+  assert.match((await ocicLockReason("computer", { action: "key", text: "Enter", tabId: 1 }, deps))!, /^Locked:/);
+  // A ref the page knows is locked, by matching names.
+  const named = { ...deps, readRef: async () => `button "${total}" [ref_1]` };
+  assert.match((await ocicLockReason("computer", { action: "left_click", ref: "ref_1", tabId: 1 }, named))!, /^Locked:/);
+  // Badges come up from the note hook.
+  await ocicLockNote("read_page", { tabId: 1 }, `button "${total}" [ref_1]`, deps);
+  const host = await page.evaluate("(function () { var h = document.getElementById('clearcart-lock-badges'); return h && { aria: h.getAttribute('aria-hidden'), pe: getComputedStyle(h).pointerEvents }; })()");
+  assert.deepEqual(host, { aria: "true", pe: "none" });
+  // Our script left the page's own global alone.
+  assert.equal(await page.evaluate("typeof window.ClearcartProtect.lockOf"), "undefined");
+  assert.ok(pageScript("return 1;").startsWith("(function (globalThis)"));
+  await page.close();
+});
