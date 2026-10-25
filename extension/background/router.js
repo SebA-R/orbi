@@ -322,7 +322,9 @@ export function createRouter({
     return keysFor(focus);
   }
 
-  const centre = (r) => ({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
+  // The element's exact centre, unrounded: the same point the page hit-tests
+  // (guard_ref, press_check), so the press lands where the check looked.
+  const centre = (r) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
   const boxOf = (r) => ({ x: r.x, y: r.y, width: r.width, height: r.height });
 
   function visibleRect(r, ref) {
@@ -374,11 +376,13 @@ export function createRouter({
       const recheck = async () => visibleRect(await pageCall(tabId, "guard_ref", { ref: params.ref }), params.ref);
       return clickCentre(tabId, r, params.ref, "click_ref", recheck, undefined, epoch);
     }
-    const guard = () => pageCall(tabId, "guard_point", { x: params.x, y: params.y });
+    // One point for the guard and the press, exactly as asked.
+    const at = { x: point(params.x, "x"), y: point(params.y, "y") };
+    const guard = () => pageCall(tabId, "guard_point", at);
     await guard();
     if (await paced()) {
       const start = docs.get(tabId);
-      await actor.click(tabId, { x: point(params.x, "x"), y: point(params.y, "y") }, {
+      await actor.click(tabId, at, {
         epoch,
         recheck: async () => {
           await guard();
@@ -386,8 +390,8 @@ export function createRouter({
         },
       });
     } else {
-      await cdp.click({ tabId, x: params.x, y: params.y });
-      actor.notePointer(tabId, params.x, params.y);
+      await cdp.click({ tabId, x: at.x, y: at.y });
+      actor.notePointer(tabId, at.x, at.y);
     }
     return { ok: true, via: "cdp" };
   }
