@@ -11,9 +11,9 @@ const els = {
   receipt: $('receipt'), receiptItem: $('receipt-item'), receiptTotal: $('receipt-total'),
   receiptCard: $('receipt-card'), srAgent: $('sr-agent'), srAlert: $('sr-alert'),
   statusLine: $('status-line'), agentCaption: $('agent-caption'), hintText: $('hint-text'), orb: $('orb'),
-  statusDetail: $('status-detail'), receiptSavedRow: $('receipt-saved-row'), receiptSaved: $('receipt-saved'),
+  statusDetail: $('status-detail'),
   confirm: $('confirm'), confirmItem: $('confirm-item'), confirmTotal: $('confirm-total'),
-  confirmChangeRow: $('confirm-change-row'), confirmChange: $('confirm-change'), confirmNote: $('confirm-note'),
+  confirmChangeRow: $('confirm-change-row'), confirmChange: $('confirm-change'),
   confirmTalk: $('confirm-talk'),
 };
 const params = new URLSearchParams(location.search);
@@ -74,7 +74,7 @@ const alertUser = (text) => { logEvent(text); announce(els.srAlert, text); };
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const ui = {
   listening: false, speaking: false, thinking: false, awaitingYes: false, status: '', detail: '', forced: null,
-  confirm: null,   // the read-back being answered: { item, total, change, note, state }
+  confirm: null,   // the read-back being answered: { item, total, changes, state }
   receipt: false,  // an order was just placed
 };
 let thinkingTimer = 0;
@@ -109,7 +109,6 @@ function renderUi() {
   setText(els.statusDetail, state === 'thinking' ? ui.detail : '');
   const hint = state === 'listening' ? HINT_SEND : HINT_TALK;
   if (els.hintText.innerHTML !== hint) els.hintText.innerHTML = hint;
-  els.confirmTalk.setAttribute('aria-pressed', String(state === 'listening'));
   clearTimeout(thinkingTimer);
   if (ui.thinking) thinkingTimer = setTimeout(() => { ui.thinking = false; renderUi(); }, 90000);
 }
@@ -145,7 +144,6 @@ function statusDetail(text) {
 }
 function onStatus(text) {
   const t = text.toLowerCase();
-  if (t === 'checkout declined') { ui.confirm = null; hideConfirm(); }
   if (t === 'checkout confirmed' && ui.confirm) {
     ui.confirm.state = 'confirmed';
     els.confirm.dataset.state = 'confirmed';
@@ -159,18 +157,13 @@ function onStatus(text) {
 }
 
 // ---------- read-back (say yes to pay) ----------
-// The agent's request_checkout tool always speaks: "You're buying {qty} {item} for {total}.{changes}
-// Say yes to pay, or no to change it." We show that as a card. If the wording ever changes, nothing
-// breaks: the reply still reads in the conversation and is spoken.
-function parseReadBack(text) {
-  const m = /^You[’']re buying (\d+) (.+?) for (\$?[\d,]+(?:\.\d{1,2})?)\.\s*(.*?)\s*Say yes to pay/s.exec(text.trim());
-  if (!m) return null;
-  const [, qty, item, total, changes] = m;
-  let change = null;
-  const c = /removed (?:an? |the )?(?:pre-?checked |pre-?selected )?(.+?) (?:that|which) would have (?:added|cost) (\$[\d,]+(?:\.\d{1,2})?)/i.exec(changes);
-  if (c) change = { what: c[1].replace(/^\w/, (x) => x.toUpperCase()), amount: c[2] };
-  const name = item.replace(/^\w/, (x) => x.toUpperCase());
-  return { item: qty === '1' ? name : `${qty} × ${name}`, total, change, note: change ? '' : changes.trim(), state: 'pending' };
+// The agent sends { type: "confirm", item, quantity, total, changes } just before it speaks the
+// read-back, and { type: "confirm_done", outcome } when the checkout ends. The card is built from
+// that message only; the spoken sentence just reads in the conversation.
+function readBackFrom(m) {
+  const name = String(m.item || '').replace(/^\w/, (x) => x.toUpperCase());
+  const qty = Number(m.quantity) || 1;
+  return { item: qty === 1 ? name : `${qty} × ${name}`, total: String(m.total || ''), changes: String(m.changes || '').trim(), state: 'pending' };
 }
 function showConfirm(rb) {
   ui.confirm = rb;
@@ -179,10 +172,8 @@ function showConfirm(rb) {
   els.receipt.hidden = true;
   els.confirmItem.textContent = rb.item;
   els.confirmTotal.textContent = rb.total;
-  els.confirmChangeRow.hidden = !rb.change;
-  els.confirmChange.textContent = rb.change ? `${rb.change.what} ${rb.change.amount}` : '';
-  els.confirmNote.hidden = !rb.note;
-  els.confirmNote.textContent = rb.note;
+  els.confirmChangeRow.hidden = !rb.changes;
+  els.confirmChange.textContent = rb.changes;
   els.confirm.dataset.state = rb.state;
   els.confirm.hidden = false;
   els.confirm.classList.remove('enter');
@@ -192,8 +183,19 @@ function showConfirm(rb) {
   renderUi();
 }
 function hideConfirm() {
+  // Don't strand keyboard focus on a hidden card: move it to the receipt if one is showing, else Talk.
+  if (els.confirm.contains(document.activeElement)) (els.receipt.hidden ? els.talk : els.receipt).focus();
   els.confirm.hidden = true;
   els.confirm.classList.remove('enter');
+}
+
+// The checkout ended without a receipt (declined, payment failed, agent error, connection lost).
+function endConfirm() {
+  if (!ui.confirm && els.confirm.hidden) return;
+  ui.confirm = null;
+  ui.awaitingYes = false;
+  hideConfirm();
+  renderUi();
 }
 
 function setUserCaption(text) {
@@ -389,7 +391,7 @@ window.__clearcartDemo = {
   state: window.__clearcartDemoState,
   receipt: window.__clearcartDemoReceipt,
   turn: (who, text) => addTurn(who, text),
-  confirm: (text) => { const rb = parseReadBack(text); if (rb) showConfirm(rb); return !!rb; },
+  confirm: (order) => showConfirm(readBackFrom(order)),
 };
 
 // ---------- agent session ----------
@@ -408,7 +410,9 @@ function setConnection(state, text) {
 function connectAgent() {
   const ws = new WebSocket(agentUrl);
   agent = ws;
+  let opened = false;
   ws.onopen = () => {
+    opened = true;
     retryMs = 500;
     setConnection('open', 'Connected to your shopping assistant.');
     if (everConnected) alertUser('Reconnected to Clearcart.');
@@ -424,6 +428,9 @@ function connectAgent() {
   ws.onclose = () => {
     if (agent !== ws) return;
     agent = null;
+    // A lost session can't finish the checkout, so drop its card. (A socket that never opened,
+    // as in the ?demo= previews, had no card from the agent.)
+    if (opened) endConfirm();
     if (everConnected && els.connection.dataset.state === 'open') alertUser('Lost connection to Clearcart. Trying again.');
     setConnection('closed', 'Not connected to the shopping assistant. Retrying…');
     setTimeout(connectAgent, retryMs);
@@ -444,7 +451,6 @@ function handleAgentMessage(m) {
       addTurn('Clearcart', m.text);
       showAgentCaption(m.text);
       ui.thinking = false;
-      { const rb = parseReadBack(m.text); if (rb) showConfirm(rb); }
       renderUi();
       if (els.announce.checked) announce(els.srAgent, m.text);
       lastReply = m.text;
@@ -458,6 +464,13 @@ function handleAgentMessage(m) {
     case 'receipt':
       showReceipt(m);
       break;
+    case 'confirm':
+      showConfirm(readBackFrom(m));
+      break;
+    case 'confirm_done':
+      logEvent(`Checkout ${m.outcome}`);
+      if (m.outcome !== 'paid') endConfirm();
+      break;
     default:
       logEvent(`Unknown agent message type: ${m.type}`);
   }
@@ -467,13 +480,10 @@ function showReceipt(r) {
   els.receiptItem.textContent = r.item || '';
   els.receiptTotal.textContent = r.total || '';
   els.receiptCard.textContent = r.last4 ? `Visa ending in ${r.last4}` : '';
-  const change = ui.confirm?.change;
-  els.receiptSavedRow.hidden = !change;
-  els.receiptSaved.textContent = change ? `Saved ${change.amount}` : '';
   ui.confirm = null;
   ui.receipt = true;
-  hideConfirm();
   els.receipt.hidden = false;
+  hideConfirm();
   els.receipt.classList.remove('enter');
   void els.receipt.offsetWidth; // restart the entrance animation
   els.receipt.classList.add('enter');
