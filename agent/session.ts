@@ -3,11 +3,17 @@
 // User turns stream into a single long-lived query() as SDKUserMessages, so
 // the conversation keeps its context across turns. While request_checkout is
 // waiting, the next user_text is routed to it instead of to Claude.
+//
+// Barge-in: {type:"interrupt"} from the client (the user held the talk key)
+// mutes the turn in progress. Its held text is dropped, anything it still
+// says goes out as a "(not spoken)" status, and the SDK turn is interrupted.
+// The next turn speaks again. An interrupt during a checkout read-back only
+// stops the speech: the read-back keeps waiting for a spoken answer.
 
 import dns from "node:dns";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
 import { callBrowserTool, resultText } from "./bridge.ts";
@@ -279,6 +285,12 @@ export class Session {
   private sweepBroken = false;
   // DNS for localDnsReason; tests replace it.
   lookup: Lookup = systemLookup;
+  // User turns sent to the SDK whose result has not come back yet.
+  private turnsOpen = 0;
+  // The turn in progress was interrupted: nothing more from it is spoken.
+  private muted = false;
+  // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
+  private held: string[] = [];
 
   constructor(private send: (m: ServerMessage) => void) {}
 
@@ -290,7 +302,21 @@ export class Session {
       resolve(text);
       return;
     }
+    this.turnsOpen++;
     this.input.push(text);
+  }
+
+  // The user started talking over us.
+  interrupt() {
+    if (this.closed) return;
+    this.held.forEach((t) => this.unspoken(t));
+    this.held = [];
+    // A read-back waiting for an answer is not cancelled or confirmed by a
+    // barge-in; the user is about to answer it.
+    if (this.awaitingAnswer || this.turnsOpen === 0 || this.muted) return;
+    this.muted = true;
+    this.status("interrupted by the user");
+    this.q?.interrupt().catch((e) => this.status(`interrupt failed: ${(e as Error).message}`));
   }
 
   close() {
@@ -303,7 +329,12 @@ export class Session {
   }
 
   private say(text: string) {
+    if (this.muted) return this.unspoken(text);
     this.send({ type: "agent_text", text });
+  }
+
+  private unspoken(text: string) {
+    this.status(`(not spoken) ${text.slice(0, 120)}`);
   }
 
   private status(text: string) {
@@ -453,6 +484,11 @@ export class Session {
 
   // The request_checkout tool body: read the order back and wait for the answer.
   async requestCheckout({ item, quantity, total, changes }: { item: string; quantity: number; total: string; changes?: string }) {
+    // The user cut this turn off: they never heard a read-back, so no yes can count.
+    if (this.muted) {
+      this.status("checkout not read back: the user interrupted");
+      return { content: [{ type: "text" as const, text: "declined. The user interrupted before the order was read back." }] };
+    }
     // Pin the yes to this checkout tab and the cart on it (pay.ts). Taken while
     // the read-back plays; if it can't be read in 5 s the tab stays unknown and
     // pay_now refuses (fail closed).
@@ -539,6 +575,38 @@ export class Session {
     });
   }
 
+  // Text-only messages are held until the turn ends: the SDK can send the
+  // text and the tool call of one step as separate messages, so a tool call
+  // that follows turns the held text into thinking aloud.
+  onSdkMessage(m: SDKMessage) {
+    if (m.type === "system" && m.subtype === "init") {
+      const servers = (m as any).mcp_servers as Array<{ name: string; status: string }> | undefined;
+      this.status(`agent ready (${(servers || []).map((s) => `${s.name}: ${s.status}`).join(", ")})`);
+    } else if (m.type === "assistant" && !m.parent_tool_use_id) {
+      const blocks = m.message.content as any[];
+      // Only a message with no tool calls is a reply to the user. Text next
+      // to tool calls is the model thinking aloud: log it, never speak it.
+      const working = blocks.some((b) => b.type === "tool_use");
+      if (working) {
+        this.held.forEach((t) => this.unspoken(t));
+        this.held = [];
+      }
+      for (const block of blocks) {
+        if (block.type === "text" && block.text?.trim()) {
+          if (working || this.muted) this.unspoken(block.text.trim());
+          else this.held.push(block.text.trim());
+        } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
+      }
+    } else if (m.type === "result") {
+      if (this.held.length) this.say(this.held.join(" "));
+      this.held = [];
+      this.turnsOpen = Math.max(0, this.turnsOpen - 1);
+      // The interrupted turn is over; the next one speaks again.
+      this.muted = false;
+      if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
+    }
+  }
+
   // Connection state of the MCP servers; needs no model call.
   async mcpStatus() {
     return this.q ? this.q.mcpServerStatus() : [];
@@ -575,39 +643,11 @@ export class Session {
       },
     }));
 
-    // Text-only messages are held until the turn ends: the SDK can send the
-    // text and the tool call of one step as separate messages, so a tool call
-    // that follows turns the held text into thinking aloud.
-    let held: string[] = [];
-    const unspoken = (text: string) => this.status(`(not spoken) ${text.slice(0, 120)}`);
     try {
-      for await (const m of q) {
-        if (m.type === "system" && m.subtype === "init") {
-          const servers = (m as any).mcp_servers as Array<{ name: string; status: string }> | undefined;
-          this.status(`agent ready (${(servers || []).map((s) => `${s.name}: ${s.status}`).join(", ")})`);
-        } else if (m.type === "assistant" && !m.parent_tool_use_id) {
-          const blocks = m.message.content as any[];
-          // Only a message with no tool calls is a reply to the user. Text next
-          // to tool calls is the model thinking aloud: log it, never speak it.
-          const working = blocks.some((b) => b.type === "tool_use");
-          if (working) {
-            held.forEach(unspoken);
-            held = [];
-          }
-          for (const block of blocks) {
-            if (block.type === "text" && block.text?.trim()) {
-              if (working) unspoken(block.text.trim());
-              else held.push(block.text.trim());
-            } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
-          }
-        } else if (m.type === "result") {
-          if (held.length) this.say(held.join(" "));
-          held = [];
-          if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
-        }
-      }
+      for await (const m of q) this.onSdkMessage(m);
     } catch (e) {
       if (!this.closed) {
+        this.muted = false;
         this.status(`agent error: ${(e as Error).message}`);
         this.send({ type: "confirm_done", outcome: "failed" });
         this.say("Sorry, something went wrong on my side. Please try again.");
