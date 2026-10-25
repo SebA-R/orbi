@@ -91,7 +91,7 @@ test("a setting note goes after the context block, before the user's words", asy
 
 test("the base prompt is for anyone: a voice web agent, no mention of blind or low-vision users", () => {
   const base = SYSTEM_PROMPT + SITES_PROMPT + EXT_TABS_PROMPT;
-  assert.ok(SYSTEM_PROMPT.startsWith("You are Clearcart, a voice-controlled web agent for anyone."));
+  assert.ok(SYSTEM_PROMPT.startsWith("You are Orbi, a voice-controlled web agent for anyone."));
   assert.match(SYSTEM_PROMPT, /you navigate, search, read and summarize pages, fill in forms when they ask, click, and shop when they ask/);
   assert.doesNotMatch(base, /blind|low[- ]vision|screen reader|visually impaired|localhost/i);
   assert.match(SYSTEM_PROMPT, /\nShopping \(only when the user wants to buy something\)\n/);
@@ -156,7 +156,7 @@ test("a mid-session change goes in front of the next user turn, once", async () 
     (extBridge as any).guided = false;
     s.userText("next");
     assert.equal(turns[0], "find pants");
-    assert.ok(turns[1].startsWith("[Setting changed, from the user's Clearcart settings] Guided mode is now on.\n- "));
+    assert.ok(turns[1].startsWith("[Setting changed, from the user's Orbi settings] Guided mode is now on.\n- "));
     assert.ok(turns[1].includes("the mode for blind and low-vision users") && turns[1].includes("describe the top 3") && turns[1].endsWith("\n\nthe blue ones"));
     assert.equal(turns[2], "add it");
     assert.equal(turns[3], `${guidedNote(false)}\n\nnext`);

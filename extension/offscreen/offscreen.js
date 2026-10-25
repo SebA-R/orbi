@@ -1,4 +1,4 @@
-// Clearcart offscreen document (reasons USER_MEDIA + AUDIO_PLAYBACK).
+// Orbi offscreen document (reasons USER_MEDIA + AUDIO_PLAYBACK).
 //
 // Offscreen documents only get chrome.runtime, so settings arrive from the
 // worker inside messages ({settings} on VOICE_START and SETTINGS_CHANGED)

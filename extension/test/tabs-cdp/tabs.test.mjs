@@ -13,7 +13,7 @@ import { SUGGESTED_BLOCKLIST } from "../../lib/blocklist.js";
 // A made-up shop on the open web (nothing is fetched).
 const SHOP = "https://shop.example";
 
-// A user's own tab, already loaded, not opened by Clearcart.
+// A user's own tab, already loaded, not opened by Orbi.
 async function userTab(c, url, { active = false, title = "User tab" } = {}) {
   const t = await c.tabs.create({ url: "about:blank", active });
   Object.assign(c._tabs.get(t.id), { url, title, status: "complete" });
@@ -43,7 +43,7 @@ test("new tabs open in the background next to the user's tab", async () => {
   assert.equal(c._tabs.get(tabId).active, false);
 });
 
-test("tabsContext lists the user's tabs and Clearcart's, with origin+path only, and hides blocked tabs", async () => {
+test("tabsContext lists the user's tabs and Orbi's, with origin+path only, and hides blocked tabs", async () => {
   const c = fresh();
   const etsy = await userTab(c, "https://www.etsy.com/listing/1/mug?ref=search#reviews", { active: true, title: "Mug" });
   const mail = await userTab(c, "https://mail.google.com/mail/u/0/#inbox");
@@ -80,7 +80,7 @@ test("every call checks the tab again: a user tab that moves to a blocked site i
   await assert.rejects(resolveAllowedTab(id), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
-test("Clearcart closes only tabs it opened", async () => {
+test("Orbi closes only tabs it opened", async () => {
   const c = fresh();
   const user = await userTab(c, "https://www.etsy.com/");
   const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
@@ -100,7 +100,7 @@ test("tabsActivate brings an allowed tab to the front, never a blocked one", asy
   await assert.rejects(tabsActivate({ tabId: mail }), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
-test("resolveTab defaults to the tab Clearcart used last, else the user's active tab", async () => {
+test("resolveTab defaults to the tab Orbi used last, else the user's active tab", async () => {
   const c = fresh();
   const active = await userTab(c, "https://www.etsy.com/", { active: true });
   assert.equal(await resolveTab(), active);
@@ -113,7 +113,7 @@ test("resolveTab defaults to the tab Clearcart used last, else the user's active
   await assert.rejects(resolveTab("1"), (e) => e.code === ERR.BAD_REQUEST);
 });
 
-test("agentTabs (the sweep) holds only tabs Clearcart opened, blocked ones included", async () => {
+test("agentTabs (the sweep) holds only tabs Orbi opened, blocked ones included", async () => {
   const c = fresh();
   const untouched = await userTab(c, "https://mail.google.com/");
   const used = await userTab(c, "https://www.etsy.com/");
@@ -129,7 +129,7 @@ test("agentTabs (the sweep) holds only tabs Clearcart opened, blocked ones inclu
   assert.deepEqual(c.storage.session.data[STATE_KEY].created, [tabId]);
 });
 
-test("the sweep may send a tab Clearcart opened to a blank page, never one of the user's tabs", async () => {
+test("the sweep may send a tab Orbi opened to a blank page, never one of the user's tabs", async () => {
   const c = fresh();
   const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
   await navigateAndWait(tabId, () => c.tabs.update(tabId, { url: "https://www.paypal.com/signin" }));
@@ -142,7 +142,7 @@ test("the sweep may send a tab Clearcart opened to a blank page, never one of th
   assert.equal(c._tabs.get(user).url, "https://www.etsy.com/");
 });
 
-test("a user tab Clearcart navigated is never swept or navigated once the user opens a blocked site in it", async () => {
+test("a user tab Orbi navigated is never swept or navigated once the user opens a blocked site in it", async () => {
   const c = fresh();
   const id = await userTab(c, "https://www.etsy.com/");
   await navigate({ tabId: id, url: "https://www.etsy.com/cart" });
@@ -261,7 +261,7 @@ test("pay sites stay the allowlist in open mode, and there are none by default",
   assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
 });
 
-test("incognito: the manifest keeps Clearcart out, and an incognito tab is hidden and refused", async () => {
+test("incognito: the manifest keeps Orbi out, and an incognito tab is hidden and refused", async () => {
   const { readFileSync } = await import("node:fs");
   const manifest = JSON.parse(readFileSync(new URL("../../manifest.json", import.meta.url), "utf8"));
   assert.equal(manifest.incognito, "not_allowed");

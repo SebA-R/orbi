@@ -1,4 +1,4 @@
-// Which sites Clearcart may drive, and the much smaller set where it may
+// Which sites Orbi may drive, and the much smaller set where it may
 // pay. Shared by the session guard, the tab sweep, pay_now and the button
 // lock's unlock gate.
 //

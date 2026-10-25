@@ -1,4 +1,4 @@
-// The voice part of Clearcart's own pages (the new tab page and the "Can't
+// The voice part of Orbi's own pages (the new tab page and the "Can't
 // reach this site" page): the orb face, the voice state in words, the focus
 // hint and the toggle shortcut. Each page's HTML loads guard.js,
 // content/hotkey.js and content/orb-face.js first and has the elements this

@@ -1,5 +1,5 @@
 // Network error pages: Chrome's own runs no content scripts, so a failed
-// main frame goes on to Clearcart's "Can't reach this site" page, where the
+// main frame goes on to Orbi's "Can't reach this site" page, where the
 // hotkey and the orb face run. Back keeps working; Retry comes back here.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -27,7 +27,7 @@ after(async () => {
 const BASE = `chrome-extension://${EXT_ID}/newtab/error.html`;
 const BAD = "http://nowhere.clearcart-errpage.test/shop";
 
-// Until the page is a ready Clearcart error page other than `not`.
+// Until the page is a ready Orbi error page other than `not`.
 async function onErrorPage(page, not = null) {
   const end = Date.now() + 10_000;
   while (Date.now() < end) {
@@ -46,7 +46,7 @@ async function failTo(page, url) {
   return onErrorPage(page);
 }
 
-test("an unreachable address opens Clearcart's page with the hotkey, Retry and the address", async () => {
+test("an unreachable address opens Orbi's page with the hotkey, Retry and the address", async () => {
   const page = await ext.context.newPage();
   await page.goto("data:text/html,<title>start</title>start");
   await failTo(page, BAD);
@@ -85,7 +85,7 @@ test("an unreachable address opens Clearcart's page with the hotkey, Retry and t
   await page.waitForTimeout(500);
   assert.equal(await page.title(), "start");
 
-  // Forward fails again and comes to Clearcart's page; Retry from there
+  // Forward fails again and comes to Orbi's page; Retry from there
   // fails again and comes back, as a new page.
   await page.goForward().catch(() => {});
   const first = await onErrorPage(page);

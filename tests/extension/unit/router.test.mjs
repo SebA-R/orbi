@@ -167,14 +167,14 @@ test("page_context: a new tab page is an empty new tab, not a blocked site, and 
   const calls = [];
   const r = createRouter({
     chromeApi: { scripting: { executeScript: async () => calls.push(["inject"]) }, tabs: { sendMessage: async () => calls.push(["page"]) } },
-    tabs: { activeTab: async () => ({ id: 30, title: "Clearcart", url: "chrome://newtab/" }), onNewTab: (t) => t.url === "chrome://newtab/", resolveAllowedTab: async () => { throw new Error("no"); } },
+    tabs: { activeTab: async () => ({ id: 30, title: "Orbi", url: "chrome://newtab/" }), onNewTab: (t) => t.url === "chrome://newtab/", resolveAllowedTab: async () => { throw new Error("no"); } },
     cdp: {},
   });
   assert.deepEqual(await r.route("page_context", {}), { active: { tabId: 30, title: "New Tab", url: "chrome://newtab/", newTab: true } });
   assert.deepEqual(calls, []);
 });
 
-test("page_context: Clearcart's error page names the failed address only when tabs allows it, and reads nothing", async () => {
+test("page_context: Orbi's error page names the failed address only when tabs allows it, and reads nothing", async () => {
   const calls = [];
   let failed = "https://shop.example/cart";
   let hidden = false;

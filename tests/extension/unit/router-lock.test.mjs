@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createRouter, isActivationKey, UNLOCK_TTL_MS } from "../../../extension/background/router.js";
 import { INTERNAL, TOOLS } from "../../../extension/lib/protocol.js";
 
-const LOCKED = { ok: false, error: { code: "locked", message: "Locked: 'Place order' can only be pressed by Clearcart after the user says yes." } };
+const LOCKED = { ok: false, error: { code: "locked", message: "Locked: 'Place order' can only be pressed by Orbi after the user says yes." } };
 
 function fakes({ locked = new Set(), url = "http://localhost:4100/checkout", cdpClickFails = false } = {}) {
   const calls = [];
@@ -142,7 +142,7 @@ test("press_protected asks the page to confirm an order button, and falls back t
 
 test("lock_arm refuses a site that is browsable but not a pay site", async () => {
   const f = fakes({ url: "https://www.etsy.com/checkout" });
-  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked", message: /not a Clearcart pay site/ });
+  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked", message: /not an Orbi pay site/ });
   // A tabs module without isPaySite fails closed.
   const bare = createRouter({ chromeApi: {}, tabs: { resolveAllowedTab: async () => 7, tabInfo: async () => ({ url: "http://localhost:4100/checkout" }) }, cdp: {} });
   await assert.rejects(bare.route("lock_arm", { tabId: 7 }), { code: "locked" });

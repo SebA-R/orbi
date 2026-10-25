@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Clearcart settings</title>
+  <title>Orbi settings</title>
   <link rel="stylesheet" href="../lib/ui.css">
   <link rel="stylesheet" href="options.css">
 </head>
@@ -32,8 +32,8 @@
     <header class="masthead">
       <span class="orb-mark" aria-hidden="true"></span>
       <div>
-        <h1>Clearcart settings</h1>
-        <p class="lede">Talk to the web: Clearcart navigates, reads and acts on pages for you. Switches and menus save as soon as you change them. Site lists and the server address save with the Save button at the bottom.</p>
+        <h1>Orbi settings</h1>
+        <p class="lede">Talk to the web: Orbi navigates, reads and acts on pages for you. Switches and menus save as soon as you change them. Site lists and the server address save with the Save button at the bottom.</p>
       </div>
     </header>
 
@@ -86,17 +86,17 @@
           </div>
           <label class="row" for="speak-replies">
             <span class="row-text"><span id="speak-replies-label">Speak replies</span>
-              <span class="hint" id="speak-replies-hint">Turn off to read Clearcart's answers in the subtitles without hearing them.</span></span>
+              <span class="hint" id="speak-replies-hint">Turn off to read Orbi's answers in the subtitles without hearing them.</span></span>
             <input id="speak-replies" name="speakReplies" class="sw" type="checkbox" role="switch" data-setting="speakReplies" aria-labelledby="speak-replies-label" aria-describedby="speak-replies-hint speak-replies-note">
           </label>
           <p class="hint warn" id="speak-replies-note" role="status" hidden></p>
           <label class="row" for="guided-mode">
             <span class="row-text"><span id="guided-mode-label">Guided mode</span>
-              <span class="hint" id="guided-mode-hint">Made for blind and low-vision users: Clearcart describes each page, reads out choices and lets you pick. Off by default.</span></span>
+              <span class="hint" id="guided-mode-hint">Made for blind and low-vision users: Orbi describes each page, reads out choices and lets you pick. Off by default.</span></span>
             <input id="guided-mode" name="guidedMode" class="sw" type="checkbox" role="switch" data-setting="guidedMode" aria-labelledby="guided-mode-label" aria-describedby="guided-mode-hint">
           </label>
         </div>
-        <p class="foot" id="hotkey-hint">Hold Space to talk. Option+Space keeps listening until you press Space. Double-tap Space to stop Clearcart talking.
+        <p class="foot" id="hotkey-hint">Hold Space to talk. Option+Space keeps listening until you press Space. Double-tap Space to stop Orbi talking.
           With another key, hold it while you speak and let go to send. A separate toggle shortcut can be set at
           <span id="shortcuts-link">chrome://extensions/shortcuts</span>. On Windows, Option is the Alt key.</p>
       </section>
@@ -113,27 +113,27 @@
             </div>
           </div>
           <label class="row" for="follow-tab">
-            <span class="row-text"><span id="follow-tab-label">Follow Clearcart to its tab</span>
-              <span class="hint" id="follow-tab-hint">When Clearcart opens a tab, or navigates, clicks, types or scrolls in one, you are brought to that tab. Reading a tab never moves you. If you switch away yourself, it stops until you talk again.</span></span>
+            <span class="row-text"><span id="follow-tab-label">Follow Orbi to its tab</span>
+              <span class="hint" id="follow-tab-hint">When Orbi opens a tab, or navigates, clicks, types or scrolls in one, you are brought to that tab. Reading a tab never moves you. If you switch away yourself, it stops until you talk again.</span></span>
             <input id="follow-tab" name="followTab" class="sw" type="checkbox" role="switch" data-setting="followTab" aria-labelledby="follow-tab-label" aria-describedby="follow-tab-hint">
           </label>
           <label class="row" for="watchable-pace">
             <span class="row-text"><span id="watchable-pace-label">Show actions at a watchable pace</span>
-              <span class="hint" id="watchable-pace-hint">Clearcart moves the pointer and scrolls at a pace you can follow. Off, clicks and scrolls happen at once. Typing always goes key by key, like a person typing.</span></span>
+              <span class="hint" id="watchable-pace-hint">Orbi moves the pointer and scrolls at a pace you can follow. Off, clicks and scrolls happen at once. Typing always goes key by key, like a person typing.</span></span>
             <input id="watchable-pace" name="watchablePace" class="sw" type="checkbox" role="switch" data-setting="watchablePace" aria-labelledby="watchable-pace-label" aria-describedby="watchable-pace-hint">
           </label>
           <label class="row" for="show-cursor">
-            <span class="row-text"><span id="show-cursor-label">Show Clearcart's cursor</span>
-              <span class="hint" id="show-cursor-hint">A second pointer on the page shows where Clearcart is clicking, typing and scrolling. Your own mouse is never moved.</span></span>
+            <span class="row-text"><span id="show-cursor-label">Show Orbi's cursor</span>
+              <span class="hint" id="show-cursor-hint">A second pointer on the page shows where Orbi is clicking, typing and scrolling. Your own mouse is never moved.</span></span>
             <input id="show-cursor" name="showCursor" class="sw" type="checkbox" role="switch" data-setting="showCursor" aria-labelledby="show-cursor-label" aria-describedby="show-cursor-hint">
           </label>
           <div class="row stack">
             <label for="allowlist">Allowed sites, one per line</label>
             <textarea id="allowlist" name="allowlist" class="field" rows="3" spellcheck="false" autocomplete="off" aria-describedby="allowlist-hint"></textarea>
-            <p class="hint" id="allowlist-hint">Site addresses only, for example https://www.etsy.com. Empty by default. In Only allowed sites mode these are the only sites Clearcart opens.</p>
+            <p class="hint" id="allowlist-hint">Site addresses only, for example https://www.etsy.com. Empty by default. In Only allowed sites mode these are the only sites Orbi opens.</p>
           </div>
         </div>
-        <p class="foot">Which sites Clearcart may open. It can use your open tabs on these sites and opens its own in the background. Tabs on blocked sites stay hidden from it, and it only closes tabs it opened.</p>
+        <p class="foot">Which sites Orbi may open. It can use your open tabs on these sites and opens its own in the background. Tabs on blocked sites stay hidden from it, and it only closes tabs it opened.</p>
 
         <div id="blocked-sites" class="subgroup">
           <h3>Blocked sites</h3>
@@ -142,7 +142,7 @@
               <label for="blocklist">Blocked sites, one per line</label>
               <textarea id="blocklist" name="blocklist" class="field mono" rows="12" spellcheck="false" autocomplete="off" aria-describedby="blocklist-hint blocklist-fixed blocklist-errors"></textarea>
               <p class="error" id="blocklist-errors" hidden></p>
-              <p class="hint" id="blocklist-hint">Clearcart never opens these in open web mode. One per line: <code>chase.com</code> blocks that site and its subdomains, <code>amazon.com/ap</code> only pages under that path (<code>amazon.*/ap</code> for every Amazon store), <code>*bank*</code> any address with that word in its name, <code>*.gov</code> any address with gov as one of its parts. Lines starting with # are notes.</p>
+              <p class="hint" id="blocklist-hint">Orbi never opens these in open web mode. One per line: <code>chase.com</code> blocks that site and its subdomains, <code>amazon.com/ap</code> only pages under that path (<code>amazon.*/ap</code> for every Amazon store), <code>*bank*</code> any address with that word in its name, <code>*.gov</code> any address with gov as one of its parts. Lines starting with # are notes.</p>
             </div>
             <div class="row">
               <p class="row-text hint" id="blocklist-fixed">Always blocked: non-web pages, local network addresses, addresses with a login in them.</p>
@@ -157,18 +157,18 @@
         <div class="card">
           <div class="row">
             <span class="row-text"><span>Checkout lock</span>
-              <span class="hint">Checkout, pay and sign in buttons stay locked everywhere except the allowed sites, where only Clearcart's pay flow can press them after you say yes.</span></span>
+              <span class="hint">Checkout, pay and sign in buttons stay locked everywhere except the allowed sites, where only Orbi's pay flow can press them after you say yes.</span></span>
             <span class="tag" data-state="ok">Always on</span>
           </div>
           <div id="danger">
             <label class="row" for="danger-mode">
-              <span class="row-text" id="danger-label">Danger mode. Clearcart acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.</span>
+              <span class="row-text" id="danger-label">Danger mode. Orbi acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.</span>
               <input id="danger-mode" class="sw" type="checkbox" role="switch" aria-labelledby="danger-label" aria-describedby="danger-hint">
             </label>
             <p id="danger-confirm" class="row confirm" hidden><button type="button" class="btn amber" id="danger-yes">Turn on Danger mode</button> <button type="button" class="btn" id="danger-no">Cancel</button></p>
           </div>
         </div>
-        <p class="foot" id="danger-hint">Danger mode is off by default. It saves as soon as you confirm. Clearcart still never sees or types card numbers or passwords, and blocked sites stay blocked.</p>
+        <p class="foot" id="danger-hint">Danger mode is off by default. It saves as soon as you confirm. Orbi still never sees or types card numbers or passwords, and blocked sites stay blocked.</p>
       </section>
 
       <section class="group" id="memory" aria-labelledby="memory-h">
@@ -176,7 +176,7 @@
         <div class="card">
           <label class="row" for="memory-on">
             <span class="row-text"><span id="memory-on-label">Remember things about me</span>
-              <span class="hint" id="memory-on-hint">Clearcart keeps what you ask it to remember, like your size or favorite store, and the last two hours of your conversation, on this computer only. It never keeps card numbers, passwords, IDs or bank details.</span></span>
+              <span class="hint" id="memory-on-hint">Orbi keeps what you ask it to remember, like your size or favorite store, and the last two hours of your conversation, on this computer only. It never keeps card numbers, passwords, IDs or bank details.</span></span>
             <input id="memory-on" name="memory" class="sw" type="checkbox" role="switch" data-setting="memory" aria-labelledby="memory-on-label" aria-describedby="memory-on-hint">
           </label>
           <div class="row stack">
@@ -191,7 +191,7 @@
           </div>
           <p id="memory-confirm" class="row confirm" hidden><button type="button" class="btn amber" id="memory-forget-yes">Forget everything now</button> <button type="button" class="btn" id="memory-forget-no">Cancel</button></p>
         </div>
-        <p class="foot">To save something, tell Clearcart "remember that" and what it is. Ask "What do you remember about me?" to hear what is saved.</p>
+        <p class="foot">To save something, tell Orbi "remember that" and what it is. Ask "What do you remember about me?" to hear what is saved.</p>
       </section>
 
       <section class="group" id="sound" aria-labelledby="sound-h">
@@ -202,13 +202,13 @@
             <input id="subtitles" name="subtitles" class="sw" type="checkbox" role="switch" data-setting="subtitles" aria-labelledby="subtitles-label">
           </label>
           <label class="row" for="newtab-page">
-            <span class="row-text"><span id="newtab-page-label">Use the Clearcart new tab page</span>
-              <span class="hint" id="newtab-page-hint">Chrome pages can't run Clearcart, so on Chrome's own new tab page Space doesn't talk and subtitles don't show. Clearcart's new tab page has a search box and works like any site. Turned off, new tabs go straight on to Chrome's new tab page, whose address then shows as chrome://new-tab-page. When Chrome asks whether to keep the new tab page, choose Keep it: Change it back turns Clearcart off. The toggle shortcut works on every page either way.</span></span>
+            <span class="row-text"><span id="newtab-page-label">Use the Orbi new tab page</span>
+              <span class="hint" id="newtab-page-hint">Chrome pages can't run Orbi, so on Chrome's own new tab page Space doesn't talk and subtitles don't show. Orbi's new tab page has a search box and works like any site. Turned off, new tabs go straight on to Chrome's new tab page, whose address then shows as chrome://new-tab-page. When Chrome asks whether to keep the new tab page, choose Keep it: Change it back turns Orbi off. The toggle shortcut works on every page either way.</span></span>
             <input id="newtab-page" name="newTabPage" class="sw" type="checkbox" role="switch" data-setting="newTabPage" aria-labelledby="newtab-page-label" aria-describedby="newtab-page-hint">
           </label>
           <label class="row" for="error-pages">
-            <span class="row-text"><span id="error-pages-label">Replace Chrome error pages with Clearcart's page</span>
-              <span class="hint" id="error-pages-hint">When a site can't be reached (no connection, a wrong address, a site that is down), Chrome's own error page can't run Clearcart. Clearcart's page shows the address with a Retry button, and Space to talk works there, so you can ask to go somewhere else. Back still returns to where you were.</span></span>
+            <span class="row-text"><span id="error-pages-label">Replace Chrome error pages with Orbi's page</span>
+              <span class="hint" id="error-pages-hint">When a site can't be reached (no connection, a wrong address, a site that is down), Chrome's own error page can't run Orbi. Orbi's page shows the address with a Retry button, and Space to talk works there, so you can ask to go somewhere else. Back still returns to where you were.</span></span>
             <input id="error-pages" name="errorPages" class="sw" type="checkbox" role="switch" data-setting="errorPages" aria-labelledby="error-pages-label" aria-describedby="error-pages-hint">
           </label>
           <label class="row" for="sounds">
@@ -218,7 +218,7 @@
           </label>
           <label class="row" for="quiet-tabs">
             <span class="row-text"><span id="quiet-tabs-label">Quiet other tabs while talking</span>
-              <span class="hint" id="quiet-tabs-hint">Fades out and mutes videos and music in other tabs while you talk and while Clearcart answers, then turns them back on. Tabs you muted yourself stay muted.</span></span>
+              <span class="hint" id="quiet-tabs-hint">Fades out and mutes videos and music in other tabs while you talk and while Orbi answers, then turns them back on. Tabs you muted yourself stay muted.</span></span>
             <input id="quiet-tabs" name="quietTabs" class="sw" type="checkbox" role="switch" data-setting="quietTabs" aria-labelledby="quiet-tabs-label" aria-describedby="quiet-tabs-hint">
           </label>
         </div>
@@ -235,7 +235,7 @@
           </div>
           <div class="row">
             <span class="row-text"><span>Microphone</span>
-              <span class="hint">Clearcart listens through a hidden extension page, which can't ask for the microphone itself. Grant it once here.</span>
+              <span class="hint">Orbi listens through a hidden extension page, which can't ask for the microphone itself. Grant it once here.</span>
               <span class="hint strong" id="mic-status" role="status" aria-live="polite"></span></span>
             <button type="button" class="btn" id="grant-mic">Grant microphone</button>
           </div>

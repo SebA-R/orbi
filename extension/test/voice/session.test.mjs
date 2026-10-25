@@ -170,7 +170,7 @@ test("standby moved: speech stops and a turn still listening ends unsent", async
   const emitted = [];
   const v = voice((m) => emitted.push(m));
   await v.controller.start();
-  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Clearcart moved to another window." });
+  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Orbi moved to another window." });
   assert.equal(v.controller.listening, false);
   assert.equal(v.stts[0].aborted, true);
   assert.equal(v.mic.sink, null);
@@ -187,7 +187,7 @@ test("standby moved ends a hands-free latch too, and its held phrases are never 
   const v = voice((m) => emitted.push(m));
   await v.controller.start({ latch: true });
   v.stts[0].h.onFinal("add the blue mug"); // held until the latch ends
-  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Clearcart moved to another window." });
+  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Orbi moved to another window." });
   assert.equal(v.controller.listening, false);
   assert.equal(v.controller.latched, false);
   assert.ok(!v.agent.sent.some((m) => m.type === "user_text"));
@@ -251,7 +251,7 @@ test("hotkey: navigating away or removing the frame mid-hold releases it, so not
   assert.deepEqual(a.sent, [RT.PTT_START, RT.PTT_CANCEL]);
 });
 
-test("hotkey: a press another Clearcart build already took is left to it", () => {
+test("hotkey: a press another Orbi build already took is left to it", () => {
   const p = page();
   for (const alt of [false, true]) {
     p.fire("keydown", key("Space", { altKey: alt, defaultPrevented: true }));

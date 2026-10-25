@@ -17,10 +17,10 @@ export function hostAllowed(host: string | string[] | undefined, port: number): 
   return !!m && LOCAL_NAMES.has(m[1]) && Number(m[2]) === port;
 }
 
-// The /memory endpoint (server.ts) is for the Clearcart extension's
+// The /memory endpoint (server.ts) is for the Orbi extension's
 // settings page only. On top of the Host check it needs:
 //   - a loopback peer (the server listens on every interface), and
-//   - an Origin that is the Clearcart extension. A web page cannot set
+//   - an Origin that is the Orbi extension. A web page cannot set
 //     Origin, so no site can read or delete saved facts, even with the
 //     Host header right. A request with no Origin is refused too.
 export function isLoopbackAddress(addr: string | undefined): boolean {
@@ -57,7 +57,7 @@ export function memoryRequestAllowed(req: { headers: Record<string, string | str
 // WebSocket upgrades (/session, /ext). Browsers send an Origin with every
 // WebSocket, and a page cannot change it, so a site that opens
 // ws://localhost:5050/session (its Host header is right) is refused here.
-// Allowed: the Clearcart extension, this server's own pages (the voice
+// Allowed: the Orbi extension, this server's own pages (the voice
 // console) and clients that are not browsers (no Origin: tests, scripts on
 // this computer).
 export function upgradeOriginAllowed(origin: string | string[] | undefined, port: number, extOrigins = extensionOrigins()): boolean {

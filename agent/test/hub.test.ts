@@ -167,7 +167,7 @@ test("a yes still being pinned to its tab when the user moves windows never turn
   await tick();
   a.peer.userText("yes"); // request_checkout now waits for the checkout snapshot
   b.peer.interrupt(); // the user moves to b before that returns
-  assert.match((await done).content[0].text, /^declined\. The user moved to another Clearcart window/);
+  assert.match((await done).content[0].text, /^declined\. The user moved to another Orbi window/);
   assert.equal(claimConfirmation((s as any).state).ok, false);
 });
 

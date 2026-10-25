@@ -1,4 +1,4 @@
-// Draws the Clearcart toolbar icons (an orb with a soft spectrum, like the
+// Draws the Orbi toolbar icons (an orb with a soft spectrum, like the
 // voice console's talk button) and writes them as PNGs. No dependencies.
 //
 //   node scripts/make-extension-icons.mjs   -> extension/icons/icon{16,32,48,128}.png

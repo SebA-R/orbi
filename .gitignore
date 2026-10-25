@@ -21,5 +21,5 @@ docs/demo/raw/*/*.mp4
 # Local HyperFrames project and large renders for the demo video
 docs/demo/out/
 
-# Clearcart memory and recent conversation, local only (agent/memory.ts)
+# Orbi memory and recent conversation, local only (agent/memory.ts)
 agent/.data/

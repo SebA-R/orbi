@@ -1,4 +1,4 @@
-// Clearcart's earcons: every cue is in CUES, played by one small synth.
+// Orbi's earcons: every cue is in CUES, played by one small synth.
 // Recipes are version A of each cue from the earcon design page.
 //
 //   listen  talk key held (confirm): whoop, 280 -> 560 Hz

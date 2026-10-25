@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
-  <title>Clearcart Voice</title>
+  <title>Orbi Voice</title>
   <link rel="stylesheet" href="css/console.css">
   <link rel="stylesheet" href="css/looks.css">
   <script>
@@ -25,7 +25,7 @@
   <div class="edge-glow" aria-hidden="true"></div>
 
   <header class="bar">
-    <h1 class="brand">Clearcart</h1>
+    <h1 class="brand">Orbi</h1>
     <div class="bar-end">
       <p id="connection" class="connection" data-state="connecting">Connecting to your shopping assistant…</p>
       <button id="settings-toggle" class="icon-button" type="button" popovertarget="settings"
@@ -73,7 +73,7 @@
         <p class="hint" aria-hidden="true"><span id="hint-text"></span></p>
         <p id="talk-help" class="visually-hidden">
           Hold the Space bar while you speak and let go when you are done. Or press Enter to start
-          listening and press it again to send. Escape stops Clearcart talking.
+          listening and press it again to send. Escape stops Orbi talking.
         </p>
         <div class="quick-actions">
           <button id="replay" class="ghost" type="button" disabled>Repeat last reply</button>
@@ -82,7 +82,7 @@
       </div>
     </section>
 
-    <!-- Right on desktop, below on phones: what was said, what is being bought, and what Clearcart may do. -->
+    <!-- Right on desktop, below on phones: what was said, what is being bought, and what Orbi may do. -->
     <div class="side">
       <section aria-labelledby="convo-heading" class="conversation">
         <h2 id="convo-heading" class="section-label">Conversation</h2>
@@ -126,12 +126,12 @@
         </dl>
         <p class="receipt-secure">
           <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
-          <span>Paid securely. The AI never saw your card. Clearcart's own code filled it in after you said yes.</span>
+          <span>Paid securely. The AI never saw your card. Orbi's own code filled it in after you said yes.</span>
         </p>
       </section>
 
       <section aria-labelledby="trust-heading" class="trust card">
-        <h2 id="trust-heading" class="section-label">What Clearcart is doing</h2>
+        <h2 id="trust-heading" class="section-label">What Orbi is doing</h2>
         <ul>
           <li><span class="dot" aria-hidden="true"></span>Only browsing allowed sites</li>
           <li><span class="dot" aria-hidden="true"></span>The AI never has access to your card</li>
@@ -179,20 +179,20 @@
       const options = 'Three options. A blue ceramic mug, 12 ounces, $12. A navy travel mug, $16.50. Or a pair of blue mugs, $19. Which one?';
       const readBack = "You're buying 1 blue ceramic mug, 12 oz for $12.96. I removed a pre-checked Subscribe and Save membership that would have added $4.99. Say yes to pay, or no to change it.";
       const order = { item: 'blue ceramic mug, 12 oz', quantity: 1, total: '$12.96', changes: 'I removed a pre-checked Subscribe and Save membership that would have added $4.99.' };
-      if (demo !== 'idle') { hook.turn('You', ask); hook.turn('Clearcart', options); hook.turn('You', 'The ceramic one.'); }
+      if (demo !== 'idle') { hook.turn('You', ask); hook.turn('Orbi', options); hook.turn('You', 'The ceramic one.'); }
       if (demo === 'confirm') {
-        hook.turn('Clearcart', readBack);
+        hook.turn('Orbi', readBack);
         hook.confirm(order);
         hook.state('idle', { user: 'The ceramic one.', agent: readBack });
       } else if (demo === 'receipt') {
-        hook.turn('Clearcart', readBack);
+        hook.turn('Orbi', readBack);
         hook.confirm(order);
         hook.turn('You', 'Yes.');
-        hook.turn('Clearcart', 'Done. Your order is placed, $12.96 on your Visa ending in 1111.');
+        hook.turn('Orbi', 'Done. Your order is placed, $12.96 on your Visa ending in 1111.');
         hook.state('idle', { user: 'Yes', agent: 'Done. Your order is placed, $12.96 on your Visa ending in 1111.' });
         hook.receipt({ item: 'Blue ceramic mug, 12 oz', total: '$12.96', last4: '1111' });
       } else {
-        if (demo === 'speaking') hook.turn('Clearcart', 'I unchecked a Subscribe and Save membership. Your total is $12.96.');
+        if (demo === 'speaking') hook.turn('Orbi', 'I unchecked a Subscribe and Save membership. Your total is $12.96.');
         hook.state(demo, {
           user: demo === 'idle' ? '' : demo === 'listening' ? 'Find a blue mug under twenty dollars' : 'The ceramic one.',
           agent: demo === 'speaking' ? 'I unchecked a Subscribe and Save membership. Your total is $12.96.' : '',
