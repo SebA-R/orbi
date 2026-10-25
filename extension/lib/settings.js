@@ -31,6 +31,9 @@ export const DEFAULTS = Object.freeze({
   quietTabs: true,
   // Bring the user to the tab Clearcart acts on (background/follow.js).
   followTab: true,
+  // Guided mode: the agent describes each page and lets the user choose.
+  // Off, it picks and acts on its own (agent/prompt.ts GUIDED_PROMPT).
+  guidedMode: true,
 });
 
 export const SPEED_MIN = 0.6;
@@ -78,6 +81,7 @@ export function normalize(raw = {}) {
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
   if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
+  if (typeof raw.guidedMode === "boolean") out.guidedMode = raw.guidedMode;
   return out;
 }
 
