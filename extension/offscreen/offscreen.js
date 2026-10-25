@@ -5,7 +5,7 @@
 // rather than from chrome.storage.
 //
 // In:  runtime messages with target "offscreen":
-//        VOICE_START {settings?, silent?}, VOICE_CONFIRM, VOICE_CANCEL, VOICE_STOP, PTT_TOGGLE, TTS_STOP,
+//        VOICE_START {settings?, silent?, latch?}, VOICE_CONFIRM, VOICE_CANCEL, VOICE_HUSH, VOICE_STOP, PTT_TOGGLE, TTS_STOP,
 //        TTS_SPEAK {text}, CHIME {kind}, SETTINGS_CHANGED {settings}
 //      Anything else (including PTT_* that content scripts broadcast to every
 //      extension page) is ignored; the worker is the only router.
@@ -90,13 +90,16 @@ chrome.runtime.onMessage.addListener((msg) => {
   switch (msg.type) {
     case RT.VOICE_START:
       applySettings(msg.settings);
-      controller.start({ silent: !!msg.silent });
+      controller.start({ silent: !!msg.silent, latch: !!msg.latch });
       break;
     case RT.VOICE_CONFIRM:
       controller.confirm();
       break;
     case RT.VOICE_CANCEL:
       controller.cancel();
+      break;
+    case RT.VOICE_HUSH:
+      controller.hush();
       break;
     case RT.VOICE_STOP:
       controller.stop();

@@ -104,9 +104,18 @@ export const keyName = (hotkey) => (HOTKEYS[hotkey] || HOTKEYS.Space).split(" ("
 
 export function talkKeyHelp(hotkey) {
   const name = keyName(hotkey);
-  const hold = `Hold ${name}, wait for the chime, speak, then let go.`;
-  if (name === "Space") return `${hold} In a text field, Space types a space, so hold Option + Space there instead.`;
-  return `${hold} It works in text fields too.`;
+  if (name === "Space") {
+    return "Hold Space to talk. Option+Space keeps listening until you press Space, and works in text fields too. "
+      + "Double-tap Space to stop Clearcart talking.";
+  }
+  return `Hold ${name}, wait for the chime, speak, then let go. It works in text fields too.`;
 }
 
 export const allReady = ({ site, mic, agent }) => site === true && mic === "granted" && agent?.connected === true;
+
+// The setup page's four checks (site access, microphone, agent server, talk
+// key), counted for the popup's setup pill. The talk key always has a
+// default, so it is always done, as on the setup page.
+export const SETUP_STEPS = 4;
+export const setupDone = ({ site, mic, agent }) =>
+  [site === true, mic === "granted", agent?.connected === true, true].filter(Boolean).length;
