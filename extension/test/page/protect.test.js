@@ -141,7 +141,44 @@ test("badges: aria-hidden overlay outside <body>, pointer-events none, idempoten
   assert.equal(host.parentNode, document.documentElement);
   assert.equal(host.getAttribute("aria-hidden"), "true");
   assert.match(host.style.cssText, /pointer-events: none/);
-  assert.equal(document.body.innerHTML, before, "the page body is untouched");
+  assert.equal(document.body.innerHTML.replace(' data-clearcart-locked=""', ""), before, "the page body is untouched but for the gray mark");
   assert.equal(host.shadowRoot, null, "closed shadow root");
   assert.equal(window.document.body.textContent.includes("Locked for AI"), false);
+});
+
+test("gray marks: on what the AI is locked out of, never disabled, gone once unlocked or re-rendered", () => {
+  const { P, $, document } = load(`<button id="po">Place order</button><button id="add">Add to cart</button>
+    <label><input type="checkbox" id="on" checked> Subscribe &amp; Save</label>
+    <label><input type="checkbox" id="off"> Save this card</label>
+    <form id="pay"><input id="addr" name="address"><input id="cc" name="cc-number" autocomplete="cc-number"><select id="exp"><option>12</option></select><textarea id="note"></textarea><button id="go">Continue</button></form>
+    <form><input id="email" name="email"><input id="pw" type="password"><button id="next">Next</button></form>
+    <form role="search"><input id="q" name="q"><button id="s">Search</button></form>`);
+  P.showBadges(document);
+  const marked = (s) => $(s).hasAttribute(P.LOCKED_ATTR);
+  for (const s of ["#po", "#off", "#addr", "#cc", "#exp", "#note", "#go", "#email", "#pw", "#next"]) assert.ok(marked(s), s);
+  for (const s of ["#add", "#on", "#q", "#s"]) assert.ok(!marked(s), s);
+  for (const el of document.querySelectorAll("button,input,select,textarea")) {
+    for (const a of ["disabled", "aria-disabled", "inert"]) assert.ok(!el.hasAttribute(a), `${el.id} ${a}`);
+    assert.ok(!/pointer-events/.test(el.getAttribute("style") || ""), el.id);
+  }
+  assert.ok(document.getElementById("clearcart-lock-style"), "one stylesheet");
+
+  P.release($("#po"));
+  $("#next").textContent = "Search";
+  $("#pw").remove();
+  P.showBadges(document);
+  assert.ok(!marked("#po"), "the single-use press is no longer grayed");
+  assert.ok(!marked("#next") && !marked("#email"), "re-rendered as unlocked");
+});
+
+test("gray marks come off when the extension goes away", () => {
+  const { P, $, document } = load(`<button id="po">Place order</button>`);
+  let alive = true;
+  P.showBadges(document, { alive: () => alive });
+  assert.ok($("#po").hasAttribute(P.LOCKED_ATTR));
+  alive = false;
+  P.showBadges(document);
+  assert.ok(!$("#po").hasAttribute(P.LOCKED_ATTR));
+  assert.equal(document.getElementById("clearcart-lock-style"), null);
+  assert.equal(document.getElementById(P.BADGE_HOST_ID), null);
 });

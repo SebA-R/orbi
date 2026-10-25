@@ -501,19 +501,29 @@
       var hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
       if (!hit || !(hit === t.el || t.el.contains(hit))) throw PageError(ERR.NO_ELEMENT, params.ref + " is covered by another element");
     }
+    Protect.release(t.el);
     return { x: r.x, y: r.y, width: r.width, height: r.height, kind: t.lock.kind };
   }
 
   function pressRef(params) {
     var t = pressTarget(params);
+    Protect.release(t.el);
     if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", behavior: "instant" });
     t.el.click();
     return { ok: true };
   }
 
-  // Lock badges for sighted viewers; see protect.js. Never fails a call.
+  // False once the extension is disabled or reloaded (chrome.runtime.id goes
+  // away); the badges and grayed marks then come off the page.
+  var runtimeId = function () { return globalThis.chrome && chrome.runtime && chrome.runtime.id; };
+  var hadRuntime = !!runtimeId();
+  function extensionAlive() {
+    return !hadRuntime || !!runtimeId();
+  }
+
+  // Lock badges and grayed-out marks; see protect.js. Never fails a call.
   function badges() {
-    try { Protect.showBadges(document); } catch (_) { /* cosmetic */ }
+    try { Protect.showBadges(document, { alive: extensionAlive }); } catch (_) { /* cosmetic */ }
   }
 
   // -------------------------------------------- read_fields / fill_payment
