@@ -116,10 +116,10 @@ export class VoiceController {
     switch (m.type) {
       case "agent_text":
         if (!m.text) return;
-        this.awaitingReply = false;
+        // agent_text arrives whole (not streamed), so its subtitle is final at once.
+        // Stay "thinking" until the speaker reports it started (onSpeakingChange clears it).
         this.emit({ type: RT.SUBTITLE, speaker: "agent", text: m.text, final: true });
         this.speaker.speak(m.text);
-        this.#settle();
         break;
       case "status":
         this.emit({ type: RT.STATUS, kind: "status", text: m.text || "" });
