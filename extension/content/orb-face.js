@@ -12,6 +12,10 @@
 // same root, ideally a closed shadow root. The state is always said in text
 // elsewhere; the face never carries meaning on its own.
 //
+// It is 26 px unless the page sets --ccf-size on an ancestor (the new tab
+// hero uses 128px); the face is drawn in a 100 x 100 viewBox, so the eyes and
+// mouth scale with it. --ccf-glow likewise replaces the small glow.
+//
 // States (Mini Orb States board, recommended faceless set):
 //   idle       I1 slow breathing, smiling
 //   listening  L1 voice swell, from the mic level when one is fed in, no face
@@ -33,7 +37,7 @@
   const LEVEL_HOLD_MS = 300; // without a new level for this long, fall back to the loop
   const REDUCE = "(prefers-reduced-motion: reduce)";
 
-  // Face geometry in a 100 x 100 box (1 unit = 0.26 px at 26 px). Eyes are
+  // Face geometry in a 100 x 100 box (1 unit = 0.26 px at the default 26 px). Eyes are
   // face 3's dots. The mouth is a thin, shallow crescent (top sag 2, bottom
   // sag 6), so it reads as a friendly smile rather than a grin.
   const SMILE = "M40.5 60Q50 64 59.5 60Q50 72 40.5 60Z";
@@ -57,10 +61,10 @@
 @keyframes ccf-grin { 0%, 100% { transform: scaleX(1); } 35%, 65% { transform: scaleX(1.12); } }
 .ccf {
   position: relative !important; display: inline-block !important; flex: none !important;
-  box-sizing: border-box !important; width: 26px !important; height: 26px !important;
+  box-sizing: border-box !important; width: var(--ccf-size, 26px) !important; height: var(--ccf-size, 26px) !important;
   margin: 0; padding: 0 !important; border: 0 !important; border-radius: 50% !important;
   background: radial-gradient(circle at 35% 30%, #ffffff, #c9b8ff 40%, #5e8bff 75%) !important;
-  box-shadow: 0 0 8px .5px rgb(94 139 255 / .4) !important;
+  box-shadow: var(--ccf-glow, 0 0 8px .5px rgb(94 139 255 / .4)) !important;
   overflow: visible !important; pointer-events: none !important; vertical-align: middle;
   transform: scale(var(--ccf-swell, 1)); transform-origin: 50% 50%;
   transition: transform .22s ease-out;
