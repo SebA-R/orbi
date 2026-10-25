@@ -31,6 +31,10 @@ export const ACT_METHODS = new Set([
 // change can arrive a little later. They are not the user switching away.
 const OWN_SWITCH_GRACE_MS = 500;
 
+// Kept in chrome.storage.session so a service-worker restart mid-turn does
+// not forget that the user switched away.
+export const FOLLOW_KEY = "clearcartFollow";
+
 export function createFollower({
   chromeApi = globalThis.chrome,
   getSettings = () => loadSettings(chromeApi.storage.local),
@@ -44,37 +48,40 @@ export function createFollower({
   let quietUntil = 0;
   let quietDepth = 0;
 
+  const store = chromeApi?.storage?.session;
+  let loaded = !store;
+  const ready = store
+    ? Promise.resolve()
+        .then(() => store.get(FOLLOW_KEY))
+        .then((r) => {
+          const v = r && r[FOLLOW_KEY];
+          if (v && !loaded) ({ target = null, targetWindow = null, paused = false } = v);
+        })
+        .catch(() => {})
+        .finally(() => (loaded = true))
+    : Promise.resolve();
+  // Event handlers run at once when the state is loaded, else right after.
+  const whenReady = (fn) => (loaded ? fn() : void ready.then(fn));
+  function save() {
+    if (!store) return;
+    Promise.resolve()
+      .then(() => store.set({ [FOLLOW_KEY]: { target, targetWindow, paused } }))
+      .catch(() => {});
+  }
+
   const quiet = () => quietDepth > 0 || now() < quietUntil;
 
   function newTurn() {
+    loaded = true; // a new turn replaces whatever is still loading
     paused = false;
     target = null;
     targetWindow = null;
+    save();
   }
 
-  // Brings tabId to the front unless following is off or paused. Never
-  // throws: a failed switch must not fail the action.
-  async function to(tabId) {
-    if (paused || !Number.isInteger(tabId)) return false;
-    try {
-      const s = await getSettings();
-      if (!s.followTab || paused) return false;
-      const tab = await chromeApi.tabs.get(tabId);
-      target = tabId;
-      targetWindow = tab.windowId ?? null;
-      if (!tab.active) await chromeApi.tabs.update(tabId, { active: true });
-      if (tab.windowId != null && chromeApi.windows?.update) {
-        const win = await chromeApi.windows.get?.(tab.windowId).catch(() => null);
-        if (!win || !win.focused) await chromeApi.windows.update(tab.windowId, { focused: true });
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // Runs one of Clearcart's own tab changes (tabs_activate, tabs_close)
-  // without reading the events it causes as the user switching away.
+  // Runs one of Clearcart's own tab changes (its switches, tabs_activate,
+  // tabs_close) without reading the events it causes as the user switching
+  // away.
   async function own(fn) {
     quietDepth++;
     try {
@@ -85,36 +92,82 @@ export function createFollower({
     }
   }
 
+  // Brings tabId to the front unless following is off or paused. Switches
+  // run one at a time, so parallel calls on two tabs cannot read each
+  // other's events as the user's. Never throws: a failed switch must not
+  // fail the action.
+  let chain = Promise.resolve();
+  function to(tabId) {
+    const run = () => switchTo(tabId);
+    const p = chain.then(run, run);
+    chain = p.catch(() => {});
+    return p;
+  }
+
+  async function switchTo(tabId) {
+    await ready;
+    if (paused || !Number.isInteger(tabId)) return false;
+    try {
+      const s = await getSettings();
+      if (!s.followTab || paused) return false;
+      const tab = await chromeApi.tabs.get(tabId);
+      target = tabId;
+      targetWindow = tab.windowId ?? null;
+      save();
+      await own(async () => {
+        if (!tab.active) await chromeApi.tabs.update(tabId, { active: true });
+        if (tab.windowId != null && chromeApi.windows?.update) {
+          const win = await chromeApi.windows.get?.(tab.windowId).catch(() => null);
+          if (!win || !win.focused) await chromeApi.windows.update(tab.windowId, { focused: true });
+        }
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Clearcart showed this tab on purpose (tabs_activate): it is the tab now.
   function claim(tabId, windowId = null) {
     if (!Number.isInteger(tabId)) return;
     target = tabId;
     targetWindow = windowId;
+    save();
   }
 
   function forget(tabId) {
-    if (tabId === target) {
+    whenReady(() => {
+      if (tabId !== target) return;
       target = null;
       targetWindow = null;
-    }
+      save();
+    });
   }
 
   // tabs.onActivated
   function onActivated({ tabId, windowId } = {}) {
-    if (target == null || quiet()) return;
-    if (tabId === target) {
-      if (windowId != null) targetWindow = windowId;
-      return;
-    }
-    paused = true;
+    whenReady(() => {
+      if (target == null || quiet()) return;
+      if (tabId === target) {
+        if (windowId != null && windowId !== targetWindow) (targetWindow = windowId), save();
+        return;
+      }
+      paused = true;
+      save();
+    });
   }
 
   // windows.onFocusChanged. Leaving Chrome (WINDOW_ID_NONE, -1) is not a
   // switch to another tab.
   function onWindowFocused(windowId) {
-    if (target == null || quiet() || windowId == null || windowId < 0) return;
-    if (targetWindow != null && windowId !== targetWindow) paused = true;
+    whenReady(() => {
+      if (target == null || quiet() || windowId == null || windowId < 0) return;
+      if (targetWindow != null && windowId !== targetWindow) {
+        paused = true;
+        save();
+      }
+    });
   }
 
-  return { to, own, claim, forget, newTurn, onActivated, onWindowFocused, get paused() { return paused; } };
+  return { to, own, claim, forget, newTurn, onActivated, onWindowFocused, ready, get paused() { return paused; } };
 }

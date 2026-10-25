@@ -346,7 +346,8 @@ export function createRouter({
       }
       case "tabs_activate": {
         const r = await follow.own(() => tabs.tabsActivate({ tabId: params.tabId }));
-        follow.claim(r && r.tabId);
+        const shown = r && Number.isInteger(r.tabId) ? await chromeApi.tabs.get(r.tabId).catch(() => null) : null;
+        if (shown) follow.claim(shown.id, shown.windowId ?? null);
         return r;
       }
       case "tab_info":

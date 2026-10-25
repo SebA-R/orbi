@@ -7,7 +7,8 @@ import { normalize } from "../../../extension/lib/settings.js";
 
 // Two windows: the user is on tab 1 (window 10); tab 2 sits in the
 // background in window 10, tab 3 in window 20.
-function setup({ followTab = true } = {}) {
+function setup({ followTab = true, session } = {}) {
+  const clock = { t: 0 };
   const tabState = new Map([
     [1, { id: 1, windowId: 10, active: true }],
     [2, { id: 2, windowId: 10, active: false }],
@@ -34,6 +35,7 @@ function setup({ followTab = true } = {}) {
       },
       sendMessage: async () => ({ ok: true, result: { ok: true } }),
     },
+    ...(session ? { storage: { session } } : {}),
     windows: {
       get: async (id) => ({ id, focused: focused.id === id }),
       update: async (id) => {
@@ -43,7 +45,7 @@ function setup({ followTab = true } = {}) {
       },
     },
   };
-  const follow = createFollower({ chromeApi, getSettings: async () => settings });
+  const follow = createFollower({ chromeApi, getSettings: async () => settings, now: () => clock.t });
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 1,
     resolveTab: async (id) => id ?? 1,
@@ -59,6 +61,10 @@ function setup({ followTab = true } = {}) {
       }
       return { ok: true };
     },
+    tabsActivate: async ({ tabId }) => {
+      await chromeApi.tabs.update(tabId, { active: true });
+      return { ok: true, tabId };
+    },
     tabsCreate: async ({ onCreated }) => {
       tabState.set(9, { id: 9, windowId: 10, active: false });
       await onCreated?.(9);
@@ -67,13 +73,14 @@ function setup({ followTab = true } = {}) {
   };
   const cdp = { click: async () => {}, type: async () => {}, key: async () => {}, scroll: async () => {}, screenshot: async () => ({ data: "" }) };
   const router = createRouter({ chromeApi, tabs, cdp, follow });
-  // The user picks a tab themselves.
+  // The user picks a tab themselves, a moment after Clearcart's last switch.
   const userSwitch = (id) => {
+    clock.t += 1000;
     const t = tabState.get(id);
     for (const o of tabState.values()) if (o.windowId === t.windowId) o.active = o.id === id;
     follow.onActivated({ tabId: id, windowId: t.windowId });
   };
-  return { router, follow, switches, settings, tabState, userSwitch };
+  return { router, follow, switches, settings, tabState, userSwitch, clock };
 }
 
 test("followTab defaults on and keeps a stored false", () => {
@@ -142,8 +149,9 @@ test("a manual switch away stops following for the rest of the turn, the next tu
 });
 
 test("the user focusing another window also stops following; leaving Chrome does not", async () => {
-  const { router, follow } = setup();
+  const { router, follow, clock } = setup();
   await router.route("click", { tabId: 2, x: 5, y: 5 });
+  clock.t += 1000;
   follow.onWindowFocused(-1);
   assert.equal(follow.paused, false);
   follow.onWindowFocused(20);
@@ -183,4 +191,40 @@ test("a failed switch never fails the action", async () => {
   const r = await router.route("click", { tabId: 99, x: 5, y: 5 });
   assert.deepEqual(r, { ok: true, via: "cdp" });
   assert.equal(await follow.to(99), false);
+});
+
+test("parallel acts on two tabs do not pause following", async () => {
+  const { router, follow, switches } = setup();
+  await Promise.all([router.route("click", { tabId: 2, x: 5, y: 5 }), router.route("scroll", { tabId: 3, dy: 10 })]);
+  assert.equal(follow.paused, false);
+  assert.deepEqual(switches, [["tab", 2], ["window", 20]]);
+});
+
+test("a shown tab (tabs_activate) still notices the user picking another window", async () => {
+  const { router, follow, clock } = setup();
+  await router.route("tabs_activate", { tabId: 2 });
+  assert.equal(follow.paused, false);
+  clock.t += 1000;
+  follow.onWindowFocused(20);
+  assert.equal(follow.paused, true);
+});
+
+test("the pause survives a service-worker restart", async () => {
+  const data = {};
+  const session = {
+    get: async (k) => (k in data ? { [k]: data[k] } : {}),
+    set: async (o) => Object.assign(data, o),
+  };
+  const a = setup({ session });
+  await a.follow.ready;
+  await a.router.route("click", { tabId: 2, x: 5, y: 5 });
+  a.userSwitch(1);
+  assert.equal(a.follow.paused, true);
+  await new Promise((r) => setTimeout(r, 0));
+
+  const b = setup({ session });
+  await b.follow.ready;
+  assert.equal(b.follow.paused, true);
+  await b.router.route("click", { tabId: 2, x: 5, y: 5 });
+  assert.deepEqual(b.switches, []);
 });
