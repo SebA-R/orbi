@@ -15,7 +15,7 @@
 // - Text that has to be checked first (allowed sites, blocked sites, the
 //   agent address) saves only with the Save button, after validation.
 // Danger mode has its own two-press switch (lib/danger-toggle.js).
-import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, localModels, saveSettings, normalizeAgentUrl, normalizeLocalBaseUrl, normalizeLocalModel, parseOriginLines, speakRepliesNote } from "../lib/settings.js";
+import { CLAUDE_MODELS, DEFAULTS, HOTKEYS, claudeModelLabel, SPEED_MIN, SPEED_MAX, loadSettings, localModels, saveSettings, normalizeAgentUrl, normalizeLocalBaseUrl, normalizeLocalModel, parseOriginLines, speakRepliesNote } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/blocklist.js";
 import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
@@ -38,6 +38,7 @@ const els = {
 };
 
 for (const value of Object.keys(HOTKEYS)) els.hotkey.append(new Option(keyName(value), value));
+for (const id of Object.keys(CLAUDE_MODELS)) $("claude-model").append(new Option(claudeModelLabel(id), id));
 els.speed.min = String(SPEED_MIN);
 els.speed.max = String(SPEED_MAX);
 
@@ -84,6 +85,7 @@ function showSpeakNote() {
 // Leaves Danger mode alone, so an open confirm is not closed by another save.
 function fillSimple(s) {
   for (const key of simple.keys()) writeSetting(key, s[key]);
+  $("claude-model-row").hidden = s.provider !== "claude";
   showSpeed();
   showSpeakNote();
 }

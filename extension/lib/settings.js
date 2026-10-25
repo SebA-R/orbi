@@ -84,11 +84,23 @@ export const DEFAULTS = Object.freeze({
   // localBaseUrl running localModel. The agent server restarts the
   // conversation when this changes.
   provider: "claude",
+  // With provider "claude": which Claude model (CLAUDE_MODELS). The agent
+  // server restarts the conversation when this changes too.
+  claudeModel: "claude-sonnet-5-5",
   localBaseUrl: "http://localhost:11434/v1",
   localModel: "llama3.1:8b",
 });
 
 export const PROVIDERS = Object.freeze(["claude", "local"]);
+
+// The Claude models the user may pick, with their settings labels
+// (agent/local/config.ts CLAUDE_MODELS is the server's copy of the ids).
+export const CLAUDE_MODELS = Object.freeze({
+  "claude-sonnet-5-5": { name: "Sonnet 5.5", note: "balanced" },
+  "claude-opus-5-5": { name: "Opus 5.5", note: "most capable, slower" },
+  "claude-haiku-5-5": { name: "Haiku 5.5", note: "fastest" },
+});
+export const claudeModelLabel = (id) => `${CLAUDE_MODELS[id].name}, ${CLAUDE_MODELS[id].note}`;
 
 export const DANGER_MODE_COPY = "Danger mode. Orbi acts on its own with no locks, including placing orders with your saved card without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
 
@@ -159,10 +171,10 @@ export function normalizeLocalModel(value) {
 
 // The agent settings message (worker to server), and the storage keys that
 // re-send it when they change.
-export const AGENT_SETTING_KEYS = Object.freeze(["guidedMode", "memory", "provider", "localBaseUrl", "localModel", "searchEngine"]);
+export const AGENT_SETTING_KEYS = Object.freeze(["guidedMode", "memory", "provider", "claudeModel", "localBaseUrl", "localModel", "searchEngine"]);
 export function agentSettingsMessage(s) {
-  const { guidedMode, memory, provider, localBaseUrl, localModel, searchEngine } = normalize(s);
-  return { type: MSG.SETTINGS, guidedMode, memory, provider, localBaseUrl, localModel, searchEngine };
+  const { guidedMode, memory, provider, claudeModel, localBaseUrl, localModel, searchEngine } = normalize(s);
+  return { type: MSG.SETTINGS, guidedMode, memory, provider, claudeModel, localBaseUrl, localModel, searchEngine };
 }
 
 export function normalizeOrigin(value) {
@@ -199,6 +211,7 @@ export function normalize(raw = {}) {
   if (typeof raw.memory === "boolean") out.memory = raw.memory;
   if (typeof raw.errorPages === "boolean") out.errorPages = raw.errorPages;
   if (PROVIDERS.includes(raw.provider)) out.provider = raw.provider;
+  if (typeof raw.claudeModel === "string" && Object.hasOwn(CLAUDE_MODELS, raw.claudeModel)) out.claudeModel = raw.claudeModel;
   const base = raw.localBaseUrl != null && normalizeLocalBaseUrl(raw.localBaseUrl);
   if (base) out.localBaseUrl = base;
   const model = raw.localModel != null && normalizeLocalModel(raw.localModel);
