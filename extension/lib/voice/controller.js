@@ -16,6 +16,9 @@
 //            state -> thinking once something was said, else idle
 //   each STT turn.end -> {type:"user_text"} to the agent + VOICE_FINAL + SUBTITLE
 //   agent_text -> Sonic + SUBTITLE(agent); status/receipt -> STATUS
+//   standby  the agent server gave the conversation to another Clearcart
+//            window (agent/hub.ts): stop speaking and stop waiting for a
+//            reply; "moved" also drops a turn still listening, unsent
 //
 // emit(msg) sends a runtime message (type from RT) towards the worker.
 import { RT } from "../protocol.js";
@@ -159,6 +162,28 @@ export class VoiceController {
     this.speaker.stop();
   }
 
+  // {type:"standby"} from the agent server: another Clearcart window (the
+  // voice console, another browser profile) owns the conversation now.
+  // reason "moved": it just took it, so a turn still listening here ends
+  // unsent, and nothing here keeps listening alongside it. "stale": the
+  // words we sent were dropped; a newer press here (which takes the
+  // conversation back) is left alone.
+  standby(reason) {
+    if (reason === "moved" && this.listening) {
+      this.listening = false;
+      this.confirmed = false;
+      this.held = [];
+      this.mic.sink = null;
+      const s = this.session;
+      this.session = null;
+      if (s) s.abort();
+    }
+    this.speaker.stop();
+    this.muted = true;
+    this.awaitingReply = false;
+    this.#settle();
+  }
+
   onSpeakingChange(on) {
     this.speaking = on;
     if (on) this.awaitingReply = false;
@@ -186,6 +211,10 @@ export class VoiceController {
         this.awaitingReply = false;
         this.emit({ type: RT.STATUS, kind: "receipt", receipt: { item: m.item, total: m.total, last4: m.last4 } });
         this.#settle();
+        break;
+      case "standby":
+        this.emit({ type: RT.STATUS, kind: "status", text: m.text || "Clearcart is in use in another window." });
+        this.standby(m.reason);
         break;
       default:
         this.log(`unknown agent message type: ${m.type}`);
