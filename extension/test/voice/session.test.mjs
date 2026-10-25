@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { RT } from "../../lib/protocol.js";
 import { createDucker } from "../../lib/voice/duck.js";
 import { createVoiceRelay, installVoiceRelay } from "../../lib/voice/relay.js";
-import { VoiceController } from "../../lib/voice/controller.js";
+import { VoiceController, TAIL_MS } from "../../lib/voice/controller.js";
 
 const OUR_ID = "dhgknfenfoidnchmjfaicafhieepefoc";
 const SETTINGS = { speed: 1, agentUrl: "ws://localhost:5050", hotkey: "Space", subtitles: true, quietTabs: true };
@@ -34,7 +34,9 @@ function voice(emit = () => {}) {
     agent,
     chime: () => {},
     emit,
-    setTimer: (fn) => fn(),
+    // The release tail runs at once; the latch's idle stop never fires here.
+    setTimer: (fn, ms) => (ms === TAIL_MS ? fn() : null),
+    clearTimer: () => {},
   });
   return { controller, stts, agent, mic, log };
 }
@@ -177,6 +179,27 @@ test("standby moved: speech stops and a turn still listening ends unsent", async
   v.controller.stop(); // the key comes up afterwards
   assert.ok(!v.agent.sent.some((m) => m.type === "user_text"));
   assert.ok(emitted.some((m) => m.type === RT.STATUS && /another window/.test(m.text)));
+});
+
+test("standby moved ends a hands-free latch too, and its held phrases are never sent", async () => {
+  const emitted = [];
+  const v = voice((m) => emitted.push(m));
+  await v.controller.start({ latch: true });
+  v.stts[0].h.onFinal("add the advil"); // held until the latch ends
+  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Clearcart moved to another window." });
+  assert.equal(v.controller.listening, false);
+  assert.equal(v.controller.latched, false);
+  assert.ok(!v.agent.sent.some((m) => m.type === "user_text"));
+  assert.deepEqual(emitted.filter((m) => m.type === RT.VOICE_STATE).at(-1), { type: RT.VOICE_STATE, state: "idle" });
+});
+
+test("a restarted worker hears the latch too, so Space still ends it on the page", async () => {
+  const emitted = [];
+  const v = voice((m) => emitted.push(m));
+  await v.controller.start({ latch: true });
+  emitted.length = 0;
+  v.controller.announce();
+  assert.deepEqual(emitted, [{ type: RT.VOICE_STATE, state: "listening", latched: true }]);
 });
 
 test("standby stale: waiting for a reply ends, but a newer turn already listening is left alone", async () => {

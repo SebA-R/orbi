@@ -326,12 +326,14 @@ export class VoiceController {
 
   // {type:"standby"} from the agent server: another Clearcart window (the
   // voice console, another browser profile) owns the conversation now.
-  // reason "moved": it just took it, so a turn still listening here ends
-  // unsent, and nothing here keeps listening alongside it. "stale": the
-  // words we sent were dropped; a newer press here (which takes the
-  // conversation back) is left alone.
+  // reason "moved": it just took it, so a turn still listening here (a hold
+  // or a latch) ends unsent, and nothing here keeps listening alongside it.
+  // "stale": the words we sent were dropped; a newer press here (which takes
+  // the conversation back) is left alone.
   standby(reason) {
     if (reason === "moved" && this.listening) {
+      if (this.turn) this.turn.dropped = true;
+      this.#endLatch();
       this.listening = false;
       this.confirmed = false;
       this.held = [];
@@ -346,10 +348,10 @@ export class VoiceController {
     this.#settle();
   }
 
-  // Says the current state again: a restarted worker asks (VOICE_SYNC), so
-  // ducking and captions pick up a turn already in progress.
+  // Says the current state again (latched too): a restarted worker asks
+  // (VOICE_SYNC), so ducking and captions pick up a turn in progress.
   announce() {
-    this.emit({ type: RT.VOICE_STATE, state: this.state });
+    this.#setState(this.state, true);
   }
 
   onSpeakingChange(on) {
