@@ -129,6 +129,8 @@ export const RT = Object.freeze({
   FRAME: "frame",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
+  // Clearcart's "Can't reach this site" page: the user pressed Retry.
+  ERROR_PAGE_RETRY: "errorpage.retry",
 });
 
 export class BridgeError extends Error {
