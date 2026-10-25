@@ -29,6 +29,8 @@
   const MS_PER_EXTRA_WORD = 300; // about 200 words per minute of extra reading time
   const FREE_WORDS = 15;      // lines up to this many words get the minimum wait
   const STALE_MIN_MS = 30000; // hard cap after the last update, even if a state never returns to idle
+  const STALE_LATCHED_MS = 70000; // a latched session stops itself after 60 s without speech
+  const LATCH_HINT = "Listening. Press Space to send.";
   const FADE_MS = 700;        // matches the .wrap fade-out transition
   const MAX_CHARS = 600;
   const STATES = new Set(["idle", "listening", "thinking", "speaking"]);
@@ -89,7 +91,8 @@
   font-size: 21px; line-height: 1.36; font-weight: 500; letter-spacing: -.018em; color: var(--ink);
   max-height: calc(21px * 1.36 * 3); overflow: hidden; overflow-wrap: anywhere;
 }
-.user:empty, .agent:empty { display: none; }
+.hint { font-size: 12px; line-height: 1.3; font-weight: 500; letter-spacing: .01em; color: var(--muted); }
+.user:empty, .agent:empty, .hint:empty { display: none; }
 .w { display: inline; animation: word-in .46s var(--ease) both; animation-delay: calc(var(--i, 0) * 55ms); }
 @keyframes word-in {
   from { opacity: 0; filter: blur(7px); transform: translateY(3px); }
@@ -119,7 +122,7 @@
 
   const ui = {
     host: null, wrap: null, user: null, agent: null,
-    enabled: true, state: "idle",
+    enabled: true, state: "idle", latched: false, hint: null,
     agentWords: [], agentFinal: false, userFinal: false, lastSpeaker: null,
     hideTimer: 0,
     staleTimer: 0,
@@ -160,16 +163,19 @@
     dot.className = "dot";
     const lines = document.createElement("div");
     lines.className = "lines";
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = ui.latched ? LATCH_HINT : "";
     const user = document.createElement("div");
     user.className = "user";
     const agent = document.createElement("div");
     agent.className = "agent";
-    lines.append(user, agent);
+    lines.append(hint, user, agent);
     card.append(dot, lines);
     wrap.append(card);
     shadow.append(wrap);
     root.append(host);
-    Object.assign(ui, { host, wrap, user, agent });
+    Object.assign(ui, { host, wrap, hint, user, agent });
     keepLast(root);
     return true;
   }
@@ -238,7 +244,7 @@
     flushPendingClear();
     clearTimeout(ui.staleTimer);
     // The stale cap never cuts a long caption short.
-    ui.staleTimer = setTimeout(hide, Math.max(STALE_MIN_MS, hideDelayMs() + 10000));
+    ui.staleTimer = setTimeout(hide, Math.max(ui.latched ? STALE_LATCHED_MS : STALE_MIN_MS, hideDelayMs() + 10000));
     ui.wrap.classList.add("on");
     raise();
   }
@@ -333,9 +339,11 @@
     else cancelHide();
   }
 
-  function onState(state) {
+  function onState(state, latched) {
     if (!STATES.has(state)) return;
     ui.state = state;
+    ui.latched = state === "listening" && latched === true;
+    if (ui.hint) ui.hint.textContent = ui.latched ? LATCH_HINT : "";
     if (ui.wrap) ui.wrap.dataset.state = state;
     if (!ui.enabled) return;
     if (state === "idle") {
@@ -354,7 +362,7 @@
       if (watcher) watcher.disconnect();
       watcher = null;
       if (ui.host) ui.host.remove();
-      ui.host = ui.wrap = ui.user = ui.agent = null;
+      ui.host = ui.wrap = ui.hint = ui.user = ui.agent = null;
     }
   }
 
@@ -363,7 +371,7 @@
     chromeApi.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg !== "object") return;
       if (msg.type === RT.SUBTITLE) onSubtitle(msg);
-      else if (msg.type === RT.VOICE_STATE) onState(msg.state);
+      else if (msg.type === RT.VOICE_STATE) onState(msg.state, msg.latched);
       else if (msg.type === RT.SETTINGS_CHANGED && msg.settings && "subtitles" in msg.settings) {
         setEnabled(msg.settings.subtitles);
       }
