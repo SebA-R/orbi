@@ -454,10 +454,24 @@
     return r;
   }
 
+  // A copy of this script injected again (the agent's main-world path does
+  // that) replaces the host; the old copy's listeners then shut down.
+  function stop(st) {
+    if (st.observer) st.observer.disconnect();
+    var view = st.doc.defaultView;
+    if (view && view.removeEventListener) {
+      view.removeEventListener("scroll", schedule, true);
+      view.removeEventListener("resize", schedule);
+    }
+    if (st.doc.body) st.doc.body.removeEventListener("change", schedule, true);
+    if (badgeState === st) badgeState = null;
+  }
+
   function paint() {
     var st = badgeState;
     if (!st) return;
     st.pending = false;
+    if (!st.host.isConnected) return stop(st);
     var doc = st.doc;
     var layer = st.layer;
     while (layer.firstChild) layer.removeChild(layer.firstChild);
@@ -497,6 +511,7 @@
       paint();
       return badgeState.count;
     }
+    if (badgeState) stop(badgeState);
     var old = doc.getElementById(HOST_ID);
     if (old && old.parentNode) old.parentNode.removeChild(old);
     var host = doc.createElement("div");
@@ -519,7 +534,8 @@
       view.addEventListener("resize", schedule, { passive: true });
     }
     if (view && typeof view.MutationObserver === "function" && doc.body) {
-      new view.MutationObserver(schedule).observe(doc.body, {
+      badgeState.observer = new view.MutationObserver(schedule);
+      badgeState.observer.observe(doc.body, {
         subtree: true, childList: true, attributes: true,
         attributeFilter: ["class", "style", "hidden", "disabled", "checked", "aria-checked", "value", "data-clearcart-protected"],
       });
