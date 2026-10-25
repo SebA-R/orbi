@@ -22,7 +22,7 @@ State is in memory (one demo cart); restarting the server resets it. `POST /rese
 | `POST /cart/remove` | Removes an item (`product_id`) |
 | `GET /cart` | Items, the pre-checked `addon_subscription` checkbox (+$4.99), and `#order-total` |
 | `POST /cart/update` | Saves the checkbox state and redirects to `/checkout` ("Proceed to checkout"). The cart page also calls it on checkbox change (`ajax=1`, JSON reply) so the choice sticks even if the shopper goes straight to `/checkout` |
-| `GET /checkout` | Plain inputs `address`, `cc-name`, `cc-number`, `cc-exp`, `cc-csc`; submit `#place-order`; order summary with `#order-total` |
+| `GET /checkout` | Plain inputs `address`, `cc-name`, `cc-number`, `cc-exp`, `cc-csc`; submit `#place-order` (marked `data-clearcart-protected`, so only Clearcart's pay flow may press it); order summary with `#order-total` |
 | `POST /checkout` | Visa-only (starts with 4), Luhn check, exp MM/YY not in the past, 3 to 4 digit CSC; mocked Visa authorization; redirects to `/order/:id` |
 | `GET /order/:id` | Items, `#order-total`, `#card-last4`, `#approval-code` |
 
