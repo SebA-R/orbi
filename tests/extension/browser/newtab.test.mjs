@@ -105,6 +105,10 @@ test("with the setting off, a new tab goes on to Chrome's own new tab page", asy
   const page = await ext.context.newPage();
   await page.goto("chrome://newtab/");
   await page.waitForURL("chrome://new-tab-page/", { timeout: 5000 });
+  // Back from there lands on a button, not another forward.
+  await page.goBack();
+  await page.getByRole("button", { name: "Open Chrome's new tab page" }).waitFor();
+  assert.equal(page.url(), NEWTAB);
   await page.close();
   await ext.worker.evaluate(() => chrome.storage.local.set({ newTabPage: true }));
 });

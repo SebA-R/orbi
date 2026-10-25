@@ -172,7 +172,7 @@ export function createRouter({
     const tab = typeof tabs.activeTab === "function" ? await tabs.activeTab() : null;
     if (!tab) return { active: null };
     // An empty new tab page: nothing to read, but the agent may navigate it.
-    if (typeof tabs.isNewTabPage === "function" && tabs.isNewTabPage(tab.url || tab.pendingUrl)) {
+    if (typeof tabs.onNewTab === "function" && tabs.onNewTab(tab)) {
       return { active: { tabId: tab.id, title: "New Tab", url: "chrome://newtab/", newTab: true } };
     }
     try {

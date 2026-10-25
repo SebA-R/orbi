@@ -60,3 +60,14 @@ test("a user's new tab is listed and can be navigated to a store, but never read
   assert.deepEqual(updates.at(-1), [1, "https://www.etsy.com/"]);
   await assert.rejects(tabs.navigate({ tabId: 2, url: "https://www.etsy.com/" }), /blocked site/);
 });
+
+test("a user's new tab can't be sent through its history, and one loading a blocked site is hidden", async () => {
+  tabList = [{ id: 3, active: true, url: "chrome://newtab/", title: "New Tab" }];
+  await assert.rejects(tabs.navigate({ tabId: 3, url: "forward" }), /new tab page/);
+  await assert.rejects(tabs.navigate({ tabId: 3, url: "back" }), /new tab page/);
+  // The user typed a blocked address; the tab is on its way there.
+  tabList = [{ id: 4, active: true, url: "chrome://newtab/", pendingUrl: "https://www.chase.com/", title: "Chase" }];
+  assert.deepEqual((await tabs.tabsContext()).tabs, []);
+  await assert.rejects(tabs.navigate({ tabId: 4, url: "https://www.etsy.com/" }), /blocked site/);
+  assert.equal(tabs.onNewTab({ url: "chrome://newtab/", pendingUrl: "chrome://newtab/" }), true);
+});

@@ -65,6 +65,14 @@ export function isNewTabPage(url) {
   return !!own && u.split(/[?#]/)[0] === own;
 }
 
+// The tab is on a new tab page and not on its way somewhere else: while the
+// user types an address, url is still the new tab and pendingUrl the site.
+export function onNewTab(tab) {
+  if (!tab) return false;
+  const pending = tab.pendingUrl;
+  return isNewTabPage(tab.url || pending) && (!pending || isNewTabPage(pending));
+}
+
 // ------------------------------------------------------------ tab state
 
 async function loadState() {
@@ -115,7 +123,7 @@ function hiddenReason(tab, settings, { blankOk = false } = {}) {
   if (tab.incognito) return "incognito";
   const url = tab.url || tab.pendingUrl || "";
   if (blankOk && BLANK.test(url)) return null;
-  if (isNewTabPage(url)) return null;
+  if (onNewTab(tab)) return null;
   const why = blockReason(url, settings);
   if (why) return why;
   if (flagOf(tab.id)) return "served from a local address";
@@ -144,7 +152,7 @@ export async function tabsContext() {
   for (const t of all) {
     const mine = state.created.includes(t.id);
     if (hiddenReason(t, settings, { blankOk: mine })) continue;
-    const newTab = isNewTabPage(t.url || t.pendingUrl);
+    const newTab = onNewTab(t);
     tabs.push({
       tabId: t.id,
       title: String(t.title || "").slice(0, TITLE_MAX),
@@ -187,7 +195,7 @@ export async function resolveTab(tabId, { nav = false } = {}) {
 export async function resolveAllowedTab(tabId, { peek = false } = {}) {
   const id = await resolveTab(tabId);
   const tab = await api().tabs.get(id);
-  if (isNewTabPage(tab.url || tab.pendingUrl)) {
+  if (onNewTab(tab)) {
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page with nothing to use; navigate it to a store first`);
   }
   await assertAllowed(tab.url);
@@ -271,6 +279,11 @@ export async function tabsCreate({ url, onCreated } = {}) {
 export async function navigate({ tabId, url } = {}) {
   if (typeof url !== "string" || !url) throw new BridgeError(ERR.BAD_REQUEST, "url is required");
   const id = await resolveTab(tabId, { nav: true });
+  // A user's new tab may only be sent to an allowed address: its history
+  // can hold sites the user visited, blocked ones included.
+  if ((url === "back" || url === "forward") && !(await isCreated(id)) && onNewTab(await api().tabs.get(id))) {
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page; navigate it to a store address instead`);
+  }
   let start;
   const history = (fn, dir) => async () => {
     try {

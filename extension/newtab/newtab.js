@@ -25,15 +25,26 @@ const $ = (id) => document.getElementById(id);
 
 const settings = await loadSettings();
 
+const forward = async () => {
+  const tab = await chrome.tabs.getCurrent();
+  await chrome.tabs.update(tab.id, { url: CHROME_NTP });
+};
+
 if (!settings.newTabPage) {
+  // Coming back with the Back button: forwarding again would undo it, so
+  // offer a button instead.
+  const back = performance.getEntriesByType?.("navigation")?.[0]?.type === "back_forward";
   try {
-    const tab = await chrome.tabs.getCurrent();
-    await chrome.tabs.update(tab.id, { url: CHROME_NTP });
-  } catch {
+    if (back) throw new Error("back");
+    await forward();
+  } catch (e) {
     document.documentElement.dataset.ready = "true";
-    const err = $("error");
-    err.hidden = false;
-    err.textContent = "Chrome did not let Clearcart open its own new tab page. Turn on \"Use the Clearcart new tab page\" in Clearcart settings, or open a site from the address bar.";
+    for (const el of document.querySelectorAll("main > :not(#off, .brand)")) el.hidden = true;
+    $("off").hidden = false;
+    $("off-text").textContent = back
+      ? "The Clearcart new tab page is turned off in Clearcart settings."
+      : "Chrome did not let Clearcart open its own new tab page. Turn on \"Use the Clearcart new tab page\" in Clearcart settings, or open a site from the address bar.";
+    $("off-go").addEventListener("click", () => forward().catch(() => {}));
   }
 } else {
   start();
@@ -62,6 +73,8 @@ function start() {
   }
   const show = (next = state) => {
     if (!Object.hasOwn(TEXT, next)) return;
+    // Screen readers hear each change of state, as in the popup.
+    if (next !== state) $("voice-live").textContent = TEXT[next](keyName(hotkey))[0];
     state = next;
     const [title, sub] = TEXT[state](keyName(hotkey));
     $("orb").dataset.state = state;
@@ -85,10 +98,11 @@ function start() {
   });
 
   // A new tab opens with the keyboard in the address bar, where Space types.
-  const focusHint = () => { $("focus-hint").hidden = document.hasFocus(); };
-  window.addEventListener("focus", focusHint);
-  window.addEventListener("blur", focusHint);
-  focusHint();
+  // Shown until the page first has focus (later blurs are window switches).
+  if (!document.hasFocus()) {
+    $("focus-hint").hidden = false;
+    window.addEventListener("focus", () => { $("focus-hint").hidden = true; }, { once: true });
+  }
 
   // The toggle shortcut is browser-wide, so it works on Chrome's own pages too.
   chrome.commands?.getAll?.().then((cmds) => {
@@ -107,7 +121,11 @@ function start() {
     e.preventDefault();
     const text = $("q").value.trim();
     if (!text) { $("q").focus(); return; }
-    chrome.search.query({ text, disposition: "CURRENT_TAB" }).catch(() => {});
+    $("error").hidden = true;
+    chrome.search.query({ text, disposition: "CURRENT_TAB" }).catch(() => {
+      $("error").textContent = "The search did not start. Try again, or type it in the address bar.";
+      $("error").hidden = false;
+    });
   });
 
   $("settings").addEventListener("click", (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
