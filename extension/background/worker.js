@@ -13,6 +13,8 @@ import { createLogger } from "../lib/log.js";
 import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
 import { MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
+import { onInstalledSetup, refreshBadge } from "../lib/setup.js";
+import { injectIntoOpenTabs } from "../lib/inject.js";
 
 const VERSION = chrome.runtime.getManifest().version;
 const log = createLogger("worker");
@@ -23,15 +25,29 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
   // Earlier versions kept agent tabs in a "Clearcart" tab group: take them
   // out of it, closing nothing.
   tabs.ungroupLegacy().then((n) => n && log.info(`ungrouped ${n} tab(s) from the old Clearcart group`)).catch(() => {});
-  // The offscreen document cannot ask for the microphone, so the first run
-  // opens the options page where the user grants it.
-  if (reason === "install") chrome.runtime.openOptionsPage().catch(() => {});
+  // Setup page (site access, microphone, agent server): always on install,
+  // on update only when site access or the mic is still missing.
+  onInstalledSetup(reason).catch((e) => log.warn(`setup check failed: ${e.message}`));
+  // Tabs open before this install, update or reload have no content scripts yet.
+  injectIntoOpenTabs().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
   console.info(`[clearcart] browser started, version ${VERSION}`);
   bridge?.ensureConnected();
 });
+
+// "!" on the toolbar icon while site access or the mic is missing. Checked
+// whenever the worker starts and when site access changes; the setup page
+// and popup also update it after their checks.
+const badge = () => refreshBadge().catch(() => {});
+badge();
+chrome.permissions.onAdded.addListener(() => {
+  badge();
+  // New site access: add the content scripts to the tabs already open.
+  injectIntoOpenTabs().catch(() => {});
+});
+chrome.permissions.onRemoved.addListener(badge);
 
 // Module A lifecycle: forget debugger sessions and which tabs Clearcart
 // opened or drove.

@@ -6,7 +6,9 @@
 // listening state appear, and the audio from the first moment is kept.
 // Letting go before that is a tap: PTT_CANCEL throws the audio away and the
 // tap does what Space normally does (press the focused button, or scroll).
-// In text fields plain Space just types a space.
+// In text fields plain Space just types a space. With Space as the talk key,
+// Option+Space (Alt+Space) also talks, everywhere including text fields, so a
+// user typing in a search box can still speak.
 //
 // The modifier hotkeys (Alt+Space, Ctrl+Shift+Space, F9) can't be a typing
 // key, so they confirm straight away and work inside text fields too.
@@ -27,6 +29,8 @@
     "Ctrl+Shift+Space": { code: "Space", alt: false, ctrl: true, shift: true, meta: false, confirmMs: 0 },
     F9: { code: "F9", alt: false, ctrl: false, shift: false, meta: false, confirmMs: 0 },
   };
+  // A second key that also talks, for hotkeys that can't work in text fields.
+  const ALSO = { Space: "Alt+Space" };
   const MODIFIER_CODES = {
     alt: ["AltLeft", "AltRight"],
     ctrl: ["ControlLeft", "ControlRight"],
@@ -81,7 +85,14 @@
     hotkey = "Space", send, onTap = () => {},
     setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
   }) {
-    let spec = SPECS[hotkey] || SPECS.Space;
+    let specs = [];
+    let spec = null; // the spec of the current hold
+    const use = (name) => {
+      const key = SPECS[name] ? name : "Space";
+      specs = [SPECS[key], ...(ALSO[key] ? [SPECS[ALSO[key]]] : [])];
+      spec = specs[0];
+    };
+    use(hotkey);
     let held = false;
     let confirmed = false;
     let timer = null;
@@ -98,10 +109,12 @@
       get held() { return held; },
       setHotkey(name) {
         if (held) this.cancel();
-        spec = SPECS[name] || SPECS.Space;
+        use(name);
       },
       onKeyDown(e) {
-        if (!matches(spec, e)) return;
+        const hit = held ? (matches(spec, e) ? spec : null) : specs.find((s) => matches(s, e));
+        if (!hit) return;
+        spec = hit;
         if (spec.confirmMs && !held && isTextEntry(targetOf(e))) return;
         e.preventDefault();
         e.stopPropagation();
@@ -153,8 +166,19 @@
       else win.scrollBy({ top: win.innerHeight * 0.85, behavior: "smooth" });
     };
     const detector = createHoldDetector({ send, onTap });
-    win.addEventListener("keydown", (e) => detector.onKeyDown(e), true);
-    win.addEventListener("keyup", (e) => detector.onKeyUp(e), true);
+    // After an extension reload this copy is orphaned (runtime.id goes away)
+    // and the worker injects a fresh one, so this copy steps aside.
+    const myId = chromeApi.runtime && chromeApi.runtime.id;
+    const orphaned = () => { try { return !!myId && !chromeApi.runtime.id; } catch { return true; } };
+    const onDown = (e) => { if (orphaned()) return detach(); detector.onKeyDown(e); };
+    const onUp = (e) => { if (orphaned()) return detach(); detector.onKeyUp(e); };
+    const detach = () => {
+      detector.cancel();
+      win.removeEventListener("keydown", onDown, true);
+      win.removeEventListener("keyup", onUp, true);
+    };
+    win.addEventListener("keydown", onDown, true);
+    win.addEventListener("keyup", onUp, true);
     win.addEventListener("blur", () => detector.cancel());
     doc.addEventListener("visibilitychange", () => { if (doc.visibilityState === "hidden") detector.cancel(); });
 

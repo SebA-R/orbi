@@ -132,17 +132,28 @@ test("a new user turn clears the previous agent answer", () => {
   assert.equal(t.$(".agent").textContent, "");
 });
 
-test("hides 6 s after the last final line, and a newer line resets the timer", () => {
+test("fades out 5 s after the last final line, a newer line resets the timer, text clears after the fade", () => {
   const t = setup();
   t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
-  t.tick(5000);
+  t.tick(4000);
   assert.ok(t.visible());
   t.send({ type: "subtitle", speaker: "agent", text: "Anything else?", final: true });
-  t.tick(5000);
+  t.tick(4000);
   assert.ok(t.visible(), "timer restarted by the newer final line");
   t.tick(1000);
   assert.equal(t.visible(), false);
-  assert.equal(t.$(".agent").textContent, "", "card is cleared once hidden");
+  assert.equal(t.$(".agent").textContent.trim(), "Anything else?", "words stay while fading");
+  t.tick(700);
+  assert.equal(t.$(".agent").textContent, "", "card is cleared once the fade ends");
+});
+
+test("hides 30 s after the last update even if the voice state never returns to idle", () => {
+  const t = setup();
+  t.send({ type: "voice.state", state: "thinking" });
+  t.tick(29_999);
+  assert.ok(t.visible());
+  t.tick(1);
+  assert.equal(t.visible(), false);
 });
 
 test("a partial line cancels a pending hide", () => {
@@ -167,7 +178,7 @@ test("state dot follows voice.state; active states keep the card up, idle lets i
   assert.ok(t.visible(), "still speaking, no hide");
   t.send({ type: "voice.state", state: "idle" });
   assert.equal(t.$(".wrap").dataset.state, "idle");
-  t.tick(5999);
+  t.tick(4999);
   assert.ok(t.visible());
   t.tick(1);
   assert.equal(t.visible(), false);
@@ -222,4 +233,21 @@ test("stylesheet honors reduced motion, dark mode and stays inside the shadow ro
   assert.match(css, /prefers-color-scheme: dark/);
   assert.match(css, /max-width: min\(720px/);
   assert.equal(t.window.document.head.querySelectorAll("style,link").length, 0, "no page-level styles added");
+});
+
+test("a line arriving mid-fade clears the old words at once instead of bringing them back", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "user", text: "old question", final: true });
+  t.send({ type: "subtitle", speaker: "agent", text: "Old answer.", final: true });
+  t.tick(5000);
+  assert.equal(t.visible(), false, "fading");
+  t.send({ type: "voice.state", state: "listening" });
+  assert.ok(t.visible());
+  assert.equal(t.$(".agent").textContent, "");
+  assert.equal(t.$(".user").textContent, "");
+  t.tick(5000);
+  t.send({ type: "subtitle", speaker: "agent", text: "New.", final: true });
+  t.tick(5000);
+  t.send({ type: "subtitle", speaker: "agent", text: "Newer.", final: false });
+  assert.equal(t.$(".agent").textContent.trim(), "Newer.");
 });
