@@ -68,7 +68,7 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   const page = await context.newPage();
   await page.goto(`chrome-extension://${EXT_ID}/options/options.html`);
   await page.waitForSelector("html[data-ready=true]");
-  assert.equal(await page.locator("#hotkey option").count(), 3);
+  assert.equal(await page.locator("#hotkey option").count(), 4);
   assert.equal(await page.inputValue("#agent-url"), "ws://localhost:5050");
   await page.selectOption("#hotkey", "F9");
   await page.fill("#speed", "1.4");
@@ -78,6 +78,23 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   const stored = await page.evaluate(() => chrome.storage.local.get(["hotkey", "speed", "subtitles"]));
   assert.deepEqual(stored, { hotkey: "F9", speed: 1.4, subtitles: false });
 
+  // Sites: open web by default, editable lists, origins only.
+  assert.equal(await page.isChecked("#mode-open"), true);
+  assert.equal(await page.inputValue("#allowlist"), "http://localhost:4000");
+  await page.fill("#blocklist", "https://www.nordstrom.com/s/1\nhttps://me:pw@shop.example");
+  await page.click("button[type=submit]");
+  await page.waitForFunction(() => /Not a site address in the blocked sites: https:\/\/me:pw@shop\.example/.test(document.getElementById("status").textContent));
+  assert.equal(await page.getAttribute("#blocklist", "aria-invalid"), "true");
+  await page.fill("#allowlist", "http://localhost:4000\nwww.etsy.com/c/home");
+  await page.fill("#blocklist", "https://www.nordstrom.com/s/1");
+  await page.check("#mode-allowlist");
+  await page.click("button[type=submit]");
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
+  assert.deepEqual(await page.evaluate(() => chrome.storage.local.get(["browseMode", "allowlist", "blocklist"])), {
+    browseMode: "allowlist", allowlist: ["http://localhost:4000", "https://www.etsy.com"], blocklist: ["https://www.nordstrom.com"],
+  });
+  assert.equal(await page.inputValue("#allowlist"), "http://localhost:4000\nhttps://www.etsy.com");
+
   await page.fill("#agent-url", "ws://evil.example:5050");
   await page.click("button[type=submit]");
   await page.waitForFunction(() => /must be ws/.test(document.getElementById("status").textContent));
@@ -86,6 +103,10 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   await page.waitForFunction(() => /Microphone allowed/.test(document.getElementById("mic-status").textContent));
   await page.click("#reset");
   await page.waitForFunction(() => document.getElementById("status").textContent === "Reset to defaults.");
+  assert.equal(await page.isChecked("#mode-open"), true);
+  assert.deepEqual(await page.evaluate(() => chrome.storage.local.get(["browseMode", "allowlist", "blocklist"])), {
+    browseMode: "open", allowlist: ["http://localhost:4000"], blocklist: [],
+  });
   await page.close();
 });
 

@@ -1,7 +1,8 @@
-// Options page: hotkey, speech speed, subtitles, agent URL, and the one-time
+// Options page: hotkey, speech speed, subtitles, browse mode and site
+// lists, agent URL, and the one-time
 // microphone grant (getUserMedia here, on an extension page, so the
 // offscreen document, same origin, inherits the permission).
-import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, normalizeAgentUrl } from "../lib/settings.js";
+import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, normalizeAgentUrl, parseOriginLines } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 
 const $ = (id) => document.getElementById(id);
@@ -9,7 +10,9 @@ const els = {
   form: $("form"), hotkey: $("hotkey"), speed: $("speed"), speedOut: $("speed-out"),
   subtitles: $("subtitles"), agentUrl: $("agent-url"), status: $("status"),
   grant: $("grant-mic"), micStatus: $("mic-status"), reset: $("reset"),
+  allowlist: $("allowlist"), blocklist: $("blocklist"),
 };
+const modeInput = (mode) => document.querySelector(`input[name="browseMode"][value="${mode}"]`);
 
 for (const [value, label] of Object.entries(HOTKEYS)) {
   const opt = document.createElement("option");
@@ -28,6 +31,9 @@ function fill(s) {
   els.speed.value = String(s.speed);
   els.subtitles.checked = s.subtitles;
   els.agentUrl.value = s.agentUrl;
+  modeInput(s.browseMode).checked = true;
+  els.allowlist.value = s.allowlist.join("\n");
+  els.blocklist.value = s.blocklist.join("\n");
   showSpeed();
 }
 
@@ -54,7 +60,27 @@ els.form.addEventListener("submit", async (e) => {
     return;
   }
   els.agentUrl.removeAttribute("aria-invalid");
+  const allow = parseOriginLines(els.allowlist.value);
+  const block = parseOriginLines(els.blocklist.value);
+  for (const [el, r, name] of [[els.allowlist, allow, "allowed"], [els.blocklist, block, "blocked"]]) {
+    el.removeAttribute("aria-invalid");
+    if (r.bad.length) {
+      el.setAttribute("aria-invalid", "true");
+      el.focus();
+      say(els.status, `Not a site address in the ${name} sites: ${r.bad.join(", ")}. Use addresses like https://www.etsy.com, with no login in them.`);
+      return;
+    }
+  }
+  if (!allow.origins.length) {
+    els.allowlist.setAttribute("aria-invalid", "true");
+    els.allowlist.focus();
+    say(els.status, "Add at least one allowed site, for example http://localhost:4000.");
+    return;
+  }
   const saved = await saveSettings({
+    browseMode: document.querySelector('input[name="browseMode"]:checked')?.value || DEFAULTS.browseMode,
+    allowlist: allow.origins,
+    blocklist: block.origins,
     hotkey: els.hotkey.value,
     speed: Number(els.speed.value),
     subtitles: els.subtitles.checked,
@@ -66,7 +92,10 @@ els.form.addEventListener("submit", async (e) => {
 });
 
 els.reset.addEventListener("click", async () => {
-  const saved = await saveSettings({ hotkey: DEFAULTS.hotkey, speed: DEFAULTS.speed, subtitles: DEFAULTS.subtitles, agentUrl: DEFAULTS.agentUrl });
+  const saved = await saveSettings({
+    hotkey: DEFAULTS.hotkey, speed: DEFAULTS.speed, subtitles: DEFAULTS.subtitles, agentUrl: DEFAULTS.agentUrl,
+    browseMode: DEFAULTS.browseMode, allowlist: [...DEFAULTS.allowlist], blocklist: [...DEFAULTS.blocklist],
+  });
   fill(saved);
   notify(saved);
   say(els.status, "Reset to defaults.");
