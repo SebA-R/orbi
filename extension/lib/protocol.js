@@ -40,7 +40,9 @@ export const TOOLS = Object.freeze([
 ]);
 
 // Methods only the agent server's own code calls (pay_now, the store guard).
-// Never exposed to Claude as tools.
+// Never exposed to Claude as tools. lock_arm and press_protected are the
+// button lock's unlock: a single-use nonce, then one press of an order
+// button (see background/router.js).
 export const INTERNAL = Object.freeze([
   "tab_info",
   "read_fields",
@@ -48,6 +50,8 @@ export const INTERNAL = Object.freeze([
   "clear_payment",
   "rect",
   "click_ref",
+  "lock_arm",
+  "press_protected",
 ]);
 
 export const METHODS = Object.freeze([...TOOLS, ...INTERNAL]);
@@ -59,6 +63,7 @@ export const ERR = Object.freeze({
   NO_TAB: "no_tab",
   NO_ELEMENT: "no_element",
   PAYMENT_FIELD: "payment_field",
+  LOCKED: "locked",
   TIMEOUT: "timeout",
   NOT_CONNECTED: "not_connected",
   INTERNAL: "internal",
