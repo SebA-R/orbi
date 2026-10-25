@@ -90,9 +90,9 @@ function getStatus(port: number, pathname: string, host: string): Promise<number
 }
 
 // Resolves with the HTTP status of a refused upgrade, or "open".
-function upgradeStatus(port: number, pathname: string, host: string): Promise<number | "open"> {
+function upgradeStatus(port: number, pathname: string, host: string, origin?: string): Promise<number | "open"> {
   return new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}${pathname}`, { headers: { Host: host } });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${pathname}`, { headers: { Host: host, ...(origin ? { Origin: origin } : {}) } });
     ws.once("open", () => {
       ws.close();
       resolve("open");
@@ -122,6 +122,16 @@ for (const [port, env, label] of [[5172, {}, "default mode"], [5173, { CLEARCART
       }
       assert.equal(await getStatus(port, "/healthz", `localhost:${port}`), 200);
       assert.equal(await upgradeStatus(port, "/session", `127.0.0.1:${port}`), "open");
+      // A web page opening the socket (its Host is right, its Origin is not)
+      // could speak as the user, so it is refused.
+      const paths = env.CLEARCART_BROWSER ? ["/session", "/ext"] : ["/session"];
+      for (const p of paths) {
+        for (const origin of ["https://evil.example", "null", "http://localhost:4000", "chrome-extension://abcdefghijklmnopabcdefghijklmnop"]) {
+          assert.equal(await upgradeStatus(port, p, `localhost:${port}`, origin), 403, `${p} ${origin}`);
+        }
+      }
+      assert.equal(await upgradeStatus(port, "/session", `localhost:${port}`, "chrome-extension://dhgknfenfoidnchmjfaicafhieepefoc"), "open", "the extension");
+      assert.equal(await upgradeStatus(port, "/session", `localhost:${port}`, `http://localhost:${port}`), "open", "the voice console");
     } finally {
       child.kill();
     }

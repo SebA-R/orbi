@@ -10,7 +10,7 @@ import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { extBridge, extMode } from "./extbridge.ts";
-import { extensionOrigins, hostAllowed, memoryRequestAllowed } from "./hostcheck.ts";
+import { extensionOrigins, hostAllowed, memoryRequestAllowed, upgradeOriginAllowed } from "./hostcheck.ts";
 import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
 import { conversationLog, memoryStore } from "./memory.ts";
 import { memoryOn, Session } from "./session.ts";
@@ -110,6 +110,9 @@ async function cartesiaToken(res: http.ServerResponse) {
 // The port actually listened on (AGENT_PORT=0 picks a free one).
 const port = () => (server.address() as { port?: number } | null)?.port ?? PORT;
 const localHost = (req: http.IncomingMessage) => hostAllowed(req.headers.host, port());
+// Upgrades also need an allowed Origin: a web page can open a socket to
+// localhost with the right Host, and /session takes its words as the user's.
+const localUpgrade = (req: http.IncomingMessage) => localHost(req) && upgradeOriginAllowed(req.headers.origin, port(), EXT_ORIGINS);
 
 // Saved facts for the extension's settings page (memory.ts):
 //   GET    /memory       { enabled, facts: [{ id, text, at }] }
@@ -155,8 +158,8 @@ const server = http.createServer((req, res) => {
 // Both refuse an upgrade whose Host header is not this computer (hostcheck.ts).
 const wss = EXT
   ? new WebSocketServer({ noServer: true })
-  : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localHost(req), 403) });
-if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localHost);
+  : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localUpgrade(req), 403) });
+if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localUpgrade);
 
 // One voice session for all /session sockets (hub.ts). Echo mode goes
 // through the same hub, so it follows the same one-owner rules.

@@ -53,3 +53,16 @@ export function memoryRequestAllowed(req: { headers: Record<string, string | str
   const origin = req.headers.origin;
   return hostAllowed(req.headers.host, port) && isLoopbackAddress(req.socket.remoteAddress) && typeof origin === "string" && origins.has(origin);
 }
+
+// WebSocket upgrades (/session, /ext). Browsers send an Origin with every
+// WebSocket, and a page cannot change it, so a site that opens
+// ws://localhost:5050/session (its Host header is right) is refused here.
+// Allowed: the Clearcart extension, this server's own pages (the voice
+// console) and clients that are not browsers (no Origin: tests, scripts on
+// this computer).
+export function upgradeOriginAllowed(origin: string | string[] | undefined, port: number, extOrigins = extensionOrigins()): boolean {
+  if (origin === undefined) return true;
+  if (typeof origin !== "string") return false;
+  if (extOrigins.has(origin)) return true;
+  return [`http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`].includes(origin.toLowerCase());
+}
