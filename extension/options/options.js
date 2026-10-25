@@ -259,7 +259,9 @@ async function refreshLocal() {
 els.localTest.addEventListener("click", async () => {
   if (!checkLocalFields()) return;
   const saved = await saveSettings({ localBaseUrl: normalizeLocalBaseUrl(els.localUrl.value), localModel: normalizeLocalModel(els.localModel.value) });
-  fill(saved);
+  // Only these two fields: other unsaved text (site lists, agent address) stays as typed.
+  els.localUrl.value = saved.localBaseUrl;
+  els.localModel.value = saved.localModel;
   notify(saved);
   tag(els.localState, "wait", "Checking");
   els.localStatus.textContent = "";
@@ -269,7 +271,7 @@ els.localTest.addEventListener("click", async () => {
   const msg = result.state === "missing"
     ? "This agent server can't check local models yet. Type the model name above."
     : result.state === "down"
-      ? `Local model not reachable at ${saved.localBaseUrl}. Check that Ollama or LM Studio is running.`
+      ? "Local model not reachable. Check that Ollama or LM Studio is running at the address above."
       : !result.models.length ? "Connected, but the local server lists no models."
         : result.models.includes(saved.localModel) ? `Connected. ${saved.localModel} is ready.`
           : `Connected, but ${saved.localModel} is not installed. Choose one of the installed models.`;

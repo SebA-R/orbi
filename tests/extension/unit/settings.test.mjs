@@ -139,6 +139,8 @@ test("provider settings default to Claude with the Ollama address", () => {
   assert.equal(normalize({ provider: "local" }).provider, "local");
   assert.equal(normalizeLocalModel("lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"), "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF");
   assert.equal(normalizeLocalModel("<img src=x>"), null);
+  assert.equal(normalizeLocalModel("a/../../x"), null);
+  assert.equal(normalizeLocalModel("a//b"), null);
   assert.equal(normalizeLocalModel("a".repeat(129)), null);
 });
 
@@ -151,7 +153,7 @@ test("local model address must be http(s) on a loopback host", () => {
     "http://evil.example/v1", "http://localhost.evil.example/v1", "http://192.168.1.5:11434/v1", "http://10.0.0.1",
     "ftp://localhost/v1", "file:///etc/passwd", "javascript:alert(1)", "ws://localhost:11434",
     "http://user:pw@localhost:11434/v1", "http://localhost@evil.example/v1", "http://localhost:11434/v1?x=1",
-    "http://localhost:11434/v1#x", "localhost:11434", "", "nonsense",
+    "http://localhost:11434/v1#x", "http://localhost//evil.example", "localhost:11434", "", "nonsense",
   ]) assert.equal(normalizeLocalBaseUrl(bad), null, bad);
   assert.equal(normalize({ localBaseUrl: "http://evil.example/v1" }).localBaseUrl, DEFAULTS.localBaseUrl);
   assert.equal(normalize({ localBaseUrl: "http://127.0.0.1:1234/v1" }).localBaseUrl, "http://127.0.0.1:1234/v1");

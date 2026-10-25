@@ -124,6 +124,8 @@ export function normalizeLocalBaseUrl(value) {
     if (u.protocol !== "http:" && u.protocol !== "https:") return null;
     if (!LOOPBACK.has(u.hostname)) return null;
     if (u.username || u.password || u.search || u.hash) return null;
+    // "//host" as a path could be read as another host when joined.
+    if (u.pathname.startsWith("//")) return null;
     return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
   } catch {
     return null;
@@ -137,7 +139,9 @@ const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/;
 export function normalizeLocalModel(value) {
   if (typeof value !== "string") return null;
   const v = value.trim();
-  return MODEL_NAME.test(v) ? v : null;
+  // No "." or ".." path parts and no empty ones, in case a server puts it in a path.
+  if (!MODEL_NAME.test(v) || v.split("/").some((part) => part === "" || part === "." || part === "..")) return null;
+  return v;
 }
 
 // The agent settings message (worker to server), and the storage keys that
@@ -230,7 +234,7 @@ export async function localModels(agentUrl, fetchFn = globalThis.fetch, timeoutM
   try { body = await res.json(); } catch {}
   const list = Array.isArray(body) ? body : body?.models ?? body?.data;
   if (!res.ok || body?.ok === false || body?.error || !Array.isArray(list)) return { state: "down", models: [] };
-  const names = list.map((m) => normalizeLocalModel(typeof m === "string" ? m : m?.id ?? m?.name ?? m?.model)).filter(Boolean);
+  const names = list.slice(0, 500).map((m) => normalizeLocalModel(typeof m === "string" ? m : m?.id ?? m?.name ?? m?.model)).filter(Boolean);
   return { state: "ok", models: [...new Set(names)].slice(0, 200) };
 }
 
