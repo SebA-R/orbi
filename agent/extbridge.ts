@@ -35,6 +35,7 @@ export const TOOLS = [
   "key",
   "scroll",
   "screenshot",
+  "dismiss_overlay",
 ] as const;
 export const INTERNAL = ["tab_info", "agent_tabs", "page_context", "fill_card", "clear_card", "card_state", "order_buttons", "rect", "click_ref", "lock_arm", "press_protected", "press_unlocked", "lock_info", "actions_stop"] as const;
 export const ERR = {

@@ -835,6 +835,211 @@
     return { selection: selectionText(), pointing: pointing };
   }
 
+  // ------------------------------------------------------ marketing pop-ups
+  // overlay_find and overlay_hide, for the worker's dismiss_overlay (it
+  // tries the close button, Escape and the backdrop first, through the
+  // guarded click path; overlay_hide is the last resort). Never for a
+  // dialog that signs in, checks out or takes payment: those are refused.
+  // Not bridge methods: only the router calls them.
+  var OVERLAY_SEL = 'dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]';
+  var CLOSE_NAME = /^(?:close|close (?:dialog|modal|pop-?up|window|this|form|banner|offer|sign ?up)|dismiss|no,? ?thanks?|no thank you|not now|not today|maybe later|skip|x|×|✕|✖|╳)$/i;
+  var CLOSE_HINT = /(?:^|[\s_-])(?:close|dismiss)(?:$|[\s_-])|^(?:close|dismiss)/i;
+  var SENSITIVE_NAME = /\b(?:sign[\s-]?in|log[\s-]?in|login|create (?:an |your )?account|welcome back|my account|checkout|check[\s-]out|payment|billing|password|verify|verification|captcha|security check|one[\s-]time (?:code|password)|otp|enter (?:the|your) code)\b/i;
+  // Checked against the whole pop-up's text, not just its name.
+  var SENSITIVE_TEXT = /\b(?:verification code|one[\s-]time (?:code|passcode|password)|enter (?:the|your) (?:code|password)|security check|captcha)\b/i;
+  var COOKIE_NAME = /\b(?:cookies?|consent|privacy|gdpr|ccpa)\b/i;
+  var SIGNIN_LABEL = /sign[\s-]?in|log[\s-]?in|login|continue with|create (?:an |my )?account|register/i;
+  var SENSITIVE_KINDS = { order: 1, express: 1, "payment-method": 1 };
+  var SENSITIVE_PATH = /checkout|payment|\/pay(?:\/|$)|login|log-in|signin|sign-in|password|\/account/i;
+  var COVER_SHARE = 0.3; // a fixed box over this much of the viewport is a backdrop
+
+  function ours(el) {
+    for (var n = el; n; n = n.parentElement) {
+      if (n.hasAttribute && n.hasAttribute("data-clearcart-overlay")) return true;
+      if (/^CLEARCART-/.test(n.tagName) || n.id === "clearcart-lock-badges") return true;
+    }
+    return false;
+  }
+
+  function boxShown(el) {
+    if (!el || el.nodeType !== 1 || hiddenByStyle(el)) return null;
+    var r = el.getBoundingClientRect();
+    if (!(r.width > 1 && r.height > 1)) return null;
+    if (r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) return null;
+    return r;
+  }
+
+  function fixedCover(el) {
+    var cs;
+    try { cs = getComputedStyle(el); } catch (_) { return false; }
+    if (cs.position !== "fixed" && cs.position !== "sticky") return false;
+    var r = boxShown(el);
+    if (!r) return false;
+    var w = Math.min(r.right, innerWidth) - Math.max(r.left, 0);
+    var h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+    return (w * h) / Math.max(1, innerWidth * innerHeight) >= COVER_SHARE;
+  }
+
+  // A fixed box with no dialog role is a pop-up only when it is not the
+  // page's own layout: no main, nav or header in it, and well under half of
+  // the page's text.
+  function popupLike(cover) {
+    if (cover.querySelector("main,nav,header,[role=main],[role=navigation],[role=banner]")) return false;
+    var all = clean(textOf(document.body), 100000).length;
+    var mine = clean(textOf(cover), 100000).length;
+    return all === 0 || mine / all < 0.5;
+  }
+
+  // The topmost pop-up: from what sits over the middle of the viewport, the
+  // outermost fixed box covering much of it (the backdrop or wrapper) and
+  // the dialog inside it; else any open dialog on screen.
+  function topOverlay() {
+    var stack = typeof document.elementsFromPoint === "function" ? document.elementsFromPoint(innerWidth / 2, innerHeight / 2) : [];
+    for (var i = 0; i < stack.length; i++) {
+      var el = stack[i];
+      if (el === document.documentElement || el === document.body || ours(el)) continue;
+      var cover = null, dialog = null;
+      for (var n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+        if (!dialog && n.matches && n.matches(OVERLAY_SEL)) dialog = n;
+        if (fixedCover(n)) cover = n;
+      }
+      if (cover && !dialog && !cover.querySelector(OVERLAY_SEL) && !popupLike(cover)) cover = null;
+      if (cover || dialog) {
+        if (!dialog && cover) dialog = cover.querySelector(OVERLAY_SEL) || cover;
+        return { root: cover || dialog, dialog: dialog, cover: cover };
+      }
+      break; // the page itself is on top
+    }
+    var all = document.querySelectorAll(OVERLAY_SEL);
+    for (var j = 0; j < all.length; j++) {
+      if (!ours(all[j]) && boxShown(all[j])) return { root: all[j], dialog: all[j], cover: null };
+    }
+    return null;
+  }
+
+  function overlayName(o) {
+    var d = o.dialog;
+    var s = nameOf(d, "dialog");
+    if (!s) {
+      var h = d.querySelector("h1,h2,h3,h4,[role=heading]");
+      s = h ? clean(textOf(h)) : "";
+    }
+    return s || clean(textOf(d), 60) || "pop-up";
+  }
+
+  // Why this pop-up must stay, or "" when it may be dismissed.
+  function sensitiveWhy(o) {
+    if (SENSITIVE_PATH.test(location.pathname)) return "this is a checkout, payment or sign-in page";
+    var root = o.root;
+    var fields = root.querySelectorAll("input,select,textarea");
+    for (var i = 0; i < fields.length; i++) {
+      if (Mask.isPaymentField(fields[i])) return "it has a payment field";
+      if (Protect.isPasswordField(fields[i])) return "it has a password field";
+    }
+    var name = overlayName(o);
+    if (SENSITIVE_NAME.test(name)) return "it looks like a sign-in, checkout, payment or verification dialog";
+    var text = clean(textOf(root), 4000);
+    if (COOKIE_NAME.test(name) || /\bcookies?\b/i.test(text)) return "it is a cookie or privacy banner: choose reject, decline or necessary only in it instead";
+    if (SENSITIVE_TEXT.test(text)) return "it asks for a code or verification";
+    var controls = root.querySelectorAll("button,a,input,[role=button]");
+    for (var j = 0; j < controls.length && j < 300; j++) {
+      var l = Protect.classify(controls[j]);
+      if (l && SENSITIVE_KINDS[l.kind]) return "it has a checkout or payment button";
+      if (l && l.kind === "account" && SIGNIN_LABEL.test(Protect.labelOf(controls[j]) || "")) return "it has a sign-in button";
+    }
+    return "";
+  }
+
+  function clickable(el) {
+    if (/^(BUTTON|A|SUMMARY)$/.test(el.tagName) || (el.tagName === "INPUT" && /^(button|submit|image|reset)$/i.test(el.type))) return true;
+    var role = el.getAttribute("role");
+    if (role === "button" || role === "link") return true;
+    if (el.hasAttribute("onclick") || el.hasAttribute("tabindex")) return true;
+    try { return getComputedStyle(el).cursor === "pointer"; } catch (_) { return false; }
+  }
+
+  function closeName(el) {
+    return clean(el.getAttribute("aria-label") || el.getAttribute("title") || nameOf(el, "button") || textOf(el), 40);
+  }
+
+  // The pop-up's close or decline control: by accessible name first
+  // (close, dismiss, no thanks, X), then by a close-ish class or id.
+  function findClose(o) {
+    var scope = o.cover || o.root;
+    var els = scope.querySelectorAll("button,a,[role=button],[aria-label],[title],input[type=button],input[type=image],span,div,svg,i");
+    var hint = null;
+    for (var i = 0; i < els.length && i < 2000; i++) {
+      var el = els[i];
+      if (el.tagName === "svg" || el.tagName === "SPAN" || el.tagName === "I" || el.tagName === "DIV") {
+        // An icon inside a button: the button is the control.
+        var up = el.closest("button,a,[role=button]");
+        if (up && scope.contains(up)) continue;
+      }
+      if (!boxShown(el) || !clickable(el)) continue;
+      var lock = Protect.classify(el);
+      if (lock) continue;
+      if (CLOSE_NAME.test(closeName(el))) return el;
+      var cls = (typeof el.className === "string" ? el.className : "") + " " + (el.id || "");
+      if (!hint && CLOSE_HINT.test(cls.trim()) && clean(textOf(el)).length <= 3) hint = el;
+    }
+    return hint;
+  }
+
+  // A point on the backdrop, outside the dialog, where a click lands on the
+  // backdrop itself.
+  function backdropPoint(o) {
+    if (!o.cover || o.cover === o.dialog) return null;
+    // Pinch zoom: page and input coordinates differ; skip the backdrop.
+    if (globalThis.visualViewport && Math.abs(visualViewport.scale - 1) > 0.01) return null;
+    var inner = o.dialog !== o.cover ? o.dialog : null;
+    var w = innerWidth, h = innerHeight;
+    var pts = [[w / 2, 12], [w / 2, h - 12], [12, h / 2], [w - 24, h / 2], [24, 24], [w - 24, h - 24]];
+    for (var i = 0; i < pts.length; i++) {
+      var x = Math.round(pts[i][0]), y = Math.round(pts[i][1]);
+      var hit = document.elementFromPoint(x, y);
+      if (!hit || !o.cover.contains(hit)) continue;
+      if (inner && inner.contains(hit)) continue;
+      if (hit !== o.cover && clickable(hit)) continue; // a control, not the backdrop
+      return { x: x, y: y };
+    }
+    return null;
+  }
+
+  function overlayFind() {
+    var o = topOverlay();
+    if (!o) return { found: false };
+    var name = overlayName(o);
+    var why = sensitiveWhy(o);
+    if (why) return { found: true, ref: refFor(o.root), name: name, sensitive: why };
+    var close = findClose(o);
+    return { found: true, ref: refFor(o.root), name: name, closeRef: close ? refFor(close) : null, backdrop: backdropPoint(o) };
+  }
+
+  // Last resort: hides the pop-up and gives the page its scrolling back.
+  function overlayHide(params) {
+    var root = elementFor(params.ref);
+    var o = topOverlay();
+    if (!o || (o.root !== root && !root.contains(o.root) && !o.root.contains(root))) o = { root: root, dialog: root.matches(OVERLAY_SEL) ? root : root.querySelector(OVERLAY_SEL) || root, cover: null };
+    var why = sensitiveWhy(o);
+    if (why) throw PageError(ERR.LOCKED, "Locked: not hiding this dialog, " + why + ". Ask the user.");
+    var dialogs = [o.root].concat(Array.prototype.slice.call(o.root.querySelectorAll("dialog[open]")));
+    for (var i = 0; i < dialogs.length; i++) {
+      var d = dialogs[i];
+      if (d.tagName === "DIALOG" && d.open && typeof d.close === "function") { try { d.close(); } catch (_) { /* hide below */ } }
+    }
+    o.root.style.setProperty("display", "none", "important");
+    o.root.setAttribute("data-clearcart-dismissed", "");
+    // Its backdrop, when it is a separate fixed sibling covering the page.
+    var sib = o.root.previousElementSibling;
+    if (sib && !ours(sib) && fixedCover(sib) && clean(textOf(sib)) === "") sib.style.setProperty("display", "none", "important");
+    // Modals lock scrolling with overflow hidden on html or body.
+    [document.documentElement, document.body].forEach(function (n) {
+      if (!n) return;
+      try { if (getComputedStyle(n).overflow === "hidden" || getComputedStyle(n).overflowY === "hidden") n.style.setProperty("overflow", "auto", "important"); } catch (_) { /* cosmetic */ }
+    });
+    return { hidden: true, name: overlayName(o) };
+  }
+
   // ------------------------------------------------------------ dispatcher
   var METHODS = {
     page_context: pageContext,
@@ -856,6 +1061,8 @@
     press_hit_user: pressHitUser,
     press_done_user: pressDoneUser,
     press_ref_user: pressRefUser,
+    overlay_find: overlayFind,
+    overlay_hide: overlayHide,
   };
 
   function call(method, params) {

@@ -292,3 +292,80 @@ test("a tabs module without the page recheck fails closed", async () => {
   const router = createRouter({ chromeApi, tabs: { resolveAllowedTab: async () => 3 }, cdp: {} });
   await assert.rejects(router.route("get_page_text", { tabId: 3 }), { code: "internal" });
 });
+
+test("a coordinate click or scroll outside the viewport is refused before any input; scroll defaults to the centre", async () => {
+  const f = { calls: [] };
+  const vp = { width: 1440, height: 900, dpr: 2 };
+  const r = createRouter({
+    chromeApi: { scripting: { executeScript: async () => {} }, tabs: { sendMessage: async () => ({ ok: true, result: { ok: true } }) } },
+    tabs: { resolveAllowedTab: async (id) => id ?? 7, assertPageAllowed: async () => {} },
+    cdp: {
+      viewport: async () => vp,
+      click: async (o) => f.calls.push(["cdp.click", o]),
+      scroll: async (o) => f.calls.push(["cdp.scroll", o]),
+      send: async () => {},
+    },
+  });
+  for (const [x, y] of [[1878, 574], [1538, 1193]]) {
+    await assert.rejects(r.route("click", { x, y }), (e) => e.code === "bad_request" && /outside the 1440x900 viewport/.test(e.message));
+    await assert.rejects(r.route("scroll", { x, y, dy: 100 }), (e) => e.code === "bad_request");
+  }
+  assert.equal(f.calls.length, 0, "nothing was pressed or scrolled");
+  await r.route("click", { x: 700, y: 400 });
+  await r.route("scroll", { dy: 300 });
+  assert.deepEqual(f.calls.map((c) => c[0]), ["cdp.click", "cdp.scroll"]);
+  assert.deepEqual([f.calls[1][1].x, f.calls[1][1].y], [720, 450]);
+});
+
+function overlayRouter(script) {
+  const calls = [];
+  let finds = 0;
+  const router = createRouter({
+    chromeApi: {
+      scripting: { executeScript: async () => {} },
+      tabs: {
+        sendMessage: async (_t, msg) => {
+          calls.push(["page", msg.method, msg.params]);
+          if (msg.method === "overlay_find") return { ok: true, result: script.find(finds++) };
+          if (msg.method === "guard_ref") return { ok: true, result: { x: 10, y: 20, width: 20, height: 20 } };
+          return { ok: true, result: { ok: true, hidden: true } };
+        },
+      },
+    },
+    tabs: { resolveAllowedTab: async (id) => id ?? 7, assertPageAllowed: async () => {} },
+    cdp: {
+      viewport: async () => ({ width: 1280, height: 800, dpr: 1 }),
+      click: async (o) => calls.push(["cdp.click", o.x, o.y]),
+      key: async (o) => calls.push(["cdp.key", o.key]),
+      send: async () => {},
+    },
+    settle: async () => {},
+  });
+  return { calls, router };
+}
+
+const POP = { found: true, ref: "ref_1", name: "Get 10% off", closeRef: "ref_2", backdrop: { x: 640, y: 12 } };
+
+test("dismiss_overlay: the close button first, and it stops once the pop-up is gone", async () => {
+  const { calls, router } = overlayRouter({ find: (i) => (i === 0 ? POP : { found: false }) });
+  assert.deepEqual(await router.route("dismiss_overlay", {}), { dismissed: true, via: "close button", name: "Get 10% off" });
+  assert.deepEqual(calls.filter((c) => c[0].startsWith("cdp")), [["cdp.click", 20, 30]]);
+  assert.ok(!calls.some((c) => c[1] === "overlay_hide"));
+});
+
+test("dismiss_overlay: Escape, then the backdrop, then hiding it", async () => {
+  const stubborn = overlayRouter({ find: () => POP });
+  assert.deepEqual(await stubborn.router.route("dismiss_overlay", {}), { dismissed: true, via: "hidden", name: "Get 10% off" });
+  assert.deepEqual(stubborn.calls.filter((c) => c[0].startsWith("cdp")), [["cdp.click", 20, 30], ["cdp.key", "Escape"], ["cdp.click", 640, 12]]);
+  assert.deepEqual(stubborn.calls.at(-1), ["page", "overlay_hide", { ref: "ref_1" }]);
+  const esc = overlayRouter({ find: (i) => (i === 0 ? { ...POP, closeRef: null } : { found: false }) });
+  assert.equal((await esc.router.route("dismiss_overlay", {})).via, "Escape");
+});
+
+test("dismiss_overlay: a sign-in or payment dialog is refused with nothing pressed; no pop-up is a plain answer", async () => {
+  const s = overlayRouter({ find: () => ({ found: true, ref: "ref_1", name: "Sign in", sensitive: "it has a password field" }) });
+  await assert.rejects(s.router.route("dismiss_overlay", {}), (e) => e.code === "locked" && /password field/.test(e.message));
+  assert.ok(!s.calls.some((c) => c[0].startsWith("cdp") || c[1] === "overlay_hide"));
+  const none = overlayRouter({ find: () => ({ found: false }) });
+  assert.equal((await none.router.route("dismiss_overlay", {})).dismissed, false);
+});

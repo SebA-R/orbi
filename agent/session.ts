@@ -116,10 +116,10 @@ const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_
 // only right after the read-back. Danger mode's announced confirmation is
 // left as it always was.
 const ACTS = new Set(
-  ["navigate", "tabs_create", "tabs_create_mcp", "tabs_close", "tabs_close_mcp", "computer", "click", "type", "key", "form_input"].map((t) => B + t)
+  ["navigate", "tabs_create", "tabs_create_mcp", "tabs_close", "tabs_close_mcp", "computer", "click", "type", "key", "form_input", "dismiss_overlay"].map((t) => B + t)
 );
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
-  ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
+  ["screenshot", "click", "type", "key", "scroll", "dismiss_overlay", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
 
 function extPrompt(prompt: string): string {
