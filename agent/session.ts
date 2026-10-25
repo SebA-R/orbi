@@ -110,7 +110,7 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
 // key and scroll stand in for "computer" in the card-live block list.
 const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
-  ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
+  ["screenshot", "click", "type", "key", "scroll", "dismiss_overlay", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
 
 function extPrompt(prompt: string): string {

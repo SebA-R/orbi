@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { installChrome } from "./chrome-mock.mjs";
 import {
-  _resetForTests, attach, click, isAttached, key, onDetach, onTabRemoved, parseKey, screenshot, scroll, type,
+  _resetForTests, assertInViewport, attach, click, isAttached, jpegSize, key, onDetach, onTabRemoved, parseKey, screenshot, scroll, type, viewport,
 } from "../../background/cdp.js";
 import { ERR } from "../../lib/protocol.js";
 
@@ -90,10 +90,39 @@ test("scroll sends a mouseWheel event", async () => {
   assert.deepEqual(sent(), [["Input.dispatchMouseEvent", { type: "mouseWheel", x: 100, y: 200, deltaX: 0, deltaY: 300 }]]);
 });
 
-test("screenshot captures jpeg quality 70", async () => {
+test("screenshot captures jpeg quality 70 and reports its CSS size", async () => {
   const r = await screenshot({ tabId });
-  assert.deepEqual(r, { data: "BASE64JPEG", mimeType: "image/jpeg" });
-  assert.deepEqual(sent(), [["Page.captureScreenshot", { format: "jpeg", quality: 70 }]]);
+  assert.deepEqual(r, { data: "BASE64JPEG", mimeType: "image/jpeg", width: 1440, height: 900, scale: 1 });
+  assert.deepEqual(sent(), [["Page.getLayoutMetrics", {}], ["Page.captureScreenshot", { format: "jpeg", quality: 70 }]]);
+});
+
+// SOI, then a SOF0 frame header for w x h.
+const fakeJpeg = (w, h) => Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 17, 8, h >> 8, h & 255, w >> 8, w & 255, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0]).toString("base64");
+
+test("jpegSize reads the frame header", () => {
+  assert.deepEqual(jpegSize(fakeJpeg(2880, 1800)), { width: 2880, height: 1800 });
+});
+
+test("a 2x capture is reported in CSS px with its scale when it cannot be resized", async () => {
+  c._viewport = { width: 1440, height: 900, dpr: 2 };
+  c._shot = fakeJpeg(2880, 1800);
+  assert.deepEqual(await viewport(tabId), { width: 1440, height: 900, dpr: 2 });
+  // No OffscreenCanvas in node: the image stays 2880 wide, scale 2.
+  const r = await screenshot({ tabId });
+  assert.deepEqual([r.width, r.height, r.scale], [1440, 900, 2]);
+  // Chrome already captured at CSS size: nothing to scale.
+  c._shot = fakeJpeg(1440, 900);
+  const r1 = await screenshot({ tabId });
+  assert.deepEqual([r1.width, r1.height, r1.scale, r1.data], [1440, 900, 1, c._shot]);
+});
+
+test("assertInViewport refuses points past the edge with a clear message", () => {
+  const vp = { width: 1440, height: 900, dpr: 2 };
+  assert.doesNotThrow(() => assertInViewport(vp, 0, 0));
+  assert.doesNotThrow(() => assertInViewport(vp, 1440, 900));
+  for (const [x, y] of [[1878, 574], [1538, 1193], [-1, 10], [10, 901]]) {
+    assert.throws(() => assertInViewport(vp, x, y), (e) => e.code === ERR.BAD_REQUEST && /outside the 1440x900 viewport/.test(e.message) && /CSS pixels/.test(e.message));
+  }
 });
 
 test("re-attaches after an external detach", async () => {

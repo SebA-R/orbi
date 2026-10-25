@@ -172,3 +172,99 @@ test("protect.js in real layout: closed shadow roots fail closed, pointer divs a
   assert.equal(await page.evaluate(() => globalThis.ClearcartProtect.lockForKey(document, "Enter")?.kind), "order");
   await page.close();
 });
+
+test("a lock badge at the right edge stays in the viewport and adds no scroll width", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  // An open shadow root, so the test can measure the badge.
+  await page.addInitScript(() => {
+    const attach = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function () { return attach.call(this, { mode: "open" }); };
+  });
+  await page.goto("about:blank");
+  // Page CSS that tries to unpin our host does not get to.
+  await page.setContent(`<style>html>div{position:static!important;overflow:visible!important}</style>
+    <table width="100%"><tr><td>News</td><td style="text-align:right"><a href="/login">login</a></td></tr></table>`);
+  for (const f of ["mask.js", "protect.js"]) await page.addScriptTag({ path: file("../../content/" + f) });
+  const before = await page.evaluate(() => document.documentElement.scrollWidth);
+  assert.equal(await page.evaluate(() => ClearcartProtect.showBadges(document)), 1);
+  const after = await page.evaluate(() => {
+    const host = document.getElementById("clearcart-lock-badges");
+    const b = host.shadowRoot.querySelector(".b").getBoundingClientRect();
+    return { sw: document.documentElement.scrollWidth, right: b.right, pos: getComputedStyle(host).position, overflow: getComputedStyle(host).overflow };
+  });
+  assert.equal(after.sw, before);
+  assert.ok(after.right <= 1440, `badge right ${after.right}`);
+  assert.deepEqual([after.pos, after.overflow], ["fixed", "hidden"]);
+  await page.close();
+});
+
+const POPUP = (inner, { close = '<button aria-label="Close" class="x">×</button>' } = {}) => `<body style="overflow:hidden">
+  <h1>Wool sweater</h1><button id="add">Add to bag</button><div style="height:3000px"></div>
+  <div id="wrap" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10">
+    <div id="dlg" role="dialog" aria-modal="true" aria-labelledby="t" style="position:absolute;left:400px;top:200px;width:500px;height:300px;background:#fff">
+      ${close}<h2 id="t">Get 10% off your first order</h2>${inner}
+    </div>
+  </div>
+  <script>document.getElementById("wrap").addEventListener("click", (e) => { if (e.target.id === "wrap") window.backdropClicked = true; });</script></body>`;
+
+async function openPopup(html) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto("about:blank");
+  await page.setContent(html);
+  for (const f of ["mask.js", "protect.js", "page.js"]) await page.addScriptTag({ path: file("../../content/" + f) });
+  const call = (method, params = {}) => page.evaluate(([m, p]) => globalThis.__clearcartPage.handle({ method: m, params: p }), [method, params]);
+  return { page, call };
+}
+
+test("dismiss_overlay page helpers: a sign-up pop-up's close button and backdrop are found, and hiding it frees the page", async () => {
+  const { page, call } = await openPopup(POPUP('<input type="email" placeholder="Email"><button>Sign up</button><button>No thanks</button>'));
+  const f = (await call("overlay_find")).result;
+  assert.equal(f.found, true);
+  assert.equal(f.name, "Get 10% off your first order");
+  assert.ok(!f.sensitive, f.sensitive);
+  assert.ok(f.closeRef, "close button found");
+  assert.equal(await page.evaluate((ref) => [...document.querySelectorAll("button")].find((b) => globalThis.__clearcartPage.refFor(b) === ref)?.getAttribute("aria-label"), f.closeRef), "Close");
+  assert.ok(f.backdrop, "a backdrop point");
+  await page.mouse.click(f.backdrop.x, f.backdrop.y);
+  assert.equal(await page.evaluate(() => window.backdropClicked), true, "the point lands on the backdrop");
+
+  const h = (await call("overlay_hide", { ref: f.ref })).result;
+  assert.equal(h.hidden, true);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("wrap")).display), "none");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.body).overflow), "auto");
+  assert.deepEqual((await call("overlay_find")).result, { found: false });
+  await page.close();
+});
+
+test("dismiss_overlay page helpers: no close button by name falls back to a close-ish class; text 'No thanks' counts too", async () => {
+  const a = await openPopup(POPUP("<p>Join the list</p>", { close: '<div class="modal-close" style="cursor:pointer;width:20px;height:20px"></div>' }));
+  const fa = (await a.call("overlay_find")).result;
+  assert.ok(fa.closeRef);
+  await a.page.close();
+  const b = await openPopup(POPUP("<p>Join the list</p><a href='#' id='nt'>No, thanks</a>", { close: "" }));
+  const fb = (await b.call("overlay_find")).result;
+  assert.equal(await b.page.evaluate((ref) => globalThis.__clearcartPage.refFor(document.getElementById("nt")) === ref, fb.closeRef), true);
+  await b.page.close();
+});
+
+test("dismiss_overlay page helpers: sign-in, payment and cookie dialogs are never hidden", async () => {
+  for (const [inner, heading] of [
+    ['<input type="password" name="pw"><button>Continue</button>', null],
+    ['<input autocomplete="cc-number" name="cardnumber"><button>Save</button>', null],
+    ["<button>Continue</button>", "Sign in to your account"],
+    ["<button>Accept all</button><button>Reject all</button>", "We use cookies"],
+  ]) {
+    let html = POPUP(inner);
+    if (heading) html = html.replace("Get 10% off your first order", heading);
+    const { page, call } = await openPopup(html);
+    const f = (await call("overlay_find")).result;
+    assert.equal(f.found, true);
+    assert.ok(f.sensitive, `${inner} ${heading}`);
+    assert.equal(f.closeRef, undefined);
+    const h = await call("overlay_hide", { ref: f.ref });
+    assert.equal(h.ok, false);
+    assert.equal(h.error.code, "locked");
+    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("wrap")).display), "block");
+    await page.close();
+  }
+});

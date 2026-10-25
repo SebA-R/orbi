@@ -742,11 +742,15 @@
   // root under <html> (outside <body>, so read_page and get_page_text never
   // see it), is aria-hidden, and has pointer-events none, so it changes
   // nothing a screen reader announces and never blocks a person's click.
+  // The host itself is the viewport-sized, fixed, clipping box (inline
+  // !important, so page CSS cannot make it static or unclipped), and every
+  // badge is kept inside the viewport: a badge on a control at the right
+  // edge (a top-right "login" link) never adds scroll width to the page.
   var HOST_ID = "clearcart-lock-badges";
   var LOCK_SVG = '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" focusable="false">' +
     '<path fill="currentColor" d="M8 1a3.5 3.5 0 0 0-3.5 3.5V7H4a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-.5V4.5A3.5 3.5 0 0 0 8 1Zm-2 6V4.5a2 2 0 1 1 4 0V7H6Z"/></svg>';
   var CSS = ":host{all:initial}" +
-    ".layer{position:fixed;inset:0;pointer-events:none;z-index:2147483646;overflow:hidden}" +
+    ".layer{position:absolute;inset:0;pointer-events:none;overflow:hidden}" +
     ".b{position:absolute;display:inline-flex;align-items:center;gap:4px;padding:2px 7px 2px 6px;border-radius:999px;" +
     "font:600 11px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;letter-spacing:.01em;" +
     "color:#fff;background:#1f2937;box-shadow:0 1px 3px rgba(0,0,0,.35);white-space:nowrap;transform:translateY(-100%)}" +
@@ -865,6 +869,10 @@
       b.style.left = Math.max(0, r.left) + "px";
       b.style.top = Math.max(16, r.top - 2) + "px";
       layer.appendChild(b);
+      // Past the right edge: flip it left so it ends at the viewport edge.
+      var room = (doc.documentElement && doc.documentElement.clientWidth) || vw;
+      var w = b.offsetWidth || 0;
+      if (room && w && Math.max(0, r.left) + w > room) b.style.left = Math.max(0, room - w) + "px";
     }
     st.count = layer.childNodes.length;
   }
@@ -897,7 +905,10 @@
     host.setAttribute("aria-hidden", "true");
     host.setAttribute("role", "presentation");
     host.setAttribute("data-clearcart-overlay", "0"); // our overlays never re-append past it
-    host.style.cssText = "position:fixed;inset:0;width:0;height:0;pointer-events:none;z-index:2147483646";
+    var HOST_STYLE = [["all", "initial"], ["position", "fixed"], ["inset", "0"], ["display", "block"], ["width", "auto"], ["height", "auto"],
+      ["margin", "0"], ["padding", "0"], ["border", "0"], ["overflow", "hidden"], ["contain", "strict"], ["transform", "none"],
+      ["pointer-events", "none"], ["z-index", "2147483646"]];
+    for (var k = 0; k < HOST_STYLE.length; k++) host.style.setProperty(HOST_STYLE[k][0], HOST_STYLE[k][1], "important");
     var shadow = host.attachShadow ? host.attachShadow({ mode: "closed" }) : host;
     var style = doc.createElement("style");
     style.textContent = CSS;

@@ -30,7 +30,7 @@
 import * as tabsModule from "./tabs.js";
 import * as cdpModule from "./cdp.js";
 import { ACT_METHODS, createFollower } from "./follow.js";
-import { parseKey } from "./cdp.js";
+import { assertInViewport, parseKey } from "./cdp.js";
 import { createActor } from "./actor.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
 import { luhnValid } from "../lib/log.js";
@@ -117,6 +117,9 @@ function point(v, name) {
   return n;
 }
 
+// How long a pop-up gets to animate away before dismiss_overlay looks again.
+export const OVERLAY_SETTLE_MS = 450;
+
 const msgOf = (e) => String((e && e.message) || e || "failed");
 
 function originOf(url) {
@@ -141,6 +144,7 @@ export function createRouter({
   onAgentTab = () => {},
   // The watchablePace setting (worker.js). Off unless it answers true.
   watchable = async () => false,
+  settle = (ms) => new Promise((r) => setTimeout(r, ms)),
   actor = createActor({ cdp, tabWindow: async (id) => (await chromeApi.tabs.get(id)).windowId }),
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
@@ -376,8 +380,10 @@ export function createRouter({
       const recheck = async () => visibleRect(await pageCall(tabId, "guard_ref", { ref: params.ref }), params.ref);
       return clickCentre(tabId, r, params.ref, "click_ref", recheck, undefined, epoch);
     }
-    // One point for the guard and the press, exactly as asked.
+    // One point for the guard and the press, exactly as asked, and inside
+    // the viewport (a device-pixel coordinate from a 2x screenshot is not).
     const at = { x: point(params.x, "x"), y: point(params.y, "y") };
+    await inViewport(tabId, at);
     const guard = () => pageCall(tabId, "guard_point", at);
     await guard();
     if (await paced()) {
@@ -394,6 +400,63 @@ export function createRouter({
       actor.notePointer(tabId, at.x, at.y);
     }
     return { ok: true, via: "cdp" };
+  }
+
+  // Refuses a point outside the tab's viewport (cdp.assertInViewport).
+  // Answers the viewport, or null when this cdp cannot tell.
+  async function inViewport(tabId, at) {
+    if (typeof cdp.viewport !== "function") return null;
+    const vp = await cdp.viewport(tabId);
+    if (at) assertInViewport(vp, at.x, at.y);
+    return vp;
+  }
+
+  // dismiss_overlay: closes the marketing pop-up on top of the page the way
+  // a person would, stopping at the first step that works: its close or
+  // decline control (by name: close, dismiss, no thanks, X), Escape, a
+  // click on the backdrop, and only then hiding it from the page script.
+  // The clicks go through the guarded click path, so a locked control is
+  // never pressed. Sign-in, checkout, payment and cookie dialogs are refused
+  // (content/page.js overlay_find), and blocked sites never get here.
+  async function dismissOverlay(tabId, epoch) {
+    const find = () => pageCall(tabId, "overlay_find", {});
+    const first = await find();
+    if (!first.found) return { dismissed: false, message: "No pop-up is covering the page." };
+    if (first.sensitive) throw new BridgeError(ERR.LOCKED, `Locked: not dismissing "${first.name}", ${first.sensitive}. Ask the user if it is in the way.`);
+    const name = first.name;
+    let now = first;
+    // Gone, or replaced by a different pop-up (the next call handles that).
+    const gone = async () => {
+      await settle(OVERLAY_SETTLE_MS);
+      now = await find();
+      // A re-rendered copy of the same pop-up (new ref, same name) is not gone.
+      return !now.found || (now.ref !== first.ref && now.name !== first.name);
+    };
+    // An interrupt or turn end stops the ladder between steps.
+    const live = () => {
+      if (actor.epoch() !== epoch) throw Object.assign(new BridgeError(ERR.INTERRUPTED, "stopped: the turn ended"), { noFallback: true });
+    };
+    const steps = [
+      ["close button", async () => now.closeRef && (await clickAt(tabId, { ref: now.closeRef }, epoch), true)],
+      ["Escape", async () => (await cdp.key({ tabId, key: "Escape" }), true)],
+      ["backdrop", async () => now.backdrop && (await clickAt(tabId, { x: now.backdrop.x, y: now.backdrop.y }, epoch), true)],
+    ];
+    for (const [via, step] of steps) {
+      if (now.sensitive) break;
+      let tried = false;
+      live();
+      try {
+        tried = await step();
+      } catch (e) {
+        if (e && (e.code === ERR.INTERRUPTED || e.noFallback)) throw e;
+        tried = false; // a locked or failed step: on to the next one
+      }
+      if (tried && (await gone())) return { dismissed: true, via, name };
+    }
+    if (now.sensitive) throw new BridgeError(ERR.LOCKED, `Locked: not hiding "${now.name}", ${now.sensitive}.`);
+    live();
+    await pageCall(tabId, "overlay_hide", { ref: first.ref });
+    return { dismissed: true, via: "hidden", name };
   }
 
   async function tabOrigin(tabId) {
@@ -584,15 +647,26 @@ export function createRouter({
         return pageCall(tabId, "lock_info", { ref: params.ref });
       case "press_protected":
         return pressProtected(tabId, params, epoch);
-      case "scroll":
+      case "scroll": {
+        // No point given: the centre of the viewport.
+        let { x, y } = params;
+        if (x == null && y == null) {
+          const vp = await inViewport(tabId);
+          if (vp) [x, y] = [Math.round(vp.width / 2), Math.round(vp.height / 2)];
+        } else if (x != null && y != null) {
+          await inViewport(tabId, { x: point(x, "x"), y: point(y, "y") });
+        }
         if (await paced()) {
-          const at = { x: point(params.x, "x"), y: point(params.y, "y"), dx: point(params.dx ?? 0, "dx"), dy: point(params.dy ?? 0, "dy") };
+          const at = { x: point(x, "x"), y: point(y, "y"), dx: point(params.dx ?? 0, "dx"), dy: point(params.dy ?? 0, "dy") };
           await actor.scroll(tabId, at, { epoch });
         } else {
-          await cdp.scroll({ tabId, x: params.x, y: params.y, dx: params.dx, dy: params.dy });
-          actor.notePointer(tabId, Number(params.x), Number(params.y));
+          await cdp.scroll({ tabId, x, y, dx: params.dx, dy: params.dy });
+          actor.notePointer(tabId, Number(x), Number(y));
         }
         return { ok: true };
+      }
+      case "dismiss_overlay":
+        return dismissOverlay(tabId, epoch);
       case "screenshot": {
         const shot = await cdp.screenshot({ tabId });
         // The tab may have moved to a blocked site while it was captured.

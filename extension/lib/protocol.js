@@ -49,6 +49,7 @@ export const TOOLS = Object.freeze([
   "key",
   "scroll",
   "screenshot",
+  "dismiss_overlay",
 ]);
 
 // Methods only the agent server's own code calls (pay_now, the tab sweep).
