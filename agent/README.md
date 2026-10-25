@@ -16,6 +16,9 @@ Needs `ANTHROPIC_API_KEY` (unless you use a local model) and, for Cartesia voice
 | `AGENT_PORT` | 5050 | |
 | `OCIC_SERVER` | `~/code/open-claude-in-chrome/host/mcp-server.js` | browser MCP server to spawn (plain server: no wrangler sidecar, no `execute_code`) |
 | `CLEARCART_DEBUG=1` | off | print the Claude Code subprocess stderr |
+| `ORBI_TIMING=1` | off | log `[timing]` marks for each turn (key release, STT final, `user_text`, each model step and tool call, first speech, first audio) in ms since release (`timing.ts`) |
+| `ORBI_ACK=0` | on | turn off the short spoken acknowledgement ("Opening Aritzia.") at the start of tool work |
+| `ORBI_EFFORT` | SDK default | `low`, `medium` or `high`: model effort per step. `medium` cut a shopping turn by about 2 s in tests; `low` made mistakes |
 | `CLEARCART_ALLOW_ANY_SITE=1` | off | turn off the browse check and the tab sweep entirely (the checkout page block and button lock stay) |
 | `CLEARCART_BROWSE_MODE` | `open` | `open`: `navigate` and the tab sweep accept any http(s) site except the blocked sites (`blocklist.ts`: fixed rules for non-web schemes, logins in the address, and localhost and private network addresses not in `CLEARCART_ALLOWED_ORIGINS` in any spelling, so the agent console too, plus the extension's list in ext mode or the suggested list otherwise) and `CLEARCART_BLOCKED_ORIGINS`. `allowlist`: only `CLEARCART_ALLOWED_ORIGINS`. The tab sweep sends a tab on a blocked site back a page (open) or to a blank page (allowlist, or when back fails) |
 | `CLEARCART_GUIDED` | off | Guided mode, the mode for blind and low-vision users, outside ext mode (`1`, `true`, `on` or `yes`: on). In ext mode the extension's Guided mode setting decides (off by default). On: the agent describes each page, reads out the choices and lets the user pick |

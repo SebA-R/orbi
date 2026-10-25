@@ -55,6 +55,13 @@
 //            window (agent/hub.ts): stop speaking and stop waiting for a
 //            reply; "moved" also drops a turn still listening, unsent
 //
+//   wallClock (Date.now in the offscreen document; tests leave it out) adds
+//            turn timing for the agent's ORBI_TIMING log (agent/timing.ts):
+//            user_text carries timing {releasedAt, stopAt, finalAt}, and the
+//            first audio of the reply sends {type:"timing", event:"first_audio", at}.
+//   confirm() also warms the speaker's socket (speaker.warm), so the reply
+//            does not wait on a Cartesia connect after the user stops talking.
+//
 // chime(name, opts) plays a cue from lib/voice/chime.js: listen, sent, cut,
 // placed, failed, error (closed is played by the offscreen document).
 //
@@ -81,9 +88,11 @@ export class VoiceController {
   constructor({
     createStt, speaker, mic, chime, agent, emit,
     setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
-    resumeAudio = () => {}, log = () => {}, now = () => Date.now(), speakReplies = () => true,
+    resumeAudio = () => {}, log = () => {}, now = () => Date.now(), speakReplies = () => true, wallClock = null,
   }) {
-    Object.assign(this, { createStt, speaker, mic, chime, agent, emit, setTimer, clearTimer, resumeAudio, log, now, speakReplies });
+    Object.assign(this, { createStt, speaker, mic, chime, agent, emit, setTimer, clearTimer, resumeAudio, log, now, speakReplies, wallClock });
+    this.pageReleaseAt = 0; // wallClock time of the page's own PTT_STOP
+    this.timingOpen = false; // a user_text went out whose first audio is not reported yet
     this.listening = false;
     this.session = null;
     this.awaitingReply = false;
@@ -105,6 +114,7 @@ export class VoiceController {
 
   // A page's own hotkey broadcast; the worker's copy is still on its way.
   onPageKey(type) {
+    if (type === RT.PTT_STOP && this.wallClock) this.pageReleaseAt = this.wallClock();
     if (type === RT.PTT_START) {
       this.pagePresses++;
       if (this.listening || !this.speaking) return;
@@ -172,11 +182,15 @@ export class VoiceController {
     this.latchTimer = timer;
   }
 
-  #sendUserText(text) {
+  #sendUserText(text, turn = null) {
     this.awaitingReply = true;
     this.muted = false; // a fresh turn: its replies are spoken
     this.readParts = []; // a fresh turn: nothing read yet
-    this.agent.send({ type: "user_text", text });
+    if (this.wallClock) {
+      const t = turn ? { releasedAt: turn.releasedAt, stopAt: turn.stopAt, finalAt: turn.finalAt } : {};
+      this.timingOpen = true;
+      this.agent.send({ type: "user_text", text, timing: t });
+    } else this.agent.send({ type: "user_text", text });
     this.emit({ type: RT.VOICE_FINAL, text });
     this.emit({ type: RT.SUBTITLE, speaker: "user", text, final: true });
     this.#settle();
@@ -191,7 +205,7 @@ export class VoiceController {
     const text = join([...turn.parts, last]);
     turn.parts = [];
     turn.partial = "";
-    if (text) this.#sendUserText(text);
+    if (text) this.#sendUserText(text, turn);
     else if (turn.expected) {
       this.awaitingReply = false; // stop() expected words that never came
       this.#settle();
@@ -258,7 +272,10 @@ export class VoiceController {
       onFinal: gate((text) => {
         if (turn.dropped) return;
         if (turn.sent) return this.log(`late final dropped: ${text.slice(0, 80)}`);
-        if (!turn.open) return this.#flush(turn, text);
+        if (!turn.open) {
+          if (this.wallClock) turn.finalAt = this.wallClock();
+          return this.#flush(turn, text);
+        }
         // Still held: Ink's pause-ended turn is only a segment of ours.
         heard();
         turn.partial = "";
@@ -330,6 +347,8 @@ export class VoiceController {
     if (!this.listening || this.confirmed) return;
     this.confirmed = true;
     const cut = this.#bargeIn();
+    // The reply comes in a few seconds: have Sonic's socket open by then.
+    if (this.speakReplies()) this.speaker.warm?.();
     const when = cut ? cueLength("cut") : 0;
     this.chime("listen", when ? { when } : undefined);
     this.listenUntil = this.now() + (when + cueLength("listen")) * 1000;
@@ -415,6 +434,12 @@ export class VoiceController {
     if (!this.listening) return;
     if (!this.confirmed) return this.cancel();
     const turn = this.turn;
+    if (turn && this.wallClock) {
+      const at = this.wallClock();
+      // The page's own key-up got here first (the worker's copy follows it).
+      turn.releasedAt = this.pageReleaseAt && at - this.pageReleaseAt >= 0 && at - this.pageReleaseAt < 2000 ? this.pageReleaseAt : at;
+      turn.stopAt = at;
+    }
     if (turn) {
       turn.open = false;
       turn.expected = turn.parts.length > 0 || !!turn.partial.trim();
@@ -537,6 +562,14 @@ export class VoiceController {
   // (VOICE_SYNC), so ducking and captions pick up a turn in progress.
   announce() {
     this.#setState(this.state, true);
+  }
+
+  // The speaker's first audio of a line will be heard at `at` (wallClock ms).
+  // Only the first one after a user_text is reported, for the timing log.
+  onFirstAudio(at) {
+    if (!this.wallClock || !this.timingOpen) return;
+    this.timingOpen = false;
+    this.agent.send({ type: "timing", event: "first_audio", at: Math.round(at) });
   }
 
   onSpeakingChange(on) {
