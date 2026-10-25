@@ -24,8 +24,11 @@
   globalThis[FLAG] = true;
 
   const RT = { SUBTITLE: "subtitle", VOICE_STATE: "voice.state", SETTINGS_CHANGED: "settings.changed" };
-  const HIDE_AFTER_MS = 5000; // after the last words, once nothing is being said
-  const STALE_MS = 30000;     // hard cap: hide 30 s after the last update, even if a state never returns to idle
+  const HIDE_MIN_MS = 10000;  // shortest wait after the last words, once nothing is being said
+  const HIDE_MAX_MS = 60000;  // longest wait, however much text is on the card
+  const MS_PER_EXTRA_WORD = 300; // about 200 words per minute of extra reading time
+  const FREE_WORDS = 15;      // lines up to this many words get the minimum wait
+  const STALE_MIN_MS = 30000; // hard cap after the last update, even if a state never returns to idle
   const FADE_MS = 700;        // matches the .wrap fade-out transition
   const MAX_CHARS = 600;
   const STATES = new Set(["idle", "listening", "thinking", "speaking"]);
@@ -222,11 +225,20 @@
     clearText();
   }
 
+  // Reading time for what is on the card (user line plus agent line):
+  // 10 s for up to 15 words, plus 300 ms per extra word, capped at 60 s.
+  function hideDelayMs() {
+    const n = words(ui.user ? ui.user.textContent : "").length
+      + words(ui.agent ? ui.agent.textContent : "").length;
+    return Math.min(HIDE_MAX_MS, HIDE_MIN_MS + Math.max(0, n - FREE_WORDS) * MS_PER_EXTRA_WORD);
+  }
+
   function show() {
     if (!ui.enabled || !mount()) return;
     flushPendingClear();
     clearTimeout(ui.staleTimer);
-    ui.staleTimer = setTimeout(hide, STALE_MS);
+    // The stale cap never cuts a long caption short.
+    ui.staleTimer = setTimeout(hide, Math.max(STALE_MIN_MS, hideDelayMs() + 10000));
     ui.wrap.classList.add("on");
     raise();
   }
@@ -254,7 +266,7 @@
 
   function scheduleHide() {
     clearTimeout(ui.hideTimer);
-    ui.hideTimer = setTimeout(hide, HIDE_AFTER_MS);
+    ui.hideTimer = setTimeout(hide, hideDelayMs());
   }
 
   function cancelHide() {
