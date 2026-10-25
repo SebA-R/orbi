@@ -192,3 +192,46 @@ test("standby stale: waiting for a reply ends, but a newer turn already listenin
   assert.equal(v.controller.listening, true);
   assert.equal(v.stts[1].aborted, undefined);
 });
+
+// The hotkey content script, loaded the way hotkey.test.mjs does.
+const HOTKEY = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "content", "hotkey.js"), "utf8");
+
+function page() {
+  const hooks = {};
+  vm.runInNewContext(HOTKEY, { __clearcartHotkeyTest: hooks, Promise, setTimeout, clearTimeout });
+  const listeners = {};
+  const win = { addEventListener: (t, fn) => { (listeners[t] ||= []).push(fn); }, removeEventListener() {} };
+  const doc = { visibilityState: "visible", addEventListener: () => {} };
+  const sent = [];
+  const chromeApi = { runtime: { id: OUR_ID, sendMessage: (m) => { sent.push(m.type); return Promise.resolve(); } } };
+  hooks.install({ win, doc, chromeApi });
+  const fire = (t, e) => (listeners[t] || []).forEach((fn) => fn(e));
+  return { fire, sent };
+}
+
+function key(code, extra = {}) {
+  const e = { code, altKey: false, ctrlKey: false, shiftKey: false, metaKey: false, repeat: false, target: { tagName: "DIV" }, defaultPrevented: false, ...extra };
+  e.preventDefault = () => { e.defaultPrevented = true; };
+  e.stopPropagation = () => {};
+  return e;
+}
+
+test("hotkey: navigating away or removing the frame mid-hold releases it, so nothing keeps listening", () => {
+  const a = page();
+  a.fire("keydown", key("Space"));
+  a.fire("pagehide", {});
+  assert.deepEqual(a.sent, [RT.PTT_START, RT.PTT_CANCEL]);
+  a.fire("keyup", key("Space")); // arrives in the new page, if at all
+  assert.deepEqual(a.sent, [RT.PTT_START, RT.PTT_CANCEL]);
+});
+
+test("hotkey: a press another Clearcart build already took is left to it", () => {
+  const p = page();
+  for (const alt of [false, true]) {
+    p.fire("keydown", key("Space", { altKey: alt, defaultPrevented: true }));
+    p.fire("keyup", key("Space", { altKey: alt, defaultPrevented: true }));
+  }
+  assert.deepEqual(p.sent, []);
+  p.fire("keydown", key("Space", { altKey: true }));
+  assert.deepEqual(p.sent, [RT.PTT_START], "an untaken press still talks");
+});
