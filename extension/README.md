@@ -13,7 +13,7 @@ Our own Chrome extension (Manifest V3) for Clearcart. It replaces the third-part
 ## Install
 
 1. Open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and pick this `extension/` folder. The extension id is fixed by the manifest key (`dhgknfenfoidnchmjfaicafhieepefoc`).
-2. The setup page opens on first install, and after an update when something is still missing. It checks site access on all sites (Chrome can hold back `<all_urls>` after an update if site access was limited before), the microphone (the offscreen voice document can't ask for it; it inherits this grant), the agent server's `/healthz` and the talk key, each with one button. The toolbar icon shows **!** while site access or the mic is missing, and its popup has the same checklist plus browse mode, talk key, speed and subtitles. Run it again from the options page.
+2. The setup page opens on first install, and after an update when something is still missing. It checks site access on all sites (Chrome can hold back `<all_urls>` after an update if site access was limited before), the microphone (the offscreen voice document can't ask for it; it inherits this grant), the agent server's `/healthz` and the talk key, each with one button. The toolbar icon shows **!** while site access or the mic is missing, and its popup shows the live voice state on an orb (Ready, Listening, Thinking, Speaking), a setup pill ("Setup: N of 4" opens the setup page) and the everyday settings: browse mode, talk key, speed, subtitles and quiet other tabs. Run it again from the options page.
 3. In the repo's `.env`, set `CLEARCART_BROWSER=ext`, then restart the agent server (`npm --prefix agent start`). The server log should say `ext: extension connected`.
 4. Start the store as usual (`node store/server.js`) and hold Space to talk.
 
@@ -63,7 +63,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
 | `options/` | Options page |
-| `setup/`, `popup/` | Setup page (install and update) and the toolbar popup; both draw `setup/checklist.js` |
+| `setup/`, `popup/` | Setup page (install and update), drawn by `setup/checklist.js`, and the toolbar popup, which follows `VOICE_STATE` and counts the same checks |
 | `lib/setup.js`, `lib/mic-grant.js` | Setup checks, the badge and the onInstalled rule; the microphone grant shared by options and setup |
 | `lib/` | Protocol, bridge client, settings, redacting logger, voice modules |
 
