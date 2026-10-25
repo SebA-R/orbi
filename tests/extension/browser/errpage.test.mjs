@@ -91,6 +91,13 @@ test("an unreachable address opens Clearcart's page with the hotkey, Retry and t
   const first = await onErrorPage(page);
   await page.getByRole("button", { name: "Retry" }).click();
   await onErrorPage(page, first);
+  // Retry went Back to the failed entry, so it added none: two Backs still
+  // reach the start page.
+  await page.goBack().catch(() => {});
+  await page.waitForTimeout(1000);
+  await page.goBack().catch(() => {});
+  await page.waitForTimeout(500);
+  assert.equal(await page.title(), "start");
   await page.close();
 });
 
