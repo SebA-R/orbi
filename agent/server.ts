@@ -1,6 +1,7 @@
 // Clearcart agent server: static voice console at /, GET /cartesia-token,
-// and the /session WebSocket. Every /session socket shares one Claude
-// conversation; the one the user last talked into owns it (hub.ts).
+// the settings page's /memory and /cards, and the /session WebSocket.
+// Every /session socket shares one Claude conversation; the one the user
+// last talked into owns it (hub.ts).
 
 import fs from "node:fs";
 import http from "node:http";
@@ -9,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { createCardsRoute } from "./cards.ts";
 import { extBridge, extMode } from "./extbridge.ts";
 import { extensionOrigins, hostAllowed, memoryRequestAllowed, upgradeOriginAllowed } from "./hostcheck.ts";
 import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
@@ -140,10 +142,16 @@ function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathna
   json(res, 405, { error: "method not allowed" });
 }
 
+// Saved cards for the settings page (cards.ts): the same loopback and
+// extension Origin rule as /memory. Answers never hold a card number,
+// expiry or security code.
+const cardsRoute = createCardsRoute({ allowed: (req) => memoryRequestAllowed(req, port(), EXT_ORIGINS) });
+
 const server = http.createServer((req, res) => {
   if (!localHost(req)) return void res.writeHead(403, { "Content-Type": "text/plain" }).end("Forbidden host");
   const url = new URL(req.url || "/", "http://localhost");
   if (url.pathname === "/memory" || url.pathname.startsWith("/memory/")) return memoryRoute(req, res, url.pathname);
+  if (url.pathname === "/cards" || url.pathname.startsWith("/cards/")) return void cardsRoute(req, res, url.pathname);
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
   if (req.method === "GET" && url.pathname === "/healthz") {
     if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, browser: "ext", extension: extBridge.connected() });
