@@ -3,8 +3,12 @@
 //
 // The worker (background/frame.js) decides which tab gets it and sends
 // RT.FRAME { on } to that tab's top frame. One ring, no per-state variants:
-// a conic gradient in the orb colours, masked to a 4px border, at opacity
-// .45, turning once every 6s. It fades in and out over 300 ms. With reduced
+// a conic gradient in the orb colours, masked to a border, at opacity .45,
+// turning once every 6s. The ring (design R6b) sits 24px past every viewport
+// edge with a 32px band and a 43px outer radius, so 8px of spectrum shows
+// along each edge and the inner corners round off at about 11px. The host
+// clips it to the viewport (overflow hidden plus paint containment), so it
+// never adds scrollbars. It fades in and out over 300 ms. With reduced
 // motion it holds still.
 //
 // Classic content script (no imports), top frame only. Purely visual, like
@@ -39,8 +43,8 @@
 @property --clearcart-frame-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 :host { all: initial !important; pointer-events: none !important; }
 .ring {
-  position: fixed; inset: 0; box-sizing: border-box;
-  padding: 4px;
+  position: fixed; inset: -24px; box-sizing: border-box;
+  padding: 32px; border-radius: 43px;
   background: conic-gradient(from var(--clearcart-frame-a), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -70,7 +74,7 @@
     ["all", "initial"], ["position", "fixed"], ["inset", "0"], ["display", "block"],
     ["width", "auto"], ["height", "auto"], ["max-width", "none"], ["max-height", "none"],
     ["margin", "0"], ["padding", "0"], ["border", "0"], ["background", "transparent"],
-    ["overflow", "visible"], ["opacity", "1"], ["visibility", "visible"],
+    ["overflow", "hidden"], ["opacity", "1"], ["visibility", "visible"],
     ["transform", "none"], ["filter", "none"], ["clip-path", "none"],
     ["pointer-events", "none"], ["z-index", "2147483647"], ["contain", "strict"],
   ];
