@@ -114,3 +114,6 @@ textarea.field { resize: vertical; }
   .orb-mark { border: 2px solid CanvasText; }
   .field[aria-invalid="true"] { border-color: Mark; }
 }
+
+/* A note under a row: Speak replies with subtitles off, or voice off on the server. */
+.card > .warn { margin: 0; padding: 10px 16px; background: var(--warn-bg); color: var(--warn-fg); }

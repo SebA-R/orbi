@@ -1,7 +1,7 @@
 // Toolbar popup ("orb hero"): the live voice state, a setup pill that counts
 // the setup page's four checks, and the everyday settings. Each control saves
 // on its own; the worker and offscreen document follow chrome.storage.
-import { HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings } from "../lib/settings.js";
+import { HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, speakRepliesNote } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SETUP_PATH, SETUP_STEPS, agentHealth, hasSiteAccess, keyName, micState, setupDone, updateBadge } from "../lib/setup.js";
 import { bindDangerToggle } from "../lib/danger-toggle.js";
@@ -57,12 +57,22 @@ chrome.runtime.onMessage.addListener((msg) => {
 // Setup pill: the same checks as the setup page; it opens the setup page.
 // Checks can overlap (each health check takes up to 3 s); only the latest counts.
 let setupRun = 0;
+let serverVoice = null; // from /healthz: false when CLEARCART_VOICE=false
+// The Speak replies note, and the switch locked while the server has voice off.
+function showSpeakNote() {
+  const note = speakRepliesNote(settings, serverVoice);
+  $("speak-replies-note").textContent = note;
+  $("speak-replies-note").hidden = !note;
+  $("speak-replies").disabled = serverVoice === false;
+}
 async function refreshSetup() {
   const run = ++setupRun;
   const s = await loadSettings();
   const [site, mic, agent] = await Promise.all([hasSiteAccess(), micState(), agentHealth(s.agentUrl)]);
   if (run !== setupRun) return;
   const done = setupDone({ site, mic, agent });
+  serverVoice = agent.voice;
+  showSpeakNote();
   missing = [!site && "site", mic !== "granted" && "mic", !agent.connected && "agent"].filter(Boolean);
   // The voice status region names what is missing, so it is announced.
   showVoice();
@@ -91,6 +101,8 @@ function fill(s) {
   $("hotkey").value = s.hotkey;
   $("speed").value = String(s.speed);
   $("subtitles").checked = s.subtitles;
+  $("speak-replies").checked = s.speakReplies;
+  showSpeakNote();
   $("error-pages").checked = s.errorPages;
   $("sounds").checked = s.sounds;
   $("quiet-tabs").checked = s.quietTabs;
@@ -111,6 +123,7 @@ $("hotkey").addEventListener("change", () => save({ hotkey: $("hotkey").value })
 $("speed").addEventListener("input", showSpeed);
 $("speed").addEventListener("change", () => save({ speed: Number($("speed").value) }));
 $("subtitles").addEventListener("change", () => save({ subtitles: $("subtitles").checked }));
+$("speak-replies").addEventListener("change", () => save({ speakReplies: $("speak-replies").checked }));
 $("error-pages").addEventListener("change", () => save({ errorPages: $("error-pages").checked }));
 $("sounds").addEventListener("change", () => save({ sounds: $("sounds").checked }));
 $("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));

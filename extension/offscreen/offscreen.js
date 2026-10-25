@@ -6,7 +6,7 @@
 //
 // In:  runtime messages with target "offscreen":
 //        VOICE_START {settings?, silent?, latch?}, VOICE_CONFIRM, VOICE_CANCEL, VOICE_HUSH, VOICE_STOP, PTT_TOGGLE, TTS_STOP,
-//        TTS_SPEAK {text}, SETTINGS_CHANGED {settings}
+//        TTS_SPEAK {text} (ignored with Speak replies off), SETTINGS_CHANGED {settings}
 //      Anything else (including PTT_* that content scripts broadcast to every
 //      extension page) is ignored; the worker is the only router. The one
 //      exception: a page's own PTT_* broadcast (pageKey) goes to
@@ -85,12 +85,17 @@ controller = new VoiceController({
   emit,
   resumeAudio,
   log: say,
+  // Speak replies off: no speech is ever requested (no Cartesia credits).
+  speakReplies: () => settings.speakReplies !== false,
 });
 
 function applySettings(next) {
   if (!next) return;
   const prev = settings;
   settings = normalize(next);
+  // Turned off mid-reply: stop the speech now, keep its words on screen.
+  // Turned on: the next reply is spoken.
+  if (prev.speakReplies && !settings.speakReplies) controller.releaseSpeech();
   if (settings.agentUrl !== prev.agentUrl) {
     getToken.clear();
     agent.reconnect();
@@ -129,7 +134,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       controller.stopSpeaking();
       break;
     case RT.TTS_SPEAK:
-      if (msg.text) speaker.speak(String(msg.text));
+      if (msg.text && settings.speakReplies) speaker.speak(String(msg.text));
       break;
     case RT.SETTINGS_CHANGED:
       applySettings(msg.settings);

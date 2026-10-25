@@ -667,6 +667,22 @@ test("karaoke: said and coming inks are 4.5:1 on the card in light and dark, ove
   }
 });
 
+test("Speak replies off: the whole reply shows at once, plainly, and hides after its reading time", () => {
+  const t = setup();
+  const reply = Array.from({ length: 75 }, (_, i) => `w${i}`).join(" ");
+  t.send({ type: "voice.state", state: "thinking" });
+  // No utteranceId and no karaoke: the controller sends it whole, untimed.
+  t.send({ type: "subtitle", speaker: "agent", text: reply, final: true });
+  t.send({ type: "voice.state", state: "idle" });
+  assert.equal(t.$(".agent").textContent.trim(), reply, "every word at once");
+  assert.equal(t.$(".agent").classList.contains("karaoke"), false);
+  assert.equal(t.$(".agent").querySelectorAll(".w").length, 75);
+  t.tick(27_000);
+  assert.ok(t.visible(), "a 75 word reply gets about 28 s");
+  t.tick(2_000);
+  assert.equal(t.visible(), false);
+});
+
 test("the action line: a small secondary line under the words, never replacing them", () => {
   const t = setup();
   const caption = t.window.__clearcartCaption;
