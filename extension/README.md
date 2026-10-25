@@ -37,6 +37,8 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 
 ### Which sites
 
+![The Blocked sites section of the options page, with a bad line flagged](../docs/images/options-blocked-sites.jpg)
+
 - **Open web** (default): any `http`/`https` page except your blocked sites. The options page's Blocked sites section holds them, one entry per line: `chase.com` (that site and its subdomains), `amazon.com/ap` (pages at or under that path; `amazon.*/ap` for any Amazon store), `*bank*` (any address with that word in its name, not counting the ending), `*.gov` (any address with `gov` as one of its parts). Lines starting with `#` are notes. Bad lines are listed and nothing is saved until they are fixed.
 - On install the list is seeded with a suggested list (`SUGGESTED_BLOCKLIST` in `lib/blocklist.js`), grouped with `#` lines: email, password managers, banks and money (plus `*bank*`, `*creditunion*`), government and tax (`*.gov`, `*.gouv`, `*.mil`), health, and account and sign in pages, Amazon's included. Add or remove anything; **Restore suggested list** puts back the suggested entries and keeps yours under `# Your sites`. It is best effort, not a guarantee.
 - Always blocked, fixed in code: `chrome:`, `chrome-extension:`, `about:`, `file:`, `data:`, `javascript:` and other non-web pages, addresses with a login in them, and localhost and private network addresses other than the allowed sites (so the agent console is off limits).
