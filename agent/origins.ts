@@ -3,15 +3,16 @@
 // lock's unlock gate.
 //
 // CLEARCART_BROWSE_MODE:
-//   open (default)  any http(s) site except the built-in blocklist
-//                   (blocklist.ts: email, banks, password managers,
-//                   government, health, account pages, other localhost
-//                   ports) and CLEARCART_BLOCKED_ORIGINS. Best effort.
+//   open (default)  any http(s) site except the blocked sites
+//                   (blocklist.ts: fixed rules such as other localhost
+//                   ports, plus the extension's list in ext mode or the
+//                   suggested list otherwise) and CLEARCART_BLOCKED_ORIGINS.
+//                   Best effort.
 //   allowlist       only the store plus CLEARCART_ALLOWED_ORIGINS.
 // Pay sites never follow the browse mode: CLEARCART_PAY_ORIGINS (default
 // the store only) is the only place the unlock gate issues grants.
 
-import { builtinBlockReason } from "./blocklist.ts";
+import { blocklistReason, SUGGESTED_ENTRIES, type BlockEntry } from "./blocklist.ts";
 
 // CLEARCART_STORE_ORIGIN moves the demo store (tests run one on a spare port).
 // Read at import, so set it on the command line rather than in .env.
@@ -53,21 +54,22 @@ export type SitePolicy = {
   mode: BrowseMode;
   allowed: ReadonlySet<string>;
   blocked: ReadonlySet<string>;
+  // The blocked sites list (blocklist.ts entries).
+  entries: readonly BlockEntry[];
 };
 
 // Why `href` may not be browsed under `policy`, or null when it may.
-// Allowlisted origins always pass (that is how the store gets past the
-// localhost block) unless the user also blocked them.
+// Allowlisted origins get past the localhost rule (that is how the store
+// opens), not past CLEARCART_BLOCKED_ORIGINS or the blocked sites list.
 export function siteBlockReason(href: string | null | undefined, policy: SitePolicy): string | null {
   const o = originOf(href);
   const listed = !!o && policy.allowed.has(o);
   if (policy.mode === "allowlist") return listed ? null : "not on the allowlist";
   if (o && policy.blocked.has(o)) return "on the blocklist";
-  if (listed) return null;
-  return builtinBlockReason(href, policy.allowed);
+  return blocklistReason(href, policy.entries, policy.allowed);
 }
 
-export const SITE_POLICY: SitePolicy = { mode: BROWSE_MODE, allowed: ALLOWED_ORIGINS, blocked: BLOCKED_ORIGINS };
+export const SITE_POLICY: SitePolicy = { mode: BROWSE_MODE, allowed: ALLOWED_ORIGINS, blocked: BLOCKED_ORIGINS, entries: SUGGESTED_ENTRIES };
 
 export function originOf(href: string | null | undefined): string | null {
   if (!href) return null;
