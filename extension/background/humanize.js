@@ -47,9 +47,9 @@ export function clamp(v, lo, hi) {
 // Chosen so a click reads as deliberate without dragging the turn out:
 // about 0.4 to 1.2 s from the first move to the release.
 export const CLICK = Object.freeze({
-  moveMinMs: 220,
+  moveMinMs: 240,
   moveMaxMs: 700,
-  dwellMs: [100, 240], // resting on the target before pressing
+  dwellMs: [110, 240], // resting on the target before pressing
   holdMs: [55, 120], // button down to button up
   frameMs: 16, // one pointer sample per frame
 });
@@ -218,7 +218,8 @@ export function planTyping(text, rng, opts = {}) {
   }
   const total = out.reduce((s, k) => s + k.gapMs, 0);
   const squeeze = total > budget ? budget / total : 1;
-  for (const k of out) k.gapMs = Math.round(k.gapMs * squeeze);
+  // Floor when squeezing, so rounding cannot push the total past the budget.
+  for (const k of out) k.gapMs = squeeze < 1 ? Math.floor(k.gapMs * squeeze) : Math.round(k.gapMs);
   // The key comes up before the next one goes down; the hold is spent out
   // of the next gap, not added to it.
   for (let i = 0; i + 1 < out.length; i++) out[i].holdMs = Math.max(1, Math.min(out[i].holdMs, Math.round(out[i + 1].gapMs * 0.6)));

@@ -160,7 +160,7 @@ export function createActor({
     });
   }
 
-  // Types text a character at a time. check() runs right before every
+  // Types text a character at a time. check(ch) runs right before every
   // character and answers { keys } (true: the focus is a plain text field,
   // so key events go with the character) or throws to stop. Each character
   // is inserted with insertText, exactly once; the key events around it are
@@ -170,7 +170,7 @@ export function createActor({
     return within(tabId, async (run) => {
       const plan = planTyping(text, rng);
       if (plan === null) {
-        await check();
+        await check(text);
         live(run);
         await cdp.send(tabId, "Input.insertText", { text });
         return { via: "insertText" };
@@ -180,7 +180,7 @@ export function createActor({
         // The check's own time counts toward the gap.
         await sleep(run, k.gapMs - checkMs);
         const t0 = now();
-        const focus = await check();
+        const focus = await check(k.ch);
         checkMs = now() - t0;
         live(run);
         const key = focus && focus.keys ? keyFor(k.ch) : null;
