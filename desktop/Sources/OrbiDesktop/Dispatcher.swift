@@ -185,10 +185,27 @@ final class Dispatcher {
     }
   }
 
-  private func acting<T>(_ body: () async throws -> T) async rethrows -> T {
-    overlay.beginAction()
+  // pid: the app acted on, whose window the frame goes around.
+  private func acting<T>(_ pid: pid_t?, _ body: () async throws -> T) async rethrows -> T {
+    overlay.beginAction(pid: pid)
     defer { overlay.endAction() }
     return try await body()
+  }
+
+  // Like the extension's follow (background/follow.js), the app a ref is in
+  // comes to the front before Orbi acts on it, its window raised, so the
+  // user sees what is clicked or typed into and the press reaches it. Only
+  // when it is not already the one in front at that point. Never a blocked
+  // app; the usual checks still run after this and before every press.
+  private func bringForward(_ n: AXNode, at p: CGPoint) async throws {
+    try refuseBlocked(bundleId(n.pid), what: "the element's app")
+    guard frontApp?.processIdentifier != n.pid || targetPid(at: p) != n.pid,
+          let app = NSRunningApplication(processIdentifier: n.pid) else { return }
+    if let w = AX.window(of: n.element, pid: n.pid) { AXUIElementPerformAction(w, kAXRaiseAction as CFString) }
+    _ = app.activate()
+    for _ in 0..<24 where frontApp?.processIdentifier != n.pid || targetPid(at: p) != n.pid {
+      try await Task.sleep(nanoseconds: 25_000_000)
+    }
   }
 
   // ------------------------------------------------------------ refs
@@ -372,6 +389,10 @@ final class Dispatcher {
     let expected = try expectRef.map { try node($0) } ?? refNode
     try pointerAllowed(pt, refPid: expected?.pid)
     try needInput()
+    if let refNode {
+      try await bringForward(refNode, at: pt)
+      try pointerAllowed(pt, refPid: expected?.pid)
+    }
     let check = {
       try self.pointerAllowed(pt, refPid: expected?.pid)
       if let expected {
@@ -380,7 +401,7 @@ final class Dispatcher {
         }
       }
     }
-    try await acting {
+    try await acting(expected?.pid ?? targetPid(at: pt)) {
       try await input.click(at: pt, size: size, button: button, count: count, allowed: check)
     }
     return ["ok": true, "x": JSON(pt.x), "y": JSON(pt.y)]
@@ -398,11 +419,14 @@ final class Dispatcher {
         throw ProtoError(.badRequest, "that element is not a text field")
       }
       try pointerAllowed(tgt.point, refPid: tgt.node.pid)
+      try needInput()
+      try await bringForward(tgt.node, at: tgt.point)
+      try pointerAllowed(tgt.point, refPid: tgt.node.pid)
     }
     // With a ref the click brings its app forward first; the keys are checked after it.
     else { try keysAllowed(secureCheck: true) }
     try needInput()
-    try await acting {
+    try await acting(tgt?.node.pid ?? frontApp?.processIdentifier) {
       let focus: AXUIElement
       if let tgt {
         let el = tgt.node.element
@@ -433,7 +457,7 @@ final class Dispatcher {
     let safeInSecure = combo.modifiers.isEmpty && [KeyCode.returnKey, KeyCode.tab, KeyCode.escape].contains(combo.keyCode)
     try keysAllowed(secureCheck: !safeInSecure)
     try needInput()
-    try await acting { try await input.key(combo) { try self.keysAllowed(secureCheck: !safeInSecure) } }
+    try await acting(frontApp?.processIdentifier) { try await input.key(combo) { try self.keysAllowed(secureCheck: !safeInSecure) } }
     return ["ok": true]
   }
 
@@ -444,7 +468,7 @@ final class Dispatcher {
     let at = CGPoint(x: pt.x, y: pt.y)
     try pointerAllowed(at, refPid: nil)
     try needInput()
-    try await acting {
+    try await acting(targetPid(at: at)) {
       try await input.scroll(at: at, dx: Int(dx.rounded()), dy: Int(dy.rounded())) { try self.pointerAllowed(at, refPid: nil) }
     }
     return ["ok": true]
@@ -468,29 +492,10 @@ final class Dispatcher {
             "scale": JSON((shot.scale * 1000).rounded() / 1000), "excluded": .array(shot.excluded.map { .string($0) }), "redacted": true]
   }
 
-  // ring: true/false for the edge ring, or a frame {x, y, w, h} to
-  // highlight (the edge ring is left as it is).
+  // The overlay update (OrbiDesktopCore/OverlayUpdate.swift has the fields).
   private func overlayReq(_ p: Params) throws -> JSON {
-    let raw = try p.optString("state") ?? "idle"
-    guard let state = Overlay.State(rawValue: raw) else {
-      throw ProtoError(.badRequest, "state must be idle, listening, thinking or speaking")
-    }
-    let subtitle = try p.optString("subtitle")
-    let cursor = try p.point("cursor").map { CGPoint(x: $0.x, y: $0.y) }
-    var ring: Bool?
-    var highlight: CGRect?
-    if let o = p.raw["ring"]?.object {
-      let f = Params(o)
-      let (x, y, w, h) = (try f.number("x"), try f.number("y"), try f.number("w"), try f.number("h"))
-      guard w > 0, h > 0 else { throw ProtoError(.badRequest, "ring frame must have a positive size") }
-      highlight = CGRect(x: x, y: y, width: w, height: h)
-    } else {
-      ring = try p.optBool("ring")
-    }
-    if !Env.dryRun {
-      overlay.apply(state: state, subtitle: subtitle, cursor: cursor, ring: ring)
-      if let highlight { overlay.highlight(highlight) }
-    }
+    let u = try OverlayUpdate.parse(p)
+    if !Env.dryRun { overlay.apply(u) }
     return ["ok": true]
   }
 }

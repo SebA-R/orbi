@@ -3,7 +3,7 @@ import OrbiDesktopCore
 
 // The menu-bar app: no Dock icon, a status dot (grey connecting, green
 // connected, red while the mic is open), a Permissions window, the talk key
-// hint and Quit. Wires the connection, the dispatcher, the talk key, the mic
+// hint, the Watchable Pace and Show Cursor settings, and Quit. Wires the connection, the dispatcher, the talk key, the mic
 // and TTS playback together.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -20,10 +20,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var lastPerms = Perms.current
   private var permTimer: Timer?
   private var connected = false
+  private var latchedHere = false
 
   func applicationDidFinishLaunching(_ note: Notification) {
+    if let scenes = Env.snapshotScenes {
+      Task { @MainActor in exit(await OverlaySnapshots.run(scenes: scenes, out: Env.snapshotOut)) }
+      return
+    }
     if !Env.dryRun {
       buildMenu()
+      overlay.setShowCursor(Settings.showCursor)
       overlay.start()
       hotkey.install()
     }
@@ -32,16 +38,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     dispatcher.send = { [weak self] in self?.connection.send(text: $0) }
 
     connection.onStatus = { [weak self] s in
-      self?.connected = s == .connected
-      self?.refreshStatus()
+      guard let self else { return }
+      self.connected = s == .connected
+      self.refreshStatus()
+      if !Env.dryRun { self.overlay.link(up: self.connected) } // the closed and back cues
     }
     connection.onDisconnect = { [weak self] in
       guard let self else { return }
       self.dispatcher.reset()
       self.player.stop(local: false)
-      self.overlay.apply(state: .idle, subtitle: "", cursor: nil, ring: false)
+      self.latchedHere = false
+      self.overlay.reset()
     }
-    connection.onBinary = { [weak self] in if !Env.dryRun { self?.player.play($0) } }
+    connection.onBinary = { [weak self] in
+      guard let self, !Env.dryRun, let t = self.player.play($0) else { return }
+      self.overlay.speechAudio(samples: t.samples, inSeconds: t.inSeconds)
+    }
     connection.onMessage = { [weak self] in self?.inbound($0) }
     connection.start()
 
@@ -63,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       connection.send(text: Outbound.error(id: id, ProtoError(.badRequest, message)))
     case .audioStop:
       player.stop(local: false)
+      overlay.stopSpeech()
     case .unknown(let t):
       log("ignored message type \(t)")
     }
@@ -74,12 +87,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       case .micOpen: mic.open()
       case .micStream: mic.stream()
       case .micClose: mic.close()
-      case .stopPlayback: player.stop(local: true)
+      case .stopPlayback:
+        player.stop(local: true)
+        overlay.stopSpeech()
       case .send(let e):
-        if connection.isConnected { connection.send(text: Outbound.event(e)) }
+        guard connection.isConnected else { break }
+        connection.send(text: Outbound.event(e))
+        earcon(e)
       }
     }
     refreshStatus()
+  }
+
+  // The extension's talk key cues (lib/voice/controller.js): listen once a
+  // hold is confirmed or a latch starts, after cut when that barged in on
+  // speech or a reply; sent when it is let go or the latch ends.
+  private func earcon(_ e: PTTEvent) {
+    var starting = e == .pttDown
+    if e == .latchToggle {
+      latchedHere.toggle()
+      starting = latchedHere
+    }
+    if starting {
+      let cut = overlay.state == .speaking || overlay.state == .thinking
+      if cut { overlay.cue("cut") }
+      overlay.cue("listen", afterCut: cut)
+    } else {
+      overlay.cue("sent")
+    }
   }
 
   private func checkPermissions() {
@@ -104,6 +139,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let hint = NSMenuItem(title: "Hold Right Option to talk. Double-tap to keep listening.", action: nil, keyEquivalent: "")
     hint.isEnabled = false
     menu.addItem(hint)
+    menu.addItem(.separator())
+    let pace = menu.addItem(withTitle: "Watchable Pace", action: #selector(togglePace(_:)), keyEquivalent: "")
+    pace.target = self
+    pace.state = Settings.watchablePace ? .on : .off
+    pace.toolTip = "Clicks and scrolls go at a pace you can follow. Off: they happen at once."
+    let cursor = menu.addItem(withTitle: "Show Cursor", action: #selector(toggleCursor(_:)), keyEquivalent: "")
+    cursor.target = self
+    cursor.state = Settings.showCursor ? .on : .off
+    cursor.toolTip = "Orbi's own cursor, showing where it points and clicks."
     menu.addItem(.separator())
     menu.addItem(withTitle: "Quit Orbi Desktop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     item.menu = menu
@@ -134,6 +178,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     img.isTemplate = false
     return img
+  }
+
+  @objc private func togglePace(_ item: NSMenuItem) {
+    Settings.watchablePace.toggle()
+    item.state = Settings.watchablePace ? .on : .off
+  }
+
+  @objc private func toggleCursor(_ item: NSMenuItem) {
+    Settings.showCursor.toggle()
+    item.state = Settings.showCursor ? .on : .off
+    overlay.setShowCursor(Settings.showCursor)
   }
 
   @objc private func showPermissions() {

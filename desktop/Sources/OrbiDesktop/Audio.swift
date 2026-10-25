@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import OrbiDesktopCore
+import QuartzCore
 
 // The mic, open only while talking: AVAudioEngine converted to PCM s16le
 // 16 kHz mono in ~20 ms chunks. Before a hold is confirmed the chunks are
@@ -95,7 +96,9 @@ final class Mic {
 // AVAudioPlayerNode. stop() cuts it at once (barge-in). After a local stop
 // (the user pressed the talk key) frames still in flight are dropped until
 // the server's audio_stop arrives, or for 3 s at most, so the cut-off reply
-// does not start again.
+// does not start again. play() says when the frame will be heard, for the
+// overlay's karaoke and lip-sync: buffers play back to back, so like
+// lib/voice/tts.js it keeps a play head, plus the output's latency.
 @MainActor
 final class Player {
   private let engine = AVAudioEngine()
@@ -104,6 +107,7 @@ final class Player {
   private var carry: UInt8?
   private var wired = false
   private var mutedUntil: Date?
+  private var playHead: CFTimeInterval = 0
 
   private func wire() {
     guard !wired else { return }
@@ -111,21 +115,24 @@ final class Player {
     engine.attach(node)
     engine.connect(node, to: engine.mainMixerNode, format: format)
     NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-      Task { @MainActor in self?.node.stop() } // started again on the next frame
+      Task { @MainActor in self?.node.stop(); self?.playHead = 0 } // started again on the next frame
     }
   }
 
-  func play(_ pcm: Data) {
+  // The frame's samples and how far from now it starts to be heard, or nil
+  // when it is not played.
+  @discardableResult
+  func play(_ pcm: Data) -> (samples: Int, inSeconds: Double)? {
     var bytes = [UInt8](pcm)
     if let until = mutedUntil {
-      if Date() < until { return }
+      if Date() < until { return nil }
       mutedUntil = nil
     }
     if let c = carry { bytes.insert(c, at: 0); carry = nil }
     if bytes.count % 2 == 1 { carry = bytes.removeLast() }
     let frames = bytes.count / 2
     guard frames > 0, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
-          let out = buf.floatChannelData?[0] else { return }
+          let out = buf.floatChannelData?[0] else { return nil }
     buf.frameLength = AVAudioFrameCount(frames)
     for i in 0..<frames {
       let s = Int16(bitPattern: UInt16(bytes[2 * i]) | (UInt16(bytes[2 * i + 1]) << 8))
@@ -135,17 +142,22 @@ final class Player {
     if !engine.isRunning {
       do { try engine.start() } catch {
         log("player: could not start (\(error.localizedDescription))")
-        return
+        return nil
       }
     }
     node.scheduleBuffer(buf, completionHandler: nil)
     if !node.isPlaying { node.play() }
+    let now = CACurrentMediaTime()
+    let start = max(playHead, now)
+    playHead = start + Double(frames) / Proto.ttsSampleRate
+    return (frames, start - now + engine.outputNode.presentationLatency)
   }
 
   // local: the user barged in; the server's audio_stop is still to come.
   func stop(local: Bool) {
     carry = nil
     mutedUntil = local ? Date().addingTimeInterval(3) : nil
+    playHead = 0
     if wired { node.stop() }
   }
 }

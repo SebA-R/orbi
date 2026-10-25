@@ -105,7 +105,7 @@ final class ProtocolTests: XCTestCase {
   func testHelloAndEvents() throws {
     let hello = try JSON.decode(Outbound.hello(Permissions(accessibility: true, screen: false, mic: true), token: "abc"))
     XCTAssertEqual(hello["token"], "abc")
-    XCTAssertEqual(hello["features"], ["element", "focused", "expectRef", "exclude"])
+    XCTAssertEqual(hello["features"], ["element", "focused", "expectRef", "exclude", "overlay2"])
     XCTAssertEqual(hello["type"], "hello")
     XCTAssertEqual(hello["name"], "orbi-desktop")
     XCTAssertEqual(hello["version"], 1)
@@ -152,6 +152,36 @@ final class ProtocolTests: XCTestCase {
     XCTAssertEqual(try p.int("missing", default: 150, range: 1...500), 150)
     XCTAssertEqual(try p.optBool("b"), true)
     XCTAssertNil(try p.optString("missing"))
+  }
+}
+
+final class OverlayUpdateTests: XCTestCase {
+  func testV1Fields() throws {
+    let u = try OverlayUpdate.parse(Params(["state": "listening", "subtitle": "add milk", "ring": ["x": 1, "y": 2, "w": 30, "h": 20, "label": "Add"]]))
+    XCTAssertEqual(u.state, .listening)
+    XCTAssertEqual(u.line, OverlayUpdate.Line(speaker: "user", text: "add milk", final: false))
+    XCTAssertEqual(u.target, OverlayUpdate.Target(x: 1, y: 2, w: 30, h: 20, label: "Add"))
+    XCTAssertEqual(try OverlayUpdate.parse(Params(["state": "speaking", "subtitle": "Done."])).line?.speaker, "agent")
+    XCTAssertEqual(try OverlayUpdate.parse(Params(["ring": true])).ring, true)
+    XCTAssertNil(try OverlayUpdate.parse(Params([:])).state, "state may be left out")
+    XCTAssertThrowsError(try OverlayUpdate.parse(Params(["state": "dancing"])))
+    XCTAssertThrowsError(try OverlayUpdate.parse(Params(["ring": ["x": 1, "y": 2, "w": 0, "h": 20]])))
+  }
+
+  func testSpeechKeepsOnlyCheckedFields() throws {
+    let u = try OverlayUpdate.parse(Params(["speech": [
+      "id": "od-1", "text": "Hi there.", "extra": "dropped",
+      "timestamps": ["words": ["Hi", "there."], "start": [0, 0.2], "end": [0.2, 0.5]],
+      "phonemes": ["phonemes": ["h"], "start": [0], "end": [0.1]],
+    ]]))
+    XCTAssertEqual(u.speech?["id"], "od-1")
+    XCTAssertNil(u.speech?["extra"])
+    XCTAssertEqual(u.speech?["timestamps"]?["words"], ["Hi", "there."])
+    XCTAssertEqual(u.webJSON(frame: true)["frame"], true)
+    XCTAssertThrowsError(try OverlayUpdate.parse(Params(["speech": ["id": "bad id!"]])))
+    XCTAssertThrowsError(try OverlayUpdate.parse(Params(["speech": ["id": "a", "timestamps": ["words": ["x"], "start": [], "end": []]]])))
+    XCTAssertThrowsError(try OverlayUpdate.parse(Params(["cue": "boom"])))
+    XCTAssertEqual(try OverlayUpdate.parse(Params(["cue": "placed"])).cue, "placed")
   }
 }
 

@@ -286,7 +286,9 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
             if (blocked(now) || !spend(ok.grant, classifyElement(now.element), now)) return refuse("Not pressed: the window changed before the press. Call desktop_read again.");
           }
           const c = center(t.element) ?? (point ? { x: x!, y: y! } : undefined);
-          if (c) bridge.overlay({ state: "thinking", cursor: c, ...(t.element?.frame ? { ring: t.element.frame } : {}) });
+          // label: the cursor's "Clicking ..." line (an overlay2 helper shows it).
+          const label = t.element ? maskText(t.element.title || t.element.label || "").slice(0, 80) : "";
+          if (c) bridge.overlay({ state: "thinking", cursor: c, ...(t.element?.frame ? { ring: { ...t.element.frame, ...(label ? { label } : {}) } } : {}) });
           host.acted();
           // A labeled control under the point is clicked by its ref, so
           // nothing that appears there in between gets the click. A bare spot

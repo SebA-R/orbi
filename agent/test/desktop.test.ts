@@ -12,7 +12,7 @@ import { ExtBridge } from "../extbridge.ts";
 import { DesktopBridge, DesktopError, desktopOriginAllowed } from "../desktop/bridge.ts";
 import { appBlockReason, classifyElement, decidePress, DesktopUnlockGate, keyEffect, keyLock, maskElement, parseCombo, type AXElement, type Target } from "../desktop/safety.ts";
 import { desktopToolDefinitions, type DesktopHost } from "../desktop/tools.ts";
-import { DesktopVoice, s16ToF32, VOICE_OFF_TEXT } from "../desktop/voice.ts";
+import { DesktopVoice, s16ToF32, SonicSpeaker, VOICE_OFF_TEXT } from "../desktop/voice.ts";
 import { ensureDesktopToken, tokenMatches } from "../desktop/token.ts";
 
 const TOKEN = "ab".repeat(32);
@@ -457,6 +457,72 @@ test("voice: push-to-talk turns go through the hub; barge-in stops audio; voice 
   const f = new Float32Array(s16ToF32(Buffer.from([0, 0x80, 0xff, 0x7f])));
   assert.equal(f[0], -1);
   assert.ok(f[1] > 0.99);
+});
+
+test("voice: an overlay2 helper gets Sonic's lines with their word and phoneme timestamps, done after the audio", async () => {
+  const sockets: any[] = [];
+  class FakeWs {
+    readyState = 1;
+    sent: any[] = [];
+    onopen: any; onmessage: any; onclose: any; onerror: any;
+    constructor() {
+      sockets.push(this);
+      queueMicrotask(() => this.onopen());
+    }
+    send(d: string) { this.sent.push(JSON.parse(d)); }
+    close() {}
+  }
+  const events: string[] = [];
+  const speech: any[] = [];
+  const sp = new SonicSpeaker({
+    getToken: async () => "t",
+    onAudio: (b) => events.push(`audio:${b.length}`),
+    onIdle: () => {},
+    onSpeech: (s) => (speech.push(s), events.push(`speech:${Object.keys(s).filter((k) => k !== "id").join(",")}`)),
+    log: () => {},
+    WebSocketImpl: FakeWs as any,
+  });
+  await sp.speak("Hi there.");
+  const req = sockets[0].sent[0];
+  assert.equal(req.add_timestamps, true);
+  assert.equal(req.add_phoneme_timestamps, true);
+  const id = req.context_id;
+  const msg = (m: any) => sockets[0].onmessage({ data: JSON.stringify({ context_id: id, ...m }) });
+  msg({ type: "chunk", data: Buffer.alloc(8).toString("base64") });
+  msg({ type: "timestamps", word_timestamps: { words: ["Hi", "there."], start: [0, 0.2], end: [0.2, 0.5], extra: 1 } });
+  msg({ type: "phoneme_timestamps", phoneme_timestamps: { phonemes: ["h", "aɪ"], start: [0, 0.1], end: [0.1, 0.2] } });
+  msg({ type: "done", done: true });
+  assert.deepEqual(events, ["speech:text", "audio:8", "speech:timestamps", "speech:phonemes", "speech:done"]);
+  assert.deepEqual(speech[0], { id, text: "Hi there." });
+  assert.deepEqual(speech[1].timestamps, { words: ["Hi", "there."], start: [0, 0.2], end: [0.2, 0.5] });
+  sp.close();
+
+  // The voice sends them on only to a helper that says overlay2.
+  const { EventEmitter } = await import("node:events");
+  for (const features of [["overlay2"], []]) {
+    const overlays: any[] = [];
+    let onSpeech: any;
+    const bridge = Object.assign(new EventEmitter(), {
+      overlay: (o: any) => overlays.push(o), audioStop() {}, sendAudio() {}, connected: () => true,
+      helperInfo: () => ({ connectedAt: 0, permissions: { accessibility: true, screen: true, mic: true }, features }),
+    });
+    let hubSend: any;
+    const hub = { join: (send: any) => ((hubSend = send), { interrupt() {}, userText() {}, leave() {} }) };
+    new DesktopVoice(bridge as any, hub, {
+      voice: true, log: () => {}, getToken: async () => "t",
+      Stt: class { constructor(public o: any) {} open() {} sendAudio() {} finish() { this.o.handlers.onFinal("hi"); this.o.handlers.onClosed(); } abort() {} } as any,
+      speaker: (o) => ((onSpeech = o.onSpeech), { speak: async (t: string) => o.onSpeech?.({ id: "u1", text: t }), stop() {}, close() {}, speaking: () => false }),
+    }).start();
+    bridge.emit("ptt_down");
+    bridge.emit("ptt_up");
+    hubSend({ type: "agent_text", text: "Done." });
+    if (features.length) {
+      assert.deepEqual(overlays.slice(-2), [{ state: "speaking" }, { speech: { id: "u1", text: "Done." } }]);
+    } else {
+      assert.deepEqual(overlays.at(-1), { state: "speaking", subtitle: "Done." });
+      assert.ok(onSpeech);
+    }
+  }
 });
 
 test.after(() => fs.rmSync(process.env.ORBI_DESKTOP_BLOCKED_APPS!, { force: true }));

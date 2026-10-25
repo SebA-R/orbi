@@ -11,7 +11,7 @@ public enum Proto {
   public static let name = "orbi-desktop"
   // 127.0.0.1, never "localhost": no IPv6 ::1 listener can stand in.
   public static let defaultURL = "ws://127.0.0.1:5050/desktop"
-  public static let features = ["element", "focused", "expectRef", "exclude"]
+  public static let features = ["element", "focused", "expectRef", "exclude", "overlay2"]
   public static let micSampleRate = 16_000.0
   public static let ttsSampleRate = 24_000.0
 }
