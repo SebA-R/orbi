@@ -7,14 +7,14 @@ Our own Chrome extension (Manifest V3) for Clearcart. It replaces the third-part
 - Connects to the Clearcart agent server over a WebSocket (`ws://localhost:5050/ext`) and runs browser tools for it: tabs, navigation, page reading, form input, clicks, keys, scrolling and screenshots.
 - Only acts on allowlisted origins (by default the demo store at `http://localhost:4000`), and only in tabs of its own "Clearcart" tab group.
 - Never returns card numbers: page-reading tools mask payment fields and card-like digit runs, `form_input` and typing refuse payment fields and card numbers, and the card is filled by `pay_now` in one `fill_payment` call that answers only `last4`.
-- Hold **Option+Space** (Alt+Space) on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab.
+- Hold **Space** on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab. Recording starts the moment the key goes down, so the first word is kept; the chime and the listening state come on once it has been held for 200 ms. A quick tap is thrown away and does what Space normally does. In text fields Space types a space (use Option+Space there).
 
 ## Install
 
 1. Open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and pick this `extension/` folder. The extension id is fixed by the manifest key (`dhgknfenfoidnchmjfaicafhieepefoc`).
 2. The options page opens on first install (or right-click the toolbar icon → Options). Press **Grant microphone** and allow it. The offscreen voice document can't ask for the mic itself; it inherits this grant.
 3. In the repo's `.env`, set `CLEARCART_BROWSER=ext`, then restart the agent server (`npm --prefix agent start`). The server log should say `ext: extension connected`.
-4. Start the store as usual (`node store/server.js`) and hold Option+Space to talk.
+4. Start the store as usual (`node store/server.js`) and hold Space to talk.
 
 Chrome shows a "Clearcart started debugging this browser" bar while the agent clicks or types (CDP input). That's expected; if you cancel it, clicks fall back to DOM clicks.
 
@@ -26,7 +26,7 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | --- | --- | --- |
 | Agent URL | `ws://localhost:5050` | loopback only; the worker connects to `<url>/ext`, voice to `<url>/session` |
 | Allowlist | `http://localhost:4000` | origins the agent may open and drive |
-| Hold-to-talk key | Option+Space | also Ctrl+Shift+Space or F9 |
+| Hold-to-talk key | Space | also Option+Space, Ctrl+Shift+Space or F9 |
 | Speech speed | 1 | 0.6 to 2 |
 | Subtitles | on | |
 
