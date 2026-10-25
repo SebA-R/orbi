@@ -360,6 +360,23 @@ test("the face is 26 px unless a page sets --ccf-size (the new tab hero does)", 
   assert.match(css, /box-shadow: var\(--ccf-glow, 0 0 8px \.5px rgb\(94 139 255 \/ \.4\)\) !important;/);
 });
 
+test("the face wears the R1 spectrum ring: one circle at rest, 8 arcs with 12 degree gaps while thinking", () => {
+  const { f } = bare();
+  const ring = f.el.querySelector(":scope > .ccf-ring");
+  assert.ok(ring, "ring beside the face body, not scaled by it");
+  assert.equal(ring.querySelectorAll("circle.ccf-rf").length, 1);
+  const segs = ring.querySelectorAll("circle.ccf-seg[pathLength='360']");
+  assert.equal(segs.length, 8);
+  f.setState("thinking");
+  // 26 px orb: 1.5 px round caps take 2.666 of each 45, as on the board.
+  assert.equal(segs[0].style.getPropertyValue("--l1"), "27.669");
+  assert.equal(segs[1].style.getPropertyValue("--o1"), "-53.666");
+  const css = f.el.ownerDocument.defaultView.__clearcartOrbFace.CSS;
+  assert.match(css, /\.ccf\.ccf--thinking > \.ccf-ring \{ transform: scale\(1\.12\); \}/);
+  assert.match(css, /\.ccf\.ccf--thinking \.ccf-rs \{ animation-duration: 2\.4s; \}/);
+  assert.match(css, /animation: ccf-spin 40s linear infinite/);
+});
+
 test("the orb face gets one state class per voice state", () => {
   const t = setup();
   t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });

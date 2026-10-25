@@ -35,6 +35,15 @@
 // letters are split into vowel groups (wordVisemes). A stop, barge-in or the
 // end of the line snaps the mouth to rest; a line with no timestamps keeps
 // the talking loop. Reduced motion keeps the static speaking pose.
+// Ring (R1 "Spectrum hairline, split and grow" from the "Orb ring and
+// thinking segments" board): the head always wears a spectrum ring .12em
+// outside the orb (radius .62em), 2.5px wide at 128px and 1.5px at 26px. At
+// idle it turns once per 40 s; thinking splits it into 8 arcs with 12 degree
+// gaps that grow 1.12x over 320 ms and turn together every 2.4 s; listening
+// scales it 1 to 1.07 with the mic level (a loop without one); speaking
+// scales it 1 to 1.03 and fades .8 to 1 on the 1.4 s cadence. The ring sits
+// beside the face body, so the face's own breathing never scales it. Reduced
+// motion holds it still; thinking keeps its gaps and its larger size.
 // Between states the eyes crossfade and the mouth morphs over 180 ms. After
 // 20 minutes of continuous idle it plays one squint-smile blink (H1, 500 ms),
 // then waits for the next activity. Under prefers-reduced-motion each state
@@ -51,6 +60,14 @@
   const MORPH = ".18s ease-out"; // between states
   const LEVEL_HOLD_MS = 300; // without a new level for this long, fall back to the loop
   const REDUCE = "(prefers-reduced-motion: reduce)";
+  // Ring: 8 arcs, 12 degree gaps, measured on a 360 path length.
+  const SEGS = 8;
+  const GAP = 12;
+  const RING_R = 0.62; // em of the orb
+  const RING_EASE = ".32s cubic-bezier(.2, .7, .3, 1)";
+  // Stroke width in px for an orb of s px: 1.5 at 26, 2.5 at 128.
+  const ringWidth = (s) => 1.5 + (s - 26) / 102;
+  let ringIds = 0;
 
   // Face geometry in a 100 x 100 box, taken from the board's em units
   // (.01em = 1 unit). The board draws its arcs as .035em borders with square
@@ -208,6 +225,18 @@
   27% { transform: scale(1.04); } 38% { transform: scale(1); } 47% { transform: scale(1.06); }
   58% { transform: scale(1.01); } 67% { transform: scale(1.03); } 78%, 100% { transform: scale(1); }
 }
+@keyframes ccf-ring-voice {
+  0% { transform: scale(1); } 10% { transform: scale(1.05); } 18% { transform: scale(1.02); }
+  30% { transform: scale(1.07); } 42% { transform: scale(1.025); } 54% { transform: scale(1.06); }
+  64% { transform: scale(1.01); } 78% { transform: scale(1.045); } 90%, 100% { transform: scale(1); }
+}
+@keyframes ccf-ring-pulse {
+  0% { transform: scale(1); opacity: .8; } 7% { transform: scale(1.03); opacity: 1; }
+  18% { transform: scale(1.005); opacity: .85; } 27% { transform: scale(1.025); opacity: 1; }
+  38% { transform: scale(1); opacity: .8; } 47% { transform: scale(1.03); opacity: 1; }
+  58% { transform: scale(1.005); opacity: .85; } 67% { transform: scale(1.02); opacity: .95; }
+  78%, 100% { transform: scale(1); opacity: .8; }
+}
 @keyframes ccf-blink { 0%, 93%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(.12); } }
 @keyframes ccf-talk { ${TALK} }
 @keyframes ccf-squint { 0%, 100% { transform: scaleY(1) translateY(0); } 35%, 65% { transform: scaleY(.3) translateY(-1.2px); } }
@@ -215,13 +244,35 @@
 .ccf {
   position: relative !important; display: inline-block !important; flex: none !important;
   box-sizing: border-box !important; width: var(--ccf-size, 26px) !important; height: var(--ccf-size, 26px) !important;
-  margin: 0; padding: 0 !important; border: 0 !important; border-radius: 50% !important;
+  margin: 0; padding: 0 !important; border: 0 !important; background: none !important;
+  overflow: visible !important; pointer-events: none !important; vertical-align: middle;
+}
+/* The face body paints and moves; the ring beside it keeps its own scale. */
+.ccf-body {
+  position: absolute !important; inset: 0 !important; display: block !important;
+  border-radius: 50% !important;
   background: radial-gradient(circle at 35% 30%, #ffffff, #c9b8ff 40%, #5e8bff 75%) !important;
   box-shadow: var(--ccf-glow, 0 0 8px .5px rgb(94 139 255 / .4)) !important;
-  overflow: visible !important; pointer-events: none !important; vertical-align: middle;
   transform: scale(var(--ccf-swell, 1)); transform-origin: 50% 50%;
   transition: transform .22s ease-out;
 }
+.ccf-ring {
+  position: absolute !important; inset: -30% !important; display: block !important;
+  transform: scale(1); opacity: 1; transform-origin: 50% 50%;
+  transition: transform ${RING_EASE};
+}
+.ccf-rs {
+  position: absolute !important; inset: 0 !important; display: block !important;
+  width: 100% !important; height: 100% !important; overflow: visible !important;
+  transform-origin: 50% 50%; animation: ccf-spin 40s linear infinite;
+}
+.ccf-rs circle { fill: none; stroke-width: calc(1.5px + (var(--ccf-size, 26px) - 26px) / 102); }
+.ccf-seg {
+  stroke-linecap: round; opacity: 0;
+  stroke-dasharray: var(--l0, 45) 360; stroke-dashoffset: var(--o0, 0);
+  transition: stroke-dasharray ${RING_EASE}, stroke-dashoffset ${RING_EASE}, opacity 0s linear .32s;
+}
+.ccf-rf { opacity: 1; transition: opacity 0s linear .32s; }
 .ccf-core {
   position: absolute !important; inset: 0 !important; display: block !important;
   border-radius: 50% !important; overflow: hidden !important;
@@ -253,11 +304,15 @@
 .ccf-m { d: path("${SMILE_F1}"); transform: scaleX(1); transition: opacity ${MORPH}, d ${MORPH}, transform ${MORPH}; }
 .ccf-arcs, .ccf-t { opacity: 0; }
 
-.ccf.ccf--idle { animation: ccf-breathe 4s ease-in-out infinite; }
+.ccf.ccf--idle > .ccf-body { animation: ccf-breathe 4s ease-in-out infinite; }
 .ccf.ccf--idle .ccf-eye, .ccf.ccf--speaking .ccf-eye { animation: ccf-blink 5s ease-in-out infinite; }
 
-.ccf.ccf--listening { animation: ccf-voice 1.6s linear infinite; }
-.ccf.ccf--listening.ccf-live { animation: none; transition: transform .08s ease-out; }
+.ccf.ccf--listening > .ccf-body { animation: ccf-voice 1.6s linear infinite; }
+.ccf.ccf--listening.ccf-live > .ccf-body { animation: none; transition: transform .08s ease-out; }
+.ccf.ccf--listening > .ccf-ring { animation: ccf-ring-voice 1.6s linear infinite; }
+.ccf.ccf--listening.ccf-live > .ccf-ring {
+  animation: none; transform: scale(calc(1 + var(--ccf-lv, 0) * .07)); transition: transform .08s ease-out;
+}
 .ccf.ccf--listening .ccf-dots { opacity: 0; }
 .ccf.ccf--listening .ccf-arcs { opacity: 1; }
 .ccf.ccf--listening .ccf-m { d: path("${SMILE_F2}"); }
@@ -265,9 +320,20 @@
 .ccf.ccf--thinking .ccf-sw { opacity: .55; animation: ccf-spin 3.2s linear infinite; }
 .ccf.ccf--thinking .ccf-f { transform: translate(5px, -5px); }
 .ccf.ccf--thinking .ccf-m { transform: scaleX(.82); }
+.ccf.ccf--thinking > .ccf-ring { transform: scale(1.12); }
+.ccf.ccf--thinking .ccf-rs { animation-duration: 2.4s; }
+.ccf.ccf--thinking .ccf-rf { opacity: 0; transition-delay: 0s; }
+.ccf.ccf--thinking .ccf-seg {
+  opacity: 1; stroke-dasharray: var(--l1, 33) 360; stroke-dashoffset: var(--o1, -6); transition-delay: 0s;
+}
 
-.ccf.ccf--speaking { animation: ccf-cadence 1.4s linear infinite; }
-.ccf.ccf--speaking.ccf-live { animation: none; transition: transform .06s ease-out; }
+.ccf.ccf--speaking > .ccf-body { animation: ccf-cadence 1.4s linear infinite; }
+.ccf.ccf--speaking.ccf-live > .ccf-body { animation: none; transition: transform .06s ease-out; }
+.ccf.ccf--speaking > .ccf-ring { animation: ccf-ring-pulse 1.4s linear infinite; }
+.ccf.ccf--speaking.ccf-live > .ccf-ring {
+  animation: none; transform: scale(calc(1 + var(--ccf-lv, 0) * .03)); opacity: calc(.8 + var(--ccf-lv, 0) * .2);
+  transition: transform .06s ease-out, opacity .06s ease-out;
+}
 .ccf.ccf--speaking .ccf-m { opacity: 0; }
 .ccf.ccf--speaking .ccf-t { opacity: 1; animation: ccf-talk 1.4s linear infinite; }
 .ccf.ccf--speaking.ccf-sync .ccf-t { opacity: 0; animation: none; }
@@ -280,7 +346,9 @@
   .ccf, .ccf *, .ccf.ccf-live, .ccf.ccf-live * { animation: none !important; transition: none !important; }
 }
 @media (forced-colors: active) {
-  .ccf { background: CanvasText !important; box-shadow: none !important; forced-color-adjust: none; }
+  .ccf { forced-color-adjust: none; }
+  .ccf-body { background: CanvasText !important; box-shadow: none !important; }
+  .ccf-rs circle { stroke: CanvasText; }
   .ccf-eye, .ccf-t, .ccf-v { fill: Canvas !important; stroke: Canvas !important; }
   .ccf-ae, .ccf-m { stroke: Canvas !important; }
 }
@@ -325,7 +393,49 @@
     const lips = svg(doc, "path", { class: "ccf-v", d: VISEME_D.rest });
     f.append(lips);
     face.append(f);
-    el.append(core, face);
+    const body = doc.createElement("span");
+    body.className = "ccf-body";
+    body.append(core, face);
+
+    // The ring: one full circle at rest, 8 arcs that open up while thinking.
+    // Drawn in a box 1.6x the orb with no viewBox, so the stroke is real px.
+    const ring = doc.createElement("span");
+    ring.className = "ccf-ring";
+    const rs = svg(doc, "svg", { class: "ccf-rs", focusable: "false", "aria-hidden": "true" });
+    const gid = `ccf-rg-${++ringIds}`;
+    const grad = svg(doc, "linearGradient", {
+      id: gid, gradientUnits: "userSpaceOnUse", x1: "11.25%", y1: "11.25%", x2: "88.75%", y2: "88.75%",
+    });
+    for (const [at, color] of [["0", "#ff9f6b"], [".25", "#ff5f8f"], [".5", "#b56cff"], [".75", "#5e8bff"], ["1", "#4fd1ff"]]) {
+      grad.append(svg(doc, "stop", { offset: at, "stop-color": color }));
+    }
+    const defs = svg(doc, "defs", {});
+    defs.append(grad);
+    const circle = (cls, extra = {}) => svg(doc, "circle", {
+      class: cls, cx: "50%", cy: "50%", r: `${(RING_R / 1.6) * 100}%`, stroke: `url(#${gid})`, ...extra,
+    });
+    rs.append(defs, circle("ccf-rf"));
+    const segs = [];
+    for (let i = 0; i < SEGS; i++) segs.push(rs.appendChild(circle("ccf-seg", { pathLength: "360" })));
+    ring.append(rs);
+    el.append(body, ring);
+
+    // Arc lengths and offsets on the 360 path, less the round caps, for the
+    // orb's size (read once per state change, never per frame).
+    let ringSize = 0;
+    function layoutRing() {
+      const s = el.offsetWidth || 26;
+      if (s === ringSize) return;
+      ringSize = s;
+      const cap = (ringWidth(s) / 2 / (2 * Math.PI * RING_R * s)) * 360;
+      const step = 360 / SEGS;
+      segs.forEach((seg, i) => {
+        seg.style.setProperty("--l0", (step - 2 * cap).toFixed(3));
+        seg.style.setProperty("--o0", (-(i * step + cap)).toFixed(3));
+        seg.style.setProperty("--l1", (step - GAP - 2 * cap).toFixed(3));
+        seg.style.setProperty("--o1", (-(i * step + GAP / 2 + cap)).toFixed(3));
+      });
+    }
 
     let state = null;
     let happyTimer = 0;
@@ -365,6 +475,7 @@
       smooth = 0;
       el.classList.remove("ccf-live");
       el.style.removeProperty("--ccf-swell");
+      el.style.removeProperty("--ccf-lv");
     }
 
     // Shows one mouth shape; snap skips the easing (a stop, a barge-in).
@@ -443,6 +554,7 @@
     function setState(next) {
       if (!STATES.includes(next) || next === state) return;
       rest({ keepSync: false });
+      layoutRing();
       if (state) el.classList.remove(`ccf--${state}`);
       state = next;
       el.classList.add(`ccf--${state}`);
@@ -463,6 +575,7 @@
       smooth += (v - smooth) * (v > smooth ? 0.6 : 0.25);
       el.classList.add("ccf-live");
       el.style.setProperty("--ccf-swell", String(1 + smooth * (state === "listening" ? 0.12 : 0.06)));
+      el.style.setProperty("--ccf-lv", smooth.toFixed(3));
       clearTimeout(liveTimer);
       liveTimer = setTimeout(endLive, LEVEL_HOLD_MS);
     }
