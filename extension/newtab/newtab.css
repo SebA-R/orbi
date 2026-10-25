@@ -7,7 +7,11 @@
   --fg: #1d1d1f;
   --muted: #55575e;
   --soft: #3a3a3f;
-  --line: #c9c9d1;
+  --line: #e3e4e8;
+  --hint: #6e6e76;
+  --key: #ffffff;
+  --key-line: #d6d6dc;
+  --shadow: 0 1px 2px rgba(20, 22, 40, .05), 0 8px 28px rgba(20, 22, 40, .06);
   --hover: #ebebef;
   --focus: #2f63e8;
   --btn: #1d1d1f;
@@ -21,7 +25,11 @@
     --fg: #ececf1;
     --muted: #b0b0bb;
     --soft: #c9c9d2;
-    --line: #4a4a54;
+    --line: #34343c;
+    --hint: #85858f;
+    --key: #2e2e36;
+    --key-line: #4a4a54;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px rgba(0, 0, 0, .35);
     --hover: #2e2e36;
     --focus: #7aa7ff;
     --btn: #ececf1;
@@ -32,6 +40,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; background: var(--bg); }
+body { position: relative; }
 body {
   min-height: 100vh; display: flex; flex-direction: column;
   color: var(--fg);
@@ -47,26 +56,26 @@ a { color: var(--fg); }
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
-.top { display: flex; justify-content: flex-end; padding: 12px 16px 0; }
+.top { position: absolute; top: 16px; right: 16px; z-index: 1; }
 .icon {
   display: inline-flex; align-items: center; justify-content: center;
   width: 44px; height: 44px; border-radius: 12px; color: var(--soft);
 }
 .icon:hover { background: var(--hover); }
 
+/* Version 1A: the orb face centered as the hero, one capsule for search and
+   one quiet line for talking. */
 main {
-  flex: 1; width: 100%; max-width: 600px; margin: 0 auto; padding: 6vh 16px 48px;
-  display: flex; flex-direction: column; align-items: center; gap: 28px;
+  flex: 1; width: 100%; max-width: 672px; margin: 0 auto; padding: 72px 16px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
 }
-.brand { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; letter-spacing: .02em; color: var(--muted); }
 
 /* The orb face, as in the popup, at hero size. */
-.hero { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
 @property --ring-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 @keyframes ring-turn { to { --ring-a: 360deg; } }
 @keyframes orb-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
 .orb {
-  position: relative; display: block; width: 128px; height: 128px; margin-bottom: 18px; border-radius: 50%;
+  position: relative; display: block; flex: none; width: 128px; height: 128px; margin-bottom: 48px; border-radius: 50%;
   background: radial-gradient(circle at 34% 28%, #ffffff 0%, #ffd9e6 18%, #c9b8ff 42%, #5e8bff 72%, #4fd1ff 100%);
   box-shadow: 0 18px 48px rgba(94, 139, 255, .35), inset 0 -10px 24px rgba(60, 40, 140, .25);
 }
@@ -91,28 +100,51 @@ main {
 }
 /* Clear of the face at its biggest swell (1.14 x 128px). */
 .orb:has(> .ccf)::after { inset: -12px; }
-.voice-title { font-size: 28px; font-weight: 600; letter-spacing: -.02em; }
-.voice-sub { font-size: 16px; color: var(--muted); text-wrap: balance; }
-.hint { margin-top: 6px; font-size: 15px; color: var(--soft); text-wrap: balance; }
-
-/* Search */
-.search { width: 100%; }
-.search label { display: block; margin: 0 0 6px 4px; font-size: 14px; font-weight: 500; color: var(--muted); }
-.field { display: flex; gap: 8px; }
-.field input {
-  flex: 1; min-width: 0; height: 52px; padding: 0 18px;
-  border: 1px solid var(--line); border-radius: 26px; background: var(--field); color: var(--fg);
-  font: inherit; font-size: 17px;
+/* Search: one capsule, the icon is its submit button. */
+@keyframes cap-turn { to { --ring-a: 360deg; } }
+.search { width: 100%; max-width: 640px; }
+.cap {
+  display: flex; align-items: center; gap: 4px; height: 60px; padding: 0 10px 0 24px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--field); box-shadow: var(--shadow);
 }
-.field input:focus-visible { outline-offset: 1px; border-color: var(--focus); }
-.field button {
-  flex: none; height: 52px; padding: 0 22px; border: none; border-radius: 26px;
-  background: var(--btn); color: var(--btn-fg); font: inherit; font-weight: 600; cursor: pointer;
+.cap:focus-within { border-color: var(--focus); }
+.cap:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 3px; }
+.cap input {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: none; background: transparent; color: var(--fg);
+  font: inherit; font-size: 18px; outline: none;
+}
+.cap input::placeholder { color: var(--hint); }
+.cap input::-webkit-search-cancel-button { cursor: pointer; }
+.go {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px;
+  border: none; border-radius: 50%; background: transparent; color: var(--hint); cursor: pointer;
+}
+.go:hover { background: var(--hover); color: var(--fg); }
+.go:focus-visible { outline-offset: 0; }
+/* While Clearcart is listening, thinking or speaking the capsule takes the
+   orb's turning spectrum. */
+body:not([data-state="idle"]) .cap:not(:focus-within) {
+  border: 2px solid transparent;
+  background: linear-gradient(var(--field), var(--field)) padding-box,
+    conic-gradient(from var(--ring-a), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b) border-box;
+  animation: cap-turn 6s linear infinite;
 }
 
-.shortcut { max-width: 460px; font-size: 14px; color: var(--muted); text-align: center; text-wrap: balance; }
-.shortcut kbd { font: inherit; font-weight: 600; color: var(--soft); }
-.error { max-width: 460px; color: var(--error); text-align: center; }
+/* The quiet talk line. */
+.voice { margin-top: 22px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.voice-title { font-size: 16px; font-weight: 400; color: var(--hint); }
+kbd {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 8px; margin: 0 2px;
+  border: 1px solid var(--key-line); border-radius: 7px; background: var(--key); box-shadow: 0 1px 0 var(--key-line);
+  font: 600 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color: var(--soft); vertical-align: 1px;
+}
+.voice-sub { font-size: 14px; color: var(--hint); text-wrap: balance; }
+.focus-hint { margin-top: 6px; font-size: 14px; color: var(--soft); text-wrap: balance; }
+
+.foot { position: absolute; bottom: 20px; left: 0; right: 0; display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
+.shortcut { max-width: 760px; font-size: 13px; color: var(--hint); text-align: center; text-wrap: balance; pointer-events: auto; }
+.shortcut kbd { height: 20px; padding: 0 6px; font-size: 12px; }
+.error { margin-top: 12px; color: var(--error); }
 .off { display: flex; flex-direction: column; align-items: center; gap: 14px; max-width: 460px; text-align: center; }
 .off h2 { font-size: 22px; font-weight: 600; }
 .off button {
@@ -123,8 +155,11 @@ main {
 @media (forced-colors: active) {
   .orb { forced-color-adjust: none; border: 2px solid CanvasText; }
   .orb:not([data-state="idle"])::after { background: Highlight; }
-  .field input, .field button { border: 2px solid CanvasText; }
+  .cap { border: 2px solid CanvasText !important; animation: none; }
+  body:not([data-state="idle"]) .cap { border-color: Highlight !important; }
+  .cap:focus-within { border-color: Highlight !important; }
+  kbd { border-color: CanvasText; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .orb, .orb::after { animation: none !important; }
+  .orb, .orb::after, .cap { animation: none !important; }
 }

@@ -15,28 +15,28 @@
   </header>
 
   <main id="main">
-    <h1 class="brand">Clearcart</h1>
+    <h1 class="visually-hidden">Clearcart</h1>
 
-    <section class="hero" aria-labelledby="voice-title">
-      <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
-      <h2 class="voice-title" id="voice-title">Hold Space to talk</h2>
-      <p class="voice-sub" id="voice-sub">Option + Space keeps listening until you press Space.</p>
-      <p class="hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
-    </section>
+    <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
 
     <section class="search" aria-labelledby="search-title">
       <h2 class="visually-hidden" id="search-title">Search</h2>
-      <form id="search-form" role="search">
-        <label for="q">Search the web</label>
-        <div class="field">
-          <input id="q" name="q" type="search" autocomplete="off" spellcheck="false" enterkeyhint="search">
-          <button type="submit">Search</button>
-        </div>
+      <form class="cap" id="search-form" role="search">
+        <label class="visually-hidden" for="q">Search the web</label>
+        <input id="q" name="q" type="search" placeholder="Search the web or type a URL" autocomplete="off" spellcheck="false" enterkeyhint="search">
+        <button class="go" type="submit" aria-label="Search">
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="M16 16l4.5 4.5"></path></svg>
+        </button>
       </form>
+      <p class="error" id="error" role="alert" hidden></p>
     </section>
 
-    <p class="shortcut" id="shortcut" hidden></p>
-    <p class="error" id="error" role="alert" hidden></p>
+    <section class="voice" aria-labelledby="voice-title">
+      <h2 class="voice-title" id="voice-title">Hold <kbd>Space</kbd> to talk</h2>
+      <p class="voice-sub" id="voice-sub">Option + Space keeps listening until you press Space.</p>
+      <p class="focus-hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
+    </section>
+
     <p class="visually-hidden" id="voice-live" role="status" aria-live="polite"></p>
 
     <section class="off" id="off" aria-labelledby="off-title" hidden>
@@ -45,6 +45,10 @@
       <button type="button" id="off-go">Open Chrome's new tab page</button>
     </section>
   </main>
+
+  <footer class="foot">
+    <p class="shortcut" id="shortcut" hidden></p>
+  </footer>
 
   <script src="guard.js"></script>
   <script src="../content/hotkey.js"></script>

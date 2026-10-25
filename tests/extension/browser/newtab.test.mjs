@@ -37,6 +37,7 @@ test("chrome://newtab opens Clearcart's page with the hotkey and no subtitle car
   assert.equal(await page.locator("h1").textContent(), "Clearcart");
   assert.equal(await page.getByRole("heading", { level: 2, name: "Hold Space to talk" }).count(), 1);
   assert.equal(await page.getByLabel("Search the web").count(), 1);
+  assert.equal(await page.getByRole("search").getByRole("button", { name: "Search" }).count(), 1, "one capsule with its submit button");
   await page.close();
 });
 
