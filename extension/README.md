@@ -81,6 +81,9 @@ Enforcement, all in the extension and failing closed (if a check cannot run, the
 - `form_input`: refused on locked controls; an uncheck-only box may be set to false.
 - `read_page` lines end in `[locked]` or `[uncheck only]` after the ref, and `find` matches carry `locked: true` or `uncheckOnly: true`.
 - Badges: a small padlock with "Locked for AI" (or "AI can only uncheck") over each protected control, drawn when the page script loads. The overlay is in a closed shadow root under `<html>`, `aria-hidden`, `pointer-events: none`, so it changes nothing a screen reader announces, never blocks a person's click, and never shows up in `read_page` or `get_page_text`.
+- Grayed out: every control the agent may not press (and opt-in boxes it may not check) plus card, password and other fields of a card or password form get `data-clearcart-locked`, which one injected `!important` stylesheet turns gray (grayscale, 0.45 opacity, dashed outline). Visual only: nothing sets `disabled`, `aria-disabled`, `inert` or `pointer-events`, so a person can still press or type, and a screen reader hears the same page. The mark comes off when `press_protected` presses the button, when the page re-renders the control as unlocked, and on the next repaint after the extension is disabled or reloaded.
+
+  ![Store checkout with Place order and the card fields grayed out for the AI](../docs/images/checkout-locked.jpg)
 - Unlock: `lock_arm` returns a nonce bound to the tab and its current allowlisted origin for 30 s. `press_protected { ref, nonce }` spends the nonce first, checks the tab is still on that origin, asks the page (`press_check`) that the ref is an `order`, `marked` or `payment-form` control and not covered, then clicks it (DOM `press_ref` if CDP fails). Wallets, subscriptions, saved cards, accounts and frames never unlock. The agent server only calls these after its own unlock gate (`agent/unlock.ts`).
 
 ### Voice and subtitles

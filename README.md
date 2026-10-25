@@ -23,7 +23,7 @@ Clearcart's AI can never press the button that spends your money. Place order, B
 
 - **Enforced in code, not just asked for.** Every agent click (by element or by screen position), Enter or Space key, typed newline and form change is checked against the page before it is sent, and refused if it would press a locked control. If the check cannot run, the action is refused. Checkout and payment pages on sites other than the demo store will not open.
 - **One way through.** Only Clearcart's own pay code presses the order button, once, after your spoken yes, on an allowlisted site, with the total you heard. The AI cannot unlock anything.
-- **Only the AI is locked out.** You can always press any button yourself. A small "Locked for AI" padlock appears over locked controls for sighted helpers and the demo video. It is hidden from screen readers and lets clicks through, so what you hear does not change.
+- **Only the AI is locked out.** You can always press any button yourself. Locked controls and card fields look grayed out, with a small "Locked for AI" padlock, for sighted helpers and the demo video. Both are visual only: nothing is disabled, clicks go through, and what a screen reader says does not change.
 - **Still prompt-only:** on real stores the checkout, wallet and sign-in buttons are locked, but not typing other personal details (an address, for example) is only an instruction to the model. Details and limits are in [`extension/README.md`](extension/README.md#button-lock) and [`agent/README.md`](agent/README.md#button-lock).
 
 ## Demo examples
