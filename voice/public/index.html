@@ -2,70 +2,112 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <title>Clearcart Voice</title>
   <link rel="stylesheet" href="css/console.css">
 </head>
-<body>
+<body data-ui="idle">
   <a class="skip" href="#talk">Skip to talk button</a>
-  <header>
-    <h1>Clearcart</h1>
-    <p id="connection" class="connection" data-state="connecting">Connecting to your shopping assistant…</p>
+
+  <!-- Soft light around the screen edge while the mic is open (decorative). -->
+  <div class="edge-glow" aria-hidden="true"></div>
+
+  <header class="bar">
+    <h1 class="brand">Clearcart</h1>
+    <div class="bar-end">
+      <p id="connection" class="connection" data-state="connecting">Connecting to your shopping assistant…</p>
+      <button id="settings-toggle" class="icon-button" type="button" popovertarget="settings"
+              aria-label="Settings" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+          <path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+          <circle cx="16" cy="7" r="2.2" stroke="currentColor" stroke-width="1.8" fill="none"/>
+          <circle cx="8" cy="17" r="2.2" stroke="currentColor" stroke-width="1.8" fill="none"/>
+        </svg>
+      </button>
+    </div>
   </header>
 
   <main>
-    <section aria-labelledby="talk-heading" class="talk-area">
+    <section aria-labelledby="talk-heading" class="stage">
       <h2 id="talk-heading" class="visually-hidden">Talk</h2>
+
       <button id="talk" type="button" class="talk" aria-pressed="false" aria-describedby="talk-help" autofocus>
-        <span class="talk-label">Hold Space to talk</span>
+        <span class="orb" id="orb" aria-hidden="true">
+          <span class="orb-aura"></span>
+          <span class="orb-ring"></span>
+          <span class="orb-core"><span class="orb-sheen"></span></span>
+        </span>
+        <span class="talk-label visually-hidden">Hold Space to talk</span>
       </button>
-      <p id="talk-help" class="help">
+
+      <p id="status-line" class="status-line">Ready when you are</p>
+
+      <div class="captions">
+        <h3 class="visually-hidden">You are saying</h3>
+        <p id="partial" class="caption-user" aria-live="off"></p>
+        <p id="agent-caption" class="caption-agent" aria-hidden="true"></p>
+      </div>
+
+      <p class="hint" aria-hidden="true">
+        <span id="hint-text"><span class="hint-word">Hold</span> <kbd class="keycap">space</kbd> <span class="hint-word">to talk</span></span>
+      </p>
+      <p id="talk-help" class="visually-hidden">
         Hold the Space bar while you speak and let go when you are done. Or press Enter to start
         listening and press it again to send. Escape stops Clearcart talking.
       </p>
-      <div class="live-transcript">
-        <h3>You are saying</h3>
-        <p id="partial" class="partial" aria-live="off">…</p>
-      </div>
-    </section>
 
-    <section aria-labelledby="settings-heading" class="settings">
-      <h2 id="settings-heading">Settings</h2>
-      <div class="field">
-        <label for="speed">Speaking speed</label>
-        <input id="speed" type="range" min="0.6" max="2" step="0.1" value="1" aria-describedby="speed-help">
-        <output id="speed-value" for="speed">1.0×</output>
-        <p id="speed-help" class="help">Use the arrow keys. Takes effect on the next reply. Above 1.5 the voice gets a little higher.</p>
-      </div>
-      <div class="field">
-        <input id="announce" type="checkbox" checked>
-        <label for="announce">Also send replies to my screen reader</label>
-      </div>
-      <div class="buttons">
-        <button id="stop-speaking" type="button">Stop talking <kbd>Esc</kbd></button>
-        <button id="replay" type="button" disabled>Repeat last reply</button>
+      <div class="quick-actions">
+        <button id="replay" class="ghost" type="button" disabled>Repeat last reply</button>
+        <button id="stop-speaking" class="ghost" type="button">Stop talking <kbd class="keycap small">esc</kbd></button>
       </div>
     </section>
 
     <section aria-labelledby="receipt-heading" id="receipt" class="receipt" hidden tabindex="-1">
-      <h2 id="receipt-heading">Order placed</h2>
+      <div class="receipt-top">
+        <span class="receipt-check" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" focusable="false"><path d="M6 12.5l4 4 8-9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <h2 id="receipt-heading">Order placed</h2>
+      </div>
       <dl>
-        <dt>Item</dt><dd id="receipt-item"></dd>
-        <dt>Total</dt><dd id="receipt-total"></dd>
-        <dt>Card</dt><dd id="receipt-card"></dd>
+        <div class="row row-item"><dt>Item</dt><dd id="receipt-item"></dd></div>
+        <div class="row row-total"><dt>Total</dt><dd id="receipt-total"></dd></div>
+        <div class="row"><dt>Card</dt><dd id="receipt-card"></dd></div>
       </dl>
+      <p class="receipt-secure">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+        Paid securely. The AI never saw your card.
+      </p>
     </section>
 
     <section aria-labelledby="convo-heading" class="conversation">
-      <h2 id="convo-heading">Conversation</h2>
+      <h2 id="convo-heading" class="section-label">Conversation</h2>
       <ol id="conversation" class="turns"></ol>
     </section>
 
     <details class="events">
-      <summary>Event log</summary>
+      <summary>Details</summary>
       <ol id="events"></ol>
     </details>
   </main>
+
+  <div id="settings" class="settings" popover role="dialog" aria-labelledby="settings-heading">
+    <h2 id="settings-heading">Settings</h2>
+    <div class="field">
+      <div class="field-head">
+        <label for="speed">Speaking speed</label>
+        <output id="speed-value" for="speed">1.0×</output>
+      </div>
+      <input id="speed" type="range" min="0.6" max="2" step="0.1" value="1" aria-describedby="speed-help">
+      <p id="speed-help" class="help">Use the arrow keys. Takes effect on the next reply. Above 1.5 the voice gets a little higher.</p>
+    </div>
+    <div class="field field-check">
+      <input id="announce" type="checkbox" class="switch" checked>
+      <label for="announce">Also send replies to my screen reader</label>
+    </div>
+    <button class="done" type="button" popovertarget="settings" popovertargetaction="hide">Done</button>
+  </div>
 
   <!-- Screen reader announcements. Agent replies are polite; problems are assertive. -->
   <div id="sr-agent" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
