@@ -14,7 +14,7 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
         if (failFirstSend && sends === 1) throw new Error("Could not establish connection. Receiving end does not exist.");
         calls.push(["page", tabId, msg.method, msg.params]);
         if (msg.method === "focused_field") return { ok: true, result: focus };
-        if (msg.method === "rect") return { ok: true, result: { x: 10, y: 20, width: 100, height: 40 } };
+        if (msg.method === "rect" || msg.method === "guard_ref") return { ok: true, result: { x: 10, y: 20, width: 100, height: 40 } };
         if (msg.method === "form_input") return { ok: false, error: { code: "payment_field", message: "no" } };
         return { ok: true, result: { ok: true } };
       },
@@ -44,11 +44,11 @@ test("containsCardNumber finds Luhn-valid 13-19 digit runs only", () => {
   assert.ok(!containsCardNumber("blue wool sweater"));
 });
 
-test("page methods inject mask.js then page.js and pass params without tabId", async () => {
+test("page methods inject mask.js, protect.js, then page.js and pass params without tabId", async () => {
   const { calls, router } = fakes();
   await router.route("find", { tabId: 3, query: "sweater" });
   assert.deepEqual(calls[0], ["resolve", 3]);
-  assert.deepEqual(calls[1], ["inject", 3, ["content/mask.js", "content/page.js"]]);
+  assert.deepEqual(calls[1], ["inject", 3, ["content/mask.js", "content/protect.js", "content/page.js"]]);
   assert.deepEqual(calls[2], ["page", 3, "find", { query: "sweater" }]);
 });
 

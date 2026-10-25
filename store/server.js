@@ -379,7 +379,7 @@ ${error ? `<div class="error" role="alert" id="checkout-error">${esc(error)}</di
       <input type="text" name="cc-csc" autocomplete="cc-csc" inputmode="numeric" required>
     </label>
   </div>
-  <button class="btn big" type="submit" id="place-order">Place order &middot; ${money(t.total)}</button>
+  <button class="btn big" type="submit" id="place-order" data-clearcart-protected>Place order &middot; ${money(t.total)}</button>
 </form>
 </div>
 ${orderSummaryHtml(t)}

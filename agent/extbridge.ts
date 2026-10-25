@@ -12,6 +12,8 @@ import { EventEmitter } from "node:events";
 import type http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { parseBlockLines, type BlockEntry } from "./blocklist.ts";
+
 // Mirrors extension/lib/protocol.js (the test checks they agree). Kept as a
 // copy because that file is plain JS outside this tsconfig.
 export const PROTOCOL_VERSION = 1;
@@ -31,7 +33,7 @@ export const TOOLS = [
   "scroll",
   "screenshot",
 ] as const;
-export const INTERNAL = ["tab_info", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref"] as const;
+export const INTERNAL = ["tab_info", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref", "lock_arm", "press_protected"] as const;
 export const ERR = {
   BAD_REQUEST: "bad_request",
   UNKNOWN_METHOD: "unknown_method",
@@ -39,6 +41,7 @@ export const ERR = {
   NO_TAB: "no_tab",
   NO_ELEMENT: "no_element",
   PAYMENT_FIELD: "payment_field",
+  LOCKED: "locked",
   TIMEOUT: "timeout",
   NOT_CONNECTED: "not_connected",
   INTERNAL: "internal",
@@ -60,6 +63,7 @@ export type ExtInfo = { version: string; connectedAt: number };
 export interface ExtBridgeEvents {
   connect: [ExtInfo];
   disconnect: [{ reason: string }];
+  blocklist: [readonly BlockEntry[]];
 }
 
 export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
@@ -68,6 +72,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   private info: ExtInfo | null = null;
   private pending = new Map<string, Pending>();
   private counter = 0;
+  private entries: readonly BlockEntry[] | null = null;
 
   constructor(private log: (line: string) => void = (l) => console.log(l)) {
     super();
@@ -80,6 +85,12 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
 
   extInfo(): ExtInfo | null {
     return this.connected() ? this.info : null;
+  }
+
+  // The user's blocked sites as the extension last sent them (kept across a
+  // reconnect), or null before the first one arrives.
+  blocklist(): readonly BlockEntry[] | null {
+    return this.entries;
   }
 
   // Resolves once an extension is connected, or rejects after timeoutMs.
@@ -121,9 +132,14 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   }
 
   // Routes HTTP upgrades on `server`: /ext here, the paths in `others` to
-  // their own noServer WebSocketServers, anything else gets a 400.
-  attach(server: http.Server, others: Record<string, WebSocketServer> = {}, path = "/ext") {
+  // their own noServer WebSocketServers, anything else gets a 400. `verify`
+  // (the server's Host check) runs first; a refused upgrade gets a 403.
+  attach(server: http.Server, others: Record<string, WebSocketServer> = {}, path = "/ext", verify: (req: http.IncomingMessage) => boolean = () => true) {
     server.on("upgrade", (req, socket, head) => {
+      if (!verify(req)) {
+        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        return;
+      }
       let pathname = "";
       try {
         pathname = new URL(req.url || "/", "http://localhost").pathname;
@@ -181,6 +197,14 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
         this.pending.delete(String(m.id));
         if (m.ok === true) p.resolve(m.result ?? null);
         else p.reject(new ExtError(String(m.error?.code || ERR.INTERNAL), String(m.error?.message || `${p.method} failed`)));
+        return;
+      }
+      // The extension's blocked sites. Only read here: nothing on this side
+      // can write extension settings.
+      if (m.type === "blocklist" && ws === this.current && Array.isArray(m.lines)) {
+        this.entries = parseBlockLines(m.lines.slice(0, 5000)).entries;
+        this.log(`ext: blocked sites list updated (${this.entries.length} entries)`);
+        this.emit("blocklist", this.entries);
       }
       // pong and anything else: nothing to do.
     });

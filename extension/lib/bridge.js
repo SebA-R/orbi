@@ -10,13 +10,14 @@ import { ERR, MSG, TIMING, errorResponse, hello, okResponse, parseMessage } from
 const HELLO_TIMEOUT_MS = 5_000;
 
 export class BridgeClient {
-  constructor({ url, version = "0", log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, onRequest = null, timing = {} }) {
+  constructor({ url, version = "0", log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, onOpen = () => {}, onRequest = null, timing = {} }) {
     this.url = url;
     this.timing = { ...TIMING, ...timing };
     this.version = version;
     this.log = log;
     this.WebSocketImpl = WebSocketImpl;
     this.onState = onState;
+    this.onOpen = onOpen;
     this.onRequest = onRequest;
     this.ws = null;
     this.state = "idle"; // idle | connecting | open | closed
@@ -123,6 +124,7 @@ export class BridgeClient {
       this.backoff.reset();
       this.setState("open");
       this.startHeartbeat();
+      this.onOpen();
     } else if (m.type === MSG.PING) {
       this.send({ type: MSG.PONG, t: m.t });
     } else if (m.type === MSG.REQUEST) {

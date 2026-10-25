@@ -4,7 +4,10 @@
 // recovered by title).
 
 import { BridgeError, ERR } from "../lib/protocol.js";
-import { assertAllowed, isAllowed } from "./allowlist.js";
+import { assertAllowed, isAllowed, isPaySite } from "./allowlist.js";
+import { assertNetSafe } from "./netguard.js";
+
+export { isPaySite };
 
 export const GROUP_TITLE = "Clearcart";
 export const GROUP_COLOR = "blue";
@@ -144,7 +147,10 @@ export async function tabsCreate({ url } = {}) {
   if (url != null) await assertAllowed(url);
   const tab = await api().tabs.create({ url: "about:blank", active: true });
   await addToGroup(tab);
-  if (url != null) await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
+  if (url != null) {
+    await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
+    assertNetSafe(tab.id);
+  }
   return { tabId: tab.id };
 }
 
@@ -168,14 +174,16 @@ export async function navigate({ tabId, url } = {}) {
   }
   await navigateAndWait(id, start);
   const tab = await api().tabs.get(id);
-  // History can lead off the allowlist; report it so callers stop driving.
+  // History or a redirect can lead to a site that is not allowed; report it
+  // so callers stop driving.
   if (!(await isAllowed(tab.url))) {
     let origin = "unknown";
     try {
       origin = new URL(tab.url).origin;
     } catch {}
-    throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a non-allowlisted origin: ${origin}`);
+    throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Clearcart does not drive: ${origin}`);
   }
+  assertNetSafe(id);
   return info(tab);
 }
 
@@ -184,11 +192,14 @@ export async function tabInfo({ tabId } = {}) {
   return info(await api().tabs.get(id));
 }
 
-// For the worker: resolve an agent tab and check its current page is
-// allowlisted before any CDP input or page call touches it.
+// For the worker: resolve an agent tab (always one in the Clearcart group)
+// and check its current page is allowed (allowlist, or open web minus the
+// blocklist, and not served from a local address: netguard.js) before any
+// CDP input or page call touches it.
 export async function resolveAllowedTab(tabId) {
   const id = await resolveTab(tabId);
   const tab = await api().tabs.get(id);
   await assertAllowed(tab.url);
+  assertNetSafe(id);
   return id;
 }

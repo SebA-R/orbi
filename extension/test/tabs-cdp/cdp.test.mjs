@@ -117,3 +117,11 @@ test("onDetach and onTabRemoved forget the session", async () => {
 test("attach to a missing tab is NO_TAB", async () => {
   await assert.rejects(attach(9999), (e) => e.code === ERR.NO_TAB);
 });
+
+test("parseKey refuses control characters (\\r would press Enter)", () => {
+  for (const k of ["\r", "\n", "\t", "Shift+\r", "a\u0000", "\u007f", " "]) {
+    assert.throws(() => parseKey(k), { code: "bad_request" }, JSON.stringify(k));
+  }
+  assert.equal(parseKey("Shift+ ").key, " ");
+  assert.equal(parseKey("Enter").key, "Enter");
+});

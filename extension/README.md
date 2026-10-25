@@ -5,8 +5,9 @@ Our own Chrome extension (Manifest V3) for Clearcart. It replaces the third-part
 ## What it does
 
 - Connects to the Clearcart agent server over a WebSocket (`ws://localhost:5050/ext`) and runs browser tools for it: tabs, navigation, page reading, form input, clicks, keys, scrolling and screenshots.
-- Only acts on allowlisted origins (by default the demo store at `http://localhost:4000`), and only in tabs of its own "Clearcart" tab group.
+- Only acts in tabs of its own "Clearcart" tab group. By default (open web) those tabs may be on any site except your blocked sites (seeded with a suggested list of sensitive sites); in "Only these sites" mode, only on the allowed sites (by default the demo store at `http://localhost:4000`). See [Which sites](#which-sites).
 - Never returns card numbers: page-reading tools mask payment fields and card-like digit runs, `form_input` and typing refuse payment fields and card numbers, and the card is filled by `pay_now` in one `fill_payment` call that answers only `last4`.
+- Button lock: the agent can never press a protected control (place order, buy now, pay, checkout, wallet buttons, subscribe, save card, sign in, sign up, the submit of a card or password form, anything marked `data-clearcart-protected`). Only `pay_now`, after the user's spoken yes, presses the order button once, with a single-use unlock. People are never locked out: the lock checks the agent's tool calls only.
 - Hold **Space** on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab. Recording starts the moment the key goes down, so the first word is kept; the chime and the listening state come on once it has been held for 200 ms. A quick tap is thrown away and does what Space normally does. In text fields Space types a space (use Option+Space there).
 
 ## Install
@@ -25,10 +26,25 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | Setting | Default | |
 | --- | --- | --- |
 | Agent URL | `ws://localhost:5050` | loopback only; the worker connects to `<url>/ext`, voice to `<url>/session` |
-| Allowlist | `http://localhost:4000` | origins the agent may open and drive |
+| Browse mode | Open web | Open web: any site except the blocked sites. Only these sites: the allowed sites only |
+| Allowed sites | `http://localhost:4000` | always browsable, and the only sites where the pay flow may unlock the order button |
+| Blocked sites | the suggested list | never opened in open web mode; one entry per line, see [Which sites](#which-sites) |
 | Hold-to-talk key | Space | also Option+Space, Ctrl+Shift+Space or F9 |
 | Speech speed | 1 | 0.6 to 2 |
 | Subtitles | on | |
+
+Allowed sites take one site address per line (`https://www.etsy.com`; a path is dropped, a login in the address is refused). Only extension pages can change these settings; the agent server cannot.
+
+### Which sites
+
+![The Blocked sites section of the options page, with a bad line flagged](../docs/images/options-blocked-sites.jpg)
+
+- **Open web** (default): any `http`/`https` page except your blocked sites. The options page's Blocked sites section holds them, one entry per line: `chase.com` (that site and its subdomains), `amazon.com/ap` (pages at or under that path; `amazon.*/ap` for any Amazon store), `*bank*` (any address with that word in its name, not counting the ending), `*.gov` (any address with `gov` as one of its parts). Lines starting with `#` are notes. Bad lines are listed and nothing is saved until they are fixed.
+- On install the list is seeded with a suggested list (`SUGGESTED_BLOCKLIST` in `lib/blocklist.js`), grouped with `#` lines: email, password managers, banks and money (plus `*bank*`, `*creditunion*`), government and tax (`*.gov`, `*.gouv`, `*.mil`), health, and account and sign in pages, Amazon's included. Add or remove anything; **Restore suggested list** puts back the suggested entries and keeps yours under `# Your sites`. It is best effort, not a guarantee.
+- Always blocked, fixed in code: `chrome:`, `chrome-extension:`, `about:`, `file:`, `data:`, `javascript:` and other non-web pages, addresses with a login in them, and localhost and private network addresses other than the allowed sites (so the agent console is off limits), in any spelling (`[::ffff:127.0.0.1]`, `[::7f00:1]`, `[fec0::]`, `2130706433`) and under loopback DNS names such as `localtest.me` and `127.0.0.1.nip.io`. Because any name can resolve to this computer, `background/netguard.js` also checks the IP each Clearcart tab's page and frames actually came from (`chrome.webRequest`): a tab served from a loopback or private address on an origin that is not an allowed site is refused for every call and closed.
+- **Only these sites**: the allowed sites, as before.
+- Either way: the Clearcart tab group restriction, the button lock and the agent server's checkout page block (on every site but the store) stay on, and `lock_arm` only arms on an allowed site, so open browsing never widens the unlock.
+- The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever store you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it.
 
 `chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. Don't pick the same keys as the hold key.
 
@@ -36,11 +52,12 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 
 | Path | Contents |
 | --- | --- |
-| `manifest.json` | Manifest V3: `storage`, `tabs`, `tabGroups`, `debugger`, `scripting`, `offscreen`; host `http://localhost/*` |
+| `manifest.json` | Manifest V3: `storage`, `tabs`, `tabGroups`, `debugger`, `scripting`, `offscreen`, `webRequest` (read only, for the connected-address check); host `<all_urls>` |
 | `background/worker.js` | Service worker: starts the bridge, routes requests, tab and debugger lifecycle, the voice relay |
 | `background/router.js` | Maps each bridge method to tabs/CDP or the page script, with the card guard on `type`/`key` |
-| `background/tabs.js`, `cdp.js`, `allowlist.js` | The Clearcart tab group, navigation, `chrome.debugger` input and screenshots, the origin allowlist |
-| `content/mask.js`, `content/page.js` | Injected on demand into agent tabs: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field` |
+| `background/tabs.js`, `cdp.js`, `allowlist.js`, `netguard.js` | The Clearcart tab group, navigation, `chrome.debugger` input and screenshots, the browse mode check, the connected-address check |
+| `lib/blocklist.js` | Blocked sites: the entry parser, the fixed rules (local addresses included) and the suggested list (the agent server imports it too) |
+| `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field`, the button lock classifier, its checks and badges |
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP` |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
@@ -49,12 +66,42 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 
 ### Bridge requests
 
-The agent server sends `{ type: "request", id, method, params }` and the worker answers with `okResponse`/`errorResponse` codes from `lib/protocol.js`. Every tab-bound call resolves its tab with `tabs.resolveAllowedTab` (in the Clearcart group and on the allowlist).
+The agent server sends `{ type: "request", id, method, params }` and the worker answers with `okResponse`/`errorResponse` codes from `lib/protocol.js`. Every tab-bound call resolves its tab with `tabs.resolveAllowedTab` (in the Clearcart group and on an allowed page for the browse mode).
 
 - `tabs_context`, `tabs_create`, `navigate` (`"back"`/`"forward"` too), `tab_info` → `tabs.js`.
 - `click`, `type`, `key`, `scroll`, `screenshot` → `cdp.js`. `click` with a `ref` clicks the centre of the page's `rect` and falls back to `click_ref` if CDP can't attach. `type` and single-character `key` are refused (`payment_field`) when the text holds a Luhn-valid 13-19 digit run or the focused element is a card field.
-- Page methods inject `content/mask.js` then `content/page.js` with `chrome.scripting` (idempotent; refs stay stable for the document's life), send `PAGE_CALL` to the top frame and retry once on "Receiving end does not exist".
-- Only the 12 `TOOLS` are exposed to Claude. `INTERNAL` methods (`tab_info`, `read_fields`, `fill_payment`, `clear_payment`, `rect`, `click_ref`) are called only by the server's own code.
+- Page methods inject `content/mask.js`, `content/protect.js` and `content/page.js` with `chrome.scripting` (idempotent; refs stay stable for the document's life), send `PAGE_CALL` to the top frame and retry once on "Receiving end does not exist".
+- Only the 12 `TOOLS` are exposed to Claude. `INTERNAL` methods (`tab_info`, `read_fields`, `fill_payment`, `clear_payment`, `rect`, `click_ref`, `lock_arm`, `press_protected`) are called only by the server's own code.
+
+### Button lock
+
+`content/protect.js` decides which controls are protected. It holds every word list in one place (with tests in `tests/extension/unit/protect.test.mjs`):
+
+| Kind | Examples | Who may press |
+| --- | --- | --- |
+| `order` | Place order, Buy now, Pay, Complete purchase, Submit order, Confirm order, Checkout, Proceed to checkout, Continue to payment | `pay_now` once after a yes, never the agent |
+| `marked` | anything inside `data-clearcart-protected` (the store's `#place-order`) | same as `order` |
+| `payment-form` | the submit control of a form that holds card fields, whatever it says | same as `order` |
+| `express` | Apple Pay, Google Pay, PayPal, Shop Pay, Amazon Pay, Klarna, 1-Click, Express checkout | only the user |
+| `subscription` | Subscribe, Subscribe and Save, Start free trial, Join now, Membership | only the user |
+| `payment-method` | Add payment method, Add card, Save card | only the user |
+| `account` | Sign in, Log in, Sign up, Create account, Register, Continue with Google, and the submit of a password form | only the user; Clearcart never logs in or creates accounts |
+| `frame` | a click that lands in a cross-origin frame (hosted card fields, wallet buttons) | only the user |
+| `shadow` | a click or key inside a shadow root the check cannot read (a closed root where `chrome.dom` is missing) | only the user |
+
+Checkboxes, radios, listbox options and tabs that opt into a subscription, saved card, wallet or account are **uncheck only**: the agent may turn them off, never on. Add to cart, quantity, remove and similar shopping controls are never locked. A label with a help or undo word (remove, cancel, edit, help, guide, learn more, policy, continue shopping, back to, sign out...) is not locked by the word lists, and labels longer than six words (twenty for checkboxes) are treated as sentences, so "Remove from cart", "Checkout guide" and "Check out our new arrivals" stay clickable. Ids and `name` attributes count for order and money words (`#place-order`, `buyNowButton`). An element with no role counts as a control when it has `onclick`, a `tabindex` or a pointer cursor and holds no real control, so a `<div onclick>Place order</div>` is locked; the text under the click counts too. The tradeoff is fail closed: an info link like "Pay over time" or a newsletter "Subscribe" is locked too, which only costs the agent a click it should not need.
+
+Enforcement, all in the extension and failing closed (if a check cannot run, the input is not sent):
+
+- `click` by ref: `guard_ref` checks the element, its ancestors and whatever covers its centre, then CDP clicks. By coordinates: `guard_point` hit-tests the point (through open and closed shadow roots, the closed ones read with `chrome.dom.openOrClosedShadowRoot`, and same-origin frames, up the ancestors; a `<label>` stands for its control; a cross-origin frame is locked). `click_ref` refuses locked targets in the page.
+- `key` Enter or Space: decided on what `parseKey` will send, not the spelling, so `Shift+ ` is a Space; `parseKey` refuses control characters such as `\r`. `guard_key` checks the focused element, and for Enter also the form a field would submit (a form with card or password fields, or any locked submit, including one outside the form tied to it with `form="id"`). `type` text with a newline is checked as Enter.
+- `form_input`: refused on locked controls; an uncheck-only box may be set to false. A `select` is uncheck-only too: the agent may move it away from an opt-in option ("Subscribe and save"), never onto one.
+- `read_page` lines end in `[locked]` or `[uncheck only]` after the ref, and `find` matches carry `locked: true` or `uncheckOnly: true`.
+- Badges: a small padlock with "Locked for AI" (or "AI can only uncheck") over each protected control, drawn when the page script loads. The overlay is in a closed shadow root under `<html>`, `aria-hidden`, `pointer-events: none`, so it changes nothing a screen reader announces, never blocks a person's click, and never shows up in `read_page` or `get_page_text`.
+- Grayed out: every control the agent may not press (and opt-in boxes it may not check) plus card, password and other fields of a card or password form get `data-clearcart-locked`, which one injected `!important` stylesheet turns gray (grayscale, 0.45 opacity, dashed outline). Visual only: nothing sets `disabled`, `aria-disabled`, `inert` or `pointer-events`, so a person can still press or type, and a screen reader hears the same page. The mark comes off when `press_protected` presses the button, when the page re-renders the control as unlocked, and on the next repaint after the extension is disabled or reloaded.
+
+  ![Store checkout with Place order and the card fields grayed out for the AI](../docs/images/checkout-locked.jpg)
+- Unlock: `lock_arm` returns a nonce bound to the tab and its current origin for 30 s, and refuses unless that origin is an allowed site (open web pages never arm). `press_protected { ref, nonce }` spends the nonce first, checks the tab is still on that origin, asks the page (`press_check`) that the ref is an `order`, `marked` or `payment-form` control and not covered, then clicks it (DOM `press_ref` if CDP fails). Wallets, subscriptions, saved cards, accounts and frames never unlock. The agent server only calls these after its own unlock gate (`agent/unlock.ts`).
 
 ### Voice and subtitles
 
@@ -74,10 +121,13 @@ npm --prefix agent test                        # bridge, tools and pay_now with 
 npm --prefix agent run test:e2e:ext            # full flow: store on 4300, agent on 5300, the real extension
 ```
 
+Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, the e2e), so they never connect to a live agent on :5050. `tests/extension/browser/load.test.mjs` and `extension/test/voice/pages.browser.test.mjs` still load `extension/` as is, so their worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
+
 ## Known gaps
 
-- Host permissions cover `http://localhost/*` only. Allowlisting a real site in options isn't enough on its own: page calls need host access to that origin too (an optional host permission request is not wired yet).
+- The suggested blocked sites are best effort: a sensitive site that is not on it, under its own domain, is browsable until you add it.
 - Typing guard: a card field inside a cross-origin iframe (hosted payment forms) reports as "none" from the top frame, so only the Luhn check protects it there.
+- Button lock: the classifier reads names, ids and forms, so a commit button with no words at all (an icon with no label, outside a card or password form, not marked) is not caught. Keys other than Enter and Space, and a `select` whose change handler places an order, are not checked. Navigating straight to a checkout URL is refused by the agent server (on sites other than the store), not by the extension; the agent's tab sweep sends a tab that lands on one back.
 - Subtitles show in the top frame only, and not over fullscreen (top-layer) elements.
 - Chrome may close the `AUDIO_PLAYBACK` offscreen document after about 30 s of silence; the next press recreates it, but an `agent_text` that arrives while it is closed is lost.
 - `navigate("back")` after only programmatic navigations may report `bad_request` (Chrome's history intervention skips entries without a user gesture).

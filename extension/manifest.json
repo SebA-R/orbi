@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Clearcart",
   "version": "0.1.0",
-  "description": "Voice shopping for screen reader users: lets the Clearcart agent shop on allowlisted stores, with hold-to-talk and subtitles.",
+  "description": "Voice shopping for screen reader users: lets the Clearcart agent shop on any store, with sensitive sites blocked, with hold-to-talk and subtitles.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA310Vc8zUcQUrmBkXvtyspB5+zVbw750v5Q7XbHuv3APMh/X9YNsxPgI6sb3fSmBdRe2d5z4j5xHnVNcsJv6UdcnFYZIX9utU5ajB6BWPax0qLfWprnblpkoMcTaZUvWdwrJn1+ttleFYEwRaAPqGeizgOMxWSMkUK9B9NbxXPFpk7S1IHpI2pVB4pjf+htIeExwLZb9CLccqR+NcDsZW4uh8YegLMhS/vYEBRjVHu6KnYpduIAcZuDJJzd+4cavnr7AXfDBn9EWXoUn/DibmYVwOfV/wTX/mHP825QkFzojwDWzwzvQgin0MDJpzZDo+KN+4eFrmGWLHGL//2uBVlwIDAQAB",
   "icons": {
@@ -28,10 +28,11 @@
     "tabGroups",
     "debugger",
     "scripting",
-    "offscreen"
+    "offscreen",
+    "webRequest"
   ],
   "host_permissions": [
-    "http://localhost/*"
+    "<all_urls>"
   ],
   "options_page": "options/options.html",
   "commands": {

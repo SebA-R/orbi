@@ -1,7 +1,7 @@
 // Clearcart page content script.
 //
 // Injected on demand by the worker with
-//   chrome.scripting.executeScript({ target: { tabId }, files: ["content/mask.js", "content/page.js"] })
+//   chrome.scripting.executeScript({ target: { tabId }, files: ["content/mask.js", "content/protect.js", "content/page.js"] })
 // (classic scripts, run in order in the isolated world). Re-injecting is a
 // no-op: the first run installs globalThis.__clearcartPage and later runs
 // return early, so refs stay stable for the life of the document.
@@ -19,15 +19,30 @@
     UNKNOWN_METHOD: "unknown_method",
     NO_ELEMENT: "no_element",
     PAYMENT_FIELD: "payment_field",
+    LOCKED: "locked",
     INTERNAL: "internal",
   };
 
   var Mask = globalThis.ClearcartMask;
+  var Protect = globalThis.ClearcartProtect;
 
   function PageError(code, message) {
     var e = new Error(message);
     e.code = code;
     return e;
+  }
+
+  // Throws ERR.LOCKED with the message for Claude when lock is set.
+  function refuse(lock) {
+    if (lock) throw PageError(ERR.LOCKED, Protect.message(lock));
+  }
+
+  // Lock marker for read_page and find: only on the control itself (or the
+  // element carrying data-clearcart-protected), not on every text node
+  // inside a marked block.
+  function lockMark(el, role) {
+    if (!isInteractive(el, role) && !el.hasAttribute("data-clearcart-protected")) return null;
+    return Protect.lockOf(el);
   }
 
   // ---------------------------------------------------------------- refs
@@ -249,7 +264,10 @@
         var line = role + (name ? " " + q(Mask.maskCardRuns(name)) : "");
         var st = statesOf(el, role);
         if (st.length) line += " " + st.join(" ");
-        emit(depth, line + " [" + refFor(el) + "]");
+        line += " [" + refFor(el) + "]";
+        var lk = lockMark(el, role);
+        if (lk) line += lk.optin ? " [uncheck only]" : " [locked]";
+        emit(depth, line);
         childDepth = depth + 1;
         // Name already covers the content of links, buttons, headings.
         if (NAME_FROM_CONTENT[role] && filter === "all" && !el.querySelector("a[href],button,input,select,textarea")) return;
@@ -265,6 +283,7 @@
 
     if (document.body) walk(document.body, 0);
     if (dropped) lines.push("- … " + dropped + " more nodes (raise maxNodes or use find)");
+    badges();
     return { url: location.href, title: Mask.maskCardRuns(document.title), tree: lines.join("\n") };
   }
 
@@ -296,8 +315,15 @@
       hits.push({ el: el, role: role, name: name, score: score, order: i });
     }
     hits.sort(function (a, b) { return b.score - a.score || a.order - b.order; });
+    badges();
     return {
-      matches: hits.slice(0, limit).map(function (h) { return { ref: refFor(h.el), role: h.role, name: h.name }; }),
+      matches: hits.slice(0, limit).map(function (h) {
+        var m = { ref: refFor(h.el), role: h.role, name: h.name };
+        var lk = lockMark(h.el, h.role);
+        if (lk && lk.optin) m.uncheckOnly = true;
+        else if (lk) m.locked = true;
+        return m;
+      }),
     };
   }
 
@@ -370,6 +396,9 @@
       throw PageError(ERR.PAYMENT_FIELD, "refusing to type a card number into the page");
     }
     if (el.disabled) throw PageError(ERR.BAD_REQUEST, "element is disabled");
+    // Locked controls: an uncheck-only box may be turned off, nothing else.
+    var lk = Protect.lockOf(el);
+    if (lk && !(lk.optin && (!truthy(value) || lk.checked))) refuse(lk);
     var tag = el.tagName;
     if (tag === "INPUT" && (el.type === "checkbox" || el.type === "radio")) {
       var want = truthy(value);
@@ -386,6 +415,17 @@
       var hit = opts.find(function (o) { return o.value === s; }) ||
         opts.find(function (o) { return clean(o.textContent).toLowerCase() === s.trim().toLowerCase(); });
       if (!hit) throw PageError(ERR.BAD_REQUEST, "no option matching value");
+      // Uncheck-only, for a dropdown: the AI may move the choice away from
+      // an opt-in option ("Subscribe and save"), never onto one.
+      if (!hit.selected) {
+        var optKind = Protect.classifyLabel(clean(hit.textContent), { checkable: true }) ||
+          Protect.classifyLabel(clean(hit.label), { checkable: true }) ||
+          Protect.classifyLabel(clean(hit.value).replace(/[-_]+/g, " "), { checkable: true });
+        if (optKind) {
+          throw PageError(ERR.LOCKED, "Locked: '" + Mask.maskCardRuns(clean(hit.label || hit.textContent)).replace(/'/g, "\u2019").slice(0, 60) +
+            "' turns on a subscription, saved card, account or one-tap payment. The AI may choose another option, but only the user can choose this one.");
+        }
+      }
       nativeSet(el, hit.value);
       fire(el);
       return { ok: true };
@@ -415,10 +455,86 @@
 
   function clickRef(params) {
     var el = elementFor(params.ref);
+    refuse(Protect.lockInChain(el));
     if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", behavior: "instant" });
     if (typeof el.focus === "function") el.focus();
     el.click();
     return { ok: true };
+  }
+
+  // ------------------------------------------------------ button lock
+  // The worker asks these before every agent click and key press. They throw
+  // ERR.LOCKED with a message for Claude when the action would press a
+  // protected control. Not bridge methods: only the router calls them.
+
+  function point(params) {
+    var x = Number(params.x), y = Number(params.y);
+    if (!isFinite(x) || !isFinite(y)) throw PageError(ERR.BAD_REQUEST, "x and y must be numbers");
+    return { x: x, y: y };
+  }
+
+  // Click by ref: the element (and what it sits in) must not be locked, and
+  // neither may whatever is on top of its centre, which is where the click
+  // will land.
+  function guardRef(params) {
+    refuse(Protect.lockInChain(elementFor(params.ref)));
+    var r = rect(params);
+    if (r.width > 0 && r.height > 0) refuse(Protect.lockAt(document, r.x + r.width / 2, r.y + r.height / 2));
+    return r;
+  }
+
+  function guardPoint(params) {
+    var p = point(params);
+    refuse(Protect.lockAt(document, p.x, p.y));
+    return { ok: true };
+  }
+
+  function guardKey(params) {
+    refuse(Protect.lockForKey(document, String(params.key == null ? "" : params.key)));
+    return { ok: true };
+  }
+
+  // The internal pay flow, after the worker has checked its single-use
+  // unlock: the ref must be an order commit (never a wallet, subscription,
+  // saved card or account control), and its centre must not be covered.
+  function pressTarget(params) {
+    var el = elementFor(params.ref);
+    var lk = Protect.lockOf(el);
+    if (!Protect.pressable(lk)) throw PageError(ERR.LOCKED, "press_protected only presses an order button");
+    return { el: el, lock: lk };
+  }
+
+  function pressCheck(params) {
+    var t = pressTarget(params);
+    var r = rect(params);
+    if (!(r.width > 0 && r.height > 0)) throw PageError(ERR.NO_ELEMENT, params.ref + " is not visible");
+    if (typeof document.elementFromPoint === "function") {
+      var hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      if (!hit || !(hit === t.el || t.el.contains(hit))) throw PageError(ERR.NO_ELEMENT, params.ref + " is covered by another element");
+    }
+    Protect.release(t.el);
+    return { x: r.x, y: r.y, width: r.width, height: r.height, kind: t.lock.kind };
+  }
+
+  function pressRef(params) {
+    var t = pressTarget(params);
+    Protect.release(t.el);
+    if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", behavior: "instant" });
+    t.el.click();
+    return { ok: true };
+  }
+
+  // False once the extension is disabled or reloaded (chrome.runtime.id goes
+  // away); the badges and grayed marks then come off the page.
+  var runtimeId = function () { return globalThis.chrome && chrome.runtime && chrome.runtime.id; };
+  var hadRuntime = !!runtimeId();
+  function extensionAlive() {
+    return !hadRuntime || !!runtimeId();
+  }
+
+  // Lock badges and grayed-out marks; see protect.js. Never fails a call.
+  function badges() {
+    try { Protect.showBadges(document, { alive: extensionAlive }); } catch (_) { /* cosmetic */ }
   }
 
   // -------------------------------------------- read_fields / fill_payment
@@ -559,10 +675,17 @@
     read_fields: readFields,
     fill_payment: fillPayment,
     clear_payment: clearPayment,
+    guard_ref: guardRef,
+    guard_point: guardPoint,
+    guard_key: guardKey,
+    press_check: pressCheck,
+    press_ref: pressRef,
   };
 
   function call(method, params) {
     if (!Mask) throw PageError(ERR.INTERNAL, "mask.js was not injected before page.js");
+    // Fail closed: without the classifier nothing may be clicked or read.
+    if (!Protect) throw PageError(ERR.INTERNAL, "protect.js was not injected before page.js");
     var fn = Object.prototype.hasOwnProperty.call(METHODS, method) && METHODS[method];
     if (!fn) throw PageError(ERR.UNKNOWN_METHOD, "unknown page method: " + method);
     if (params != null && typeof params !== "object") throw PageError(ERR.BAD_REQUEST, "params must be an object");
@@ -581,6 +704,7 @@
   }
 
   globalThis.__clearcartPage = { call: call, handle: handle, refFor: refFor };
+  if (Protect) badges();
 
   if (globalThis.chrome && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {

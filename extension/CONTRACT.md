@@ -24,6 +24,8 @@ Existing base (read it, don't change it): `lib/protocol.js` (MSG, TOOLS, INTERNA
 // allowlist.js
 export async function allowedOrigins(): Promise<string[]>   // from settings, default ["http://localhost:4000"]
 export async function assertAllowed(url: string): Promise<void> // throws BridgeError(ERR.NOT_ALLOWED) unless new URL(url).origin is allowed
+export function blockReason(url, settings): string | null      // browseMode "open": lib/blocklist.js fixed rules + settings.blocklist entries; "allowlist": origin in settings.allowlist
+export async function isPaySite(url: string): Promise<boolean>  // origin in the allowlist, in both modes; lock_arm needs it
 
 // tabs.js  (agent tabs live in one tab group titled "Clearcart"; group id persisted in chrome.storage.session)
 export async function tabsContext(): Promise<{ tabs: {tabId,url,title,active}[], groupId }>
@@ -54,9 +56,18 @@ The worker sends `chrome.tabs.sendMessage(tabId, { type: RT.PAGE_CALL, method, p
 | `read_fields` | `{}` | `{ fields: [{ name, autocomplete, kind: "cc-number"\|"cc-name"\|"cc-exp"\|"cc-csc"\|"address"\|"other", filled: boolean }] }` (never values) |
 | `fill_payment` | `{ card: { name, number, exp, csc }, address? }` | `{ ok: true, last4 }` sets values by kind, dispatches input+change; never echoes the card |
 | `clear_payment` | `{}` | `{ ok: true }` |
-| `click_ref` | `{ ref }` | `{ ok: true }` DOM `.click()` fallback when CDP is unavailable |
+| `click_ref` | `{ ref }` | `{ ok: true }` DOM `.click()` fallback when CDP is unavailable; refuses locked targets with `ERR.LOCKED` |
+| `guard_ref` | `{ ref }` | like `rect`, but `ERR.LOCKED` when the element, an ancestor or what covers its centre is protected (worker only) |
+| `guard_point` | `{ x, y }` | `{ ok: true }` or `ERR.LOCKED` after hit-testing the point (worker only) |
+| `guard_key` | `{ key }` | `{ ok: true }` or `ERR.LOCKED` for Enter or Space on a protected focus or form (worker only) |
+| `press_check` | `{ ref }` | `{ x, y, width, height, kind }` when the ref is an order button and not covered; else `ERR.LOCKED` or `ERR.NO_ELEMENT` (worker only, for `press_protected`) |
+| `press_ref` | `{ ref }` | DOM `.click()` on an order button (worker only, `press_protected` fallback) |
 
 `mask.js` exports `isPaymentField(el)`, `luhn(text)`, `maskValue(text, el)`; refs are `ref_N`, stable per element (WeakRef registry).
+
+`protect.js` (button lock, injected between `mask.js` and `page.js`) exports `classifyLabel(label, { checkable })`, `lockOf(el)`, `lockInChain(el)`, `lockAt(doc, x, y)`, `lockForKey(doc, key)`, `listLocks(doc)`, `message(lock)`, `pressable(lock)` and `showBadges(doc)`. A lock is `{ kind, label, optin, checked }`, kinds `order`, `marked`, `payment-form`, `express`, `subscription`, `payment-method`, `account`, `frame`. `read_page` appends `[locked]` or `[uncheck only]` after a protected control's ref; `find` adds `locked: true` or `uncheckOnly: true`; `form_input` refuses locked controls (an uncheck-only box may be set to false). `showBadges` also sets `data-clearcart-locked` (visual only, styled by one injected stylesheet) on controls and fields the agent is locked out of; `release(el)` clears it for the single-use press.
+
+Bridge `INTERNAL` methods for the unlock: `lock_arm { tabId }` → `{ nonce, expiresInMs }` (single use, bound to the tab and its origin, 30 s) and `press_protected { tabId, ref, nonce }` → `{ ok, via }`. The worker checks every `click`, `key` (Enter, Space) and `type` (with a newline) with the page before CDP and refuses with `ERR.LOCKED`.
 
 ### C. Server bridge (agent, TypeScript)
 

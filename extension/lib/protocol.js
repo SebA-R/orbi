@@ -6,6 +6,9 @@
 //   server -> ext  { type: "request", id, method, params }
 //   ext -> server  { type: "response", id, ok: true, result }
 //                  { type: "response", id, ok: false, error: { code, message } }
+//   ext -> server  { type: "blocklist", lines } after welcome and whenever
+//                  the user saves it (the options page's blocked sites).
+//                  One way: the server cannot change extension settings.
 //   either way     { type: "ping", t } answered by { type: "pong", t }
 //
 // Runtime messages (inside the extension, chrome.runtime / chrome.tabs
@@ -21,6 +24,7 @@ export const MSG = Object.freeze({
   RESPONSE: "response",
   PING: "ping",
   PONG: "pong",
+  BLOCKLIST: "blocklist",
 });
 
 // Tools the agent may expose to Claude.
@@ -40,7 +44,9 @@ export const TOOLS = Object.freeze([
 ]);
 
 // Methods only the agent server's own code calls (pay_now, the store guard).
-// Never exposed to Claude as tools.
+// Never exposed to Claude as tools. lock_arm and press_protected are the
+// button lock's unlock: a single-use nonce, then one press of an order
+// button (see background/router.js).
 export const INTERNAL = Object.freeze([
   "tab_info",
   "read_fields",
@@ -48,6 +54,8 @@ export const INTERNAL = Object.freeze([
   "clear_payment",
   "rect",
   "click_ref",
+  "lock_arm",
+  "press_protected",
 ]);
 
 export const METHODS = Object.freeze([...TOOLS, ...INTERNAL]);
@@ -59,6 +67,7 @@ export const ERR = Object.freeze({
   NO_TAB: "no_tab",
   NO_ELEMENT: "no_element",
   PAYMENT_FIELD: "payment_field",
+  LOCKED: "locked",
   TIMEOUT: "timeout",
   NOT_CONNECTED: "not_connected",
   INTERNAL: "internal",

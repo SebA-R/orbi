@@ -3,6 +3,9 @@ import { test } from "node:test";
 
 import * as proto from "../../extension/lib/protocol.js";
 import { ERR, EXT_NAME, ExtError, INTERNAL, PROTOCOL_VERSION, TOOLS } from "../extbridge.ts";
+// @ts-ignore: plain JS module from the extension
+import { BridgeClient } from "../../extension/lib/bridge.js";
+import { WebSocket } from "ws";
 import { ExtError2, FakeExt, NO_REPLY, onceEvent, startBridge } from "./fake-ext.ts";
 
 test("constants mirror extension/lib/protocol.js", () => {
@@ -142,6 +145,48 @@ test("newest wins: a second extension replaces the first; reconnect works", asyn
     assert.deepEqual(await b.bridge.call("tabs_context"), { who: "again" });
     again.close();
   } finally {
+    await b.stop();
+  }
+});
+
+test("blocklist: the extension's list is kept and parsed; only the current, greeted socket counts", async () => {
+  const b = await startBridge();
+  try {
+    assert.equal(b.bridge.blocklist(), null);
+    const early = new FakeExt(b.url);
+    await early.open(false);
+    early.ws.send(JSON.stringify({ type: "blocklist", lines: ["etsy.com"] }));
+    await early.ping();
+    assert.equal(b.bridge.blocklist(), null, "before hello");
+    early.close();
+
+    const ext = new FakeExt(b.url);
+    await ext.open();
+    const got = onceEvent(b.bridge, "blocklist");
+    ext.ws.send(JSON.stringify({ type: "blocklist", lines: ["# shops", "https://www.etsy.com/", "*bank*", "not a site"] }));
+    assert.deepEqual((await got).map((e: any) => e.text), ["etsy.com", "*bank*"]);
+    ext.close();
+    await onceEvent(b.bridge, "disconnect");
+    assert.equal(b.bridge.blocklist()?.length, 2, "kept across a disconnect");
+  } finally {
+    await b.stop();
+  }
+});
+
+test("blocklist: the extension's BridgeClient sends it on connect", async () => {
+  const b = await startBridge();
+  const got = onceEvent(b.bridge, "blocklist");
+  const client = new BridgeClient({
+    url: b.url,
+    WebSocketImpl: WebSocket,
+    log: { info() {}, warn() {}, debug() {} },
+    onOpen: () => client.send({ type: proto.MSG.BLOCKLIST, lines: ["chase.com", "amazon.*/ap"] }),
+  });
+  try {
+    client.start();
+    assert.deepEqual((await got).map((e: any) => e.text), ["chase.com", "amazon.*/ap"]);
+  } finally {
+    client.stop();
     await b.stop();
   }
 });

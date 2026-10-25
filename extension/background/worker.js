@@ -6,10 +6,12 @@
 
 import * as tabs from "./tabs.js";
 import * as cdp from "./cdp.js";
+import * as netguard from "./netguard.js";
 import { createRouter } from "./router.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
-import { endpoints, loadSettings } from "../lib/settings.js";
+import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
+import { MSG } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -17,6 +19,7 @@ const log = createLogger("worker");
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   console.info(`[clearcart] installed (${reason}), version ${VERSION}`);
+  seedBlocklist().catch((e) => log.warn(`blocklist seed failed: ${e.message}`));
   // The offscreen document cannot ask for the microphone, so the first run
   // opens the options page where the user grants it.
   if (reason === "install") chrome.runtime.openOptionsPage().catch(() => {});
@@ -31,6 +34,26 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.tabs.onRemoved.addListener((tabId) => cdp.onTabRemoved(tabId));
 chrome.debugger.onDetach.addListener((source) => cdp.onDetach(source));
 chrome.tabGroups.onRemoved.addListener((group) => tabs.onGroupRemoved(group));
+
+// Connected-address check (netguard.js): a Clearcart tab whose page came
+// from a local address it may not use is closed. Other tabs are the user's.
+chrome.tabs.onRemoved.addListener((tabId) => netguard.forget(tabId));
+chrome.webRequest.onResponseStarted.addListener((d) => {
+  const flag = netguard.noteResponse(d);
+  if (flag) void closeIfAgentTab(d.tabId, flag);
+}, netguard.FILTER);
+
+async function closeIfAgentTab(tabId, flag) {
+  try {
+    const [tab, gid] = await Promise.all([chrome.tabs.get(tabId), tabs.groupId()]);
+    if (gid == null || tab.groupId !== gid || netguard.flagOf(tabId) !== flag) return;
+    log.info(`closing agent tab: ${flag.origin} is served from a local address`);
+    await chrome.tabs.remove(tabId);
+  } catch {}
+}
+
+const loadAllowlist = () => loadSettings().then((s) => netguard.setAllowlist(s.allowlist)).catch(() => {});
+loadAllowlist();
 
 // Voice: hold-to-talk relay between content scripts and the offscreen
 // document; SUBTITLE and VOICE_STATE go to the talking (or active) tab, where
@@ -56,11 +79,16 @@ async function onRequest(method, params) {
 
 let bridge = null;
 
+// The agent server's navigation guard and tab sweep use the user's blocked
+// sites too, so send them on every connect and every change.
+const sendBlocklist = () =>
+  loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
+
 async function startBridge() {
   const settings = await loadSettings();
   const url = endpoints(settings.agentUrl).ext;
   if (!bridge) {
-    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onState: (s) => log.info(`bridge ${s}`) });
+    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onOpen: sendBlocklist, onState: (s) => log.info(`bridge ${s}`) });
     bridge.start();
   } else {
     bridge.setUrl(url);
@@ -68,7 +96,10 @@ async function startBridge() {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
+  if (area !== "local") return;
+  if (changes.allowlist) loadAllowlist();
+  if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
+  if (changes.blocklist) sendBlocklist();
 });
 
 startBridge().catch((e) => log.warn(`bridge start failed: ${e.message}`));

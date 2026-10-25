@@ -9,6 +9,7 @@ import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { extBridge, extMode } from "./extbridge.ts";
+import { hostAllowed } from "./hostcheck.ts";
 import { Session, type ServerMessage } from "./session.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -103,7 +104,12 @@ async function cartesiaToken(res: http.ServerResponse) {
   }
 }
 
+// The port actually listened on (AGENT_PORT=0 picks a free one).
+const port = () => (server.address() as { port?: number } | null)?.port ?? PORT;
+const localHost = (req: http.IncomingMessage) => hostAllowed(req.headers.host, port());
+
 const server = http.createServer((req, res) => {
+  if (!localHost(req)) return void res.writeHead(403, { "Content-Type": "text/plain" }).end("Forbidden host");
   const url = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
   if (req.method === "GET" && url.pathname === "/healthz") {
@@ -116,8 +122,11 @@ const server = http.createServer((req, res) => {
 
 // Two WebSocket paths on one server need noServer mode plus a router: a
 // server-attached WebSocketServer answers 400 to every path but its own.
-const wss = EXT ? new WebSocketServer({ noServer: true }) : new WebSocketServer({ server, path: "/session" });
-if (EXT) extBridge.attach(server, { "/session": wss });
+// Both refuse an upgrade whose Host header is not this computer (hostcheck.ts).
+const wss = EXT
+  ? new WebSocketServer({ noServer: true })
+  : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localHost(req), 403) });
+if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localHost);
 
 wss.on("connection", (ws: WebSocket) => {
   const send = (m: ServerMessage) => {
