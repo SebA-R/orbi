@@ -325,7 +325,7 @@ const happy = (t) => face(t).classList.contains("ccf-happy");
 
 test("the orb face replaces the dot: decorative, inside the card, eyes and a smile", () => {
   const t = setup();
-  t.send({ type: "voice.state", state: "listening" });
+  t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });
   const f = face(t);
   assert.ok(f, "face mounted in the card");
   assert.equal(t.$(".dot"), null, "old dot gone");
@@ -334,6 +334,21 @@ test("the orb face replaces the dot: decorative, inside the card, eyes and a smi
   assert.equal(f.querySelectorAll("path.ccf-m").length, 1);
   assert.equal(f.querySelectorAll(".ccf-b, [class*=brow]").length, 0, "no eyebrows");
   assert.equal(f.textContent, "", "no text: the state is said elsewhere");
+});
+
+test("the face shows only at rest: listening, thinking and speaking are faceless", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });
+  assert.equal(face(t).classList.contains("ccf-noface"), false, "idle smiles");
+  for (const state of ["listening", "thinking", "speaking"]) {
+    t.send({ type: "voice.state", state });
+    assert.equal(face(t).classList.contains("ccf-noface"), true, state);
+  }
+  t.send({ type: "voice.state", state: "idle" });
+  assert.equal(face(t).classList.contains("ccf-noface"), false, "face back at rest");
+  const css = t.window.__clearcartOrbFace.CSS;
+  assert.match(css, /\.ccf\.ccf-noface \.ccf-f \{ opacity: 0; \}/);
+  assert.match(css, /\.ccf-f \{[^}]*transition: opacity \.15s/, "fades over 150 ms");
 });
 
 test("the orb face gets one state class per voice state", () => {
@@ -411,7 +426,7 @@ test("no happy moment and no live motion under reduced motion", () => {
   t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: true });
   t.send({ type: "voice.state", state: "speaking" });
   t.send({ type: "voice.level", level: 0.9 });
-  assert.equal(face(t).style.getPropertyValue("--ccf-open"), "", "levels ignored");
+  assert.equal(face(t).style.getPropertyValue("--ccf-swell"), "", "levels ignored");
   t.send({ type: "voice.state", state: "idle" });
   t.tick(60 * MIN);
   assert.equal(happy(t), false);
@@ -424,7 +439,7 @@ test("no happy moment and no live motion under reduced motion", () => {
   assert.match(css, /prefers-reduced-motion: reduce\)\s*\{[^}]*\.ccf[^{]*\{\s*animation: none !important/);
 });
 
-test("a live level drives the swell and the mouth, then falls back to the loop", () => {
+test("a live level drives the swell and the cadence pulse, then falls back to the loop", () => {
   const t = setup();
   t.send({ type: "voice.state", state: "listening" });
   t.send({ type: "voice.level", level: 1 });
@@ -434,9 +449,10 @@ test("a live level drives the swell and the mouth, then falls back to the loop",
   assert.equal(face(t).classList.contains("ccf-live"), false, "loop again once levels stop");
   t.send({ type: "voice.state", state: "speaking" });
   t.send({ type: "voice.level", level: 0.5 });
-  assert.ok(Number(face(t).style.getPropertyValue("--ccf-open")) > 1, "mouth opens from the smile");
+  const pulse = Number(face(t).style.getPropertyValue("--ccf-swell"));
+  assert.ok(pulse > 1 && pulse <= 1.09, "speaking pulses the orb, up to 1.09");
   t.send({ type: "voice.state", state: "thinking" });
-  assert.equal(face(t).style.getPropertyValue("--ccf-open"), "", "reset on state change");
+  assert.equal(face(t).style.getPropertyValue("--ccf-swell"), "", "reset on state change");
   t.send({ type: "voice.level", level: 1 });
   assert.equal(face(t).classList.contains("ccf-live"), false, "no level motion while thinking");
 });
