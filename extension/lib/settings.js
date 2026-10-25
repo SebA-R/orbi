@@ -29,6 +29,8 @@ export const DEFAULTS = Object.freeze({
   // Fade out and mute other tabs' audio while the user talks and while
   // Clearcart answers (lib/voice/duck.js).
   quietTabs: true,
+  // Bring the user to the tab Clearcart acts on (background/follow.js).
+  followTab: true,
 });
 
 export const SPEED_MIN = 0.6;
@@ -75,6 +77,7 @@ export function normalize(raw = {}) {
   if (raw.speed != null && Number.isFinite(speed)) out.speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, speed));
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
+  if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
   return out;
 }
 
