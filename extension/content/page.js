@@ -557,7 +557,7 @@
       kind: t.lock.kind,
       label: t.lock.label,
       optin: !!t.lock.optin,
-      cls: Protect.unlockClass(t.lock),
+      cls: Protect.unlockClass(t.lock, t.el),
       password: pw.password,
       passwordFilled: pw.filled,
     };
@@ -565,7 +565,7 @@
 
   function userTarget(params) {
     var t = lockTarget(elementFor(params.ref));
-    var cls = Protect.unlockClass(t.lock);
+    var cls = Protect.unlockClass(t.lock, t.el);
     if (!cls || cls !== params.cls) throw PageError(ERR.LOCKED, "Locked: this control cannot be unlocked on request");
     if (!Protect.sameLabel(t.lock.label, params.label)) throw PageError(ERR.LOCKED, "Locked: the control changed since the user asked");
     return t;

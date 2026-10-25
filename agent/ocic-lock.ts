@@ -33,7 +33,7 @@ type ProtectApi = {
   isActivationKey(k: string): boolean;
   message(l: Lock): string;
   blocks(l: Lock): boolean;
-  unlockClass(l: Lock | null): string | null;
+  unlockClass(l: Lock | null, el?: unknown): string | null;
   sameLabel(a: string, b: string): boolean;
   isCheckoutNav(label: string): boolean;
 };

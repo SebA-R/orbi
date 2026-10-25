@@ -208,12 +208,12 @@ export function ocicLockInfoScript(label: string): string {
 var hits = P.listLocks(document, 300).filter(function (x) { return P.sameLabel(P.labelOf(x.el), want) || P.sameLabel(x.lock.label, want); });
 if (!hits.length) return { locked: false };
 var x = hits[0], pw = P.passwordState(x.el);
-return { locked: P.blocks(x.lock), kind: x.lock.kind, label: x.lock.label, optin: !!x.lock.optin, cls: P.unlockClass(x.lock), password: pw.password, passwordFilled: pw.filled, count: hits.length };`;
+return { locked: P.blocks(x.lock), kind: x.lock.kind, label: x.lock.label, optin: !!x.lock.optin, cls: P.unlockClass(x.lock, x.el), password: pw.password, passwordFilled: pw.filled, count: hits.length };`;
 }
 
 export function ocicPressScript(label: string, cls: UnlockClass): string {
   return `var want = ${JSON.stringify(String(label))}, cls = ${JSON.stringify(cls)};
-var hits = P.listLocks(document, 300).filter(function (x) { return P.unlockClass(x.lock) === cls && (P.sameLabel(P.labelOf(x.el), want) || P.sameLabel(x.lock.label, want)); });
+var hits = P.listLocks(document, 300).filter(function (x) { return P.unlockClass(x.lock, x.el) === cls && (P.sameLabel(P.labelOf(x.el), want) || P.sameLabel(x.lock.label, want)); });
 if (!hits.length) return "missing";
 var el = hits[0].el;
 if (el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "instant" });

@@ -154,15 +154,23 @@
 
   // Unlock class of a lock for request_unlock: "checkout", "account",
   // "subscription", "payment-method" or "marked", or null when it never
-  // unlocks on request.
-  function unlockClass(lock) {
+  // unlocks on request. A marked control is judged by its label too, so a
+  // marked "Place order" or wallet stays locked. el (optional): the control;
+  // the submit of a card form never unlocks, whatever it says.
+  function unlockClass(lock, el) {
     if (!lock) return null;
-    switch (lock.kind) {
+    if (el && el.nodeType === 1 && isSubmit(el) && formKind(el.form) === "payment-form") return null;
+    var kind = lock.kind;
+    if (kind === "marked") {
+      var byLabel = classifyLabel(lock.label, { checkable: !!lock.optin });
+      if (!byLabel) return "marked";
+      kind = byLabel;
+    }
+    switch (kind) {
       case "order": return !lock.optin && isCheckoutNav(lock.label) ? "checkout" : null;
       case "account": return "account";
       case "subscription": return "subscription";
       case "payment-method": return "payment-method";
-      case "marked": return "marked";
       default: return null; // express, payment-form, frame, shadow
     }
   }
