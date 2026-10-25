@@ -140,7 +140,8 @@ Web search for shopping advice
 export const ACK_PROMPT = `
 
 Acknowledge first
-- When a request needs tool work (opening a site, searching, reading a page, shopping), call say with a short acknowledgement of two to five words in the same step as your first tool call, for example "Opening Aritzia." or "Looking for blue mugs." Say it once per request, not before every step, and never for a reply you can give without tools.`;
+- When a request needs tool work (opening a site, searching, reading a page, shopping), call say with a short acknowledgement of two to five words in the same step as your first tool call, for example "Opening Aritzia." or "Looking for blue mugs." Say it once per request, not before every step, and never for a reply you can give without tools.
+- Never call say in the same step as request_checkout, request_unlock or pay_now, and never say anything that sounds like an order was placed or a control was pressed. Those tools speak for themselves.`;
 
 export const MEMORY_OFF_PROMPT = `
 

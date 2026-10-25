@@ -104,6 +104,8 @@ const speaker = {
   stop: (opts) => current().stop(opts),
   duck: () => current().duck(),
   unduck: () => current().unduck(),
+  // Opens Sonic's socket ahead of the reply; only when Cartesia is the voice.
+  warm: () => { if (voice().mode === "cartesia") sonic.warm(); },
 };
 
 // /healthz decides the voice. A change mid-reply stops the old voice (its
