@@ -53,14 +53,15 @@ export class VoiceController {
     this.latchTimer = null;
   }
 
-  #setState(state) {
-    if (state === this.state) return;
+  #setState(state, force = false) {
+    if (state === this.state && !force) return;
     this.state = state;
     this.emit({ type: RT.VOICE_STATE, state, ...(state === STATES.LISTENING && this.latched ? { latched: true } : {}) });
   }
 
   #settle() {
-    if (this.listening) this.#setState(STATES.LISTENING);
+    // An unconfirmed silent start shows nothing (it may be a tap).
+    if (this.listening && this.confirmed) this.#setState(STATES.LISTENING);
     else if (this.speaking) this.#setState(STATES.SPEAKING);
     else if (this.awaitingReply) this.#setState(STATES.THINKING);
     else this.#setState(STATES.IDLE);
@@ -68,7 +69,8 @@ export class VoiceController {
 
   // The toggle command is hands-free too, so it latches like Option+Space.
   toggle() {
-    return this.listening ? this.stop() : this.start({ latch: true });
+    if (this.listening && this.confirmed) return this.stop();
+    return this.start({ latch: true });
   }
 
   #armLatch() {
@@ -101,8 +103,21 @@ export class VoiceController {
   }
 
   async start({ silent = false, latch = false } = {}) {
-    // Talking again from another frame or tab during a latch ends it.
-    if (this.listening) return this.latched ? this.stop() : undefined;
+    if (this.listening) {
+      // Talking again from another frame or tab during a latch ends it.
+      if (this.latched) return this.stop();
+      if (!latch) return;
+      if (!this.confirmed) {
+        this.cancel(); // a tap's silent start: drop it and latch instead
+      } else {
+        // Option+Space during a hold: keep this session and make it hands-free.
+        this.latched = true;
+        if (this.turn) this.turn.latched = true;
+        this.#armLatch();
+        this.#setState(STATES.LISTENING, true);
+        return;
+      }
+    }
     this.listening = true;
     this.confirmed = false;
     this.held = [];
@@ -137,6 +152,16 @@ export class VoiceController {
       onError: (message) => this.emit({ type: RT.VOICE_ERROR, message }),
       onClosed: () => {
         if (this.session === s) this.session = null;
+        // The STT socket closed mid-latch (server close, token expiry): end
+        // the latch here rather than listen on a dead session.
+        if (turn.latched && turn.open && this.turn === turn && this.listening) {
+          turn.open = false;
+          this.listening = false;
+          this.confirmed = false;
+          this.mic.sink = null;
+          this.#endLatch();
+          this.chime("stop");
+        }
         if (turn.latched && !turn.dropped) this.#flush(turn);
         this.#settle();
       },
@@ -156,7 +181,7 @@ export class VoiceController {
       this.held = [];
       turn.dropped = true;
       this.#endLatch();
-      this.#settle();
+      this.#setState(this.speaking ? STATES.SPEAKING : this.awaitingReply ? STATES.THINKING : STATES.IDLE, true); // the page may think it latched
       const blocked = err && err.name === "NotAllowedError";
       this.emit({
         type: RT.VOICE_ERROR,

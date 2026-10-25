@@ -388,11 +388,13 @@ test("install learns the voice state from runtime messages and a hidden tab forg
   const d = install({ win, doc, chromeApi });
   onMsg({ type: "voice.state", state: "listening", latched: true });
   assert.equal(d.latched, true);
-  onMsg({ type: "voice.error", message: "x" });
-  assert.equal(d.latched, false);
-  onMsg({ type: "voice.state", state: "listening", latched: true });
+  onMsg({ type: "voice.error", message: "stt hiccup" });
+  assert.equal(d.latched, true, "an STT error alone doesn't end the latch");
   doc.visibilityState = "hidden";
   listeners["doc:visibilitychange"].forEach((fn) => fn());
   assert.equal(d.latched, false);
   assert.deepEqual(messages, []);
+  doc.visibilityState = "visible";
+  listeners["doc:visibilitychange"].forEach((fn) => fn());
+  assert.deepEqual(messages, ["voice.state.query"], "visible again: ask for the state");
 });

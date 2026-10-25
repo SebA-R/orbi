@@ -376,3 +376,40 @@ test("token source says plainly when voice is off on the server", async () => {
   });
   await assert.rejects(get(), /Voice is off/);
 });
+
+test("an unconfirmed silent start never shows listening, even when speech ends meanwhile", async () => {
+  const r = rig();
+  r.c.onSpeakingChange(true);
+  await r.c.start({ silent: true });
+  r.c.onSpeakingChange(false);
+  assert.deepEqual(states(r.emitted), ["speaking", "idle"]);
+});
+
+test("the STT closing mid-latch ends the latch and sends what was held", async () => {
+  const r = rig();
+  await r.c.start({ latch: true });
+  r.stt.h.onFinal("eggs");
+  r.stt.h.onClosed();
+  assert.equal(r.c.listening, false);
+  assert.equal(r.c.latched, false);
+  assert.equal(r.mic.sink, null);
+  assert.deepEqual(r.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "eggs" }]);
+  assert.notEqual(states(r.emitted).at(-1), "listening");
+});
+
+test("a failed latch start tells the page it is not latched", async () => {
+  const r = rig({ micFails: "NotAllowedError" });
+  await r.c.start({ latch: true });
+  assert.equal(r.c.latched, false);
+  assert.deepEqual(r.emitted.filter((m) => m.type === RT.VOICE_STATE).at(-1), { type: RT.VOICE_STATE, state: "idle" });
+});
+
+test("the toggle during a tap's silent start latches instead of doing nothing", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  await r.c.toggle();
+  assert.equal(r.c.listening, true);
+  assert.equal(r.c.latched, true);
+  r.c.cancel(); // the tap's late PTT_CANCEL is a no-op now
+  assert.equal(r.c.listening, true);
+});

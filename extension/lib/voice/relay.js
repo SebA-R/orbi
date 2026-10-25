@@ -10,6 +10,7 @@
 //                                 the speech), only from the tab that is talking
 //   command "toggle-listening" -> PTT_TOGGLE {settings} to offscreen
 //   content/popup TTS_STOP     -> TTS_STOP to offscreen
+//   content VOICE_STATE_QUERY  -> the current VOICE_STATE back to that tab
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
 //   offscreen SUBTITLE / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
 //   offscreen VOICE_ERROR code "mic_blocked" -> open the options page once
@@ -134,8 +135,12 @@ export function createVoiceRelay({
         toOffscreen({ type: RT.VOICE_STOP }, { create: false });
         return true;
       case RT.PTT_HUSH:
-        // A double-tap in another tab must not stop this one.
-        if (sender.tab && sender.tab.id != null && lastTabId != null && sender.tab.id !== lastTabId) return true;
+        // A double-tap in another tab must not stop this one; just drop its
+        // first tap's silent start.
+        if (sender.tab && sender.tab.id != null && lastTabId != null && sender.tab.id !== lastTabId) {
+          toOffscreen({ type: RT.VOICE_CANCEL }, { create: false });
+          return true;
+        }
         toOffscreen({ type: RT.VOICE_HUSH }, { create: false });
         return true;
       case RT.PTT_TOGGLE:
@@ -143,6 +148,14 @@ export function createVoiceRelay({
         return true;
       case RT.TTS_STOP:
         toOffscreen({ type: RT.TTS_STOP }, { create: false });
+        return true;
+      case RT.VOICE_STATE_QUERY:
+        // A tab became visible again: tell it the current state (the hotkey
+        // needs it for the latch and the double-tap).
+        if (sender.tab && sender.tab.id != null) {
+          const { from, target, ...state } = replay.state || { type: RT.VOICE_STATE, state: "idle" };
+          try { chromeApi.tabs.sendMessage(sender.tab.id, state)?.catch?.(() => {}); } catch {}
+        }
         return true;
       default:
         return false;

@@ -34,7 +34,7 @@
 (() => {
   const RT = {
     PTT_START: "ptt.start", PTT_STOP: "ptt.stop", PTT_CONFIRM: "ptt.confirm", PTT_CANCEL: "ptt.cancel", PTT_HUSH: "ptt.hush",
-    VOICE_STATE: "voice.state", VOICE_ERROR: "voice.error",
+    VOICE_STATE: "voice.state", VOICE_STATE_QUERY: "voice.state.query",
   };
   const CONFIRM_MS = 200;
   const DOUBLE_TAP_MS = 350; // second tap within this long after the first: hush
@@ -165,7 +165,7 @@
         if (held) this.cancel();
         use(name);
       },
-      // From the worker's VOICE_STATE broadcast (or VOICE_ERROR: state "error").
+      // From the worker's VOICE_STATE broadcast.
       setVoiceState(state, isLatched) {
         voiceState = state;
         if (state === "listening") { if (isLatched) latched = true; } else latched = false;
@@ -276,12 +276,15 @@
     win.addEventListener("keydown", onDown, true);
     win.addEventListener("keyup", onUp, true);
     win.addEventListener("blur", () => detector.cancel());
-    doc.addEventListener("visibilitychange", () => { if (doc.visibilityState === "hidden") detector.forgetVoiceState(); });
+    // Hidden, the tab may stop hearing the voice state; visible again, it asks.
+    doc.addEventListener("visibilitychange", () => {
+      if (doc.visibilityState === "hidden") detector.forgetVoiceState();
+      else send(RT.VOICE_STATE_QUERY);
+    });
     // The worker sends the voice state to the tab that is talking (all frames).
     chromeApi.runtime.onMessage?.addListener((msg) => {
       if (!msg || orphaned()) return;
       if (msg.type === RT.VOICE_STATE) detector.setVoiceState(msg.state, msg.latched === true);
-      else if (msg.type === RT.VOICE_ERROR) detector.setVoiceState("error");
     });
 
     const storage = chromeApi.storage && chromeApi.storage.local;
