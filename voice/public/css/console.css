@@ -313,7 +313,7 @@ body[data-ui="speaking"] .caption-user,
 .caption-agent:empty { display: none; }
 /* During the read-back the card says it all; the spoken sentence stays in the conversation. */
 body[data-phase="confirm"] .caption-agent { display: none; }
-.w { display: inline-block; white-space: pre; }
+.w { display: inline-block; }
 /* On desktop the reply already reads in the conversation column, so the orb side shows only your words. */
 @media (min-width: 900px) {
   .caption-agent { display: none; }
@@ -402,7 +402,7 @@ body[data-ui="listening"] .edge-glow { opacity: .8; }
 .convo-empty { color: var(--muted); font-size: 1rem; }
 .conversation:has(.turns li) .convo-empty { display: none; }
 .turns { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1.25rem; }
-.turns li { max-width: 85%; font-size: 1.0625rem; line-height: 1.4; }
+.turns li { max-width: 85%; font-size: 1.0625rem; line-height: 1.4; overflow-wrap: anywhere; }
 .turns li.user {
   align-self: flex-end; max-width: 80%;
   padding: .875rem 1.125rem; border-radius: 20px 20px 6px 20px; background: var(--bubble);
@@ -437,11 +437,12 @@ body[data-ui="listening"] .edge-glow { opacity: .8; }
   margin: .25rem 0; padding: .75rem .875rem; border: 0; border-radius: 14px;
   background: var(--change-bg); color: var(--change-ink); font-weight: 600;
 }
-.confirm .row-change dt { color: inherit; }
+.confirm .row-change { flex-direction: column; align-items: flex-start; gap: .25rem; }
+.confirm .row-change dt { color: inherit; font-size: .875rem; }
+.confirm .row-change dd { color: inherit; text-align: left; }
 .confirm .row-change + .row-total { border-top: 1px solid var(--line); }
 .confirm .row-total { align-items: baseline; }
 .confirm .row-total dd { font-size: 2.75rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; }
-.confirm-note { font-size: 1rem; color: var(--ink-soft); }
 .card-secure { display: flex; align-items: center; gap: .5rem; font-size: .9375rem; color: var(--ink-soft); }
 .card-secure svg { flex: none; }
 
