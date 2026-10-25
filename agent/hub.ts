@@ -24,6 +24,10 @@
 //   - The Session ends when the last socket closes, or when its agent loop
 //     stops; the next message starts a fresh one. Messages from a Session
 //     that has ended reach nobody.
+//   - When the user switches the agent between Claude and a local model
+//     (switchBackend), the Session is retired the same way as a hand-off
+//     (nothing waiting is confirmed, an unused yes is withdrawn) and a
+//     fresh one starts on the new backend. The window in use keeps it.
 
 import type { ServerMessage } from "./session.ts";
 
@@ -35,6 +39,10 @@ export interface HubSession {
   interrupt(): void;
   handOff(): void;
   close(): void;
+  // What its agent runs on (local/config.ts backendKey); none in echo mode.
+  backend?: string;
+  // handOff() and close() in one, for a session being replaced.
+  retire?(why: string): void;
 }
 
 // A new session whose messages go out through send. It calls ended() when
@@ -108,6 +116,27 @@ export class SessionHub {
     s.handOff();
     this.log(prev ? "voice session moved to another window" : "voice session claimed");
     return s;
+  }
+
+  // The agent's provider setting changed. A session on another backend is
+  // retired: a read-back or unlock question still waiting is declined,
+  // never confirmed, a yes pay_now has not used is withdrawn, and nothing
+  // it says afterwards reaches anyone. A new session on the new backend
+  // starts if a window is open. Returns whether it switched.
+  switchBackend(backend: string, label = backend): boolean {
+    const s = this.session;
+    if (!s || s.backend === undefined || s.backend === backend) return false;
+    const why = `switched to ${label}`;
+    if (s.retire) s.retire(why);
+    else {
+      s.handOff();
+      s.close();
+    }
+    if (this.session === s) this.session = null;
+    this.log(`voice session restarted (${why})`);
+    if (this.peers.size) this.ensure();
+    this.owner?.send({ type: "status", text: `Switched to ${label}. Starting a new conversation.` });
+    return true;
   }
 
   private interrupt(peer: Peer) {
