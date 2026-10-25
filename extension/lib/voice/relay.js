@@ -10,6 +10,8 @@
 //                                 the speech), only from the tab that is talking
 //   command "toggle-listening" -> PTT_TOGGLE {settings} to offscreen
 //   content/popup TTS_STOP     -> TTS_STOP to offscreen
+//   popup/new tab TYPED_TEXT {text} -> VOICE_TYPED {text} (typed instead of
+//                                 said; only from those two extension pages)
 //   content VOICE_STATE_QUERY  -> the current VOICE_STATE back to that tab
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
 //   offscreen SUBTITLE / SUBTITLE_WORD / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
@@ -29,6 +31,9 @@ import { loadSettings } from "../settings.js";
 import { createDucker } from "./duck.js";
 
 export const OFFSCREEN_PATH = "offscreen/offscreen.html";
+// The extension pages with a "Type to Orbi" box (basic voice).
+export const TYPING_PAGES = Object.freeze(["popup/popup.html", "newtab/newtab.html"]);
+export const TYPED_MAX = 2000;
 export const COMMAND_TOGGLE = "toggle-listening";
 const TO_TAB = new Set([RT.SUBTITLE, RT.SUBTITLE_WORD, RT.VOICE_STATE, RT.VOICE_ERROR, RT.STATUS, RT.VOICE_PARTIAL, RT.VOICE_FINAL]);
 
@@ -173,6 +178,20 @@ export function createVoiceRelay({
       case RT.TTS_STOP:
         toOffscreen({ type: RT.TTS_STOP }, { create: false });
         return true;
+      case RT.TYPED_TEXT: {
+        // The user's own words, so only from Orbi's own pages, never a
+        // content script on a web page.
+        if (!typingPage(sender)) return true;
+        const text = typeof msg.text === "string" ? msg.text.replace(/\s+/g, " ").trim().slice(0, TYPED_MAX) : "";
+        if (!text) return true;
+        // Captions go to the new tab page that sent it, or (the popup) the
+        // tab in front now. Settings ride along, as on VOICE_START: a
+        // document this creates knows nothing else of them.
+        if (sender.tab && sender.tab.id != null) lastTabId = sender.tab.id;
+        const typedTab = sender.tab && sender.tab.id != null ? null : activeTabId().then((id) => { if (id != null) lastTabId = id; }, () => {});
+        toOffscreen(async () => { await typedTab; return { type: RT.VOICE_TYPED, text, settings: await getSettings() }; });
+        return true;
+      }
       case RT.VOICE_STATE_QUERY:
         // A tab became visible again: tell it the current state (the hotkey
         // needs it for the latch and the double-tap).
@@ -184,6 +203,12 @@ export function createVoiceRelay({
       default:
         return false;
     }
+  }
+
+  function typingPage(sender) {
+    if (!sender || sender.id !== chromeApi.runtime.id || typeof sender.url !== "string") return false;
+    const path = sender.url.split(/[?#]/)[0];
+    return TYPING_PAGES.some((p) => path === chromeApi.runtime.getURL(p));
   }
 
   async function toggle(tabId) {

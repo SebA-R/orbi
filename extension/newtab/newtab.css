@@ -174,3 +174,13 @@ kbd {
   background: var(--btn); color: var(--btn-fg); font: inherit; font-weight: 600; cursor: pointer;
 }
 @media (forced-colors: active) { .failed button { border: 2px solid CanvasText; } }
+
+/* Basic voice (no Cartesia key): type instead of talking. */
+.type-box { margin-top: 18px; width: 100%; max-width: 480px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.type-box[hidden] { display: none; }
+.type-note { font-size: 13px; color: var(--hint); text-align: center; }
+.type-row { display: flex; gap: 8px; width: 100%; }
+.type-row input { flex: 1; min-width: 0; height: 40px; padding: 0 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--field); color: var(--fg); font: inherit; font-size: 15px; }
+.type-row input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.type-row button { height: 40px; padding: 0 16px; border: 1px solid var(--line); border-radius: 999px; background: var(--field); color: var(--fg); font: inherit; font-size: 14px; cursor: pointer; }
+.type-row button:hover { background: var(--hover); }

@@ -32,7 +32,8 @@
     "scripting",
     "offscreen",
     "webRequest",
-    "search"
+    "search",
+    "tts"
   ],
   "host_permissions": [
     "<all_urls>"
