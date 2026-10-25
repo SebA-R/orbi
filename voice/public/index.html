@@ -94,10 +94,9 @@
         <h2 id="confirm-heading">Ready to pay</h2>
         <dl class="lines">
           <div class="row"><dt>Item</dt><dd id="confirm-item"></dd></div>
-          <div class="row row-change" id="confirm-change-row" hidden><dt><s id="confirm-change"></s></dt><dd>Removed</dd></div>
+          <div class="row row-change" id="confirm-change-row" hidden><dt>Changed for you</dt><dd id="confirm-change"></dd></div>
           <div class="row row-total"><dt>Total</dt><dd id="confirm-total"></dd></div>
         </dl>
-        <p id="confirm-note" class="confirm-note" hidden></p>
         <p class="card-secure">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
           Place order stays locked until you say yes.
@@ -122,7 +121,6 @@
         </div>
         <dl class="lines">
           <div class="row row-item"><dt>Item</dt><dd id="receipt-item"></dd></div>
-          <div class="row" id="receipt-saved-row" hidden><dt>Add-on removed</dt><dd id="receipt-saved"></dd></div>
           <div class="row"><dt>Card</dt><dd id="receipt-card"></dd></div>
           <div class="row row-total"><dt>Total</dt><dd id="receipt-total"></dd></div>
         </dl>
@@ -180,14 +178,15 @@
       const ask = 'Reorder my allergy pills, cheapest same dose.';
       const options = 'Three options. Store brand cetirizine, 30 count, $8.99. The 45 count, $11.49. Or 90 count, $17.99. Which one?';
       const readBack = "You're buying 1 store brand cetirizine 10mg, 30 count for $9.64. I removed a pre-checked Subscribe and Save membership that would have added $4.99. Say yes to pay, or no to change it.";
+      const order = { item: 'store brand cetirizine 10mg, 30 count', quantity: 1, total: '$9.64', changes: 'I removed a pre-checked Subscribe and Save membership that would have added $4.99.' };
       if (demo !== 'idle') { hook.turn('You', ask); hook.turn('Clearcart', options); hook.turn('You', 'The 30 count.'); }
       if (demo === 'confirm') {
         hook.turn('Clearcart', readBack);
-        hook.confirm(readBack);
+        hook.confirm(order);
         hook.state('idle', { user: 'The 30 count.', agent: readBack });
       } else if (demo === 'receipt') {
         hook.turn('Clearcart', readBack);
-        hook.confirm(readBack);
+        hook.confirm(order);
         hook.turn('You', 'Yes.');
         hook.turn('Clearcart', 'Done. Your order is placed, $9.64 on your Visa ending in 1111.');
         hook.state('idle', { user: 'Yes', agent: 'Done. Your order is placed, $9.64 on your Visa ending in 1111.' });

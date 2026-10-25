@@ -5,7 +5,10 @@ export function createTokenSource({ url, fetchImpl = (...a) => fetch(...a), now 
   let inflight = null;
   async function mint() {
     const res = await fetchImpl(url(), { cache: "no-store" });
-    if (!res.ok) throw new Error(`/cartesia-token returned ${res.status}`);
+    if (!res.ok) {
+      const body = await Promise.resolve().then(() => res.json()).catch(() => null);
+      throw new Error(body && body.voice === false ? "Voice is off on the agent server" : `/cartesia-token returned ${res.status}`);
+    }
     const data = await res.json();
     if (!data || !data.token) throw new Error("/cartesia-token returned no token");
     const ttl = Number(data.expires_in) || 60;
