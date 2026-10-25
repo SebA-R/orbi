@@ -40,7 +40,7 @@ if (!settings.newTabPage) {
     await forward();
   } catch (e) {
     document.documentElement.dataset.ready = "true";
-    for (const el of document.querySelectorAll("main > :not(#off, .brand)")) el.hidden = true;
+    for (const el of document.querySelectorAll("main > :not(#off, h1)")) el.hidden = true;
     $("off").hidden = false;
     $("off-text").textContent = back
       ? "The Clearcart new tab page is turned off in Clearcart settings."
@@ -82,7 +82,18 @@ function start() {
     const [title, sub] = TEXT[state](keyName(hotkey));
     $("orb").dataset.state = state;
     face?.setState(state);
-    if ($("voice-title").textContent !== title) $("voice-title").textContent = title;
+    document.body.dataset.state = state;
+    if ($("voice-title").textContent !== title) {
+      // The key shows as a keycap, as in "Hold [Space] to talk".
+      const k = keyName(hotkey);
+      const at = title.indexOf(k);
+      if (at < 0) $("voice-title").textContent = title;
+      else {
+        const kbd = document.createElement("kbd");
+        kbd.textContent = k;
+        $("voice-title").replaceChildren(title.slice(0, at), kbd, title.slice(at + k.length));
+      }
+    }
     if ($("voice-sub").textContent !== sub) $("voice-sub").textContent = sub;
   };
 

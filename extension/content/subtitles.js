@@ -122,6 +122,7 @@
     const root = document.documentElement;
     if (!root) return false;
     const host = document.createElement("clearcart-subtitles");
+    host.setAttribute(OVERLAY_ATTR, String(RANK));
     host.setAttribute("aria-hidden", "true");
     host.setAttribute("inert", "");
     host.setAttribute("translate", "no");
@@ -163,7 +164,7 @@
     card.append(lines);
     wrap.append(card);
     shadow.append(wrap);
-    root.append(host);
+    place(root, host);
     if (ui.face) ui.face.destroy();
     Object.assign(ui, { host, wrap, hint, user, agent, face });
     keepLast(root);
@@ -197,18 +198,66 @@
   }
 
   // Pages that append their own overlay after us, or rewrite our inline style.
+  // Every Clearcart overlay host carries OVERLAY_ATTR, whose value is its rank
+  // (higher sits later, so the subtitles stay above the frame). A host only
+  // moves when a non-Clearcart element follows it, so two Clearcart overlays
+  // never chase each other. A valve stops re-appending for a while if a page
+  // keeps itself last too, so the two can't spin forever.
+  const OVERLAY_ATTR = "data-clearcart-overlay";
+  const VALVE_MAX = 20;       // re-appends allowed per window
+  const VALVE_WINDOW_MS = 1000;
+  const VALVE_PAUSE_MS = 3000;
+  const RANK = 2;
+  const valve = { times: [], until: 0, timer: 0 };
+  function rankOf(el) {
+    const r = Number(el.getAttribute(OVERLAY_ATTR));
+    return Number.isFinite(r) ? r : 0;
+  }
+  function followedByPage(host) {
+    for (let el = host.nextElementSibling; el; el = el.nextElementSibling) {
+      if (!el.hasAttribute(OVERLAY_ATTR)) return true;
+    }
+    return false;
+  }
+  // Last, but before any trailing Clearcart overlay that ranks above us.
+  function place(root, host) {
+    let before = null;
+    for (let el = root.lastElementChild; el && el !== host; el = el.previousElementSibling) {
+      if (!el.hasAttribute(OVERLAY_ATTR) || rankOf(el) <= RANK) break;
+      before = el;
+    }
+    if (before) root.insertBefore(host, before);
+    else root.append(host);
+  }
+  function valveOpen() {
+    const now = Date.now();
+    if (now < valve.until) return false;
+    valve.times = valve.times.filter((t) => now - t < VALVE_WINDOW_MS);
+    if (valve.times.length >= VALVE_MAX) {
+      valve.until = now + VALVE_PAUSE_MS;
+      valve.times = [];
+      clearTimeout(valve.timer);
+      valve.timer = setTimeout(() => { valve.timer = 0; check(); }, VALVE_PAUSE_MS);
+      return false;
+    }
+    valve.times.push(now);
+    return true;
+  }
+
+  function check() {
+    const host = ui.host;
+    const root = document.documentElement;
+    if (!host || !root) return;
+    if ((host.parentNode !== root || followedByPage(host)) && valveOpen()) {
+      place(root, host);
+      if (ui.wrap && ui.wrap.classList.contains("on")) raise();
+    }
+    if (host.style.getPropertyPriority("z-index") !== "important") pinHostStyle(host);
+  }
   let watcher = null;
   function keepLast(root) {
     if (watcher || typeof MutationObserver !== "function") return;
-    watcher = new MutationObserver(() => {
-      const host = ui.host;
-      if (!host) return;
-      if (host.parentNode !== root || root.lastElementChild !== host) {
-        root.append(host);
-        if (ui.wrap && ui.wrap.classList.contains("on")) raise();
-      }
-      if (host.style.getPropertyPriority("z-index") !== "important") pinHostStyle(host);
-    });
+    watcher = new MutationObserver(check);
     watcher.observe(root, { childList: true });
   }
 

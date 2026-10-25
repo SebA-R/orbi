@@ -910,6 +910,7 @@
     host.id = HOST_ID;
     host.setAttribute("aria-hidden", "true");
     host.setAttribute("role", "presentation");
+    host.setAttribute("data-clearcart-overlay", "0"); // our overlays never re-append past it
     host.style.cssText = "position:fixed;inset:0;width:0;height:0;pointer-events:none;z-index:2147483646";
     var shadow = host.attachShadow ? host.attachShadow({ mode: "closed" }) : host;
     var style = doc.createElement("style");
