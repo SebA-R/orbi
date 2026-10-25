@@ -35,6 +35,9 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
+// extbridge.ts before user-unlock.ts: origins.ts and prompt.ts import each
+// other through it, and only this order initializes them.
+import "../extbridge.ts";
 import { isDesktopDirectAsk, isDirectAsk, type DesktopUnlockClass, type UnlockClass } from "../user-unlock.ts";
 import { orbiConfigPath } from "../userconfig.ts";
 
