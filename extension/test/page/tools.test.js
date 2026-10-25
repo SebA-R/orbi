@@ -198,3 +198,11 @@ test("fill_payment handles split month/year selects", async () => {
   assert.equal(p.document.querySelector('[name="m"]').value, "12");
   assert.equal(p.document.querySelector('[name="y"]').value, "2029");
 });
+
+test("read_page and get_page_text report origin and path only, never the query string or fragment", async () => {
+  const p = loadPage(pages.search, { url: store.base + "/search?q=allergy&code=SECRET#access_token=TOKEN" });
+  for (const m of ["read_page", "get_page_text"]) {
+    const r = (await p.call(m, {})).result;
+    assert.equal(r.url, store.base + "/search", m);
+  }
+});

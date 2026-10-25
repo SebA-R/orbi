@@ -284,7 +284,14 @@
     if (document.body) walk(document.body, 0);
     if (dropped) lines.push("- … " + dropped + " more nodes (raise maxNodes or use find)");
     badges();
-    return { url: location.href, title: Mask.maskCardRuns(document.title), tree: lines.join("\n") };
+    return { url: pageUrl(), title: Mask.maskCardRuns(document.title), tree: lines.join("\n") };
+  }
+
+  // Origin and path only: a query string or fragment can carry login codes
+  // and tokens, and this goes to Claude.
+  function pageUrl() {
+    var o = location.origin;
+    return o && o !== "null" ? o + location.pathname : location.protocol;
   }
 
   // ------------------------------------------------------------------ find
@@ -364,7 +371,7 @@
     text = Mask.maskCardRuns(text);
     var truncated = text.length > maxChars;
     if (truncated) text = text.slice(0, maxChars) + "\n… (truncated)";
-    return { url: location.href, title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
+    return { url: pageUrl(), title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
   }
 
   // ------------------------------------------------------------ form_input
