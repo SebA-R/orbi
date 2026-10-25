@@ -166,8 +166,19 @@
       else win.scrollBy({ top: win.innerHeight * 0.85, behavior: "smooth" });
     };
     const detector = createHoldDetector({ send, onTap });
-    win.addEventListener("keydown", (e) => detector.onKeyDown(e), true);
-    win.addEventListener("keyup", (e) => detector.onKeyUp(e), true);
+    // After an extension reload this copy is orphaned (runtime.id goes away)
+    // and the worker injects a fresh one, so this copy steps aside.
+    const myId = chromeApi.runtime && chromeApi.runtime.id;
+    const orphaned = () => { try { return !!myId && !chromeApi.runtime.id; } catch { return true; } };
+    const onDown = (e) => { if (orphaned()) return detach(); detector.onKeyDown(e); };
+    const onUp = (e) => { if (orphaned()) return detach(); detector.onKeyUp(e); };
+    const detach = () => {
+      detector.cancel();
+      win.removeEventListener("keydown", onDown, true);
+      win.removeEventListener("keyup", onUp, true);
+    };
+    win.addEventListener("keydown", onDown, true);
+    win.addEventListener("keyup", onUp, true);
     win.addEventListener("blur", () => detector.cancel());
     doc.addEventListener("visibilitychange", () => { if (doc.visibilityState === "hidden") detector.cancel(); });
 

@@ -14,6 +14,7 @@ import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
 import { MSG } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 import { onInstalledSetup, refreshBadge } from "../lib/setup.js";
+import { injectIntoOpenTabs } from "../lib/inject.js";
 
 const VERSION = chrome.runtime.getManifest().version;
 const log = createLogger("worker");
@@ -24,6 +25,8 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
   // Setup page (site access, microphone, agent server): always on install,
   // on update only when site access or the mic is still missing.
   onInstalledSetup(reason).catch((e) => log.warn(`setup check failed: ${e.message}`));
+  // Tabs open before this install, update or reload have no content scripts yet.
+  injectIntoOpenTabs().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -36,7 +39,11 @@ chrome.runtime.onStartup.addListener(() => {
 // and popup also update it after their checks.
 const badge = () => refreshBadge().catch(() => {});
 badge();
-chrome.permissions.onAdded.addListener(badge);
+chrome.permissions.onAdded.addListener(() => {
+  badge();
+  // New site access: add the content scripts to the tabs already open.
+  injectIntoOpenTabs().catch(() => {});
+});
 chrome.permissions.onRemoved.addListener(badge);
 
 // Module A lifecycle: forget debugger sessions and the tab group with them.
