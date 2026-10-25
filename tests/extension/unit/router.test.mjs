@@ -461,3 +461,12 @@ test("get_page_text: a sheet's gid only from the page that answered; CSV; maxCha
   await keyed.router.route("get_page_text", {});
   assert.match(keyed.calls.find((c) => c[0] === "fetch")[1], /format=txt&authuser=2&resourcekey=0-abc_D$/);
 });
+
+test("in a hidden field (Google Docs) a typed space goes in without a Space key; letters are keys", async () => {
+  const { calls, router } = docsFakes({ focus: { kind: "other", payment: false, text: true, hidden: true } });
+  await router.route("type", { text: "a b" });
+  const sent = calls.filter((c) => c[0] === "cdp.send");
+  assert.ok(!sent.some((c) => c[1] === "Input.dispatchKeyEvent" && c[2].code === "Space"), "no Space key event");
+  assert.ok(sent.some((c) => c[1] === "Input.insertText" && c[2].text === " "));
+  assert.ok(sent.some((c) => c[1] === "Input.dispatchKeyEvent" && c[2].type === "char" && c[2].text === "a"));
+});

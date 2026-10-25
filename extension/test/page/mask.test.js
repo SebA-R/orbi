@@ -59,3 +59,22 @@ test("maskCardRuns finds a card glued to other digits: a CVC, an expiry, a short
   assert.ok(order === "Order 123456789012345678" || order === `Order ${M}`);
   assert.equal(maskCardRuns("x".repeat(10) + "1".repeat(5000)), "x".repeat(10) + M);
 });
+
+test("order and tracking numbers mostly stay readable", () => {
+  const { window } = loadPage("");
+  const { maskCardRuns } = window.ClearcartMask;
+  // Random digits, seeded: Amazon-style order ids and 22-digit tracking numbers.
+  let seed = 7;
+  const digit = () => ((seed = (seed * 1103515245 + 12345) % 2147483648), String(seed % 10));
+  const digits = (n) => Array.from({ length: n }, digit).join("");
+  let orders = 0;
+  let tracking = 0;
+  for (let i = 0; i < 500; i++) {
+    const o = `112-${digits(7)}-${digits(7)}`;
+    if (maskCardRuns(o) !== o) orders++;
+    const t = `9400 ${digits(4)} ${digits(4)} ${digits(4)} ${digits(4)} ${digits(2)}`;
+    if (maskCardRuns(t) !== t) tracking++;
+  }
+  assert.ok(orders < 150, `${orders} of 500 order ids masked`);
+  assert.ok(tracking < 200, `${tracking} of 500 tracking numbers masked`);
+});

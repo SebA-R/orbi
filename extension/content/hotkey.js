@@ -11,10 +11,12 @@
 //
 // Canvas editors (Google Docs, and others that type through a hidden text
 // field, see isHiddenEntry) keep the caret in a field the user can't see,
-// so Space there types as usual and a hold of CONFIRM_MS also talks: PTT_START
-// then (with the listen sound, nothing recorded before), key repeats are
-// swallowed, and the release sends PTT_STOP. The first space stays typed.
-// Any other key during those first moments means typing, so no talk.
+// so Space there types as usual and a hold also talks, from the key's first
+// auto-repeat (or HIDDEN_CONFIRM_MS without key repeat): PTT_START then (with
+// the listen sound, nothing recorded before), key repeats are swallowed, and
+// the release sends PTT_STOP. The first space stays typed. Any other key
+// during the hold means typing, so no talk. Orbi's own typing sends no Space
+// key there (background/router.js), so it never starts a hold.
 //
 // With Space as the talk key, Option+Space (Alt+Space) latches, everywhere
 // including text fields: one press sends PTT_START {latch: true} and listening
@@ -57,6 +59,9 @@
   };
   const CONFIRM_MS = 200;
   const DOUBLE_TAP_MS = 350; // second tap within this long after the first: hush
+  // A Space hold in a hidden text field talks at its first key repeat, or
+  // after this long with key repeat turned off: longer than a resting thumb.
+  const HIDDEN_CONFIRM_MS = 650;
 
   // Same names as HOTKEYS in lib/settings.js.
   const SPECS = {
@@ -184,7 +189,7 @@
   function createHoldDetector({
     hotkey = "Space", send, onTap = () => {},
     setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
-    doubleTapMs = DOUBLE_TAP_MS, dom = null, isHidden = isHiddenEntry,
+    doubleTapMs = DOUBLE_TAP_MS, dom = null, isHidden = isHiddenEntry, hiddenConfirmMs = HIDDEN_CONFIRM_MS,
   }) {
     let specs = [];
     let spec = null; // the spec of the current hold
@@ -216,6 +221,13 @@
       send(RT.PTT_CANCEL);
     };
     const consume = (e) => { e.preventDefault(); e.stopPropagation(); };
+    // A Space hold in a hidden text field is long enough: talk.
+    const confirmTyped = () => {
+      clearHoldTimer();
+      if (!held || !typed || confirmed) return;
+      confirmed = true;
+      send(RT.PTT_START);
+    };
     // Space, Option+Space or the talk key ends a latch, even in a text field.
     const endsLatch = (e) => e.code === "Space"
       ? !e.ctrlKey && !e.shiftKey && !e.metaKey
@@ -267,6 +279,13 @@
           typed = false;
           clearHoldTimer();
         }
+        // The key repeating means a finger is holding it (Orbi's own typing
+        // and a quick press never repeat): talk now.
+        if (typed && !confirmed && e.code === spec.code && e.repeat && matches(spec, e)) {
+          consume(e);
+          confirmTyped();
+          return;
+        }
         if (latched) {
           if (!endsLatch(e)) return;
           consume(e);
@@ -288,12 +307,7 @@
           held = true;
           typed = true;
           confirmed = false;
-          timer = setTimer(() => {
-            timer = null;
-            if (!held) return;
-            confirmed = true;
-            send(RT.PTT_START);
-          }, spec.confirmMs);
+          timer = setTimer(confirmTyped, hiddenConfirmMs);
           return;
         }
         consume(e);
@@ -460,7 +474,7 @@
   }
 
   if (typeof globalThis.__clearcartHotkeyTest === "object") {
-    Object.assign(globalThis.__clearcartHotkeyTest, { createHoldDetector, install, isTextEntry, isHiddenEntry, isPressable, deepFocus, isTyping, SPECS, RT, CONFIRM_MS, DOUBLE_TAP_MS });
+    Object.assign(globalThis.__clearcartHotkeyTest, { createHoldDetector, install, isTextEntry, isHiddenEntry, isPressable, deepFocus, isTyping, SPECS, RT, CONFIRM_MS, DOUBLE_TAP_MS, HIDDEN_CONFIRM_MS });
   } else if (globalThis.chrome && globalThis.chrome.runtime && globalThis.chrome.runtime.id) {
     install();
   }

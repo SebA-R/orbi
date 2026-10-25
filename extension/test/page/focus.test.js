@@ -32,3 +32,25 @@ test("a frame whose page is focused is nothing, unless it is in designMode", asy
   assert.equal(f.text, true);
   assert.equal(f.nothing, undefined);
 });
+
+test("a field off screen, or in a frame off screen, is hidden; one on screen is not", async () => {
+  const p = loadPage(`<input id="q"><iframe></iframe>`);
+  const rect = (left, top, width, height) => () => ({ left, top, width, height, right: left + width, bottom: top + height });
+  const q = p.document.getElementById("q");
+  q.getBoundingClientRect = rect(10, 10, 200, 30);
+  q.focus();
+  assert.equal((await focused(p)).hidden, undefined);
+  q.getBoundingClientRect = rect(-9999, 10, 1, 1);
+  assert.equal((await focused(p)).hidden, true);
+  // Google Docs: a 1px frame at top -10000 holding the caret's textbox.
+  const frame = p.document.querySelector("iframe");
+  frame.getBoundingClientRect = rect(0, -10000, 625, 1);
+  frame.contentDocument.body.innerHTML = '<div contenteditable="true" role="textbox"></div>';
+  const box = frame.contentDocument.querySelector("div");
+  Object.defineProperty(box, "isContentEditable", { get: () => true });
+  box.getBoundingClientRect = rect(0, 0, 625, 18);
+  box.focus();
+  const f = await focused(p);
+  assert.equal(f.text, true);
+  assert.equal(f.hidden, true);
+});

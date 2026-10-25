@@ -396,8 +396,10 @@ export function createRouter({
   }
 
   // Key events only go into a plain text field; anywhere else (a button, a
-  // select, the page) a key press could act on its own.
-  const keysFor = (focus) => ({ keys: !!(focus && focus.text === true) });
+  // select, the page) a key press could act on its own. A space in a hidden
+  // field (a canvas editor's, such as Google Docs') goes in without a Space
+  // key, which content/hotkey.js would take for the user holding Space.
+  const keysFor = (focus, ch) => ({ keys: !!(focus && focus.text === true) && !(focus.hidden === true && ch === " ") });
 
   // Typing: the check for every character. The focus may have moved to a
   // card or password field since the last one, a newline may now land in a
@@ -406,7 +408,7 @@ export function createRouter({
     const focus = await guardType(tabId, "");
     sameDoc(tabId, start);
     if (/[\r\n]/.test(ch)) await pageCall(tabId, "guard_key", { key: "Enter" });
-    return keysFor(focus);
+    return keysFor(focus, ch);
   }
 
   // The element's exact centre, unrounded: the same point the page hit-tests

@@ -71,17 +71,36 @@
   // or dashes.
   var RUN = /\d(?:[ -]?\d){12,}/g;
 
-  // True when some 13-19 digit window of the run passes Luhn, so a card
-  // glued to other digits ("4111 1111 1111 1111 123", "Order 12 4111...")
-  // is still found. Long numbers that are not cards are caught too, which is
-  // fine: masking too much is safe.
+  // Card numbers are 13 to 19 digits and start with 1 to 6.
+  function cardLike(d) {
+    return /^[1-6]/.test(d) && luhn(d);
+  }
+
+  // True when the run holds a card number, also next to other digits:
+  // every span of whole groups (the digits between spaces or dashes) of 13
+  // to 19 digits is checked ("4111 1111 1111 1111 123", "Order 12
+  // 4111111111111111", "4111 1111 1111 1111 05/27"), and a group longer
+  // than 16 digits is checked for a card at its start or end, glued to more
+  // digits ("4111111111111111123"). Aligned spans keep order and tracking
+  // numbers mostly readable; a few are masked, which is safe.
+  var CARD_LENGTHS = [13, 14, 15, 16, 19];
   function hasCardWindow(run) {
-    var d = String(run).replace(/[\s-]/g, "");
+    var groups = String(run).split(/[\s-]+/);
     // Too long to be anything a person reads as a number: mask it.
-    if (d.length > 400) return true;
-    for (var len = 13; len <= 19 && len <= d.length; len++) {
-      for (var i = 0; i + len <= d.length; i++) {
-        if (luhn(d.slice(i, i + len))) return true;
+    if (groups.join("").length > 400) return true;
+    for (var i = 0; i < groups.length; i++) {
+      var span = "";
+      for (var j = i; j < groups.length; j++) {
+        span += groups[j];
+        if (span.length > 19) break;
+        if (span.length >= 13 && cardLike(span)) return true;
+      }
+      var g = groups[i];
+      if (g.length > 16) {
+        for (var k = 0; k < CARD_LENGTHS.length && CARD_LENGTHS[k] < g.length; k++) {
+          var n = CARD_LENGTHS[k];
+          if (cardLike(g.slice(0, n)) || cardLike(g.slice(g.length - n))) return true;
+        }
       }
     }
     return false;

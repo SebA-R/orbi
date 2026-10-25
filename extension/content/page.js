@@ -723,7 +723,6 @@
 
   // A document whose whole body is the editor (designMode, or an editable
   // body, as old rich-text editors in a frame have).
-  var EDITABLE_DOC = { kind: "other", payment: false, text: true };
   function editableDoc(doc) {
     return doc.designMode === "on" || !!(doc.body && doc.body.isContentEditable);
   }
@@ -732,7 +731,32 @@
   // CDP typing into a card field. Never returns the value. nothing: no
   // element has focus (only the page or a frame's page), so typed text
   // would go nowhere.
+  // No visible area: off its window's viewport, or under 2px on a side.
+  function offscreen(el) {
+    var win = el.ownerDocument && el.ownerDocument.defaultView;
+    var r = el.getBoundingClientRect();
+    return !win || !(r.width >= 2) || !(r.height >= 2) || r.right <= 0 || r.bottom <= 0 || r.left >= win.innerWidth || r.top >= win.innerHeight;
+  }
+
+  // hidden: the field (or a frame it is in) can't be seen, like the hidden
+  // field a canvas editor types through (Google Docs). content/hotkey.js
+  // talks on a held Space there, so the worker types spaces there without a
+  // Space key event.
   function focusedField() {
+    var out = focusedKind();
+    if (out.el) {
+      var hidden = false;
+      try {
+        hidden = offscreen(out.el) || out.frames.some(offscreen);
+      } catch (_) { hidden = false; }
+      if (hidden) out.info.hidden = true;
+    }
+    return out.info;
+  }
+
+  function focusedKind() {
+    var frames = [];
+    var done = function (info, el) { return { info: info, el: el || null, frames: frames }; };
     var el = document.activeElement;
     for (var guard = 0; el && guard < 20; guard++) {
       if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
@@ -742,26 +766,27 @@
       // there is refused like a payment field.
       var sub = null;
       try { sub = el.contentDocument || null; } catch (_) { sub = null; }
-      if (!sub) return { kind: "frame", payment: true, text: false };
+      if (!sub) return done({ kind: "frame", payment: true, text: false });
+      frames.push(el);
       var inner = sub.activeElement;
       if (!inner || inner === sub.body || inner === sub.documentElement) {
-        return editableDoc(sub) ? EDITABLE_DOC : { kind: "none", payment: false, nothing: true };
+        return done(editableDoc(sub) ? { kind: "other", payment: false, text: true } : { kind: "none", payment: false, nothing: true });
       }
       el = inner;
     }
     if (!el || el === document.body || el === document.documentElement) {
-      return editableDoc(document) ? EDITABLE_DOC : { kind: "none", payment: false, nothing: true };
+      return done(editableDoc(document) ? { kind: "other", payment: false, text: true } : { kind: "none", payment: false, nothing: true });
     }
     var tag = el.tagName;
     if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
-      return { kind: el.isContentEditable ? "other" : "none", payment: false, text: !!el.isContentEditable };
+      return done({ kind: el.isContentEditable ? "other" : "none", payment: false, text: !!el.isContentEditable }, el);
     }
     var k = kindOf(el);
     // text: a field that takes typed characters, so a key press there only
     // types (watchable typing sends key events only then).
     var text = !el.disabled && !el.readOnly && (tag === "TEXTAREA" ||
       (tag === "INPUT" && /^(text|search|email|url|tel|number)$/.test(String(el.type || "text").toLowerCase())));
-    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el), text: text };
+    return done({ kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el), text: text }, el);
   }
 
   // ---------------------------------------------------------- page_context

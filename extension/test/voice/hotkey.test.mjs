@@ -529,11 +529,16 @@ test("a frame rewritten with document.open() gets its listeners back", () => {
 const DOCS_BOX = { tagName: "DIV", isContentEditable: true, getAttribute: () => null };
 
 test("Space in a hidden text field types, and a hold talks with nothing recorded before", () => {
-  const { d, sent, extras, fire } = detector("Space", { isHidden: () => true });
+  const { d, sent, extras, timers, fire } = detector("Space", { isHidden: () => true });
   const down = key("Space", {}, { target: DOCS_BOX });
   d.onKeyDown(down);
   assert.equal(down.prevented, false, "the space is typed");
   assert.deepEqual(sent, [], "no silent start while typing");
+  assert.equal(timers[0].ms, load().HIDDEN_CONFIRM_MS, "longer than a resting thumb");
+  // The key's first auto-repeat: a finger is holding it.
+  const first = key("Space", {}, { target: DOCS_BOX, repeat: true });
+  d.onKeyDown(first);
+  assert.equal(first.prevented, true);
   fire();
   assert.deepEqual(sent, ["ptt.start"]);
   assert.equal(extras[0], undefined, "a confirmed start, with the listen sound");
@@ -544,6 +549,12 @@ test("Space in a hidden text field types, and a hold talks with nothing recorded
   d.onKeyUp(up);
   assert.equal(up.prevented, true);
   assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
+  // Key repeat turned off: the hold talks after HIDDEN_CONFIRM_MS.
+  const b = detector("Space", { isHidden: () => true });
+  b.d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  b.fire();
+  b.d.onKeyUp(key("Space", {}, { target: DOCS_BOX }));
+  assert.deepEqual(b.sent, ["ptt.start", "ptt.stop"]);
 });
 
 test("a tap, or Space then another key, in a hidden text field is just typing", () => {
