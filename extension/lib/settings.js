@@ -53,6 +53,10 @@ export const DEFAULTS = Object.freeze({
   // (background/actor.js). Off, they happen at once. Typing is always
   // key by key at a typist's cadence, either way.
   watchablePace: true,
+  // Memory: the agent keeps facts the user asked it to remember and the
+  // last two hours of the conversation, on this computer only
+  // (agent/memory.ts). Off, it neither uses nor saves them.
+  memory: true,
   // Clearcart's own pointer on the page while it clicks, types and scrolls
   // (content/cursor.js). Purely visual.
   showCursor: true,
@@ -110,6 +114,7 @@ export function normalize(raw = {}) {
   if (typeof raw.watchablePace === "boolean") out.watchablePace = raw.watchablePace;
   if (typeof raw.showCursor === "boolean") out.showCursor = raw.showCursor;
   if (typeof raw.newTabPage === "boolean") out.newTabPage = raw.newTabPage;
+  if (typeof raw.memory === "boolean") out.memory = raw.memory;
   if (typeof raw.errorPages === "boolean") out.errorPages = raw.errorPages;
   // Only a stored true turns it on.
   out.dangerMode = raw.dangerMode === true;
