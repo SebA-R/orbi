@@ -40,7 +40,7 @@ test("chrome://newtab opens Clearcart's page with the hotkey and no subtitle car
   await page.close();
 });
 
-test("the hero orb is the face: it smiles at rest, faceless while active, no mini orb", async () => {
+test("the hero orb is the face: it has a face in every state, no mini orb", async () => {
   const page = await openNewTab();
   assert.equal(await page.locator("#mini-orb, .brand .ccf").count(), 0, "no mini orb beside the name");
   const face = page.locator("#orb > .ccf");
@@ -60,10 +60,13 @@ test("the hero orb is the face: it smiles at rest, faceless while active, no min
   for (const state of ["listening", "thinking", "speaking"]) {
     await ext.worker.evaluate(([tabId, s]) => chrome.tabs.sendMessage(tabId, { type: "voice.state", state: s }), [id, state]);
     await page.waitForFunction((s) => document.querySelector("#orb > .ccf").dataset.state === s, state);
-    assert.equal(await face.evaluate((f) => f.classList.contains("ccf-noface")), true, state);
+    assert.equal(await face.evaluate((f) => f.classList.contains("ccf-noface")), false, state);
+    // F2's arc eyes while listening, F1's dots otherwise, after the crossfade.
+    const eyes = state === "listening" ? ".ccf-arcs" : ".ccf-dots";
+    await page.waitForFunction((sel) => getComputedStyle(document.querySelector(`#orb > .ccf ${sel}`)).opacity === "1", eyes);
   }
   await ext.worker.evaluate((tabId) => chrome.tabs.sendMessage(tabId, { type: "voice.state", state: "idle" }), id);
-  await page.waitForFunction(() => !document.querySelector("#orb > .ccf").classList.contains("ccf-noface"));
+  await page.waitForFunction(() => document.querySelector("#orb > .ccf").dataset.state === "idle");
   await page.close();
 });
 
