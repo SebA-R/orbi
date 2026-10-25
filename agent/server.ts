@@ -10,9 +10,10 @@ import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { extBridge, extMode } from "./extbridge.ts";
-import { hostAllowed } from "./hostcheck.ts";
+import { extensionOrigins, hostAllowed, memoryRequestAllowed, upgradeOriginAllowed } from "./hostcheck.ts";
 import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
-import { Session } from "./session.ts";
+import { conversationLog, memoryStore } from "./memory.ts";
+import { memoryOn, Session } from "./session.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -109,10 +110,40 @@ async function cartesiaToken(res: http.ServerResponse) {
 // The port actually listened on (AGENT_PORT=0 picks a free one).
 const port = () => (server.address() as { port?: number } | null)?.port ?? PORT;
 const localHost = (req: http.IncomingMessage) => hostAllowed(req.headers.host, port());
+// Upgrades also need an allowed Origin: a web page can open a socket to
+// localhost with the right Host, and /session takes its words as the user's.
+const localUpgrade = (req: http.IncomingMessage) => localHost(req) && upgradeOriginAllowed(req.headers.origin, port(), EXT_ORIGINS);
+
+// Saved facts for the extension's settings page (memory.ts):
+//   GET    /memory       { enabled, facts: [{ id, text, at }] }
+//   DELETE /memory/<id>  forget one fact
+//   DELETE /memory       forget everything, the recent conversation too
+// Loopback peers with the Clearcart extension's Origin only (hostcheck.ts).
+// Nothing here adds a fact: only the remember tool does.
+const EXT_ORIGINS = extensionOrigins();
+function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathname: string) {
+  if (!memoryRequestAllowed(req, port(), EXT_ORIGINS)) return json(res, 403, { error: "forbidden" });
+  const store = memoryStore();
+  const id = pathname.slice("/memory/".length);
+  if (req.method === "GET" && pathname === "/memory") return json(res, 200, { enabled: memoryOn(), facts: store.list() });
+  if (req.method === "DELETE" && pathname === "/memory") {
+    const n = store.clear();
+    conversationLog().clear();
+    console.log("memory: forgot everything (settings page)");
+    return json(res, 200, { ok: true, removed: n });
+  }
+  if (req.method === "DELETE" && /^m[0-9a-f]{8}$/.test(id)) {
+    const hit = store.remove(id);
+    if (hit) console.log("memory: forgot a fact (settings page)");
+    return json(res, hit ? 200 : 404, hit ? { ok: true } : { error: "not found" });
+  }
+  json(res, 405, { error: "method not allowed" });
+}
 
 const server = http.createServer((req, res) => {
   if (!localHost(req)) return void res.writeHead(403, { "Content-Type": "text/plain" }).end("Forbidden host");
   const url = new URL(req.url || "/", "http://localhost");
+  if (url.pathname === "/memory" || url.pathname.startsWith("/memory/")) return memoryRoute(req, res, url.pathname);
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
   if (req.method === "GET" && url.pathname === "/healthz") {
     if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, browser: "ext", extension: extBridge.connected() });
@@ -127,15 +158,15 @@ const server = http.createServer((req, res) => {
 // Both refuse an upgrade whose Host header is not this computer (hostcheck.ts).
 const wss = EXT
   ? new WebSocketServer({ noServer: true })
-  : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localHost(req), 403) });
-if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localHost);
+  : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localUpgrade(req), 403) });
+if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localUpgrade);
 
 // One voice session for all /session sockets (hub.ts). Echo mode goes
 // through the same hub, so it follows the same one-owner rules.
 const hub = new SessionHub(
   (send, ended) => {
     if (ECHO) return echoSession(send);
-    const session = new Session(send);
+    const session = new Session(send, { memory: memoryStore(), log: conversationLog() });
     void session.run().finally(() => {
       console.log("session agent stopped");
       ended();

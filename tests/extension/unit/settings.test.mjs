@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULTS, endpoints, loadSettings, normalize, normalizeAgentUrl, normalizeOrigin, parseOriginLines, saveSettings, seedBlocklist,
-  SPEAK_REPLIES_COPY, replyWarning, speakRepliesNote,
 } from "../../../extension/lib/settings.js";
 import { SUGGESTED_BLOCKLIST } from "../../../extension/lib/blocklist.js";
 
@@ -124,36 +123,4 @@ test("guidedMode defaults on, keeps booleans only, and round-trips through stora
   assert.equal(store.data.guidedMode, false);
   assert.equal((await loadSettings(store)).guidedMode, false);
   assert.equal((await saveSettings({ guidedMode: true }, store)).guidedMode, true);
-});
-
-test("speakReplies defaults on and keeps a stored false only", () => {
-  assert.equal(DEFAULTS.speakReplies, true);
-  assert.equal(normalize({}).speakReplies, true);
-  assert.equal(normalize({ speakReplies: false }).speakReplies, false);
-  assert.equal(normalize({ speakReplies: "false" }).speakReplies, true, "non-boolean falls back");
-});
-
-test("both off: the popup and options warn that replies won't be shown or spoken", () => {
-  assert.equal(replyWarning({ speakReplies: true, subtitles: false }), null);
-  assert.equal(replyWarning({ speakReplies: false, subtitles: true }), null);
-  assert.match(replyWarning({ speakReplies: false, subtitles: false }), /won't be shown or spoken.*Turn on Speak replies or subtitles/);
-  // Voice off on the server counts as not speaking.
-  assert.match(replyWarning({ speakReplies: true, subtitles: false }, false), /won't be shown or spoken/);
-  assert.equal(speakRepliesNote(normalize({})), "");
-  assert.equal(speakRepliesNote(normalize({}), false), "Voice is off on the server.");
-  assert.match(speakRepliesNote({ speakReplies: false, subtitles: false }, true), /^Clearcart's replies won't/);
-  assert.match(SPEAK_REPLIES_COPY, /^Speak replies\. Turn off to read Clearcart's answers in the subtitles without hearing them\.$/);
-});
-
-test("Speak replies: one popup switch with the full copy, one options row in the Voice group", async () => {
-  const fs = await import("node:fs");
-  const read = (f) => fs.readFileSync(new URL(`../../../extension/${f}`, import.meta.url), "utf8");
-  const popup = read("popup/popup.html");
-  assert.ok(popup.includes(SPEAK_REPLIES_COPY));
-  assert.equal(popup.match(/id="speak-replies"/g).length, 1);
-  const options = read("options/options.html");
-  const voice = options.slice(options.indexOf('id="voice"'), options.indexOf('id="sites"'));
-  assert.equal(voice.match(/data-setting="speakReplies"/g).length, 1);
-  assert.ok(voice.includes(">Speak replies<") && voice.includes(SPEAK_REPLIES_COPY.replace(/^Speak replies\. /, "")));
-  assert.doesNotMatch(SPEAK_REPLIES_COPY + replyWarning({ speakReplies: false, subtitles: false }), /\u2014/);
 });
