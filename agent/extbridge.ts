@@ -219,7 +219,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       if (m.type === "settings" && ws === this.current && typeof m.guidedMode === "boolean") {
         this.guided = m.guidedMode;
         this.log(`ext: guided mode ${this.guided ? "on" : "off"}`);
-        this.emit("settings", { guidedMode: this.guided });
+        this.emit("settings", { guidedMode: m.guidedMode });
       }
       // pong and anything else: nothing to do.
     });

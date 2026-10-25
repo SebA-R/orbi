@@ -24,7 +24,7 @@ import { ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.t
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
-import { EXT_TABS_PROMPT, SITES_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
+import { buildSystemPrompt, EXT_TABS_PROMPT, guidedNote } from "./prompt.ts";
 import {
   decideUnlock,
   isDirectAsk,
@@ -107,6 +107,12 @@ function extPrompt(prompt: string): string {
     "calling tabs_context_mcp with createIfEmpty true, then use a tab in the MCP group.",
     "calling tabs_context. Use a tab already on the store, or open one with tabs_create."
   ) + EXT_TABS_PROMPT;
+}
+
+// The user's Guided mode setting: the extension's in ext mode, on until it
+// says otherwise (Clearcart is built for blind and low-vision users).
+export function currentGuided(): boolean {
+  return extMode() ? (extBridge.guidedMode() ?? true) : true;
 }
 
 // How long a user turn waits for page_context before going without it.
@@ -360,6 +366,9 @@ export class Session {
   private muted = false;
   // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
   private held: string[] = [];
+  // Guided mode as the model last heard it: the system prompt's at the
+  // start, then the last note sent with a user turn (see withGuidedNote).
+  guided = currentGuided();
 
   constructor(private send: (m: ServerMessage) => void) {}
 
@@ -385,16 +394,25 @@ export class Session {
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
     const fetch = this.pageContext;
-    if (!fetch) return this.input.push(text);
+    if (!fetch) return this.input.push(this.withGuidedNote(text));
     const ctx = Promise.race([
       fetch().catch(() => null),
       new Promise<null>((r) => setTimeout(() => r(null), CONTEXT_TIMEOUT_MS + 200).unref?.()),
     ]);
     this.turns = this.turns.then(async () => {
       const c = await ctx;
-      if (!this.closed) this.input.push(withContext(text, c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
+      if (!this.closed) this.input.push(this.withGuidedNote(withContext(text, c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy())));
     });
     return this.turns;
+  }
+
+  // The system prompt is fixed for a session, so a Guided mode change made
+  // after it started goes in front of the next user turn.
+  private withGuidedNote(turn: string): string {
+    const now = currentGuided();
+    if (now === this.guided) return turn;
+    this.guided = now;
+    return `${guidedNote(now)}\n\n${turn}`;
   }
 
   // The user started talking over us.
@@ -774,7 +792,7 @@ export class Session {
     // calls is reasoning, not speech, so it is never spoken (see the loop).
     const sayTool = tool(
       "say",
-      "Speak one short progress note to the user right now, for example \"Searching the store now.\" Use it only before a slow step. Never for reasoning, page details or ids.",
+      "Speak a few words to the user right now, while you work. Never for reasoning, ids or URLs.",
       { text: z.string().max(160) },
       async ({ text }) => {
         this.say(text.trim());
@@ -867,7 +885,7 @@ export class Session {
       prompt: this.input,
       options: {
         model: MODEL,
-        systemPrompt: (ext ? extPrompt(SYSTEM_PROMPT) : SYSTEM_PROMPT) + SITES_PROMPT,
+        systemPrompt: buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined }),
         cwd: HERE,
         tools: [],
         settingSources: [],
