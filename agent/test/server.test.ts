@@ -15,7 +15,7 @@ const TSX = path.join(AGENT, "node_modules", ".bin", "tsx");
 async function startServer(port: number, env: Record<string, string>): Promise<ChildProcess> {
   const child = spawn(TSX, ["server.ts"], {
     cwd: AGENT,
-    env: { ...process.env, CLEARCART_BROWSER: "", ...env, AGENT_PORT: String(port), AGENT_MODE: "echo" },
+    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", ...env, AGENT_PORT: String(port), AGENT_MODE: "echo" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise<void>((resolve, reject) => {
@@ -54,7 +54,7 @@ test("CLEARCART_BROWSER=ext: /ext and /session share the server", async () => {
     await ext.open();
     assert.equal(ext.welcome.server, "clearcart-agent");
     const health = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
-    assert.deepEqual(health, { ok: true, echo: true, browser: "ext", extension: true });
+    assert.deepEqual(health, { ok: true, echo: true, voice: false, browser: "ext", extension: true });
     assert.equal(await sessionEcho(port), "You said: hi");
     ext.close();
   } finally {
@@ -68,8 +68,21 @@ test("default mode: no /ext endpoint, /session unchanged", async () => {
   try {
     await assert.rejects(new FakeExt(`ws://127.0.0.1:${port}/ext`).open());
     const health = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
-    assert.deepEqual(health, { ok: true, echo: true });
+    assert.deepEqual(health, { ok: true, echo: true, voice: false });
     assert.equal(await sessionEcho(port), "You said: hi");
+  } finally {
+    child.kill();
+  }
+});
+
+test("CLEARCART_VOICE=false: no Cartesia token is minted", async () => {
+  const port = 5172;
+  const child = await startServer(port, {});
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/cartesia-token`);
+    assert.equal(r.status, 503);
+    assert.equal((await r.json()).voice, false);
+    assert.equal((await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()).voice, false);
   } finally {
     child.kill();
   }

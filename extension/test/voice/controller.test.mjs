@@ -228,3 +228,11 @@ test("a silent start does not interrupt the agent speaking; confirm barges in", 
   assert.equal(r.stt.aborted, true);
   assert.deepEqual(r.log, []);
 });
+
+test("token source says plainly when voice is off on the server", async () => {
+  const get = createTokenSource({
+    url: () => "http://localhost:5050/cartesia-token",
+    fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({ voice: false }) }),
+  });
+  await assert.rejects(get(), /Voice is off/);
+});
