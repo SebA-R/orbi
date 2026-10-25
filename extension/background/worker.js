@@ -60,19 +60,14 @@ let bridge = null;
 
 // The agent server's navigation guard and tab sweep use the user's blocked
 // sites too, so send them on every connect and every change.
-async function sendBlocklist() {
-  const { blocklist } = await loadSettings();
-  bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist });
-}
+const sendBlocklist = () =>
+  loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
 
 async function startBridge() {
   const settings = await loadSettings();
   const url = endpoints(settings.agentUrl).ext;
   if (!bridge) {
-    bridge = new BridgeClient({
-      url, version: VERSION, log, onRequest, onState: (s) => log.info(`bridge ${s}`),
-      onOpen: () => sendBlocklist().catch(() => {}),
-    });
+    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onOpen: sendBlocklist, onState: (s) => log.info(`bridge ${s}`) });
     bridge.start();
   } else {
     bridge.setUrl(url);
@@ -82,7 +77,7 @@ async function startBridge() {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
-  if (changes.blocklist) sendBlocklist().catch(() => {});
+  if (changes.blocklist) sendBlocklist();
 });
 
 startBridge().catch((e) => log.warn(`bridge start failed: ${e.message}`));
