@@ -6,6 +6,7 @@ import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, no
 import { RT } from "../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/blocklist.js";
 import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
+import { bindDangerToggle } from "../lib/danger-toggle.js";
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -28,6 +29,9 @@ els.speed.max = String(SPEED_MAX);
 const showSpeed = () => { els.speedOut.textContent = `${Number(els.speed.value).toFixed(1)}x`; };
 els.speed.addEventListener("input", showSpeed);
 
+// Saves on its own (not with the Save button), after the confirm press.
+const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no") }, saveSettings);
+
 function fill(s) {
   els.hotkey.value = s.hotkey;
   els.speed.value = String(s.speed);
@@ -37,6 +41,7 @@ function fill(s) {
   modeInput(s.browseMode).checked = true;
   els.allowlist.value = s.allowlist.join("\n");
   els.blocklist.value = s.blocklist.join("\n");
+  danger.fill(s);
   showSpeed();
 }
 
@@ -106,6 +111,7 @@ els.reset.addEventListener("click", async () => {
   const saved = await saveSettings({
     hotkey: DEFAULTS.hotkey, speed: DEFAULTS.speed, subtitles: DEFAULTS.subtitles, quietTabs: DEFAULTS.quietTabs, agentUrl: DEFAULTS.agentUrl,
     browseMode: DEFAULTS.browseMode, allowlist: [...DEFAULTS.allowlist], blocklist: [...DEFAULTS.blocklist],
+    dangerMode: DEFAULTS.dangerMode,
   });
   fill(saved);
   notify(saved);

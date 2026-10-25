@@ -8,7 +8,7 @@
 </head>
 <body>
   <main>
-    <h1>Clearcart</h1>
+    <h1>Clearcart <span id="danger-chip" class="danger-chip" hidden>Danger mode</span></h1>
     <section aria-labelledby="setup-heading">
       <h2 id="setup-heading">Setup</h2>
       <div id="checklist"></div>
@@ -27,6 +27,7 @@
       <input id="speed" type="range" step="0.1">
       <label class="check"><input id="subtitles" type="checkbox"> Show subtitles on the page</label>
       <label class="check"><input id="quiet-tabs" type="checkbox"> Quiet other tabs while talking</label>
+      <div class="danger-row"><label class="check"><input id="danger-mode" type="checkbox"> <span>Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.</span></label><p id="danger-confirm" class="row" hidden><button type="button" id="danger-yes">Turn on Danger mode</button> <button type="button" id="danger-no" class="secondary">Cancel</button></p></div>
     </section>
 
     <nav aria-label="More settings">
