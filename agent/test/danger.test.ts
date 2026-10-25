@@ -109,7 +109,7 @@ test("pay_now and the order unlock refuse without a confirmed yes, Danger mode o
     assert.ok(!calls.includes("lock_arm") && !calls.includes("press_protected") && !calls.includes("fill_payment"), calls.join(","));
     const gate = new UnlockGate({ isAllowed: () => true });
     for (const confirmation of [null, { total: "$9.00", state: "pending" }, { total: "$9.00", state: "used" }]) {
-      assert.equal(gate.issue({ confirmation, tabId: 3, href: "http://localhost:4000/checkout", pageTotal: "$9.00" }).ok, false);
+      assert.equal(gate.issue({ confirmation, tabId: 3, href: "https://shop.example/checkout", pageTotal: "$9.00" }).ok, false);
     }
   });
 });
