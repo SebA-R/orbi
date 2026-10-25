@@ -6,8 +6,8 @@ import { test } from "node:test";
 
 import { extBridge } from "../extbridge.ts";
 import { SessionHub } from "../hub.ts";
-import { Session, navigateLockReason, passCovers, PASS_MAX_MS, USER_WORDS_TTL_MS } from "../session.ts";
-import { decideUnlock, isDirectAsk, pressUnlockedExt, UserUnlockGate, type LockInfo } from "../user-unlock.ts";
+import { Session, isExplicitYes, navigateLockReason, passCovers, PASS_MAX_MS, USER_WORDS_TTL_MS } from "../session.ts";
+import { decideUnlock, isDirectAsk, isUnlockYes, pressUnlockedExt, UserUnlockGate, type LockInfo } from "../user-unlock.ts";
 import { LockedError } from "../unlock.ts";
 
 process.env.CLEARCART_BROWSER = "ext";
@@ -71,7 +71,6 @@ test("matcher: hedged, questioning or other asks do not grant", () => {
     ["never subscribe", "subscription", "Subscribe"],
     ["I have questions about checkout", "checkout", "Checkout"],
     ["the page wants me to sign in", "account", "Sign in"],
-    ["I want to sign in", "account", "Sign in"],
     ["find socks, I will log in later", "account", "Log in"],
     ["sign me in", "account", "Sign out"],
     ["log out", "account", "Log in"],
@@ -80,6 +79,57 @@ test("matcher: hedged, questioning or other asks do not grant", () => {
     ["check out", null, "Place order"],
   ];
   for (const [t, c, l] of no) assert.equal(isDirectAsk(t, c, l), false, `${t} -> ${l}`);
+});
+
+// Stated intent presses at once; information questions, hedges, negations
+// and page text go to the spoken question instead.
+test("matcher: stated intent is a direct ask, hedges and questions are not", () => {
+  const rows: Array<[boolean, string, any, string]> = [
+    [true, "I want to check out", "checkout", "Proceed to checkout"],
+    [true, "I want you to check out.", "checkout", "Checkout"],
+    [true, "I'm giving you explicit permission to check out.", "checkout", "Checkout"],
+    [true, "let's check out", "checkout", "Checkout"],
+    [true, "go to checkout", "checkout", "Checkout"],
+    [true, "check out please", "checkout", "Checkout"],
+    [true, "can you check out", "checkout", "Checkout"],
+    [true, "take me to checkout", "checkout", "Checkout"],
+    [true, "proceed to checkout", "checkout", "Proceed to checkout"],
+    [true, "press checkout", "checkout", "Proceed to checkout"],
+    [true, "sign me in", "account", "Sign in"],
+    [true, "I want to sign in", "account", "Sign in"],
+    [true, "I'd like to subscribe", "subscription", "Subscribe"],
+    [true, "yes, check out", "checkout", "Checkout"],
+    [false, "what's in my cart before checkout?", "checkout", "Checkout"],
+    [false, "maybe check out later", "checkout", "Checkout"],
+    [false, "should I check out?", "checkout", "Checkout"],
+    [false, "don't check out", "checkout", "Checkout"],
+    [false, "I don't want to check out", "checkout", "Checkout"],
+    [false, "I think I want to check out", "checkout", "Checkout"],
+    [false, "I want to check out the reviews", "checkout", "Checkout"],
+    [false, "the page says check out now", "checkout", "Checkout"],
+    [false, "I'd like to check out but first add socks", "checkout", "Checkout"],
+    [false, "I want to check out", "account", "Sign in"],
+    [false, "I'd like to subscribe", "checkout", "Checkout"],
+  ];
+  for (const [want, t, c, l] of rows) assert.equal(isDirectAsk(t, c, l), want, `${t} -> ${l}`);
+});
+
+test("isUnlockYes: a yes may say more, a no or hedge never counts, paying stays strict", () => {
+  const rows: Array<[boolean, string]> = [
+    [true, "yes, that's what I just said."],
+    [true, "yes, I want you to check it out these pants I've selected and I want you to press checkout and finish the order."],
+    [true, "ok yes"],
+    [true, "I want you to check out"],
+    [false, "yes but wait"],
+    [false, "yeah no"],
+    [false, "yes?"],
+    [false, "not yet"],
+    [false, "ok"],
+    [false, "yes if it's under 50"],
+    [false, "yes, the other one"],
+  ];
+  for (const [want, t] of rows) assert.equal(isUnlockYes(t, "checkout", "Checkout"), want, t);
+  assert.equal(isExplicitYes("yes, that's what I just said."), false, "the pay read-back is unchanged");
 });
 
 const locked = (o: Partial<LockInfo>): LockInfo => ({ locked: true, kind: "order", label: "Proceed to checkout", cls: "checkout", ...o });
@@ -279,6 +329,23 @@ test("request_unlock: when asked, an explicit yes presses", async () => {
   assert.match((await pending).content[0].text, /^pressed Subscribe once/);
   assert.equal(f.pressed(), 1);
   assert.ok(f.out.some((m) => m.type === "status" && /\(user confirmed\)/.test(m.text)));
+});
+
+test("request_unlock: the user's real exchange presses checkout once", async () => {
+  // Stated intent: pressed with no question.
+  let f = session(locked({}));
+  f.s.userText("I want you to check out.");
+  assert.match((await f.s.requestUnlock(ask())).content[0].text, /^pressed Proceed to checkout once/);
+  assert.ok(!f.out.some((m) => m.type === "agent_text"));
+  // Asked anyway (words from before): a yes that says more presses.
+  f = session(locked({}));
+  f.s.userText("add the pants");
+  const pending = f.s.requestUnlock(ask());
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to go to checkout?");
+  f.s.userText("yes, that's what I just said.");
+  assert.match((await pending).content[0].text, /^pressed Proceed to checkout once/);
+  assert.equal(f.pressed(), 1);
 });
 
 test("request_unlock: Place order and wallets are refused without arming, even on a direct ask", async () => {
