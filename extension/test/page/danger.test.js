@@ -1,4 +1,4 @@
-// Danger mode inside page.js (jsdom, inline HTML, no store): sign in and
+// Danger mode inside page.js (jsdom, inline HTML, no server): sign in and
 // sign up are no longer locked, while the order button, wallets, checkout,
 // subscribe, card forms and the masking of card and password fields stay.
 import { test } from "node:test";

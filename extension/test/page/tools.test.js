@@ -1,32 +1,17 @@
 // find, get_page_text, form_input, rect, click_ref, read_fields,
-// fill_payment, clear_payment against real demo store HTML.
-import { test, before, after } from "node:test";
+// fill_payment, clear_payment against the test shop's pages
+// (tests/fixtures/shop.mjs).
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadPage, startStore, fetchHtml } from "./harness.js";
+import { HELP_LINE } from "../../../tests/fixtures/shop.mjs";
+import { loadPage, shopPages } from "./harness.js";
 
 const CARD = { name: "Ada Lovelace", number: "4111 1111 1111 1111", exp: "12/29", csc: "737" };
 const SECRETS = ["4111111111111111", "4111 1111", "Ada Lovelace", "12/29", "737"];
-let store;
-const pages = {};
+const BASE = "http://localhost:4100";
+const pages = shopPages();
 
-before(async () => {
-  store = await startStore();
-  const b = store.base;
-  await fetch(b + "/reset", { method: "POST", redirect: "manual" });
-  pages.search = await fetchHtml(b + "/search?q=allergy");
-  pages.product = await fetchHtml(b + "/product/cetirizine-30");
-  await fetch(b + "/cart/add", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "product_id=cetirizine-30&quantity=1",
-    redirect: "manual",
-  });
-  pages.cart = await fetchHtml(b + "/cart");
-  pages.checkout = await fetchHtml(b + "/checkout");
-});
-after(() => store && store.stop());
-
-const load = (name, path) => loadPage(pages[name], { url: store.base + path });
+const load = (name, path) => loadPage(pages[name], { url: BASE + path });
 const refOf = async (p, query, role) => {
   const r = await p.call("find", { query });
   assert.equal(r.ok, true, JSON.stringify(r));
@@ -36,7 +21,7 @@ const refOf = async (p, query, role) => {
 };
 
 test("find ranks exact names and returns refs shared with read_page", async () => {
-  const p = load("product", "/product/cetirizine-30");
+  const p = load("product", "/product/mug");
   const r = (await p.call("find", { query: "add to cart" })).result;
   assert.equal(r.matches[0].role, "button");
   assert.equal(r.matches[0].name, "Add to cart");
@@ -49,8 +34,8 @@ test("find ranks exact names and returns refs shared with read_page", async () =
 });
 
 test("find on search results locates product links", async () => {
-  const p = load("search", "/search?q=allergy");
-  const m = (await p.call("find", { query: "cetirizine link" })).result.matches;
+  const p = load("search", "/search?q=mug");
+  const m = (await p.call("find", { query: "mug link" })).result.matches;
   assert.ok(m.length >= 1);
   assert.ok(m.every((x) => x.role === "link"));
 });
@@ -61,7 +46,7 @@ test("get_page_text puts main content first and masks card runs", async () => {
   const r = (await p.call("get_page_text", {})).result;
   assert.ok(r.text.startsWith("Checkout"), r.text.slice(0, 80));
   assert.ok(r.text.includes("Order total"));
-  assert.ok(r.text.includes("1-800-555-0142"));
+  assert.ok(r.text.includes(HELP_LINE), "text outside main comes after it");
   assert.ok(!r.text.includes("4111"), "card leaked");
   const short = (await p.call("get_page_text", { maxChars: 100 })).result;
   assert.equal(short.truncated, true);
@@ -97,7 +82,7 @@ test("form_input refuses payment fields and card numbers anywhere", async () => 
 });
 
 test("form_input and rect report missing refs", async () => {
-  const p = load("product", "/product/cetirizine-30");
+  const p = load("product", "/product/mug");
   assert.equal((await p.call("form_input", { ref: "ref_999", value: "x" })).error.code, "no_element");
   assert.equal((await p.call("rect", { ref: "nope" })).error.code, "bad_request");
   const ref = await refOf(p, "add to cart", "button");
@@ -181,7 +166,7 @@ test("fill_payment validates input and errors never echo the card", async () => 
   const bad = await p.call("fill_payment", { card: { ...CARD, number: "4111 1111 1111 111x" } });
   assert.equal(bad.error.code, "bad_request");
   assert.ok(!JSON.stringify(bad).includes("4111"));
-  const noField = load("product", "/product/cetirizine-30");
+  const noField = load("product", "/product/mug");
   const r = await noField.call("fill_payment", { card: CARD });
   assert.equal(r.error.code, "no_element");
   assert.ok(!JSON.stringify(r).includes("4111"));
@@ -200,9 +185,9 @@ test("fill_payment handles split month/year selects", async () => {
 });
 
 test("read_page and get_page_text report origin and path only, never the query string or fragment", async () => {
-  const p = loadPage(pages.search, { url: store.base + "/search?q=allergy&code=SECRET#access_token=TOKEN" });
+  const p = loadPage(pages.search, { url: BASE + "/search?q=mug&code=SECRET#access_token=TOKEN" });
   for (const m of ["read_page", "get_page_text"]) {
     const r = (await p.call(m, {})).result;
-    assert.equal(r.url, store.base + "/search", m);
+    assert.equal(r.url, BASE + "/search", m);
   }
 });
