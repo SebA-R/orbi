@@ -11,6 +11,9 @@ import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createCardsRoute } from "./cards.ts";
+import { DESKTOP_PATH, desktopBridge, setDesktopToken } from "./desktop/bridge.ts";
+import { desktopTokenPath, ensureDesktopToken } from "./desktop/token.ts";
+import { DesktopVoice, mintCartesiaToken } from "./desktop/voice.ts";
 import { extBridge, extMode } from "./extbridge.ts";
 import * as timing from "./timing.ts";
 import { extensionOrigins, hostAllowed, isLoopbackAddress, memoryRequestAllowed, upgradeOriginAllowed } from "./hostcheck.ts";
@@ -39,8 +42,6 @@ const PUBLIC_DIR = path.join(ROOT, "voice", "public");
 // starts Claude. Useful for testing the voice console alone.
 const ECHO = process.env.AGENT_MODE === "echo";
 
-const CARTESIA_VERSION = process.env.CARTESIA_VERSION || "2026-08-14";
-const TOKEN_TTL_S = 300;
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -116,16 +117,10 @@ async function cartesiaToken(res: http.ServerResponse) {
   const key = process.env.CARTESIA_API_KEY?.trim();
   if (!key) return json(res, 503, { error: "No Cartesia key is set, so Orbi uses basic voice", cartesia: false });
   try {
-    const r = await fetch("https://api.cartesia.ai/access-token", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
-      body: JSON.stringify({ grants: { tts: true, stt: true }, expires_in: TOKEN_TTL_S }),
-    });
-    const body = (await r.json().catch(() => ({}))) as { token?: string };
-    if (!r.ok || !body.token) return json(res, 502, { error: `Cartesia token request failed (${r.status})` });
-    json(res, 200, { token: body.token, expires_in: TOKEN_TTL_S });
-  } catch {
-    json(res, 502, { error: "Could not reach Cartesia" });
+    json(res, 200, await mintCartesiaToken(key));
+  } catch (e) {
+    const status = (e as { status?: number }).status;
+    json(res, 502, { error: status ? `Cartesia token request failed (${status})` : "Could not reach Cartesia" });
   }
 }
 
@@ -239,7 +234,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/local-models") return void localModelsRoute(req, res, url);
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
   if (req.method === "GET" && url.pathname === "/healthz") {
-    if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, cartesia: hasCartesia(), browser: "ext", extension: extBridge.connected() });
+    if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, cartesia: hasCartesia(), browser: "ext", extension: extBridge.connected(), desktop: desktopBridge.connected() });
     return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, cartesia: hasCartesia() });
   }
   if (req.method === "GET" || req.method === "HEAD") return serveStatic(url.pathname, res);
@@ -252,7 +247,16 @@ const server = http.createServer((req, res) => {
 const wss = EXT
   ? new WebSocketServer({ noServer: true })
   : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localUpgrade(req), 403) });
-if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localUpgrade);
+// /desktop is Orbi Desktop, the native helper (desktop/bridge.ts). It sends
+// no Origin: any Origin is a browser, refused.
+const upgradePath = (req: http.IncomingMessage) => {
+  try {
+    return new URL(req.url || "/", "http://localhost").pathname;
+  } catch {
+    return "";
+  }
+};
+if (EXT) extBridge.attach(server, { "/session": wss, [DESKTOP_PATH]: desktopBridge.wss }, "/ext", (req) => localUpgrade(req) && (upgradePath(req) !== DESKTOP_PATH || desktopBridge.accepts(req)));
 
 // One voice session for all /session sockets (hub.ts). Echo mode goes
 // through the same hub, so it follows the same one-owner rules.
@@ -280,6 +284,19 @@ if (EXT) {
     if (hub.switchBackend(backendKey(p), describeBackend(p))) console.log(`agent: ${describeBackend(p)}`);
   });
 }
+
+// Orbi Desktop's shared secret (desktop/token.ts). If it can't be made, no
+// helper is let in.
+if (EXT) {
+  try {
+    setDesktopToken(ensureDesktopToken());
+  } catch {
+    console.log(`desktop: could not create ${desktopTokenPath()}, so Orbi Desktop can't connect`);
+  }
+}
+
+// Orbi Desktop's push-to-talk and speaker: one more window on the hub.
+if (EXT) new DesktopVoice(desktopBridge, hub, { voice: hasCartesia() }).start();
 
 wss.on("connection", (ws: WebSocket) => {
   const send = (m: HubMessage) => {
@@ -320,6 +337,6 @@ server.listen(PORT, () => {
     console.log("note: no Anthropic API key is set, so Claude can't answer. Run `npm run setup`, or choose Local in Orbi's settings.");
   }
   if (VOICE_ENABLED && !hasCartesia()) console.log("voice: no Cartesia key, so the extension uses basic voice (Chrome's own speech)");
-  console.log(`Orbi agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext" : ""}${ECHO ? ", echo mode" : ""})`);
+  console.log(`Orbi agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext, /desktop" : ""}${ECHO ? ", echo mode" : ""})`);
   if (!fs.existsSync(PUBLIC_DIR)) console.log(`note: ${PUBLIC_DIR} does not exist yet`);
 });

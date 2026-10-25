@@ -1,7 +1,7 @@
 // Toolbar popup ("orb hero"): the live voice state, a setup pill that counts
 // the setup page's four checks, and the everyday settings. Each control saves
 // on its own; the worker and offscreen document follow chrome.storage.
-import { HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, localModels, localStatusText, saveSettings, speakRepliesNote } from "../lib/settings.js";
+import { CLAUDE_MODELS, HOTKEYS, SPEED_MIN, SPEED_MAX, claudeModelLabel, loadSettings, localModels, localStatusText, saveSettings, speakRepliesNote } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SETUP_PATH, SETUP_STEPS, agentHealth, basicVoice, hasSiteAccess, keyName, micState, setupDone, updateBadge } from "../lib/setup.js";
 import { mountTypeBox } from "../lib/typebox.js";
@@ -93,6 +93,7 @@ $("setup-pill").addEventListener("click", () => openTab(SETUP_PATH));
 
 // Settings
 for (const value of Object.keys(HOTKEYS)) $("hotkey").append(new Option(keyName(value), value));
+for (const id of Object.keys(CLAUDE_MODELS)) $("claude-model").append(new Option(claudeModelLabel(id), id));
 $("speed").min = String(SPEED_MIN);
 $("speed").max = String(SPEED_MAX);
 const showSpeed = () => { $("speed-out").textContent = `${Number($("speed").value).toFixed(1)}x`; };
@@ -116,9 +117,9 @@ async function refreshLocal() {
   chip.dataset.state = result.state === "ok" && chip.textContent.endsWith(", connected") ? "ok" : result.state === "missing" ? "wait" : "todo";
 }
 let noteTimer = 0;
-function showProviderNote(provider) {
+function showProviderNote(provider, model) {
   const note = $("provider-note");
-  note.textContent = provider === "local" ? "Starting a new conversation with your local model." : "Starting a new conversation with Claude.";
+  note.textContent = provider === "local" ? "Starting a new conversation with your local model." : `Starting a new conversation with ${model ? CLAUDE_MODELS[model].name : "Claude"}.`;
   note.hidden = false;
   clearTimeout(noteTimer);
   noteTimer = setTimeout(() => { note.hidden = true; }, 4000);
@@ -130,6 +131,8 @@ function fill(s) {
   if (radio) radio.checked = true;
   const prov = document.querySelector(`input[name="provider"][value="${s.provider}"]`);
   if (prov) prov.checked = true;
+  $("claude-model-row").hidden = s.provider !== "claude";
+  $("claude-model").value = s.claudeModel;
   $("hotkey").value = s.hotkey;
   $("speed").value = String(s.speed);
   $("subtitles").checked = s.subtitles;
@@ -158,6 +161,10 @@ for (const r of document.querySelectorAll('input[name="provider"]')) {
     save({ provider: r.value });
   });
 }
+$("claude-model").addEventListener("change", () => {
+  showProviderNote("claude", $("claude-model").value);
+  save({ claudeModel: $("claude-model").value });
+});
 $("hotkey").addEventListener("change", () => save({ hotkey: $("hotkey").value }));
 $("speed").addEventListener("input", showSpeed);
 $("speed").addEventListener("change", () => save({ speed: Number($("speed").value) }));

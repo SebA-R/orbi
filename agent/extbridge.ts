@@ -14,8 +14,8 @@ import { WebSocketServer, type WebSocket } from "ws";
 
 import { parseBlockLines, type BlockEntry } from "./blocklist.ts";
 import { extensionOrigins } from "./hostcheck.ts";
-import { parseLocalBaseUrl, parseLocalModel, parseProvider, type Provider } from "./local/config.ts";
-import { SEARCH_ENGINES, type SearchEngine } from "./prompt.ts";
+import { parseClaudeModel, parseLocalBaseUrl, parseLocalModel, parseProvider, type ClaudeModel, type Provider } from "./local/config.ts";
+import { SEARCH_ENGINES, type SearchEngine } from "./search-engines.ts";
 
 // Mirrors extension/lib/protocol.js (the test checks they agree). Kept as a
 // copy because that file is plain JS outside this tsconfig.
@@ -67,10 +67,11 @@ type Pending = { ws: WebSocket; method: string; resolve: (v: any) => void; rejec
 
 export type ExtInfo = { version: string; connectedAt: number };
 
-// The user's agent provider settings as the extension sent them: Claude or
-// a local model, and the local endpoint (local/config.ts). A field is null
+// The user's agent provider settings as the extension sent them: Claude
+// (and which Claude model) or a local model, and the local endpoint
+// (local/config.ts). A field is null
 // until the extension sends a good value for it.
-export type ExtProviderSettings = { provider: Provider | null; localBaseUrl: string | null; localModel: string | null; localVision: boolean | null };
+export type ExtProviderSettings = { provider: Provider | null; claudeModel: ClaudeModel | null; localBaseUrl: string | null; localModel: string | null; localVision: boolean | null };
 
 export interface ExtBridgeEvents {
   connect: [ExtInfo];
@@ -99,7 +100,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   private engine: SearchEngine | null = null;
   private danger = false;
   private memory: boolean | null = null;
-  private agent: ExtProviderSettings = { provider: null, localBaseUrl: null, localModel: null, localVision: null };
+  private agent: ExtProviderSettings = { provider: null, claudeModel: null, localBaseUrl: null, localModel: null, localVision: null };
 
   constructor(private log: (line: string) => void = (l) => console.log(l)) {
     super();
@@ -308,7 +309,8 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     ws.on("error", () => {});
   }
 
-  // provider ("claude" or "local"), localBaseUrl (http(s) to localhost,
+  // provider ("claude" or "local"), claudeModel (local/config.ts
+  // CLAUDE_MODELS only), localBaseUrl (http(s) to localhost,
   // 127.0.0.1 or [::1] only), localModel (a short plain name) and
   // localVision from a settings message. Emits "provider" when they change.
   private takeProvider(m: Record<string, unknown>) {
@@ -321,6 +323,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       else next[key] = v;
     };
     take("provider", parseProvider);
+    take("claudeModel", parseClaudeModel);
     take("localBaseUrl", parseLocalBaseUrl);
     take("localModel", parseLocalModel);
     take("localVision", (v) => (typeof v === "boolean" ? v : null));
@@ -328,7 +331,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     const keys = Object.keys(next) as Array<keyof ExtProviderSettings>;
     if (keys.every((k) => next[k] === this.agent[k])) return;
     this.agent = next;
-    this.log(`ext: agent ${next.provider === "local" ? `local model ${next.localModel ?? "(default)"} at ${next.localBaseUrl ?? "(default)"}` : next.provider ?? "(default)"}`);
+    this.log(`ext: agent ${next.provider === "local" ? `local model ${next.localModel ?? "(default)"} at ${next.localBaseUrl ?? "(default)"}` : `${next.provider ?? "(default)"} ${next.claudeModel ?? "(default model)"}`}`);
     this.emit("provider", { ...next });
   }
 

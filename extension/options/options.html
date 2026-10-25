@@ -49,6 +49,11 @@
               <label>Local<input type="radio" name="provider" value="local" id="provider-local" data-setting="provider"></label>
             </div>
           </div>
+          <div class="row" id="claude-model-row">
+            <span class="row-text"><label for="claude-model">Claude model</label>
+              <span class="hint" id="claude-model-hint">Changing it starts a new conversation.</span></span>
+            <select id="claude-model" name="claudeModel" class="sel" data-setting="claudeModel" aria-describedby="claude-model-hint"></select>
+          </div>
           <div class="row stack">
             <label for="local-base-url">Local server address</label>
             <input id="local-base-url" name="localBaseUrl" class="field mono" type="text" spellcheck="false" autocomplete="off" aria-describedby="local-base-url-hint local-base-url-error">

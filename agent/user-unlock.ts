@@ -211,6 +211,59 @@ export function isDirectAsk(userText: string, cls: UnlockClass | null, label: st
   return false;
 }
 
+// Orbi Desktop's extra lock classes (desktop/safety.ts): sending a message
+// or an email, deleting or moving to the trash, and installing or allowing
+// (software, a permission). The same rule as isDirectAsk: the user's own
+// unhedged imperative, its verb leading a clause, whose intent matches the
+// control's label ("send it" for Send, "move it to the trash" for Move to
+// Trash), or "press <label>". Placing an order never unlocks this way on
+// the desktop either; it always gets the spoken question.
+export type DesktopUnlockClass = "send" | "delete" | "install";
+
+const DESKTOP_USER_INTENTS: Array<[DesktopUnlockClass, RegExp]> = [
+  ["send", /^ send /],
+  ["delete", /^ (delete|trash|erase|discard|throw (it |this |that |them )?away) /],
+  ["delete", /^ (move|put|drag|throw) (it |this |that |them |these |those |the [a-z0-9]+ |my [a-z0-9]+ )*(in|into|to) (the )?(trash|bin) /],
+  ["delete", /^ empty (the |my )?(trash|bin) /],
+  ["install", /^ (install|allow|approve|authorize|authorise|trust|grant) /],
+  ["install", /^ open (it |this |that )?anyway /],
+];
+
+const DESKTOP_LABEL_INTENTS: Record<DesktopUnlockClass, RegExp> = {
+  send: / send /,
+  delete: / (delete|trash|erase|discard|bin) /,
+  install: / (install|allow|approve|authorize|authorise|trust|grant|open anyway) /,
+};
+
+export function isDesktopDirectAsk(userText: string, cls: DesktopUnlockClass | null, label: string): boolean {
+  if (!cls || !DESKTOP_LABEL_INTENTS[cls] || !userText || !label) return false;
+  const raw = String(userText);
+  const n = norm(raw);
+  if (n.trim().split(" ").length > 24) return false;
+  if (/\?/.test(raw) && !POLITE.test(n)) return false;
+  if (HEDGE.test(n)) return false;
+  const cs = clauses(raw);
+  if (cs.some((x) => x.led) && cs.length > 1) return false;
+  const name = norm(label).trim();
+  if (name) {
+    const named = new RegExp(`^ (press|click|tap|hit|select|choose|push) (the |on )?${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( button| link)? $`);
+    if (cs.some((x) => named.test(x.c))) return true;
+  }
+  if (!DESKTOP_LABEL_INTENTS[cls].test(norm(label))) return false;
+  const mine = new Set(norm(label).trim().split(" "));
+  for (const { c, led } of cs) {
+    for (const [intent, re] of DESKTOP_USER_INTENTS) {
+      if (intent !== cls) continue;
+      const m = re.exec(c);
+      if (!m) continue;
+      const rest = c.slice(m[0].length).trim();
+      if (led && rest && !rest.split(" ").every((w) => LEAD_TAIL.has(w) || mine.has(w))) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
 // The answer to request_unlock's own question ("Do you want me to go to
 // checkout?"). Wider than the pay read-back's isExplicitYes (session.ts),
 // which this never replaces. It must lead with a yes, and every later

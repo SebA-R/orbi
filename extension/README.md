@@ -45,6 +45,7 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | Danger mode | off | no button lock and orders placed without a spoken yes; masking, the blocklist and the CAPTCHA hand-off stay. Turning it on takes a second press (`lib/danger-toggle.js`) |
 | Remember things about me | on | Memory: saved facts and the last two hours of conversation, kept by the agent server (`lib/memory.js`) |
 | Model provider | Claude | Claude or Local, with `localBaseUrl` (`http://localhost:11434/v1`, loopback only) and `localModel` (`llama3.1:8b`); sent to the agent server in the `settings` message, which does not act on it yet |
+| Claude model | Sonnet 5.5 | With Claude: Sonnet 5.5 (`claude-sonnet-5-5`), Opus 5.5 (`claude-opus-5-5`) or Haiku 5.5 (`claude-haiku-5-5`); sent as `claudeModel` in the `settings` message. A change starts a new conversation on the next turn |
 
 Allowed sites take one site address per line (`https://www.etsy.com`; a path is dropped, a login in the address is refused). Only extension pages can change these settings; the agent server cannot.
 
@@ -162,15 +163,15 @@ Tests stay outside the shipped code paths, and every browser test uses Playwrigh
 
 ```
 npm --prefix tests/extension install           # Playwright + ws, needed by the browser tests below
-npm --prefix tests/extension test              # protocol, bridge, settings, log, router + load test
+npm --prefix tests/extension test              # protocol, bridge, settings, log, router + lock, card fill, netguard in Chromium
 node --test --test-concurrency=1 extension/test/tabs-cdp/ extension/test/voice/
 (cd extension/test/page && npm install && npm test)        # jsdom against the test shop's pages + Chromium layout
-(cd extension/test/subtitles && npm install && npm test && npm run screenshots)
+(cd extension/test/subtitles && npm install && npm test)
 npm --prefix agent test                        # bridge, tools and pay_with_saved_card with a fake extension
 npm --prefix agent run test:e2e:ext            # full flow: test shops on 4300 and 4303, card frames on 4302, agent on 5300, the real extension
 ```
 
-Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, `cardfill.test.mjs`, the e2e), so they never connect to a live agent on :5050. `tests/extension/browser/load.test.mjs` and `extension/test/voice/pages.browser.test.mjs` still load `extension/` as is, so their worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
+Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, `cardfill.test.mjs`, the e2e), so they never connect to a live agent on :5050. `extension/test/voice/pages.browser.test.mjs` still loads `extension/` as is, so its worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
 
 ### New tab page
 

@@ -13,8 +13,20 @@ export type Provider = "claude" | "local";
 export const DEFAULT_LOCAL_URL = "http://localhost:11434/v1";
 export const DEFAULT_LOCAL_MODEL = "llama3.1:8b";
 
+// The Claude models the extension may pick (extension/lib/settings.js
+// CLAUDE_MODELS mirrors this list). Any other name falls back to the
+// default, so no setting passes an arbitrary string to the SDK.
+export const CLAUDE_MODELS = Object.freeze({
+  "claude-sonnet-5-5": "Sonnet 5.5",
+  "claude-opus-5-5": "Opus 5.5",
+  "claude-haiku-5-5": "Haiku 5.5",
+});
+export type ClaudeModel = keyof typeof CLAUDE_MODELS;
+export const DEFAULT_CLAUDE_MODEL: ClaudeModel = "claude-sonnet-5-5";
+
 export type ProviderSettings = {
   provider: Provider;
+  claudeModel: ClaudeModel;
   localBaseUrl: string;
   localModel: string;
   // The local model takes images: screenshots go to it as images, not as a
@@ -22,7 +34,7 @@ export type ProviderSettings = {
   localVision: boolean;
 };
 
-export const CLAUDE_DEFAULTS: ProviderSettings = { provider: "claude", localBaseUrl: DEFAULT_LOCAL_URL, localModel: DEFAULT_LOCAL_MODEL, localVision: false };
+export const CLAUDE_DEFAULTS: ProviderSettings = { provider: "claude", claudeModel: DEFAULT_CLAUDE_MODEL, localBaseUrl: DEFAULT_LOCAL_URL, localModel: DEFAULT_LOCAL_MODEL, localVision: false };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 // Ollama names (llama3.1:8b, hf.co/org/model:Q4_K_M), LM Studio keys
@@ -31,6 +43,10 @@ const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,127}$/;
 
 export function parseProvider(v: unknown): Provider | null {
   return v === "claude" || v === "local" ? v : null;
+}
+
+export function parseClaudeModel(v: unknown): ClaudeModel | null {
+  return typeof v === "string" && Object.hasOwn(CLAUDE_MODELS, v) ? (v as ClaudeModel) : null;
 }
 
 // The endpoint's base URL, normalized (no trailing slash; /v1 when no path
@@ -72,6 +88,8 @@ export function envProviderSettings(env: NodeJS.ProcessEnv = process.env): Provi
   };
   return {
     provider: pick("CLEARCART_PROVIDER", (v) => parseProvider(v.toLowerCase()), "claude", "claude or local"),
+    // Not one of CLAUDE_MODELS: the default, not a refusal to start.
+    claudeModel: parseClaudeModel(raw("CLEARCART_MODEL")) ?? DEFAULT_CLAUDE_MODEL,
     localBaseUrl: pick("CLEARCART_LOCAL_URL", parseLocalBaseUrl, DEFAULT_LOCAL_URL, "an http(s) URL on this computer (localhost, 127.0.0.1 or [::1])"),
     localModel: pick("CLEARCART_LOCAL_MODEL", parseLocalModel, DEFAULT_LOCAL_MODEL, "a model name such as llama3.1:8b"),
     localVision: pick("CLEARCART_LOCAL_VISION", (v) => (v.toLowerCase() === "true" ? true : v.toLowerCase() === "false" ? false : null), false, "true or false"),
@@ -91,9 +109,9 @@ export function envLocalContext(env: NodeJS.ProcessEnv = process.env): number {
 // What a session runs on, as one string. When it changes, the hub starts
 // a new session (hub.ts switchBackend).
 export function backendKey(p: ProviderSettings): string {
-  return p.provider === "claude" ? "claude" : `local ${p.localBaseUrl} ${p.localModel}${p.localVision ? " vision" : ""}`;
+  return p.provider === "claude" ? `claude ${p.claudeModel}` : `local ${p.localBaseUrl} ${p.localModel}${p.localVision ? " vision" : ""}`;
 }
 
 export function describeBackend(p: ProviderSettings): string {
-  return p.provider === "claude" ? "Claude" : `your local model ${p.localModel} (${new URL(p.localBaseUrl).host})`;
+  return p.provider === "claude" ? `Claude (${CLAUDE_MODELS[p.claudeModel]})` : `your local model ${p.localModel} (${new URL(p.localBaseUrl).host})`;
 }

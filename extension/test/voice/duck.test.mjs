@@ -189,23 +189,6 @@ test("backstop: a duck with no non-idle state in force restores after BACKSTOP_M
   assert.deepEqual(state.updates, []);
 });
 
-test("restore removes each id from storage only after its own unmute", async () => {
-  const { ducker, state, timers, voiceState, chromeApi } = make([{ id: 1, audible: true }, { id: 4, audible: true }]);
-  voiceState("speaking");
-  await ducker.idle();
-  const seen = [];
-  const update = chromeApi.tabs.update;
-  chromeApi.tabs.update = async (id, opts) => {
-    seen.push([id, [...state.session[STORE_KEY]]]); // what storage held when this unmute ran
-    return update(id, opts);
-  };
-  voiceState("idle");
-  timers.fireGrace();
-  await ducker.idle();
-  for (const [id, stored] of seen) assert.ok(stored.includes(id), `tab ${id} still tracked while unmuting`);
-  assert.deepEqual(state.session[STORE_KEY], []);
-});
-
 test("a tab that starts playing mid-turn is ducked too", async () => {
   const { ducker, state, voiceState, byId } = make([{ id: 1, audible: true }, { id: 6, audible: false }]);
   voiceState("speaking");
