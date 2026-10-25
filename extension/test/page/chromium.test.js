@@ -171,3 +171,28 @@ test("protect.js in real layout: closed shadow roots fail closed, pointer divs a
   assert.equal(await page.evaluate(() => globalThis.ClearcartProtect.lockForKey(document, "Enter")?.kind), "order");
   await page.close();
 });
+
+test("a lock badge at the right edge stays in the viewport and adds no scroll width", async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  // An open shadow root, so the test can measure the badge.
+  await page.addInitScript(() => {
+    const attach = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function () { return attach.call(this, { mode: "open" }); };
+  });
+  await page.goto("about:blank");
+  // Page CSS that tries to unpin our host does not get to.
+  await page.setContent(`<style>html>div{position:static!important;overflow:visible!important}</style>
+    <table width="100%"><tr><td>News</td><td style="text-align:right"><a href="/login">login</a></td></tr></table>`);
+  for (const f of ["mask.js", "protect.js"]) await page.addScriptTag({ path: file("../../content/" + f) });
+  const before = await page.evaluate(() => document.documentElement.scrollWidth);
+  assert.equal(await page.evaluate(() => ClearcartProtect.showBadges(document)), 1);
+  const after = await page.evaluate(() => {
+    const host = document.getElementById("clearcart-lock-badges");
+    const b = host.shadowRoot.querySelector(".b").getBoundingClientRect();
+    return { sw: document.documentElement.scrollWidth, right: b.right, pos: getComputedStyle(host).position, overflow: getComputedStyle(host).overflow };
+  });
+  assert.equal(after.sw, before);
+  assert.ok(after.right <= 1440, `badge right ${after.right}`);
+  assert.deepEqual([after.pos, after.overflow], ["fixed", "hidden"]);
+  await page.close();
+});
