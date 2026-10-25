@@ -8,8 +8,8 @@
 //   - That check runs again on every call (resolveAllowedTab), not only when
 //     the tabs are listed: a tab can move between calls.
 //   - Clearcart only closes tabs it opened itself.
-//   - New tabs open in the background next to the user's tab; a tab is only
-//     brought to the front by tabsActivate (when the user asks to see it).
+//   - New tabs open next to the user's tab. The router brings a tab to the
+//     front when Clearcart acts on it (follow.js), or on tabsActivate.
 //
 // Which tabs Clearcart opened is kept in chrome.storage.session so it
 // survives a service-worker restart. The agent server's tab sweep only looks
@@ -228,9 +228,10 @@ export function navigateAndWait(tabId, start, timeoutMs = NAV_TIMEOUT_MS) {
   });
 }
 
-// Opens a tab in the background, right after the user's current tab, so the
-// user stays where they are.
-export async function tabsCreate({ url } = {}) {
+// Opens a tab right after the user's current tab. It is created in the
+// background; onCreated (the router's follow) may then bring it to the
+// front before it loads.
+export async function tabsCreate({ url, onCreated } = {}) {
   if (url != null) await assertAllowed(url);
   const cur = await activeTab();
   const props = { url: "about:blank", active: false };
@@ -238,6 +239,7 @@ export async function tabsCreate({ url } = {}) {
   const tab = await api().tabs.create(props);
   await markCreated(tab.id);
   await markUsed(tab.id);
+  if (typeof onCreated === "function") await Promise.resolve(onCreated(tab.id)).catch(() => {});
   if (url != null) {
     await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
     assertNetSafe(tab.id);
