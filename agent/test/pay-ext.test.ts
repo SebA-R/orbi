@@ -42,6 +42,7 @@ function fakeCheckout(o: CheckoutOpts = {}) {
     { kind: "cc-csc", filled: false },
   ];
   let rejected = false;
+  let ordered = false;
   const handler = async (method: string, params: any) => {
     calls.push({ method, params });
     switch (method) {
@@ -51,7 +52,7 @@ function fakeCheckout(o: CheckoutOpts = {}) {
       case "tabs_context":
         return { tabs: [{ tabId: 7, url, title: "t", active: true }], groupId: 1 };
       case "get_page_text":
-        if (url.includes("/order/")) return { url, title: "Order", text: "Thanks!\nTotal charged: $14.27\nPaid with: Visa ending in 4242" };
+        if (ordered) return { url, title: "Order", text: "Thanks!\nTotal charged: $14.27\nPaid with: Visa ending in 4242" };
         return { url, title: "Checkout", text: `Shipping\nOrder total ${o.total ?? "$14.27"}\nPlace order · ${o.total ?? "$14.27"}` };
       case "read_fields":
         return { fields };
@@ -68,7 +69,10 @@ function fakeCheckout(o: CheckoutOpts = {}) {
         return { nonce: `nonce-${calls.filter((c) => c.method === "lock_arm").length}`, expiresInMs: 30_000 };
       case "press_protected":
         if (o.press === "locked") throw new ExtError("locked", "Locked: no valid unlock for this press");
-        if ((o.outcome ?? "order") === "order") url = `${PAY_SITE}/order/abc`;
+        if ((o.outcome ?? "order") === "order") {
+          ordered = true;
+          url = `${PAY_SITE}/order/abc`;
+        }
         else if (o.outcome === "reject") rejected = true;
         return { ok: true, via: "cdp" };
       case "read_page":
@@ -288,4 +292,25 @@ test("two pay_now calls at once: the yes is spent synchronously, so only one fil
   assert.equal(s.calls.filter((c) => c.method === "fill_payment").length, 1);
   assert.equal(s.calls.filter((c) => c.method === "press_protected").length, 1);
   assert.equal(claimConfirmation(state).ok, false);
+});
+
+test("a checkout page with an order path is not the order page: no receipt, and the form is cleared", async () => {
+  for (const url of [`${PAY_SITE}/order/checkout`, `${PAY_SITE}/orders/123/payment`]) {
+    const s = fakeCheckout({ url, outcome: "stuck" });
+    const state = confirmed();
+    const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
+    assert.equal(r.ok, false, url);
+    assert.match((r as any).error, /did not load in time/);
+    assert.ok(s.calls.some((c) => c.method === "clear_payment"), `clears the form on ${url}`);
+    assert.equal(state.cardFieldsLive, false);
+  }
+});
+
+test("on the order page, a form that still holds card values is cleared", async () => {
+  const s = fakeCheckout({ fields: [{ kind: "cc-name", filled: false }, { kind: "cc-number", filled: true }, { kind: "cc-exp", filled: false }, { kind: "cc-csc", filled: false }] });
+  const state = confirmed();
+  const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
+  assert.equal(r.ok, true);
+  assert.ok(s.calls.some((c) => c.method === "clear_payment"));
+  assert.equal(state.cardFieldsLive, false);
 });
