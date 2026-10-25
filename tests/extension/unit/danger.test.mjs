@@ -1,6 +1,7 @@
-// Danger mode: the stored setting, what the classifier lifts (only sign in
-// and sign up), how the worker's router passes it to the page, the confirm
-// step in the switch, and the limits that never move with it.
+// Danger mode: the stored setting, the classifier with it on (no lock at
+// all) and off (every lock as before), how the worker's router passes it to
+// the page, the confirm step in the switch, and the limits that never move
+// with it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -27,57 +28,56 @@ test("setting: off by default, and only a stored true turns it on", async () => 
 });
 
 test("settings copy: the exact wording, no em dashes", () => {
-  assert.equal(DANGER_MODE_COPY, "Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.");
+  assert.equal(DANGER_MODE_COPY, "Danger mode. Clearcart acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.");
   assert.doesNotMatch(DANGER_MODE_COPY, /—/);
 });
 
 const lock = (kind, label, optin = false) => ({ kind, label, optin, checked: false });
 
-test("classifier: Danger mode lifts sign in and sign up only", () => {
-  for (const l of [lock("account", "Sign in"), lock("account", "Create account"), lock("account", "Log in with Google")]) {
-    assert.equal(P.dangerLifts(l), true, l.label);
+const ALL_LOCKS = [
+  lock("order", "Place order · $14.27"), lock("order", "Buy now"), lock("order", "Pay now"), lock("order", "Proceed to checkout"),
+  lock("express", "Apple Pay"), lock("express", "PayPal"), lock("subscription", "Subscribe & Save"),
+  lock("subscription", "Auto deliver every 30 days", true), lock("payment-method", "Save card"), lock("payment-form", "Continue"),
+  lock("marked", "Confirm"), lock("frame", "embedded frame"), lock("shadow", "hidden component"), lock("account", "Sign in and pay"),
+  lock("account", "Sign in"), lock("account", "Continue"),
+];
+
+test("classifier: Danger mode off lifts nothing; on lifts every lock", () => {
+  assert.equal(P.dangerMode(), false);
+  for (const l of ALL_LOCKS) assert.equal(P.dangerLifts(l), false, `${l.kind} ${l.label}`);
+  try {
+    P.setDangerMode(true);
+    for (const l of ALL_LOCKS) assert.equal(P.dangerLifts(l), true, `${l.kind} ${l.label}`);
+    assert.equal(P.dangerLifts(null), false);
+  } finally {
+    P.setDangerMode(false);
   }
-  for (const l of [
-    lock("order", "Place order · $14.27"),
-    lock("order", "Buy now"),
-    lock("order", "Pay now"),
-    lock("order", "Proceed to checkout"),
-    lock("order", "Checkout"),
-    lock("express", "Apple Pay"),
-    lock("express", "PayPal"),
-    lock("subscription", "Subscribe & Save"),
-    lock("subscription", "Start free trial"),
-    lock("subscription", "Auto deliver every 30 days", true),
-    lock("payment-method", "Save card"),
-    lock("payment-form", "Continue"),
-    lock("marked", "Confirm"),
-    lock("frame", "embedded frame"),
-    lock("shadow", "hidden component"),
-    // Read as account first, but they also buy, pay or save a card.
-    lock("account", "Sign in and place order"),
-    lock("account", "Log in with PayPal"),
-    lock("account", "Sign in to check out"),
-    lock("account", "Create an account and save my card", true),
-    lock("account", "Sign up and subscribe"),
-    lock("account", "Sign in and pay"),
-    lock("account", "Sign in with PayPal"),
-    lock("account", "Log in with Apple Pay"),
-    lock("account", "Register and buy now"),
-    lock("account", "Sign in to confirm"),
-    lock("account", "Log in to finish your order"),
-    lock("account", "Sign up for Prime"),
-    lock("account", "Sign up for Walmart+", true),
-    lock("account", "Sign up for Subscribe & Save autoship", true),
-    lock("account", "Register to bid"),
-    lock("account", "Register and reserve"),
-    // A password form's plain submit (formKind): not a sign in by name.
-    lock("account", "Continue"),
-    lock("account", "Confirm"),
-  ]) assert.equal(P.dangerLifts(l), false, `${l.kind} ${l.label}`);
-  for (const l of [lock("account", "Sign in now"), lock("account", "Continue with Google"), lock("account", "Create an account", true)]) {
-    assert.equal(P.dangerLifts(l), true, l.label);
+});
+
+test("classifier: no lock at points, keys or form submits while on; all back once off", () => {
+  // A minimal document: elementFromPoint always hits a Place order button,
+  // and focus sits in a password form.
+  const btn = { nodeType: 1, tagName: "BUTTON", getAttribute: (a) => (a === "type" ? "button" : null), hasAttribute: () => false,
+    closest: () => null, parentElement: null, parentNode: null, firstChild: { nodeType: 3, nodeValue: "Place order", nextSibling: null } };
+  const doc = { elementFromPoint: () => btn, activeElement: btn, body: {}, documentElement: {}, querySelectorAll: () => [btn] };
+  assert.equal(P.lockAt(doc, 1, 1).kind, "order");
+  assert.equal(P.lockOf(btn).kind, "order");
+  assert.equal(P.listLocks(doc).length, 1);
+  try {
+    P.setDangerMode(true);
+    assert.equal(P.lockAt(doc, 1, 1), null);
+    assert.equal(P.lockOf(btn), null);
+    assert.equal(P.lockInChain(btn), null);
+    assert.equal(P.lockForKey(doc, "Enter"), null);
+    assert.equal(P.lockForSubmit({ elements: [] }), null);
+    assert.deepEqual(P.listLocks(doc), []);
+    // classify still names it, for the pay flow's order-button check.
+    assert.equal(P.classify(btn).kind, "order");
+  } finally {
+    P.setDangerMode(false);
   }
-  assert.equal(P.dangerLifts(null), false);
+  assert.equal(P.lockAt(doc, 1, 1).kind, "order");
+  assert.equal(P.lockForKey(doc, "Enter").kind, "order");
 });
 
 test("classifier: setDangerMode only takes true, and pressable never widens", () => {

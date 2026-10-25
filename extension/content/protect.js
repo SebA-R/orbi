@@ -172,74 +172,20 @@
   }
 
   // Danger mode, the user's setting (off by default, lib/settings.js
-  // dangerMode): the lock and gray-out come off the controls it lifts, so
-  // Clearcart presses them without asking. It lifts only sign in and sign
-  // up (unlock class "account"). Everything that buys, pays, starts
-  // checkout, subscribes or saves a card stays locked, as do frames, hidden
-  // components and marked controls, so the spoken yes to request_checkout
-  // still comes before anything is bought. Masking of card and password
-  // fields does not depend on it. Set by whoever runs this classifier from
-  // the extension's own settings (the worker, per page call); the page and
-  // the agent cannot set it.
-  var DANGER_LIFTS = { account: 1 };
+  // dangerMode, turned on only by the user through the two-press switch in
+  // the popup or options page). While it is on, the button lock is off: no
+  // control, form, frame or hidden component is locked or grayed out, and
+  // the agent presses whatever it needs, Place order included. What stays
+  // on is data safety, not the lock: card and password fields are still
+  // masked and never typed into (mask.js, page.js, the worker), and the
+  // blocklist is the worker's. Set by whoever runs this classifier from the
+  // extension's own settings (the worker, per page call); the page and the
+  // agent cannot set it. Off, every lock below is exactly as before.
   var danger = false;
 
-  // Danger mode lifts a control only when its whole name is a plain sign
-  // in or sign up ("Sign in", "Create account", "Continue with Google").
-  // "Sign in and pay", "Log in with PayPal", "Sign up for Prime", "Register
-  // to bid" or a password form's "Continue" stay locked: the name must be
-  // on this list, not merely start with it.
-  var DANGER_NAMES = [
-    "sign in", "signin", "log in", "login", "sign up", "signup", "register",
-    "create account", "create an account", "create my account", "create your account",
-    "sign in with google", "sign in with apple", "sign in with facebook", "sign in with email",
-    "log in with google", "log in with apple", "log in with facebook", "log in with email",
-    "continue with google", "continue with apple", "continue with facebook", "continue with email",
-  ];
-  var DANGER_FILLER = /^(.*?)( now| here| instead)?$/;
-
-  function plainSignIn(label) {
-    var norm = normalize(label).trim();
-    var core = DANGER_FILLER.exec(norm)[1];
-    return DANGER_NAMES.indexOf(core) !== -1 || DANGER_NAMES.indexOf(norm) !== -1;
-  }
-
-  // Money words anywhere: an order, wallet, subscription or saved card.
-  var MONEY_KINDS = ["order", "express", "subscription", "payment-method"];
-
-  function hasMoneyWords(s) {
-    var norm = normalize(s);
-    for (var k = 0; k < MONEY_KINDS.length; k++) {
-      var list = PHRASES[MONEY_KINDS[k]];
-      for (var j = 0; j < list.length; j++) if (has(norm, list[j])) return true;
-    }
-    return false;
-  }
-
-  // A form Danger mode may submit: no card fields, every submit button a
-  // plain sign in or sign up, and no money words in the form at all (a
-  // "confirm your password to pay" prompt stays locked).
-  function plainSignInForm(form) {
-    if (!form) return true;
-    if (formKind(form) === "payment-form") return false;
-    var subs = submitsOf(form);
-    for (var i = 0; i < subs.length; i++) if (!plainSignIn(labelOf(subs[i]))) return false;
-    return !hasMoneyWords(text(form)) && !hasMoneyWords(form.getAttribute("action") || "");
-  }
-
-  function dangerLifts(lock, el) {
-    if (!lock || !DANGER_LIFTS[unlockClass(lock, el)]) return false;
-    if (!plainSignIn(lock.label)) return false;
-    if (el && el.nodeType === 1) {
-      var form = el.form || (el.closest ? el.closest("form") : null);
-      if (form && !plainSignInForm(form)) return false;
-    }
-    return true;
-  }
-
-  // Returns true when this lock stays on: always when Danger mode is off.
-  function keep(lock, el) {
-    return !(danger && dangerLifts(lock, el));
+  // True when Danger mode lifts this lock: any lock, while it is on.
+  function dangerLifts(lock) {
+    return !!lock && danger;
   }
 
   function setDangerMode(on) {
@@ -503,8 +449,15 @@
   }
 
   // Lock of one element, or null. { kind, label, optin, checked }. hit: el
-  // is the element under the pointer (see isPseudoControl).
+  // is the element under the pointer (see isPseudoControl). None while
+  // Danger mode is on.
   function lockOf(el, hit) {
+    return danger ? null : classify(el, hit);
+  }
+
+  // The lock an element would have with Danger mode off, whatever the mode.
+  // For press_protected, which presses only an order button in either mode.
+  function classify(el, hit) {
     if (!el || el.nodeType !== 1) return null;
     var marked = el.closest ? el.closest("[data-clearcart-protected]") : null;
     var control = isControl(el);
@@ -524,8 +477,7 @@
     }
     if (!kind && isSubmit(el)) kind = formKind(el.form);
     if (!kind) return null;
-    var lock = { kind: kind, label: clip(label || kind), optin: checkable, checked: checked };
-    return keep(lock, el) ? lock : null;
+    return { kind: kind, label: clip(label || kind), optin: checkable, checked: checked };
   }
 
   // Does activating this lock's element do something the AI may not do?
@@ -543,6 +495,7 @@
   // First blocking lock on el or an ancestor (a click on the <span> inside a
   // "Buy now" link activates the link). A <label> stands for its control.
   function lockInChain(el) {
+    if (danger) return null;
     for (var n = el; n && n.nodeType === 1; n = parentOf(n)) {
       var l = lockOf(n, n === el);
       if (l && blocks(l)) return l;
@@ -601,6 +554,7 @@
   // payment fields, wallet buttons) or a shadow root it cannot read is
   // locked.
   function lockAt(doc, x, y) {
+    if (danger) return null;
     if (!doc || typeof doc.elementFromPoint !== "function") return null;
     var el = doc.elementFromPoint(x, y);
     var guard = 0;
@@ -657,6 +611,7 @@
   // in a field also submits its form, so a field in a payment, password or
   // order form is locked too.
   function lockForKey(doc, spec) {
+    if (danger) return null;
     var k = keyName(spec);
     var enter = ENTER.test(k);
     if (!enter && !SPACE.test(k)) return null;
@@ -682,13 +637,9 @@
   // password fields, or when any of its submit buttons, inside the form or
   // tied to it with form="id", would be locked.
   function lockForSubmit(form) {
-    if (!form) return null;
+    if (danger || !form) return null;
     var fk = formKind(form);
-    if (fk) {
-      var fl = { kind: fk, label: clip(formLabel(form) || "this form"), optin: false, checked: false };
-      // A card form always locks; a password form only while it is kept.
-      if (fk !== "account" || !danger || !plainSignInForm(form) || keep(fl)) return fl;
-    }
+    if (fk) return { kind: fk, label: clip(formLabel(form) || "this form"), optin: false, checked: false };
     var subs = submitsOf(form);
     for (var i = 0; i < subs.length; i++) {
       var l = lockOf(subs[i]);
@@ -740,7 +691,7 @@
 
   function listLocks(doc, max) {
     var out = [];
-    if (!doc || !doc.querySelectorAll) return out;
+    if (danger || !doc || !doc.querySelectorAll) return out;
     max = max || 200;
     var els = doc.querySelectorAll(CANDIDATES);
     for (var i = 0; i < els.length && out.length < max; i++) {
@@ -946,6 +897,7 @@
     classifyLabel: classifyLabel,
     labelOf: labelOf,
     lockOf: lockOf,
+    classify: classify,
     blocks: blocks,
     lockInChain: lockInChain,
     lockAt: lockAt,

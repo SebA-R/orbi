@@ -1,6 +1,7 @@
-// Danger mode inside page.js (jsdom, inline HTML, no store): sign in and
-// sign up are no longer locked, while the order button, wallets, checkout,
-// subscribe, card forms and the masking of card and password fields stay.
+// Danger mode inside page.js (jsdom, inline HTML, no store): with it on,
+// the button lock is off (no [locked] markers, no ERR.LOCKED, Place order
+// and wallets included), while the masking of card and password fields
+// and the refusal to type into them stay. Off, every lock is as before.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadPage } from "./harness.js";
@@ -45,50 +46,73 @@ async function tree(p, dangerMode) {
   return (await call(p, "read_page", { filter: "all" }, dangerMode)).result.tree;
 }
 
-const STAY_LOCKED = [/Place order/, /"Buy now"/, /"Apple Pay"/, /Proceed to checkout/, /Subscribe/, /"Save card"/, /"Confirm"/, /button "Continue"/];
+// Every control the lock covers with Danger mode off.
+const LOCKED_OFF = [/"Sign in"/, /"Create account"/, /Place order/, /"Buy now"/, /"Apple Pay"/, /Proceed to checkout/, /Subscribe/,
+  /"Save card"/, /"Confirm"/, /button "Continue"/, /"Continue to confirm"/, /"Sign in and pay"/, /"Sign up for Prime"/];
 
-test("Danger mode off (the default): sign in and sign up are locked", async () => {
+test("Danger mode off (the default): every protected control is locked, as before", async () => {
   const p = loadPage(HTML);
-  const t = await tree(p, undefined);
-  assert.match(lineOf(t, /"Sign in"/), /\[locked\]$/);
-  assert.match(lineOf(t, /"Create account"/), /\[locked\]$/);
-  const r = await call(p, "guard_ref", { ref: refIn(lineOf(t, /"Sign in"/)) });
-  assert.equal(r.error.code, "locked");
+  for (const dm of [undefined, false]) {
+    const t = await tree(p, dm);
+    for (const re of LOCKED_OFF) {
+      const line = lineOf(t, re);
+      assert.match(line, /\[locked\]$/, String(re));
+      const r = await call(p, "guard_ref", { ref: refIn(line) }, dm);
+      assert.equal(r.error.code, "locked", String(re));
+    }
+    assert.doesNotMatch(lineOf(t, /"Add to cart"/), /locked/);
+    for (const id of ["pw", "pw2", "cvc"]) {
+      p.document.getElementById(id).focus();
+      assert.equal((await call(p, "guard_key", { key: "Enter" }, dm)).error.code, "locked", id);
+    }
+  }
 });
 
-test("Danger mode on: sign in and sign up are pressable; every money and checkout control stays locked", async () => {
+test("Danger mode on: no control is locked, Place order and wallets included", async () => {
   const p = loadPage(HTML);
   const t = await tree(p, true);
-  assert.doesNotMatch(lineOf(t, /"Sign in"/), /locked/);
-  assert.doesNotMatch(lineOf(t, /"Create account"/), /locked/);
-  assert.equal((await call(p, "guard_ref", { ref: refIn(lineOf(t, /"Sign in"/)) }, true)).ok, true);
-  for (const re of STAY_LOCKED) {
+  assert.doesNotMatch(t, /\[locked\]|\[uncheck only\]/);
+  for (const re of LOCKED_OFF) {
     const line = lineOf(t, re);
-    assert.match(line, /\[locked\]$/, String(re));
+    assert.ok(line, String(re));
     const r = await call(p, "guard_ref", { ref: refIn(line) }, true);
-    assert.equal(r.ok, false, String(re));
-    assert.equal(r.error.code, "locked", String(re));
+    assert.equal(r.ok, true, String(re));
+    // A click by ref goes through too.
+    assert.equal((await call(p, "click_ref", { ref: refIn(line) }, true)).ok, true, String(re));
   }
-  // A password form that pays, or whose other submit pays, stays locked.
-  assert.match(lineOf(t, /"Continue to confirm"/), /\[locked\]$/);
-  assert.match(lineOf(t, /"Sign in and pay"/), /\[locked\]$/);
-  const mixed = t.split("\n").filter((l) => /button "Sign in"/.test(l));
-  assert.equal(mixed.length, 2);
-  assert.match(mixed[1], /\[locked\]$/, "a Sign in next to Sign in and pay stays locked");
-  assert.match(lineOf(t, /"Sign up for Prime"/), /\[locked\]$/);
-  p.document.getElementById("pw2").focus();
-  assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).error.code, "locked");
-  p.document.getElementById("pw3").focus();
-  assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).error.code, "locked");
-  // Enter in the plain login form is allowed.
-  p.document.getElementById("email").focus();
-  assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).ok, true);
-  // Enter in the card form still submits nothing.
-  p.document.getElementById("cvc").focus();
-  assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).error.code, "locked");
+  // Enter in a password or card form submits it.
+  for (const id of ["pw", "pw2", "pw3", "cvc", "email"]) {
+    p.document.getElementById(id).focus();
+    assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).ok, true, id);
+  }
+  // find carries no lock either.
+  const found = (await call(p, "find", { query: "Place order" }, true)).result;
+  assert.ok(!JSON.stringify(found).includes('"locked":true'), JSON.stringify(found));
   // The pay flow's own press still only takes an order button.
-  const press = await call(p, "press_check", { ref: refIn(lineOf(t, /"Sign in"/)) }, true);
-  assert.equal(press.ok, false);
+  const signIn = await call(p, "press_check", { ref: refIn(lineOf(t, /"Sign in"/)) }, true);
+  assert.match(signIn.error.message, /only presses an order button/);
+  // Place order passes that check (jsdom has no layout, so it stops at visibility).
+  const order = await call(p, "press_check", { ref: refIn(lineOf(t, /Place order/)) }, true);
+  assert.doesNotMatch(String(order.error && order.error.message), /only presses an order button/);
+  // No badges or gray-out on controls.
+  assert.equal(p.document.querySelectorAll("button[data-clearcart-locked]").length, 0);
+});
+
+test("Danger mode on: opt-in boxes and dropdown options may be turned on", async () => {
+  const p = loadPage(`<label><input type="checkbox" id="sns"> Subscribe &amp; Save every 30 days</label>
+<select id="plan" aria-label="Plan"><option value="once">One-time purchase</option><option value="sns">Subscribe and save 5%</option></select>`);
+  const t = await tree(p, true);
+  const box = refIn(lineOf(t, /Subscribe & Save every/));
+  assert.equal((await call(p, "form_input", { ref: box, value: true }, true)).ok, true);
+  assert.equal(p.document.getElementById("sns").checked, true);
+  const sel = refIn(lineOf(t, /combobox|listbox|"Plan"/));
+  assert.equal((await call(p, "form_input", { ref: sel, value: "sns" }, true)).ok, true);
+  // Off: both refused again.
+  p.document.getElementById("sns").checked = false;
+  p.document.getElementById("plan").value = "once";
+  const t2 = await tree(p, false);
+  assert.equal((await call(p, "form_input", { ref: refIn(lineOf(t2, /Subscribe & Save every/)), value: true }, false)).error.code, "locked");
+  assert.equal((await call(p, "form_input", { ref: refIn(lineOf(t2, /combobox|listbox|"Plan"/)), value: "sns" }, false)).error.code, "locked");
 });
 
 test("Danger mode on: card and password values stay masked and refused", async () => {
@@ -112,11 +136,28 @@ test("Danger mode on: card and password values stay masked and refused", async (
   assert.equal((await call(p, "focused_field", {}, true)).result.password, true);
 });
 
+test("focus in a frame: a card field in a same-origin frame, or any cross-origin frame, refuses typing", async () => {
+  for (const dm of [true, false]) {
+    const p = loadPage(`<iframe id="same"></iframe><iframe id="cross" tabindex="0"></iframe>`);
+    const same = p.document.getElementById("same");
+    same.contentDocument.body.innerHTML = '<input id="cc" autocomplete="cc-number">';
+    same.contentDocument.getElementById("cc").focus();
+    const a = (await call(p, "focused_field", {}, dm)).result;
+    assert.equal(a.payment, true, "same-origin card field " + dm);
+    const cross = p.document.getElementById("cross");
+    Object.defineProperty(cross, "contentDocument", { get: () => null });
+    cross.focus();
+    const b = (await call(p, "focused_field", {}, dm)).result;
+    assert.equal(b.payment, true, "cross-origin frame " + dm);
+  }
+});
+
 test("Danger mode comes only from the message: params and anything but true are ignored", async () => {
   const p = loadPage(HTML);
   for (const v of [undefined, false, "true", 1, {}]) {
     const t = (await call(p, "read_page", { filter: "all", dangerMode: true }, v)).result.tree;
     assert.match(lineOf(t, /"Sign in"/), /\[locked\]$/, JSON.stringify(v));
+    assert.match(lineOf(t, /Place order/), /\[locked\]$/, JSON.stringify(v));
   }
   // On, then off again on the next call.
   await tree(p, true);

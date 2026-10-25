@@ -433,7 +433,8 @@
       if (!hit) throw PageError(ERR.BAD_REQUEST, "no option matching value");
       // Uncheck-only, for a dropdown: the AI may move the choice away from
       // an opt-in option ("Subscribe and save"), never onto one.
-      if (!hit.selected) {
+      // Danger mode lifts this too.
+      if (!hit.selected && !Protect.dangerMode()) {
         var optKind = Protect.classifyLabel(clean(hit.textContent), { checkable: true }) ||
           Protect.classifyLabel(clean(hit.label), { checkable: true }) ||
           Protect.classifyLabel(clean(hit.value).replace(/[-_]+/g, " "), { checkable: true });
@@ -515,7 +516,8 @@
   // saved card or account control), and its centre must not be covered.
   function pressTarget(params) {
     var el = elementFor(params.ref);
-    var lk = Protect.lockOf(el);
+    // classify, not lockOf: the same order-button check with Danger mode on.
+    var lk = Protect.classify(el);
     if (!Protect.pressable(lk)) throw PageError(ERR.LOCKED, "press_protected only presses an order button");
     return { el: el, lock: lk };
   }
@@ -762,7 +764,19 @@
   // CDP typing into a card field. Never returns the value.
   function focusedField() {
     var el = document.activeElement;
-    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    for (var guard = 0; el && guard < 20; guard++) {
+      if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      if (!/^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME)$/.test(el.tagName)) break;
+      // Focus inside a frame: a same-origin one is read like the page; a
+      // cross-origin one (hosted card fields) cannot be checked, so typing
+      // there is refused like a payment field.
+      var sub = null;
+      try { sub = el.contentDocument || null; } catch (_) { sub = null; }
+      if (!sub) return { kind: "frame", payment: true, text: false };
+      var inner = sub.activeElement;
+      if (!inner || inner === sub.body || inner === sub.documentElement) return { kind: "none", payment: false };
+      el = inner;
+    }
     if (!el || el === document.body || el === document.documentElement) return { kind: "none", payment: false };
     var tag = el.tagName;
     if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
