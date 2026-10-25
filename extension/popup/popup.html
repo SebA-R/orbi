@@ -3,39 +3,52 @@
 <head>
   <meta charset="utf-8">
   <title>Clearcart</title>
-  <link rel="stylesheet" href="../setup/setup.css">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <main>
-    <h1>Clearcart</h1>
-    <section aria-labelledby="setup-heading">
-      <h2 id="setup-heading">Setup</h2>
-      <div id="checklist"></div>
+    <header class="top">
+      <h1>Clearcart</h1>
+      <a class="icon" id="gear" href="../options/options.html" aria-label="All settings">
+        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"></path></svg>
+      </a>
+    </header>
+
+    <section class="hero" aria-label="Voice">
+      <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
+      <div class="voice" id="voice" role="status" aria-live="polite">
+        <p class="voice-title" id="voice-title">Ready</p>
+        <p class="voice-sub" id="voice-sub">Hold Space on any page to talk.</p>
+      </div>
+      <button type="button" class="pill" id="setup-pill" data-state="wait">
+        <span class="pill-face">
+          <svg class="pill-check" aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 6.2l2.3 2.3 4.7-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+          <span id="setup-text">Checking setup</span>
+        </span>
+      </button>
     </section>
 
-    <section aria-labelledby="settings-heading">
-      <h2 id="settings-heading">Settings</h2>
-      <fieldset>
-        <legend>Browse mode</legend>
-        <label class="radio"><input type="radio" name="browseMode" value="open"> <span>Open web: any store, except blocked sites</span></label>
-        <label class="radio"><input type="radio" name="browseMode" value="allowlist"> <span>Only the allowed sites</span></label>
-      </fieldset>
-      <label for="hotkey">Talk key</label>
-      <select id="hotkey"></select>
-      <label for="speed">Speaking speed: <output id="speed-out" for="speed"></output></label>
-      <input id="speed" type="range" step="0.1">
-      <label class="check"><input id="subtitles" type="checkbox"> Show subtitles on the page</label>
-      <label class="check"><input id="quiet-tabs" type="checkbox"> Quiet other tabs while talking</label>
+    <section class="sheet" aria-label="Settings">
+      <span class="handle" aria-hidden="true"></span>
+      <div class="row">
+        <span id="mode-label">Browse</span>
+        <div class="seg" role="radiogroup" aria-labelledby="mode-label">
+          <label>Open web<input type="radio" name="browseMode" value="open"></label>
+          <label>Allowed sites<input type="radio" name="browseMode" value="allowlist"></label>
+        </div>
+      </div>
+      <div class="row"><label for="hotkey">Talk key</label><select id="hotkey" class="sel"></select></div>
+      <div class="row">
+        <label for="speed">Speaking speed</label>
+        <span class="speed"><input id="speed" type="range" step="0.1"><output id="speed-out" for="speed"></output></span>
+      </div>
+      <label class="row" for="subtitles"><span>Subtitles on the page</span><input id="subtitles" class="sw" type="checkbox" role="switch"></label>
+      <label class="row" for="quiet-tabs"><span>Quiet other tabs while talking</span><input id="quiet-tabs" class="sw" type="checkbox" role="switch"></label>
+      <nav class="links" aria-label="More settings">
+        <a id="all-settings" href="../options/options.html">All settings</a>
+        <a id="blocked-sites" href="../options/options.html#blocked-sites">Blocked sites</a>
+      </nav>
     </section>
-
-    <nav aria-label="More settings">
-      <ul class="links">
-        <li><a id="all-settings" href="../options/options.html">All settings</a></li>
-        <li><a id="blocked-sites" href="../options/options.html#blocked-sites">Blocked sites</a></li>
-      </ul>
-    </nav>
-    <p id="live" role="status" aria-live="polite" class="hint"></p>
   </main>
   <script type="module" src="popup.js"></script>
 </body>

@@ -110,3 +110,10 @@ export function talkKeyHelp(hotkey) {
 }
 
 export const allReady = ({ site, mic, agent }) => site === true && mic === "granted" && agent?.connected === true;
+
+// The setup page's four checks (site access, microphone, agent server, talk
+// key), counted for the popup's setup pill. The talk key always has a
+// default, so it is always done, as on the setup page.
+export const SETUP_STEPS = 4;
+export const setupDone = ({ site, mic, agent }) =>
+  [site === true, mic === "granted", agent?.connected === true, true].filter(Boolean).length;
