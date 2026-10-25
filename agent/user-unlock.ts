@@ -2,9 +2,9 @@
 //
 // The button lock (extension/content/protect.js) keeps Claude's tools off
 // checkout, sign in, subscribe, saved card and marked controls. When the
-// user's own words ask for that action as an imperative ("sign me in", "go
-// to checkout"), request_unlock presses the control once; otherwise it asks
-// one short question and needs an explicit yes (isExplicitYes). Marked
+// user's own words ask for that action ("sign me in", "go to checkout", "I
+// want to check out"), request_unlock presses the control once; otherwise it
+// asks one short question and needs a clear yes (isUnlockYes). Marked
 // controls never unlock this way.
 //
 // What never unlocks here: placing an order, buy now, pay, wallets, marked
@@ -49,6 +49,7 @@ const USER_INTENTS: Array<[Intent, RegExp]> = [
   ["checkout", /^ (take|bring|get) (me|us) (to|into) (the )?check ?out /],
   ["checkout", /^ check ?out( (now|please|for me|thanks|thank you|right now))* $/],
   ["checkout", /^ (start|begin|open) (the )?check ?out /],
+  ["checkout", /^ (press|click|tap|hit|push) (on )?(the )?check ?out( button| link)?( (now|please|for me))* $/],
   ["signin", /^ (sign|log) (me |us )?(back )?in(to)? /],
   ["signin", /^ (signin|login)( me)? /],
   ["signout", /^ (sign|log) (me |us )?out /],
@@ -85,12 +86,21 @@ const INTENT_CLASS: Record<Intent, UnlockClass> = {
   "save-card": "payment-method",
 };
 
+// Delays, conditions, step orders and doubt: "check out, in a minute",
+// "yes, after you add the socks", "I guess". Speech to text often puts a
+// comma before them, so they count anywhere in the words.
+const DELAY = [
+  "but", "except", "first", "after(?! that)", "once", "soon", "sometime", "some point", "minute", "minutes", "sec", "second",
+  "moment", "a bit", "guess", "dunno", "kidding", "joking", "yeah right", "i mean",
+];
+
 // Words that turn a request into a question, a refusal, a complaint, a
 // condition or something for later. Any of them anywhere means "ask
 // first" (the spoken confirmation), never a direct press.
 const HEDGE = new RegExp(
   " (" +
     [
+      ...DELAY,
       "dont", "do not", "not", "never", "no", "nope", "stop", "wait", "hold on", "without", "instead", "unless", "if", "whether",
       "should", "shouldnt", "maybe", "might", "perhaps", "probably", "wonder", "wondering", "thinking", "think", "considering",
       "later", "tomorrow", "eventually", "before", "what", "why", "how", "which", "where", "when", "who", "is there", "are there",
@@ -103,30 +113,64 @@ const HEDGE = new RegExp(
 );
 
 // Polite lead-ins stripped from the start of a clause.
-const FILLER = /^ (please|ok|okay|yes|yeah|yep|alright|all right|now|great|cool|sure|just|hey|so|and|then|lets|can you|could you|would you|will you|can we|could we|go ahead and) /;
+const FILLER = /^ (please|ok|okay|yes|yeah|yep|alright|all right|now|great|cool|sure|just|hey|so|and|then|uh|um|lets|can you|could you|would you|will you|can we|could we|go ahead and) /;
+
+// How people state what they want: "I want to check out", "I'd like to
+// subscribe", "I'm giving you permission to check out". Stricter than
+// FILLER: the words must be one clause on their own, and after the action
+// only closing words or the control's own label words may follow (so "I'd
+// like to subscribe to fewer emails" or "I want to join the chat" ask).
+// norm() drops apostrophes: "I'd" is "id", "I'm" is "im".
+const LEAD = new RegExp(
+  "^ (" +
+    [
+      "(i|we) (really )?(want|need|would like|wish)( you| us)? to", "(i|we) (really )?wanna", "(id|wed) (really )?like( you| us)? to",
+      "(i am|im|we are) ready to", "(i am|im|i|we are|we) (giving|give) you (my |our )?(explicit |full )?permission to",
+      "you have (my |our )?(explicit |full )?permission to", "you can", "you may", "feel free to",
+    ].join("|") +
+    ") "
+);
+const LEAD_TAIL = new Set("now please for me thanks thank you right here again back the a an my our this it to in into on".split(" "));
 
 // A question that is really a request: "can you sign me in?".
 const POLITE = /^ (please |ok |okay |yes |yeah |now |great |cool )*(can you|could you|would you|will you|can we|could we) /;
 
-// The user's words as clauses, each " ... " with filler stripped.
-function clauses(raw: string): string[] {
-  const out: string[] = [];
+// The user's words as clauses, each " ... " with filler stripped. led: a
+// LEAD was stripped from it.
+type Clause = { c: string; led: boolean };
+function clauses(raw: string): Clause[] {
+  const out: Clause[] = [];
   for (const part of String(raw).split(/[,.;:!?]+/)) {
     for (const c of norm(part).split(/ (?:and then|and|then|after that) /)) {
       let s = ` ${c.trim()} `;
+      let led = false;
       for (let prev = ""; prev !== s; ) {
         prev = s;
         s = s.replace(FILLER, " ");
+        const t = s.replace(LEAD, " ");
+        if (t !== s) led = true;
+        s = t;
       }
-      if (s.trim()) out.push(s);
+      if (s.trim()) out.push({ c: s, led });
     }
   }
   return out;
 }
 
-function userIntents(text: string): Set<Intent> {
+// Intents of clauses; a led clause counts only when what follows the
+// action is closing words or words of the label.
+function userIntents(cs: Clause[], label: string): Set<Intent> {
   const out = new Set<Intent>();
-  for (const c of clauses(text)) for (const [intent, re] of USER_INTENTS) if (re.test(c)) out.add(intent);
+  const mine = new Set(norm(label).trim().split(" "));
+  for (const { c, led } of cs) {
+    for (const [intent, re] of USER_INTENTS) {
+      const m = re.exec(c);
+      if (!m) continue;
+      const rest = c.slice(m[0].length).trim();
+      if (led && rest && !rest.split(" ").every((w) => LEAD_TAIL.has(w) || mine.has(w))) continue;
+      out.add(intent);
+    }
+  }
   return out;
 }
 
@@ -152,15 +196,83 @@ export function isDirectAsk(userText: string, cls: UnlockClass | null, label: st
   if (n.trim().split(" ").length > 24) return false;
   if (/\?/.test(raw) && !POLITE.test(n)) return false;
   if (HEDGE.test(n)) return false;
+  const cs = clauses(raw);
+  // A stated wish must be the whole utterance: "I want to check out, once
+  // the pants are in" asks.
+  if (cs.some((x) => x.led) && cs.length > 1) return false;
   // "press Create account", "click the Subscribe button".
   const name = norm(label).trim();
   if (name) {
     const named = new RegExp(`^ (press|click|tap|hit|select|choose|push) (the |on )?${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( button| link)? $`);
-    if (clauses(raw).some((c) => named.test(c))) return true;
+    if (cs.some((x) => named.test(x.c))) return true;
   }
-  const want = userIntents(raw);
+  const want = userIntents(cs, label);
   for (const intent of labelIntents(label)) if (want.has(intent) && INTENT_CLASS[intent] === cls) return true;
   return false;
+}
+
+// The answer to request_unlock's own question ("Do you want me to go to
+// checkout?"). Wider than the pay read-back's isExplicitYes (session.ts),
+// which this never replaces. It must lead with a yes, and every later
+// clause must be filler, a confirmation ("that's what I just said"), or
+// about this control ("press checkout", "finish the order" for checkout)
+// with no hedge, delay or question word and no other control's action. An
+// answer that is itself a direct ask for this control counts too. Only
+// ever pass the user's transcribed answer.
+const YES_LEAD = /^ (yes|yeah|yep|yup|ya|yea|go ahead|do it|please do|absolutely|definitely|of course|correct|affirmative) /;
+const YES_FILLER = /^ (ok|okay|alright|all right|sure|uh|um|oh|well|so|please|now|just) /;
+const YES_TAIL = /^ (thats what i (just )?said|i (just |already )?said (so|yes|that)|i already (said|told you)( so| yes| that)?|i told you( so)?|like i said|you heard me|for sure|exactly|thats right|that is right|i do|i did|i want that|thanks|thank you|right now|go for it|lets go|lets do it) $/;
+const NOT_YES = new RegExp(
+  " (" +
+    [
+      ...DELAY,
+      "no", "nope", "nah", "not", "dont", "do not", "never", "stop", "wait", "hold on", "hang on", "cancel", "nevermind", "never mind",
+      "without", "instead", "unless", "if", "whether", "should", "shouldnt", "maybe", "might", "perhaps", "probably", "wonder", "think",
+      "thinking", "considering", "later", "tomorrow", "eventually", "before", "what", "why", "how", "which", "where", "when", "who",
+      "is it", "is there", "does", "do i", "did", "can i", "could i", "tell me", "explain", "rather", "else", "other", "actually", "hmm",
+      "isnt", "wont", "cant", "too",
+    ].join("|") +
+    ")(?= )"
+);
+const ABOUT: Record<UnlockClass, RegExp> = {
+  checkout: / (check ?out|check (it|them|this|that|these) out|order|purchase|buy|cart|bag) /,
+  account: / (sign ?in|sign ?up|log ?in|login|account|password|register) /,
+  subscription: / (subscribe|subscription|trial|member|membership|plan|join|enroll|upgrade) /,
+  "payment-method": / (card|payment) /,
+};
+
+function stripAll(s: string, ...res: RegExp[]): string {
+  for (let prev = ""; prev !== s; ) {
+    prev = s;
+    for (const re of res) s = s.replace(re, " ");
+  }
+  return s;
+}
+
+export function isUnlockYes(answer: string, cls: UnlockClass | null, label: string): boolean {
+  if (!cls || !CLASSES.has(cls) || !label) return false;
+  const raw = String(answer ?? "");
+  const n = norm(raw);
+  if (!n.trim() || n.trim().split(" ").length > 30 || /\?/.test(raw)) return false;
+  if (isDirectAsk(raw, cls, label)) return true;
+  const mine = labelIntents(label);
+  let led = false;
+  for (const part of raw.split(/[,.;:!]+/)) {
+    for (const piece of norm(part).split(/ (?:and then|and|then|so) /)) {
+      let c = stripAll(` ${piece.trim()} `, YES_FILLER);
+      if (!c.trim()) continue;
+      if (!led) {
+        if (!YES_LEAD.test(c)) return false;
+        led = true;
+      }
+      c = stripAll(c, YES_LEAD, YES_FILLER);
+      if (!c.trim() || YES_TAIL.test(c)) continue;
+      if (NOT_YES.test(c)) return false;
+      if ([...userIntents(clauses(c), "")].some((i) => !mine.has(i))) return false;
+      if (!ABOUT[cls].test(c)) return false;
+    }
+  }
+  return led;
 }
 
 // ------------------------------------------------------------------ grant

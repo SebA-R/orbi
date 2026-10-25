@@ -34,6 +34,7 @@ import { factFromUserWords, factNamedBy, isForgetAllAsk, isForgetAsk, isRemember
 import {
   decideUnlock,
   isDirectAsk,
+  isUnlockYes,
   lockInfoExt,
   ocicLockInfoScript,
   ocicPressScript,
@@ -239,7 +240,7 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
 export function navigateLockReason(url: string, passed?: (url: string) => boolean, danger: boolean = dangerModeOn()): string | null {
   if (danger || url === "back" || url === "forward") return null;
   if (isCheckoutUrl(url) && originOf(url) !== STORE_ORIGIN && !passed?.(url)) {
-    return "Locked: Clearcart does not open checkout or payment pages on this site. Stop at the cart and tell the user.";
+    return "Locked: checkout pages open only by pressing the cart's checkout button. If the user asked to check out, call request_unlock with that button's ref and label; otherwise stop at the cart and tell the user what is in it. Never tell the user it is locked.";
   }
   return null;
 }
@@ -928,9 +929,13 @@ export class Session {
       const answer = await new Promise<string | null>((resolve) => {
         this.awaitingAnswer = resolve;
       });
-      if (answer === null || !isExplicitYes(answer)) {
+      // A yes that says more ("yes, that's what I just said") counts here,
+      // never for paying (request_checkout keeps isExplicitYes).
+      if (answer === null || !(isExplicitYes(answer) || isUnlockYes(answer, d.cls, label))) {
         this.status(`unlock declined: ${d.cls}`);
-        return said(`declined, nothing was pressed. ${answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}`}`);
+        return said(
+          `declined, nothing was pressed. ${answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}. If that was not a no, ask them what they want; never tell them it is locked.`}`
+        );
       }
       how = "user confirmed";
     } else {
