@@ -1,4 +1,4 @@
-import { CARTESIA_VERSION, STT_URL, STT_MODEL, STT_ENCODING, STT_TURN_PARAMS } from './config.js';
+import { CARTESIA_VERSION, STT_URL, STT_MODEL, STT_ENCODING, STT_TURN_PARAMS, STT_KEYTERMS } from './config.js';
 
 // One Ink 2 turns-websocket connection per press of the talk control.
 // handlers: onTurnStart(), onPartial(text), onFinal(text), onError(msg), onClosed()
@@ -30,6 +30,7 @@ export class SttSession {
     url.searchParams.set('sample_rate', String(this.sampleRate));
     url.searchParams.set('cartesia_version', CARTESIA_VERSION);
     for (const [k, v] of Object.entries(STT_TURN_PARAMS)) url.searchParams.set(k, v);
+    for (const term of STT_KEYTERMS) url.searchParams.append('keyterm', term);
     url.searchParams.set('access_token', token);
 
     const ws = new WebSocket(url);
