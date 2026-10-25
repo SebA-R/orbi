@@ -138,6 +138,8 @@ test("the relay treats the page as a tab: it answers the page's state query on l
 
 test("Space talks on the page and types a space in the search box", async () => {
   const page = await openNewTab();
+  // The page holds focus on load, not the search box.
+  assert.notEqual(await page.evaluate(() => document.activeElement?.id), "q");
   // Record what the page sends the worker.
   await page.evaluate(() => {
     window.__sent = [];

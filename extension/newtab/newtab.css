@@ -63,6 +63,7 @@ html[data-ready="false"] main { visibility: hidden; }
 p, h1, h2 { margin: 0; }
 a { color: var(--fg); }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+main:focus { outline: none; } /* holds the keyboard for Space, not a control */
 [hidden] { display: none !important; }
 .visually-hidden {
   position: absolute !important; width: 1px; height: 1px; margin: -1px; padding: 0;
