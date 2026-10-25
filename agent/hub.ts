@@ -1,0 +1,153 @@
+// One voice session for every Clearcart window.
+//
+// Each window that talks to Clearcart (the extension's offscreen document,
+// the voice console page) opens its own /session socket, but they share one
+// Session: one Claude conversation driving one browser. (Before, every
+// socket got its own Session, so two windows meant two agents in the same
+// tabs, and one "yes" heard by both mics could confirm two checkouts.)
+//
+// The socket that owns the session is the one the user last talked into:
+//   - {type:"interrupt"}, sent when the talk key goes down, claims it.
+//     {type:"user_text"} claims it too, except from a socket that lost the
+//     session since it last claimed: those words were said before the user
+//     moved to another window, so they are dropped and the socket is told.
+//   - Opening a socket never claims, so opening the console, or a reconnect
+//     after a server restart, takes nothing from the window in use.
+//   - Replies, read-backs, statuses and receipts go to the owner only.
+//   - When the owner changes or goes away the Session hands off
+//     (Session.handOff): a read-back or unlock question still waiting is
+//     declined, never confirmed, so only the window that heard it can answer
+//     it, and the turn in progress stops talking. The old owner gets
+//     {type:"standby", reason:"moved"} and stops speaking and listening.
+//   - The Session ends when the last socket closes, or when its agent loop
+//     stops; the next message starts a fresh one. Messages from a Session
+//     that has ended reach nobody.
+
+import type { ServerMessage } from "./session.ts";
+
+export type Standby = { type: "standby"; reason: "moved" | "stale"; text: string };
+export type HubMessage = ServerMessage | Standby;
+
+export interface HubSession {
+  userText(text: string): unknown;
+  interrupt(): void;
+  handOff(): void;
+  close(): void;
+}
+
+// A new session whose messages go out through send. It calls ended() when
+// its agent loop has stopped for good.
+export type CreateSession = (send: (m: ServerMessage) => void, ended: () => void) => HubSession;
+
+export const ELSEWHERE_TEXT = "Clearcart is in use in another window. Talk here to use it here.";
+export const MOVED_TEXT = "Clearcart moved to another window. Talk here to bring it back.";
+export const STALE_TEXT = "Not sent: Clearcart is in use in another window. Talk here again to use it here.";
+
+type Peer = { send: (m: HubMessage) => void; lost: boolean };
+
+export type HubPeer = {
+  interrupt(): void;
+  userText(text: string): void;
+  leave(): void;
+};
+
+export class SessionHub {
+  private peers = new Set<Peer>();
+  private owner: Peer | null = null;
+  private session: HubSession | null = null;
+
+  constructor(private create: CreateSession, private log: (line: string) => void = () => {}) {}
+
+  // A socket opened. Starts the session if there is none yet (so the agent
+  // warms up), but takes nothing from the window that owns it.
+  join(send: (m: HubMessage) => void): HubPeer {
+    const peer: Peer = { send, lost: false };
+    this.peers.add(peer);
+    if (this.owner) send({ type: "status", text: ELSEWHERE_TEXT });
+    this.ensure();
+    return {
+      interrupt: () => this.interrupt(peer),
+      userText: (text) => this.userText(peer, text),
+      leave: () => this.leave(peer),
+    };
+  }
+
+  get clients(): number {
+    return this.peers.size;
+  }
+
+  private ensure(): HubSession {
+    if (this.session) return this.session;
+    let s: HubSession | null = null;
+    const live = () => s !== null && this.session === s;
+    s = this.create(
+      (m) => {
+        if (live()) this.owner?.send(m);
+      },
+      () => {
+        if (!live()) return;
+        this.session = null;
+        s!.close();
+        this.log("voice session ended (agent stopped)");
+      }
+    );
+    this.session = s;
+    this.log("voice session started");
+    return s;
+  }
+
+  // The user acted in this window: it owns the session from now on.
+  private claim(peer: Peer): HubSession {
+    const s = this.ensure();
+    if (this.owner === peer) return s;
+    const prev = this.owner;
+    this.owner = peer;
+    peer.lost = false;
+    if (prev) {
+      prev.lost = true;
+      prev.send({ type: "standby", reason: "moved", text: MOVED_TEXT });
+    }
+    s.handOff();
+    this.log(prev ? "voice session moved to another window" : "voice session claimed");
+    return s;
+  }
+
+  private interrupt(peer: Peer) {
+    if (!this.peers.has(peer)) return;
+    this.claim(peer).interrupt();
+  }
+
+  private userText(peer: Peer, text: string) {
+    if (!this.peers.has(peer)) return;
+    if (peer.lost) {
+      peer.send({ type: "standby", reason: "stale", text: STALE_TEXT });
+      return;
+    }
+    this.claim(peer).userText(text);
+  }
+
+  private leave(peer: Peer) {
+    if (!this.peers.delete(peer)) return;
+    if (this.owner === peer) {
+      this.owner = null;
+      this.session?.handOff();
+    }
+    if (!this.peers.size && this.session) {
+      const s = this.session;
+      this.session = null;
+      s.close();
+      this.log("voice session ended (no window left)");
+    }
+  }
+}
+
+// AGENT_MODE=echo: answers each user_text with "You said: ...", no Claude.
+// It goes through the hub too, so echo mode has the same one-owner rules.
+export function echoSession(send: (m: ServerMessage) => void): HubSession {
+  return {
+    userText: (text) => send({ type: "agent_text", text: `You said: ${text}` }),
+    interrupt() {},
+    handOff() {},
+    close() {},
+  };
+}
