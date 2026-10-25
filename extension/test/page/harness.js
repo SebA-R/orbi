@@ -15,6 +15,11 @@ export function loadPage(html, { url = "http://localhost:4000/", page = true } =
   const listeners = [];
   window.chrome = { runtime: { id: "test", onMessage: { addListener: (fn) => listeners.push(fn) } } };
   window.eval(MASK_SRC);
+  // Same order as the worker: mask.js, then page.js. Re-callable to test idempotence.
+  const inject = () => {
+    window.eval(MASK_SRC);
+    window.eval(readFileSync(PAGE_PATH, "utf8"));
+  };
   if (page && existsSync(PAGE_PATH)) window.eval(readFileSync(PAGE_PATH, "utf8"));
   // Sends a runtime message the way chrome.tabs.sendMessage would.
   const send = (msg) =>
@@ -26,7 +31,7 @@ export function loadPage(html, { url = "http://localhost:4000/", page = true } =
       if (!async) resolve(undefined);
     });
   const call = (method, params = {}) => send({ type: "page.call", method, params });
-  return { dom, window, document: window.document, listeners, send, call };
+  return { inject, dom, window, document: window.document, listeners, send, call };
 }
 
 // Starts the demo store on a free-ish port and returns { base, stop }.
