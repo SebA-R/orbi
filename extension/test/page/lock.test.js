@@ -66,7 +66,8 @@ test("guard_ref and guard_point refuse locked targets and pass normal ones", asy
   const r = await p.call("guard_ref", { ref: refIn(lineOf(tree, /Place order/)) });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, "locked");
-  assert.equal(r.error.message, "Locked: 'Place order · $" + /Place order · \$([0-9.]+)/.exec(tree)[1] + "' can only be pressed by Clearcart after the user says yes.");
+  const placeRef = refIn(lineOf(tree, /Place order/));
+  assert.equal(r.error.message, "Locked: 'Place order · $" + /Place order · \$([0-9.]+)/.exec(tree)[1] + "' (" + placeRef + ") places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now on the demo store. Elsewhere, tell the user they can finish it themselves.");
   const ok = await p.call("guard_ref", { ref: refIn(lineOf(tree, /textbox "Name on card"/)) });
   assert.equal(ok.ok, true);
 
@@ -334,4 +335,119 @@ test("press_check_user keeps the lock marker until press_done_user; press_hit_us
   assert.equal((await cart.call("press_hit_user", { ...t, x: 60, y: 40 })).error.code, "no_element", "covered or swapped");
   assert.equal((await cart.call("press_done_user", t)).ok, true);
   assert.ok(!target.hasAttribute(MARK));
+});
+
+// ------------------------------------------------ lock awareness for Claude
+// Every refusal names the control and a ref Claude can pass to
+// request_unlock, and says the next step. Payment controls never point at
+// request_unlock.
+
+const LINKS = `<!doctype html><body>
+<a id="co" href="/checkout" class="btn"><span id="co-text">Proceed to checkout</span></a>
+<div id="pseudo" onclick="void 0">Sign up</div>
+<button id="buy" type="button">Buy now</button>
+<button id="pay" type="button">Apple Pay</button>
+<label><input id="sns" type="checkbox"> Subscribe and save 10%</label>
+<form id="f" action="/session" method="post">
+  <label>Email <input id="email" name="email" type="email"></label>
+  <label>Password <input id="pw" name="password" type="password" value="x"></label>
+  <button id="go" type="submit">Sign in</button>
+</form>
+</body>`;
+
+test("lock refusals name the control's ref and send Claude to request_unlock, never for paying", async () => {
+  const p = loadPage(LINKS, { url: "https://shop.example/cart" });
+  const d = p.document;
+  const refOf = (id) => p.window.__clearcartPage.refFor(d.getElementById(id));
+  const next = (ref, label) => "call request_unlock with ref " + ref + " and label '" + label + "'";
+
+  // A click by point on the span inside a checkout link: the link's ref.
+  d.elementFromPoint = () => d.getElementById("co-text");
+  let r = await p.call("guard_point", { x: 1, y: 1 });
+  assert.equal(r.error.code, "locked");
+  assert.match(r.error.message, /^Locked: 'Proceed to checkout' \(ref_\d+\) starts checkout/);
+  assert.ok(r.error.message.includes(next(refOf("co"), "Proceed to checkout")), r.error.message);
+  assert.match(r.error.message, /nothing was pressed/);
+  // That ref is one request_unlock can use.
+  const info = (await p.call("lock_info", { ref: refOf("co") })).result;
+  assert.deepEqual([info.locked, info.cls], [true, "checkout"]);
+
+  // A div styled as a button.
+  d.elementFromPoint = () => d.getElementById("pseudo");
+  r = await p.call("guard_point", { x: 1, y: 1 });
+  assert.ok(r.error.message.includes(next(refOf("pseudo"), "Sign up")), r.error.message);
+
+  // Enter in the password field: the form's submit button is named.
+  d.getElementById("email").focus();
+  r = await p.call("guard_key", { key: "Enter" });
+  assert.equal(r.error.code, "locked");
+  assert.ok(r.error.message.includes(next(refOf("go"), "Sign in")), r.error.message);
+  // Space on a focused locked button.
+  d.getElementById("go").focus();
+  r = await p.call("guard_key", { key: " " });
+  assert.ok(r.error.message.includes(next(refOf("go"), "Sign in")), r.error.message);
+
+  // An uncheck-only box: turning it on goes through request_unlock.
+  r = await p.call("form_input", { ref: refOf("sns"), value: true });
+  assert.equal(r.error.code, "locked");
+  assert.match(r.error.message, /can only be unchecked by the AI, so nothing was changed/);
+  assert.ok(r.error.message.includes("if the user wants it on, " + next(refOf("sns"), "Subscribe and save 10%")), r.error.message);
+  // Clicking its label is the same lock.
+  d.elementFromPoint = () => d.querySelector("label");
+  r = await p.call("guard_point", { x: 1, y: 1 });
+  assert.ok(r.error.message.includes(next(refOf("sns"), "Subscribe and save 10%")), r.error.message);
+
+  // Buy now and wallets: named, never request_unlock.
+  for (const [id, re] of [["buy", /places the order or pays/], ["pay", /one-tap wallet/]]) {
+    r = await p.call("guard_ref", { ref: refOf(id) });
+    assert.equal(r.error.code, "locked", id);
+    assert.match(r.error.message, re);
+    assert.match(r.error.message, /Never call request_unlock for it/);
+    assert.doesNotMatch(r.error.message, /call request_unlock with/);
+  }
+});
+
+test("Place order and the card form never point at request_unlock; the lock's element stays out of JSON", async () => {
+  const p = load("checkout", "/checkout");
+  const tree = (await p.call("read_page", { filter: "all" })).result.tree;
+  const r = await p.call("guard_ref", { ref: refIn(lineOf(tree, /Place order/)) });
+  assert.match(r.error.message, /Never call request_unlock for it: paying goes only through request_checkout and pay_now/);
+  p.document.querySelector('[name="cc-name"]').focus();
+  const k = await p.call("guard_key", { key: "Enter" });
+  assert.equal(k.error.code, "locked");
+  assert.doesNotMatch(k.error.message, /call request_unlock with/);
+  const P = p.window.ClearcartProtect;
+  const lock = P.lockInChain(p.document.getElementById("place-order"));
+  assert.ok(lock.el);
+  assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(lock))).sort(), ["checked", "kind", "label", "optin"]);
+});
+
+test("frames and hidden components are named as only the user's, with no ref", async () => {
+  const p = loadPage(`<!doctype html><body><iframe id="w" src="about:blank"></iframe></body>`, { url: "https://shop.example/cart" });
+  const P = p.window.ClearcartProtect;
+  for (const kind of ["frame", "shadow"]) {
+    const m = P.message({ kind, label: kind }, null);
+    assert.match(m, /nothing was pressed/);
+    assert.match(m, /only the user can/);
+    assert.doesNotMatch(m, /request_unlock/);
+  }
+});
+
+test("get_page_text lists the locked controls with refs shared with read_page", async () => {
+  const cart = load("cart", "/cart");
+  const text = (await cart.call("get_page_text", {})).result;
+  const tree = (await cart.call("read_page", {})).result.tree;
+  const co = text.locked.find((x) => /Proceed to checkout/.test(x.name));
+  assert.equal(co.ref, refIn(lineOf(tree, /Proceed to checkout/)));
+  assert.equal(co.uncheckOnly, undefined);
+  // The pre-checked add-on does not block (it may be turned off) until it is off.
+  assert.equal(text.locked.some((x) => /Subscribe/.test(x.name)), false);
+  cart.document.getElementById("addon_subscription").checked = false;
+  const again = (await cart.call("get_page_text", {})).result;
+  const sub = again.locked.find((x) => /Subscribe/.test(x.name));
+  assert.equal(sub.uncheckOnly, true);
+  assert.equal(sub.ref, refIn(lineOf(tree, /Subscribe/)));
+  // A page with no locked controls has no list.
+  const product = (await load("product", "/product/cetirizine-30").call("get_page_text", {})).result;
+  assert.equal(product.locked, undefined);
 });
