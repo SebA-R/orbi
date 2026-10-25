@@ -18,12 +18,14 @@
 import dns from "node:dns";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type HookCallback, type HookEvent, type HookCallbackMatcher, type McpServerStatus, type SDKMessage, type SdkMcpToolDefinition, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
 import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
-import { createExtToolsServer } from "./exttools.ts";
+import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
+import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
+import { localQuery, sdkToolServer, stdioToolServer } from "./local/query.ts";
 import { withContext, type PageContext } from "./context.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
@@ -135,6 +137,42 @@ export function memoryOn(): boolean {
   return extMode() ? extBridge.memoryEnabled() === true : process.env.CLEARCART_MEMORY !== "0";
 }
 
+// Which model runs the agent (local/config.ts): in ext mode the
+// extension's provider setting, each field it has not sent falling back to
+// the environment; elsewhere CLEARCART_PROVIDER, CLEARCART_LOCAL_URL,
+// CLEARCART_LOCAL_MODEL and CLEARCART_LOCAL_VISION. Claude unless one of
+// them says local. (server.ts refuses to start on a bad environment value.)
+export function currentProvider(): ProviderSettings {
+  let env: ProviderSettings;
+  try {
+    env = envProviderSettings();
+  } catch {
+    env = CLAUDE_DEFAULTS;
+  }
+  if (!extMode()) return env;
+  const ext = extBridge.providerSettings();
+  return {
+    provider: ext.provider ?? env.provider,
+    localBaseUrl: ext.localBaseUrl ?? env.localBaseUrl,
+    localModel: ext.localModel ?? env.localModel,
+    localVision: ext.localVision ?? env.localVision,
+  };
+}
+
+// CLEARCART_LOCAL_CONTEXT, or the default when unset or bad (server.ts
+// refuses to start on a bad one).
+function localContext(): number | undefined {
+  try {
+    return envLocalContext();
+  } catch {
+    return undefined;
+  }
+}
+
+// What Session.run() reads from either backend: the SDK's Query, or the
+// local model's stand-in (local/query.ts).
+type AgentQuery = AsyncIterable<SDKMessage> & { interrupt(): Promise<unknown>; mcpServerStatus(): Promise<McpServerStatus[]> };
+
 // How long a user turn waits for page_context before going without it.
 const CONTEXT_TIMEOUT_MS = 1_500;
 
@@ -172,6 +210,9 @@ type Tab = { tabId: number; url?: string };
 type Lookup = (host: string) => Promise<Array<{ address: string }>>;
 
 const DNS_TIMEOUT_MS = 1500;
+const BROWSER_TOOL_TIMEOUT_MS = 90_000;
+// request_checkout waits on a person; give it room.
+const CLEARCART_TOOL_TIMEOUT_MS = 10 * 60_000;
 const DNS_TTL_MS = 60_000;
 const dnsCache = new Map<string, { local: boolean; at: number }>();
 const systemLookup: Lookup = (host) => dns.promises.lookup(host, { all: true });
@@ -384,7 +425,10 @@ export class Session {
   private awaitingAnswer: ((text: string | null) => void) | null = null;
   private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false, autoOk: () => dangerModeOn() };
   private closed = false;
-  private q: Query | null = null;
+  private q: AgentQuery | null = null;
+  // What the agent runs on, set when run() picks it (local/config.ts
+  // backendKey). The hub starts a new session when the setting moves.
+  backend?: string;
   // The user's most recent words, for request_unlock's direct-ask match.
   private lastUser: UserWords = noWords();
   // A sign in the user asked for before typing their own password. Lives
@@ -562,7 +606,7 @@ export class Session {
   // is left to finish; its receipt goes to the new window.) The words said
   // there stop counting for request_unlock, and the turn in progress is
   // muted.
-  handOff() {
+  handOff(why = "the user moved to another Clearcart window") {
     if (this.closed) return;
     const pending = this.awaitingAnswer;
     this.awaitingAnswer = null;
@@ -577,10 +621,24 @@ export class Session {
       this.state.confirmation = null;
       if (yes.state === "confirmed") {
         yes.state = "declined";
-        this.status("checkout yes withdrawn: the user moved to another Clearcart window");
+        this.status(`checkout yes withdrawn: ${why}`);
       }
     }
-    this.interrupt("interrupted: the user moved to another Clearcart window");
+    this.interrupt(`interrupted: ${why}`);
+  }
+
+  // The hub replaces this session: the user switched the agent between
+  // Claude and a local model. Like a hand-off nothing waiting carries over:
+  // a read-back or unlock question is declined, never confirmed, and a yes
+  // pay_now has not used is withdrawn. The read-back card is cleared, then
+  // the session closes, so nothing it still says reaches anyone.
+  retire(why = "the agent's model changed") {
+    if (this.closed) return;
+    const c = this.state.confirmation;
+    const readBack = c?.state === "pending" && !c.auto;
+    this.handOff(why);
+    if (readBack) this.send({ type: "confirm_done", outcome: "declined" });
+    this.close();
   }
 
   close() {
@@ -1098,7 +1156,10 @@ export class Session {
     return said(`Saved facts (read them plainly, never the ids):\n${facts.map((f) => `${f.id}: ${f.text}`).join("\n")}`);
   }
 
-  private tools() {
+  // The clearcart tools. Both backends use these same definitions: the SDK
+  // path serves them as the in-process "clearcart" MCP server (tools()),
+  // the local path calls their handlers directly (local/query.ts).
+  toolDefinitions(): SdkMcpToolDefinition<any>[] {
     const requestCheckout = tool(
       "request_checkout",
       "Read the order back to the user and wait for their spoken answer. Call this on the checkout page with the exact item, quantity and the order total shown on the page. Returns 'confirmed' only on an explicit yes, otherwise 'declined' with what the user said.",
@@ -1163,14 +1224,23 @@ export class Session {
     );
     const recallTool = tool("recall", "List the facts saved about the user. Call it when they ask what you remember.", {}, async () => this.recall());
 
+    return [sayTool, requestCheckout, payNowTool, requestUnlockTool, rememberTool, forgetTool, recallTool];
+  }
+
+  private tools() {
     return createSdkMcpServer({
       name: "clearcart",
       version: "0.1.0",
-      tools: [sayTool, requestCheckout, payNowTool, requestUnlockTool, rememberTool, forgetTool, recallTool],
+      tools: this.toolDefinitions(),
       alwaysLoad: true,
-      // request_checkout waits on a person; give it room.
-      timeout: 10 * 60_000,
+      timeout: CLEARCART_TOOL_TIMEOUT_MS,
     });
+  }
+
+  // The PreToolUse guard and the PostToolUse hooks. Both backends get this
+  // same object, so a call is checked the same way whichever model asked.
+  hooks(): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+    return { PreToolUse: [{ hooks: [this.guard] }], PostToolUse: [{ hooks: [this.sweep, this.lockNotes] }] };
   }
 
   // Text-only messages are held until the turn ends: the SDK can send the
@@ -1212,36 +1282,67 @@ export class Session {
     return this.q ? this.q.mcpServerStatus() : [];
   }
 
+  // Picks the backend (currentProvider) and runs the conversation on it.
+  // Both get the same system prompt, the same allowed and refused tools,
+  // the same tool definitions and the same hooks.
   async run() {
     const ext = extMode();
-    const q = (this.q = query({
-      prompt: this.input,
-      options: {
-        model: MODEL,
-        systemPrompt: this.systemPrompt(ext),
-        cwd: HERE,
-        tools: [],
-        settingSources: [],
-        strictMcpConfig: true,
-        persistSession: false,
-        abortController: this.abort,
-        mcpServers: {
-          browser: ext
-            ? createExtToolsServer()
-            : { type: "stdio", command: process.execPath, args: [BROWSER_SERVER], alwaysLoad: true, timeout: 90_000 },
-          clearcart: this.tools(),
-        },
-        allowedTools: ext ? EXT_ALLOWED : ALLOWED,
-        disallowedTools: DISALLOWED_BROWSER,
-        // Anything not in allowedTools is denied without prompting; the
-        // PreToolUse guard gates the allowed ones per call.
-        permissionMode: "dontAsk",
-        hooks: { PreToolUse: [{ hooks: [this.guard] }], PostToolUse: [{ hooks: [this.sweep, this.lockNotes] }] },
-        stderr: (d) => {
-          if (process.env.CLEARCART_DEBUG) process.stderr.write(`[claude] ${d}`);
-        },
-      },
-    }));
+    const p = currentProvider();
+    this.backend = backendKey(p);
+    const allowedTools = ext ? EXT_ALLOWED : ALLOWED;
+    const q = (this.q =
+      p.provider === "local"
+        ? localQuery({
+            prompt: this.input,
+            options: {
+              baseUrl: p.localBaseUrl,
+              model: p.localModel,
+              vision: p.localVision,
+              contextTokens: localContext(),
+              systemPrompt: this.systemPrompt(ext),
+              cwd: HERE,
+              servers: {
+                browser: ext
+                  ? sdkToolServer("browser", extToolDefinitions(), BROWSER_TOOL_TIMEOUT_MS)
+                  : stdioToolServer("browser", process.execPath, [BROWSER_SERVER], BROWSER_TOOL_TIMEOUT_MS),
+                clearcart: sdkToolServer("clearcart", this.toolDefinitions(), CLEARCART_TOOL_TIMEOUT_MS),
+              },
+              allowedTools,
+              disallowedTools: DISALLOWED_BROWSER,
+              hooks: this.hooks(),
+              abortController: this.abort,
+              onStatus: (t) => this.status(t),
+            },
+          })
+        : query({
+            prompt: this.input,
+            options: {
+              model: MODEL,
+              systemPrompt: this.systemPrompt(ext),
+              cwd: HERE,
+              tools: [],
+              settingSources: [],
+              strictMcpConfig: true,
+              persistSession: false,
+              abortController: this.abort,
+              mcpServers: {
+                browser: ext
+                  ? createExtToolsServer()
+                  : { type: "stdio", command: process.execPath, args: [BROWSER_SERVER], alwaysLoad: true, timeout: BROWSER_TOOL_TIMEOUT_MS },
+                clearcart: this.tools(),
+              },
+              allowedTools,
+              disallowedTools: DISALLOWED_BROWSER,
+              // Anything not in allowedTools is denied without prompting; the
+              // PreToolUse guard gates the allowed ones per call.
+              permissionMode: "dontAsk",
+              hooks: this.hooks(),
+              stderr: (d) => {
+                if (process.env.CLEARCART_DEBUG) process.stderr.write(`[claude] ${d}`);
+              },
+            },
+          }));
+    if (p.provider === "local") this.status(`agent: ${describeBackend(p)}`);
 
     try {
       for await (const m of q) this.onSdkMessage(m);
