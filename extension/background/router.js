@@ -3,8 +3,8 @@
 // resolves its tab with tabs.resolveAllowedTab, which checks that tab's
 // current page again (see allowlist.js: the allowlist, or in open mode any
 // site off the blocklist, and netguard.js), so a tab that moved to a blocked
-// site since tabs_context is refused. The tab being acted on shows a small
-// "Clearcart is using this tab" pill (content/indicator.js).
+// site since tabs_context is refused. The tab being acted on gets the
+// active-tab frame (background/frame.js).
 //
 // Button lock: every click, key press and typed newline is checked by the
 // page script (content/protect.js) before it reaches CDP, and is refused
@@ -39,7 +39,6 @@ export const PAGE_FILES = ["content/mask.js", "content/protect.js", "content/pag
 // page_context also loads the pointer tracker, for tabs that were open
 // before the extension (it is a declared content script for new pages).
 export const CONTEXT_FILES = ["content/context.js", ...PAGE_FILES];
-export const INDICATOR_FILES = ["content/indicator.js"];
 
 // A context snapshot taken when the user starts talking is used for the
 // user_text that follows, if it comes within this long.
@@ -172,18 +171,9 @@ export function createRouter({
     await tabs.assertPageAllowed(tabId, url);
   }
 
-  // Shows the "Clearcart is using this tab" pill. Best effort, at most once
-  // a second per tab (each injection keeps it up a little longer).
-  const shown = new Map();
+  // The active-tab frame (background/frame.js) follows every call.
   function indicate(tabId) {
-    // The active-tab frame (background/frame.js) follows every call.
     try { onAgentTab(tabId); } catch {}
-    const t = now();
-    if (t - (shown.get(tabId) || 0) < 1_000) return;
-    shown.set(tabId, t);
-    Promise.resolve()
-      .then(() => chromeApi.scripting.executeScript({ target: { tabId }, files: INDICATOR_FILES }))
-      .catch(() => {});
   }
 
   // What the user is looking at (bridge method page_context): the active

@@ -3,7 +3,7 @@
 //
 // The worker (background/frame.js) decides which tab gets it and sends
 // RT.FRAME { on } to that tab's top frame. One ring, no per-state variants:
-// a conic gradient in the orb colours, masked to a 2px border, at opacity
+// a conic gradient in the orb colours, masked to a 4px border, at opacity
 // .45, turning once every 6s. It fades in and out over 300 ms. With reduced
 // motion it holds still.
 //
@@ -40,7 +40,7 @@
 :host { all: initial !important; pointer-events: none !important; }
 .ring {
   position: fixed; inset: 0; box-sizing: border-box;
-  padding: 2px;
+  padding: 4px;
   background: conic-gradient(from var(--clearcart-frame-a), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
