@@ -10,7 +10,6 @@ import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 import { getCard, last4, type Card } from "../vault/index.ts";
 import { extBridge, extMode, type ExtBridge } from "./extbridge.ts";
 import { pressProtectedExt, unlockGate, type Grant, type UnlockGate } from "./unlock.ts";
-
 import { STORE_ORIGIN } from "./origins.ts";
 
 export { STORE_ORIGIN };

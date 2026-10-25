@@ -2,7 +2,7 @@
 
 ![The Clearcart voice console, listening](docs/images/console-listening-dark.jpg)
 
-**Shop any store by voice.** Clearcart is a voice shopping agent for blind and low-vision screen reader users. You say what you want, and Clearcart searches, compares and reads back products, fills the cart and checks out by driving a real browser for you. Payment details come from a local vault and are filled straight into the checkout form by our own code after your spoken yes, so the AI model never sees your card.
+**Shop any store by voice.** Clearcart is a voice shopping agent for blind and low-vision screen reader users. You say what you want, and Clearcart searches, compares and reads back products, fills the cart and checks out by driving a real browser for you. The AI agent never has access to your card: it can't see it, read it or type it. After your spoken yes, Clearcart's own payment step fills it in automatically.
 
 ![Clearcart on aritzia.com: a sold-out size is caught, captions show both sides of the conversation](docs/images/demo-loop.gif)
 
@@ -13,8 +13,8 @@
 1. **Hold Space and talk.** The voice console streams your speech to Cartesia Ink 2 speech-to-text.
 2. **Claude plans the trip.** Each finished turn goes to a Claude agent (Claude Agent SDK, `claude-sonnet-5-5`).
 3. **Browser tools do the clicking.** The agent searches, opens products, picks sizes, closes pop-ups without accepting them and adds to the cart through Open Claude in Chrome.
-4. **Read-back, then a spoken yes.** Before paying, Clearcart reads back the item, the total and the card. Only an explicit "yes" confirms the order.
-5. **The card is filled outside the model.** After your spoken yes, our code reads the card from your macOS Keychain and fills the card fields directly. While card values are in the form, the agent can't screenshot or read the page.
+4. **Read-back, then a spoken yes.** Before paying, Clearcart reads back the item and the total. Only an explicit "yes" confirms the order.
+5. **The agent never touches the card.** The card is filled in automatically by Clearcart's payment step, not by the AI. The agent has no tool that can read the card, and while the card is in the form it can't screenshot, read or type into the page. All it gets back is "paid, card ending 1111".
 6. **Spoken receipt.** Cartesia Sonic reads the order back, and the console shows a receipt card.
 
 ## Button lock
@@ -75,7 +75,7 @@ These runs used real retail sites, but they are **AI-to-AI simulations**: a sepa
 - **Voice:** Cartesia Ink 2 speech-to-text (`/stt/turns/websocket`) and Cartesia Sonic text-to-speech (`/tts/websocket`)
 - **Agent:** Claude via the Claude Agent SDK (TypeScript), model `claude-sonnet-5-5`
 - **Browser automation:** the third-party extension Open Claude in Chrome, plus our own add-ons
-- **Payment vault:** the card is read from the macOS Keychain and filled into the form by our own code, without the model ever seeing it (a Touch ID prompt is planned, not built yet)
+- **Payment vault:** the card is stored in the macOS Keychain and filled in automatically by Clearcart's payment step. The agent never has access to it (a Touch ID prompt is planned, not built yet)
 - **Demo store and verifier:** the Visa Trusted Agent Protocol sample
 - **Payments:** the Visa Acceptance sandbox
 
