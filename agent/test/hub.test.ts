@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { MOVED_TEXT, SessionHub, STALE_TEXT, type HubMessage, type HubSession } from "../hub.ts";
+import { claimConfirmation } from "../pay.ts";
 import { Session, type ServerMessage } from "../session.ts";
 
 // A window: everything the hub sent to its socket.
@@ -129,6 +130,31 @@ test("the window that heard the read-back still confirms it with a yes", async (
   a.peer.userText("yes");
   assert.equal((await done).content[0].text, "confirmed");
   assert.equal((session() as any).state.confirmation.state, "confirmed");
+});
+
+test("a yes pay_now has not used yet is withdrawn when the user moves to another window; a payment under way is left alone", async () => {
+  const { hub, session } = realHub();
+  const a = windowOf(hub);
+  const b = windowOf(hub);
+  a.peer.userText("buy the advil");
+  const s = session();
+  let done = s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  await tick();
+  a.peer.userText("yes");
+  assert.equal((await done).content[0].text, "confirmed");
+  b.peer.interrupt(); // the user moves to b before pay_now ran
+  const claim = claimConfirmation((s as any).state);
+  assert.equal(claim.ok, false);
+  assert.match((claim as any).error, /No confirmed checkout/);
+  // b hears its own read-back and says yes; pay_now takes it; then a takes over.
+  s.onSdkMessage({ type: "result", subtype: "success" } as any); // the interrupted turn ends
+  done = s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  await tick();
+  b.peer.userText("yes");
+  assert.equal((await done).content[0].text, "confirmed");
+  (s as any).state.confirmation.state = "used"; // what claimConfirmation does as pay_now starts
+  a.peer.interrupt();
+  assert.equal((s as any).state.confirmation.state, "used");
 });
 
 test("a read-back still waiting when its window closes is declined; the session lives on until the last window closes", async () => {

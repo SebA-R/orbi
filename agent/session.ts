@@ -461,8 +461,12 @@ export class Session {
 
   // The user moved to another Clearcart window, or the one they used went
   // away (hub.ts). A read-back or unlock question still waiting was asked
-  // there, so it is declined, never confirmed. The words said there stop
-  // counting for request_unlock, and the turn in progress is muted.
+  // there, so it is declined, never confirmed. A yes given there that
+  // pay_now has not used yet is withdrawn too: paying needs a read-back the
+  // user hears in the window they are in now. (A payment already under way
+  // is left to finish; its receipt goes to the new window.) The words said
+  // there stop counting for request_unlock, and the turn in progress is
+  // muted.
   handOff() {
     if (this.closed) return;
     const pending = this.awaitingAnswer;
@@ -470,6 +474,11 @@ export class Session {
     this.passwordAsk = null;
     this.lastUser = noWords();
     pending?.(null);
+    const yes = this.state.confirmation;
+    if (yes && yes.state === "confirmed") {
+      yes.state = "declined";
+      this.status("checkout yes withdrawn: the user moved to another Clearcart window");
+    }
     this.interrupt("interrupted: the user moved to another Clearcart window");
   }
 
