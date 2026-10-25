@@ -351,6 +351,12 @@ test("the face shows only at rest: listening, thinking and speaking are faceless
   assert.match(css, /\.ccf-f \{[^}]*transition: opacity \.15s/, "fades over 150 ms");
 });
 
+test("the face is 26 px unless a page sets --ccf-size (the new tab hero does)", () => {
+  const css = setup().window.__clearcartOrbFace.CSS;
+  assert.match(css, /width: var\(--ccf-size, 26px\) !important; height: var\(--ccf-size, 26px\) !important;/);
+  assert.match(css, /box-shadow: var\(--ccf-glow, 0 0 8px \.5px rgb\(94 139 255 \/ \.4\)\) !important;/);
+});
+
 test("the orb face gets one state class per voice state", () => {
   const t = setup();
   t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });
