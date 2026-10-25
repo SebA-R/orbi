@@ -178,9 +178,16 @@ test("every agent input path is locked on Place order; press_protected with a no
   });
   assert.deepEqual(look, { marked: true, opacity: "0.45", disabled: false });
 
-  // The pay flow's path: fill, arm, press once.
-  const filled = await call("fill_payment", { tabId, card: CARD });
-  assert.equal(filled.last4, "1111");
+  // The pay flow's path: the user fills the card (as Chrome's autofill
+  // would), then one arm and one press.
+  for (const [n, v] of [["cc-name", CARD.name], ["cc-number", CARD.number], ["cc-exp", CARD.exp], ["cc-csc", CARD.csc]]) {
+    await page.fill(`[name="${n}"]`, v);
+  }
+  const card = await call("card_state", { tabId });
+  assert.deepEqual([card.filled, card.number.filled, card.live], [4, true, true]);
+  // With a card in the form, the agent's own tools are hands off.
+  assert.equal((await fails("click", { tabId, ref: place })).code, "locked");
+  assert.equal((await fails("screenshot", { tabId })).code, "payment_field");
   const { nonce } = await call("lock_arm", { tabId });
   const pressed = await call("press_protected", { tabId, ref: place, nonce });
   assert.equal(pressed.ok, true);

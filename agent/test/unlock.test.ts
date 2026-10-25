@@ -1,15 +1,15 @@
 // The button lock's unlock gate (unlock.ts): grants only after a confirmed
-// yes, on a pay site, with a matching total; single use, bound
-// to tab and origin, short-lived.
+// yes, on a site Clearcart may use, with a matching total; single use,
+// bound to tab and origin, short-lived.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { ExtError } from "../extbridge.ts";
 import { extToolDefinitions } from "../exttools.ts";
-import { allowedSite, BROWSE_MODE, PAY_ORIGINS } from "../origins.ts";
-import { LockedError, money, pressProtectedExt, UnlockGate, unlockGate } from "../unlock.ts";
+import { BROWSE_MODE } from "../origins.ts";
+import { LockedError, pressProtectedExt, UnlockGate, unlockGate } from "../unlock.ts";
 
-// Pay sites for these gates: a local test page and a real store's origin.
+// Usable sites for these gates: a local test page and a real store's origin.
 const LOCAL = "http://localhost:4100";
 const ALLOW = new Set([LOCAL, "https://www.aritzia.com"]);
 const gateAt = (clock = { t: 0 }) =>
@@ -29,12 +29,12 @@ test("no grant without a confirmed yes", () => {
   assert.equal(g.issue(req({ confirmation: null })).ok, false);
 });
 
-test("no grant off the pay sites; any pay site can get one", () => {
+test("no grant off the usable sites; any usable site can get one", () => {
   const g = gateAt();
   assert.equal(g.issue(req({ href: "https://evil.example/checkout" })).ok, false);
   assert.equal(g.issue(req({ href: "http://localhost:4100@evil.example/checkout" })).ok, false);
   assert.equal(g.issue(req({ href: null })).ok, false);
-  // Not tied to one site: any pay site uses the same gate.
+  // Not tied to one site: any usable site uses the same gate.
   assert.equal(g.issue(req({ href: "https://www.aritzia.com/us/en/checkout" })).ok, true);
 });
 
@@ -85,12 +85,6 @@ test("pressProtectedExt spends the grant, then arms and presses once", async () 
   assert.equal(calls.length, 4, "a spent grant never reaches lock_arm");
 });
 
-test("money parses prices and rejects empty text", () => {
-  assert.equal(money("$1,014.27"), 1014.27);
-  assert.ok(Number.isNaN(money("")));
-  assert.ok(Number.isNaN(money("unknown")));
-});
-
 test("Claude's tools cannot reach the unlock: no tool arms or presses, and click passes nothing extra", async () => {
   const calls: Array<[string, any]> = [];
   const bridge = {
@@ -102,7 +96,7 @@ test("Claude's tools cannot reach the unlock: no tool arms or presses, and click
     },
   };
   const defs = Object.fromEntries(extToolDefinitions(bridge as any).map((d) => [d.name, d]));
-  for (const m of ["lock_arm", "press_protected", "click_ref", "rect", "fill_payment"]) assert.equal(defs[m], undefined, m);
+  for (const m of ["lock_arm", "press_protected", "click_ref", "rect", "card_autofill", "card_state", "order_buttons"]) assert.equal(defs[m], undefined, m);
   const r: any = await defs.click.handler({ ref: "ref_9", nonce: "x", unlock: true } as any, {});
   assert.equal(r.isError, true);
   assert.equal(r.content[0].text, "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
@@ -110,16 +104,15 @@ test("Claude's tools cannot reach the unlock: no tool arms or presses, and click
   assert.ok(calls.every(([, p]) => !("nonce" in p) && !("unlock" in p)));
 });
 
-test("open web browsing does not widen the unlock: no site is a pay site by default", () => {
-  // Defaults: CLEARCART_BROWSE_MODE open, CLEARCART_PAY_ORIGINS empty.
+test("the default gate follows the browse policy: any open web site, never a blocked or local one, and always after the yes", () => {
   assert.equal(BROWSE_MODE, "open");
-  assert.deepEqual([...PAY_ORIGINS], []);
-  for (const href of ["https://www.etsy.com/cart/checkout", "https://www.aritzia.com/us/en/checkout", "https://www.nordstrom.com/checkout", `${LOCAL}/checkout`]) {
-    assert.equal(allowedSite(href), href !== `${LOCAL}/checkout`, `${href} browsable unless local`);
-    for (const gate of [unlockGate, new UnlockGate()]) {
+  for (const gate of [unlockGate, new UnlockGate()]) {
+    assert.equal(gate.issue(req({ href: "https://www.etsy.com/cart/checkout" })).ok, true);
+    assert.equal(gate.issue(req({ href: "https://www.etsy.com/cart/checkout", confirmation: null })).ok, false, "no yes, no grant");
+    for (const href of ["https://www.chase.com/pay", `${LOCAL}/checkout`, "file:///checkout"]) {
       const r = gate.issue(req({ href }));
       assert.equal(r.ok, false, href);
-      assert.match((r as any).error, /not a Clearcart pay site/);
+      assert.match((r as any).error, /site Clearcart does not use/);
     }
   }
 });

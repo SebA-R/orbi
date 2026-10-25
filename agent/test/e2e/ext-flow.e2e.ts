@@ -1,10 +1,12 @@
 // End-to-end: the real agent server (CLEARCART_BROWSER=ext) and the unpacked
 // extension in an isolated Playwright Chromium (never the user's Chrome),
-// against the test shop (tests/fixtures/shop.mjs) on a spare port, which is
-// the only allowed site and pay site. Drives the shopping flow over
-// the bridge the way Claude's tools would, without Claude, then runs the ext
-// pay_now with a stand-in vault card (never the Keychain) and checks the card
-// number never shows up in a tool result or a log.
+// against the test shop (tests/fixtures/shop.mjs) on a spare port, the only
+// allowed site. Drives the shopping flow over the bridge the way Claude's
+// tools would, without Claude, checks that Claude's tools can neither type
+// a card nor press Place order, and that pay_now presses nothing while the
+// card number is empty (Chrome offers saved cards only on https pages, so
+// no card is picked here). The test number never shows up in a tool result
+// or a log.
 //
 //   npm --prefix agent run test:e2e:ext
 //   (needs `npm install` in tests/extension for Playwright)
@@ -32,7 +34,7 @@ const SHOP_PORT = Number(process.env.E2E_SHOP_PORT || 4300);
 const AGENT_PORT = Number(process.env.E2E_AGENT_PORT || 5300);
 const SHOP = `http://localhost:${SHOP_PORT}`;
 
-// Visa test number; the stand-in vault hands it to pay_now.
+// Visa test number, only ever offered to the tools that must refuse it.
 const CARD = { name: "Test Shopper", number: "4111111111111111", exp: "12/30", csc: "737" };
 const CARD_RUNS = [CARD.number, "4111 1111 1111 1111", "4111-1111-1111-1111"];
 
@@ -42,7 +44,6 @@ process.env.AGENT_PORT = String(AGENT_PORT);
 process.env.AGENT_MODE = "echo"; // /session without Claude; the bridge is unaffected
 process.env.CLEARCART_VOICE = "false"; // never spend Cartesia credits in tests
 process.env.CLEARCART_ALLOWED_ORIGINS = SHOP;
-process.env.CLEARCART_PAY_ORIGINS = SHOP;
 
 const skip = !fs.existsSync(PW) && "playwright not installed in tests/extension";
 
@@ -115,7 +116,6 @@ before(async () => {
   ({ extBridge: bridge } = await import("../../extbridge.ts"));
   pay = await import("../../pay.ts");
   tools = await import("../../exttools.ts");
-  assert.equal(pay.onPayCheckout(SHOP + "/checkout"), true, "the shop is the pay site");
   // Record every bridge reply, including pay_now's own calls.
   const raw = bridge.call.bind(bridge);
   (bridge as any).call = async (method: string, params?: any, ms?: number) => {
@@ -231,8 +231,8 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   assert.doesNotMatch(text, /Subscribe &? ?Save membership\s*\$4/i);
 
   // Card safety: form_input and typing into a card field are refused.
-  const fields = await call<{ fields: Array<{ name: string; kind: string }> }>("read_fields", { tabId });
-  assert.ok(["cc-name", "cc-number", "cc-exp", "cc-csc", "address"].every((k) => fields.fields.some((f) => f.kind === k)));
+  const card = await call<{ fields: number; filled: number; number: { filled: boolean } | null }>("card_state", { tabId });
+  assert.deepEqual([card.fields, card.filled, card.number?.filled], [4, 0, false]);
   const num = await findOne(tabId, "card number", (m) => /text/.test(m.role));
   assert.equal((await callErr("form_input", { tabId, ref: num.ref, value: "4000" })).code, "payment_field");
   await tools.clickRef(bridge, num.ref, tabId);
@@ -254,34 +254,28 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   assert.match(viaTool.content[0].text, /^Locked: 'Place order/);
   const r0 = await call<{ x: number; y: number; width: number; height: number }>("rect", { tabId, ref: place.ref });
   assert.equal((await callErr("click", { tabId, x: r0.x + r0.width / 2, y: r0.y + r0.height / 2 })).code, "locked");
-  // Enter in the address textarea is a new line, so press it from the name field.
+  // Enter in the address textarea is a new line, and no key at all goes
+  // into a card field.
   const cardName = await findOne(tabId, "name on card", (m) => /text/.test(m.role));
   await tools.clickRef(bridge, cardName.ref, tabId);
-  assert.equal((await callErr("key", { tabId, key: "Enter" })).code, "locked");
+  assert.equal((await callErr("key", { tabId, key: "Enter" })).code, "payment_field");
   assert.match((await call<{ tree: string }>("read_page", { tabId, filter: "all" })).tree, /Place order[^\n]*\[locked\]/);
   assert.match(await urlOf(tabId), /\/checkout$/, "no order was placed by the attempts");
 
-  // pay_now over the extension, with a stand-in vault. The yes is pinned
-  // to the tab and its cart the way request_checkout pins it.
-  const snap = await pay.checkoutSnapshot(tabId);
-  assert.equal(snap.tabId, tabId);
-  assert.match(snap.cart, /Order total/);
+  // pay_now with a yes pinned the way request_checkout pins it: the card
+  // number is empty (no card was picked), so nothing is pressed.
+  const page = await pay.readCheckoutExt(bridge, tabId);
+  assert.equal(page.total?.text, `$${total}`);
   const state = {
     lastTabId: tabId,
-    confirmation: { item: "Blue mug, 12 oz", quantity: 1, total: `$${total}`, state: "confirmed" as const, confirmedAt: Date.now(), tabId, cart: snap.cart },
-    cardFieldsLive: false,
+    confirmation: { item: "Blue mug, 12 oz", quantity: 1, total: page.total!.text, state: "confirmed" as const, confirmedAt: Date.now(), tabId, origin: page.origin, cart: page.cart },
+    payBusy: false,
   };
-  const r = await pay.payNowExt(state as any, { getCard: async () => ({ ...CARD }) });
+  const r = await pay.payNowExt(state);
   results.push(`pay_now ${JSON.stringify(r)}`);
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.ok(r.ok && r.last4 === "1111" && r.receipt.total === `$${total}`, JSON.stringify(r));
-  assert.equal(state.cardFieldsLive, false);
-
-  // Order page shows last4 only.
-  assert.match(await urlOf(tabId), /\/order\//);
-  const order = (await call<{ text: string }>("get_page_text", { tabId })).text;
-  assert.match(order, /ending in\s*1111/);
-  for (const run of CARD_RUNS) assert.ok(!order.includes(run));
+  assert.equal(r.ok, false);
+  assert.match((r as any).error, /card number is empty/);
+  assert.match(await urlOf(tabId), /\/checkout$/, "no order was placed");
 
   // Two /session clients at once (the offscreen doc opens its own).
   const a = await openSession();
@@ -297,31 +291,6 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   for (const run of CARD_RUNS) assert.ok(!all.includes(run), `card number leaked`);
   assert.ok(!all.includes(`"${CARD.csc}"`), "security code leaked");
   if (process.env.E2E_VERBOSE) process.stderr.write(results.map((l) => l.slice(0, 300)).join("\n") + "\n");
-});
-
-test("a rejected payment comes back as the alert text and the card fields are cleared", { skip }, async () => {
-  const { tabId } = await call<{ tabId: number }>("tabs_create", { url: SHOP + "/product/mug" });
-  const add = await findOne(tabId, "Add to cart", (m) => m.role === "button");
-  await tools.clickRef(bridge, add.ref, tabId);
-  await waitFor(async () => (await urlOf(tabId)).includes("/cart"), "the cart");
-  await call("navigate", { tabId, url: SHOP + "/checkout" });
-  const text = (await call<{ text: string }>("get_page_text", { tabId })).text;
-  const total = /Order total\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i.exec(text)![1];
-  const state = {
-    lastTabId: tabId,
-    confirmation: { item: "Blue mug", quantity: 1, total: `$${total}`, state: "confirmed" as const, confirmedAt: Date.now(), tabId },
-    cardFieldsLive: false,
-  };
-  const bad = { ...CARD, number: "4111111111111112" }; // fails Luhn at the shop
-  const r = await pay.payNowExt(state as any, { getCard: async () => ({ ...bad }), orderTimeoutMs: 8_000 });
-  results.push(`pay_now ${JSON.stringify(r)}`);
-  assert.equal(r.ok, false);
-  assert.match((r as any).error, /rejected the payment: That card number is not valid/);
-  assert.equal(state.cardFieldsLive, false);
-  const fields = await call<{ fields: Array<{ kind: string; filled: boolean }> }>("read_fields", { tabId });
-  assert.ok(fields.fields.filter((f) => f.kind.startsWith("cc-")).every((f) => !f.filled || f.kind === "cc-name" || f.kind === "cc-exp"));
-  const all = [...results, ...logs].join("\n");
-  assert.ok(!all.includes(bad.number) && !all.includes(CARD.number), "card number leaked");
 });
 
 async function openSession() {

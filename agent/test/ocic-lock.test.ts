@@ -15,7 +15,7 @@ import { pages as shopPages } from "../../tests/fixtures/shop.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PW = path.join(REPO, "tests", "extension", "node_modules", "playwright", "index.mjs");
-const PAYS = " places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.";
+const PAYS = " places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through pick_card, request_checkout and pay_now, after the user's yes.";
 const PLACE = "Locked: 'Place order · $14.27'" + PAYS;
 const PLACE_REF = "Locked: 'Place order · $14.27' (ref_9)" + PAYS;
 
@@ -42,7 +42,7 @@ test("the session gives Claude no page script on this path", () => {
   assert.ok(DISALLOWED_BROWSER.includes("mcp__browser__execute_code"));
 });
 
-test("navigate: with no pay sites (the default), checkout pages are locked on every site", () => {
+test("navigate: checkout pages are locked on every site without the checkout pass", () => {
   assert.match(navigateLockReason("https://www.aritzia.com/us/en/checkout")!, /^Locked:/);
   assert.match(navigateLockReason("https://shop.example/checkouts/abc123")!, /^Locked:/);
   assert.match(navigateLockReason("https://shop.example/payment")!, /^Locked:/);
@@ -76,7 +76,7 @@ test("checkout paths: decoded, any segment, with extensions; the sweep re-checks
   for (const p of [open, allow]) {
     assert.ok(isStrayTab("https://shop.example/en/checkout.html", p), "a landed checkout page is sent back");
     assert.ok(isStrayTab("https://shop.example/%63heckout", p));
-    assert.ok(isStrayTab(LOCAL + "/checkout", p), "no pay sites: an allowed site's checkout page is sent back too");
+    assert.ok(isStrayTab(LOCAL + "/checkout", p), "an allowed site's checkout page is sent back too");
     assert.ok(!isStrayTab(LOCAL + "/cart", p), "its cart is fine");
   }
   assert.ok(!isStrayTab("about:blank") && !isStrayTab(undefined));

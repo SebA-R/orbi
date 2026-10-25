@@ -52,7 +52,7 @@ test("guard_ref and guard_point refuse locked targets and pass normal ones", asy
   assert.equal(r.ok, false);
   assert.equal(r.error.code, "locked");
   const placeRef = refIn(lineOf(tree, /Place order/));
-  assert.equal(r.error.message, "Locked: 'Place order · $" + /Place order · \$([0-9.]+)/.exec(tree)[1] + "' (" + placeRef + ") places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.");
+  assert.equal(r.error.message, "Locked: 'Place order · $" + /Place order · \$([0-9.]+)/.exec(tree)[1] + "' (" + placeRef + ") places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through pick_card, request_checkout and pay_now, after the user's yes.");
   const ok = await p.call("guard_ref", { ref: refIn(lineOf(tree, /textbox "Name on card"/)) });
   assert.equal(ok.ok, true);
 
@@ -396,7 +396,7 @@ test("Place order and the card form never point at request_unlock; the lock's el
   const p = load("checkout", "/checkout");
   const tree = (await p.call("read_page", { filter: "all" })).result.tree;
   const r = await p.call("guard_ref", { ref: refIn(lineOf(tree, /Place order/)) });
-  assert.match(r.error.message, /Never call request_unlock for it: paying goes only through request_checkout and pay_now/);
+  assert.match(r.error.message, /Never call request_unlock for it: paying goes only through pick_card, request_checkout and pay_now/);
   p.document.querySelector('[name="cc-name"]').focus();
   const k = await p.call("guard_key", { key: "Enter" });
   assert.equal(k.error.code, "locked");

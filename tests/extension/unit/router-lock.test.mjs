@@ -9,7 +9,7 @@ import { INTERNAL, TOOLS } from "../../../extension/lib/protocol.js";
 
 const LOCKED = { ok: false, error: { code: "locked", message: "Locked: 'Place order' can only be pressed by Clearcart after the user says yes." } };
 
-function fakes({ locked = new Set(), url = "http://localhost:4100/checkout", cdpClickFails = false } = {}) {
+function fakes({ locked = new Set(), url = "http://localhost:4100/checkout", cdpClickFails = false, card = null, focus = { kind: "other", payment: false } } = {}) {
   const calls = [];
   let clock = 1_000;
   let n = 0;
@@ -20,10 +20,12 @@ function fakes({ locked = new Set(), url = "http://localhost:4100/checkout", cdp
       sendMessage: async (tabId, msg) => {
         calls.push(["page", msg.method, msg.params]);
         if (locked.has(msg.method)) return LOCKED;
-        if (msg.method === "guard_ref" || msg.method === "rect") return { ok: true, result: { x: 10, y: 20, width: 100, height: 40 } };
+        if (msg.method === "guard_ref" || msg.method === "guard_card" || msg.method === "rect") return { ok: true, result: { x: 10, y: 20, width: 100, height: 40 } };
         if (msg.method === "press_check_user") return { ok: true, result: { x: 10, y: 20, width: 100, height: 40, cls: msg.params.cls } };
         if (msg.method === "press_check") return { ok: true, result: { x: 10, y: 20, width: 100, height: 40, kind: "marked" } };
-        if (msg.method === "focused_field") return { ok: true, result: { kind: "other", payment: false } };
+        if (msg.method === "focused_field") return { ok: true, result: focus };
+        if (msg.method === "card_state") return { ok: true, result: card || { fields: 0, filled: 0, autofilled: 0, number: null, frames: 0, live: false } };
+        if (msg.method === "card_field") return { ok: true, result: { found: true, ref: "ref_5", filled: false, autofilled: false, frames: 0 } };
         return { ok: true, result: { ok: true } };
       },
     },
@@ -31,7 +33,7 @@ function fakes({ locked = new Set(), url = "http://localhost:4100/checkout", cdp
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 7,
     tabInfo: async ({ tabId }) => ({ tabId, url: state.url, title: "t" }),
-    isPaySite: async (u) => new URL(u).origin === "http://localhost:4100",
+    isAllowed: async (u) => !/evil\.example/.test(u),
     assertPageAllowed: async () => {},
   };
   const cdp = {
@@ -140,12 +142,46 @@ test("press_protected asks the page to confirm an order button, and falls back t
   assert.ok(g.calls.some((c) => c[1] === "press_ref"));
 });
 
-test("lock_arm refuses a site that is browsable but not a pay site", async () => {
+test("lock_arm arms the order unlock on any allowed site, and fails closed off one", async () => {
   const f = fakes({ url: "https://www.etsy.com/checkout" });
-  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked", message: /not a Clearcart pay site/ });
-  // A tabs module without isPaySite fails closed.
+  assert.equal(typeof (await f.router.route("lock_arm", { tabId: 7 })).nonce, "string");
+  f.state.url = "https://evil.example/checkout";
+  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked", message: /site Clearcart does not use/ });
+  // A tabs module without the site check fails closed.
   const bare = createRouter({ chromeApi: {}, tabs: { resolveAllowedTab: async () => 7, tabInfo: async () => ({ url: "http://localhost:4100/checkout" }) }, cdp: {} });
   await assert.rejects(bare.route("lock_arm", { tabId: 7 }), { code: "locked" });
+});
+
+// A card the user picked is in the page (or may be, in a card frame): no
+// picture of it is taken (the page's own checks refuse clicks and keys
+// there, see extension/test/page/tools.test.js); the pay flow's one press
+// still works.
+test("a page that holds a card: no screenshot, and press_protected still works", async () => {
+  for (const card of [
+    { fields: 4, filled: 4, autofilled: 4, number: { filled: true, autofilled: true }, frames: 0, live: true },
+    { fields: 0, filled: 0, autofilled: 0, number: null, frames: 1, live: true },
+  ]) {
+    const f = fakes({ card });
+    await assert.rejects(f.router.route("screenshot", {}), { code: "payment_field" });
+    const { nonce } = await f.router.route("lock_arm", {});
+    assert.deepEqual(await f.router.route("press_protected", { ref: "ref_9", nonce }), { ok: true, via: "cdp" });
+    assert.deepEqual(f.sent(), [["cdp.click", { tabId: 7, x: 60, y: 40 }]], "only the pay flow's one press");
+  }
+});
+
+test("in a card field only Tab or Escape, and card_autofill opens Chrome's list with one real click on the card number", async () => {
+  const f = fakes({ focus: { kind: "cc-number", payment: true } });
+  for (const key of ["ArrowDown", "ArrowUp", "Enter", " ", "a"]) {
+    await assert.rejects(f.router.route("key", { key }), { code: "payment_field" }, key);
+  }
+  assert.deepEqual(f.sent(), []);
+  await f.router.route("key", { key: "Tab" });
+  assert.deepEqual(f.sent(), [["cdp.key", { tabId: 7, key: "Tab" }]]);
+  f.calls.length = 0;
+  const r = await f.router.route("card_autofill", { tabId: 7 });
+  assert.deepEqual(r, { found: true, filled: false, focused: true, frames: 0 });
+  assert.deepEqual(f.sent(), [["cdp.click", { tabId: 7, x: 60, y: 40 }]]);
+  assert.ok(f.calls.some((c) => c[1] === "guard_card" && c[2].ref === "ref_5"), "checked as the card number field right before the click");
 });
 
 test("press_check and press_ref are not reachable as plain page methods", async () => {
@@ -180,9 +216,8 @@ test("key specs that send Enter or Space under another spelling are checked or r
 
 // User-directed unlock (request_unlock on the server): lock_arm scope "user"
 // works on any allowed site, and its nonce only fits press_unlocked.
-test("user scope: arms off the pay sites, presses once, and never fits press_protected", async () => {
+test("user scope: arms on an allowed site, presses once, and never fits press_protected", async () => {
   const f = fakes({ url: "https://www.etsy.com/cart" });
-  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked" }, "order scope still needs a pay site");
   const target = { tabId: 7, ref: "ref_4", label: "Proceed to checkout", cls: "checkout" };
   const a = await f.router.route("lock_arm", { tabId: 7, scope: "user" });
   assert.deepEqual(await f.router.route("press_unlocked", { ...target, nonce: a.nonce }), { ok: true, via: "cdp" });

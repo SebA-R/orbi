@@ -111,7 +111,7 @@ function routerFakes(dangerMode, url = "https://shop.example/cart") {
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 7,
     tabInfo: async ({ tabId }) => ({ tabId, url, title: "t" }),
-    isPaySite: async (u) => new URL(u).origin === "http://localhost:4100",
+    isAllowed: async () => true,
     assertPageAllowed: async () => {},
   };
   const cdp = { click: async () => {}, type: async () => {}, key: async () => {}, send: async () => {} };
@@ -130,10 +130,10 @@ test("router: every page call carries Danger mode from the settings, never from 
   }
 });
 
-test("router: Danger mode never arms the pay unlock off a pay site, nor presses without a nonce", async () => {
+test("router: Danger mode never presses an order button or a locked control without the pay flow's nonce", async () => {
   const f = routerFakes(async () => true);
-  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked" });
   await assert.rejects(f.router.route("press_protected", { tabId: 7, ref: "ref_1", nonce: "guess" }), { code: "locked" });
+  await assert.rejects(f.router.route("press_protected", { tabId: 7, ref: "ref_1" }), { code: "locked" });
   await assert.rejects(f.router.route("press_unlocked", { tabId: 7, ref: "ref_1", label: "Sign in", cls: "account", nonce: "guess" }), { code: "locked" });
 });
 

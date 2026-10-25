@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { installChrome } from "./chrome-mock.mjs";
-import { allowedOrigins, assertAllowed, blockReason, isAllowed, isPaySite } from "../../background/allowlist.js";
+import { allowedOrigins, assertAllowed, blockReason, isAllowed } from "../../background/allowlist.js";
 import { normalize } from "../../lib/settings.js";
 import { ERR } from "../../lib/protocol.js";
 
@@ -93,13 +93,3 @@ test("open mode with no saved list uses the suggested one", async () => {
   assert.equal(await isAllowed("https://www.etsy.com/"), true);
 });
 
-test("isPaySite is the allowlist in both modes, empty by default", async () => {
-  installChrome();
-  assert.equal(await isPaySite(`${LOCAL}/checkout`), false);
-  installChrome({ local: { allowlist: [LOCAL] } });
-  assert.equal(await isPaySite(`${LOCAL}/checkout`), true);
-  assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
-  installChrome({ local: { browseMode: "allowlist", allowlist: ["https://shop.example"] } });
-  assert.equal(await isPaySite("https://shop.example/pay"), true);
-  assert.equal(await isPaySite(`${LOCAL}/checkout`), false);
-});

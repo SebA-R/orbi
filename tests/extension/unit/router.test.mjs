@@ -279,7 +279,8 @@ test("the NO_RECEIVER retry checks the tab again before injecting into the new d
 test("a screenshot is dropped when the tab moved to a blocked site while it was taken", async () => {
   const ok = tocFakes();
   assert.equal((await ok.router.route("screenshot", { tabId: 3 })).data, "JPEG");
-  assert.deepEqual(ok.calls.find((c) => c[0] === "recheck"), ["recheck", 3, undefined]);
+  // The screenshot's own recheck (the card checks around it are page calls).
+  assert.ok(ok.calls.some((c) => c[0] === "recheck" && c[1] === 3 && c[2] === undefined));
   const moved = tocFakes({ blockedAfter: true });
   await assert.rejects(moved.router.route("screenshot", { tabId: 3 }), { code: "not_allowed" });
 });

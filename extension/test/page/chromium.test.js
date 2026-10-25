@@ -31,7 +31,14 @@ async function open(path) {
   return { page, call };
 }
 
-test("checkout: fill_payment, masked read_page, rect hits #place-order", async () => {
+// What the user (or Chrome's autofill, for a saved card) puts in the card form.
+async function userFillsCard(page) {
+  for (const [n, v] of [["cc-name", "Ada Lovelace"], ["cc-number", "4111111111111111"], ["cc-exp", "12/29"], ["cc-csc", "737"]]) {
+    await page.fill(`[name="${n}"]`, v);
+  }
+}
+
+test("checkout: the user's card stays masked in read_page, rect hits #place-order", async () => {
   await fetch(shop.base + "/reset", { method: "POST", redirect: "manual" });
   await fetch(shop.base + "/cart/add", {
     method: "POST",
@@ -40,8 +47,7 @@ test("checkout: fill_payment, masked read_page, rect hits #place-order", async (
     redirect: "manual",
   });
   const { page, call } = await open("/checkout");
-  const fill = await call("fill_payment", { card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/29", csc: "737" }, address: "1 Main St" });
-  assert.deepEqual([fill.ok, fill.result], [true, { ok: true, last4: "1111" }]);
+  await userFillsCard(page);
   const tree = (await call("read_page", { filter: "all" })).result.tree;
   for (const s of ["4111111111111111", "Ada Lovelace", "12/29", "737"]) assert.ok(!tree.includes(s), "leaked " + s);
   const ref = (await call("find", { query: "place order" })).result.matches[0].ref;
@@ -117,7 +123,7 @@ test("button lock: real hit-testing, label clicks, the badge never blocks a pers
   for (const l of look) assert.deepEqual(l, { marked: true, opacity: "0.45", filter: "grayscale(1)", disabled: false, pe: "auto" });
 
   // The lock is for the agent only: a person's own click places the order.
-  await call("fill_payment", { card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/29", csc: "737" }, address: "1 Main St" });
+  await userFillsCard(page);
   await page.mouse.click(cx, cy);
   await page.waitForURL(/\/order\//);
   await page.close();

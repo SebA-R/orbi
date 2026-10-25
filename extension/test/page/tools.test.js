@@ -1,6 +1,6 @@
-// find, get_page_text, form_input, rect, click_ref, read_fields,
-// fill_payment, clear_payment against the test shop's pages
-// (tests/fixtures/shop.mjs).
+// find, get_page_text, form_input, rect, click_ref and the card hand-off
+// calls (card_state, card_field, order_buttons) against the test shop's
+// pages (tests/fixtures/shop.mjs).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HELP_LINE } from "../../../tests/fixtures/shop.mjs";
@@ -119,69 +119,43 @@ test("click_ref clicks the element, and refuses the locked Place order", async (
   assert.equal(orders, 0);
 });
 
-test("read_fields classifies checkout fields without values", async () => {
-  const p = load("checkout", "/checkout");
-  const { fields } = (await p.call("read_fields", {})).result;
-  const kinds = Object.fromEntries(fields.map((f) => [f.name, f.kind]));
-  assert.equal(kinds["cc-number"], "cc-number");
-  assert.equal(kinds["cc-name"], "cc-name");
-  assert.equal(kinds["cc-exp"], "cc-exp");
-  assert.equal(kinds["cc-csc"], "cc-csc");
-  assert.equal(kinds.address, "address");
-  assert.equal(kinds.q, "other");
-  assert.ok(fields.every((f) => f.filled === false || f.name === "q"));
-  for (const f of fields) assert.deepEqual(Object.keys(f).sort(), ["autocomplete", "filled", "kind", "name"]);
-});
-
-test("fill_payment fills by kind, returns last4 only, and nothing leaks after", async () => {
+test("a card the user picked stays unreadable: the hand-off calls and page reads carry no card value", async () => {
   const p = load("checkout", "/checkout");
   const d = p.document;
-  let inputs = 0;
-  d.querySelector('[name="cc-number"]').addEventListener("input", () => inputs++);
-  const r = await p.call("fill_payment", { card: CARD, address: "1 Main St, Springfield" });
-  assert.deepEqual([r.ok, r.result], [true, { ok: true, last4: "1111" }]);
-  assert.equal(inputs, 1);
-  assert.equal(d.querySelector('[name="cc-number"]').value, "4111111111111111");
-  assert.equal(d.querySelector('[name="cc-name"]').value, "Ada Lovelace");
-  assert.equal(d.querySelector('[name="cc-exp"]').value, "12/29");
-  assert.equal(d.querySelector('[name="cc-csc"]').value, "737");
-  assert.equal(d.querySelector('[name="address"]').value, "1 Main St, Springfield");
-  const filled = (await p.call("read_fields", {})).result.fields.filter((f) => f.kind !== "other");
-  assert.ok(filled.every((f) => f.filled));
+  const before = (await p.call("card_state", {})).result;
+  assert.deepEqual(before, { fields: 4, filled: 0, autofilled: 0, number: { filled: false, autofilled: false }, frames: 0, live: false });
+  // Claude's tools cannot write a card.
+  const num = await refOf(p, "card number");
+  assert.equal((await p.call("form_input", { ref: num, value: "4000" })).error.code, "payment_field");
+  // What Chrome's autofill does when the user picks a saved card.
+  for (const [n, v] of [["cc-number", CARD.number], ["cc-name", CARD.name], ["cc-exp", CARD.exp], ["cc-csc", CARD.csc]]) {
+    d.querySelector(`[name="${n}"]`).value = v;
+  }
+  const state = (await p.call("card_state", {})).result;
+  assert.deepEqual([state.filled, state.number.filled, state.live], [4, true, true]);
+  const field = (await p.call("card_field", {})).result;
+  assert.deepEqual([field.found, field.filled, /^ref_\d+$/.test(field.ref)], [true, true, true]);
+  const buttons = (await p.call("order_buttons", {})).result.buttons;
+  assert.deepEqual(buttons.map((b) => [b.kind, b.disabled]), [["order", false]]);
+  assert.match(buttons[0].label, /^Place order/);
   const outputs = JSON.stringify([
+    state,
+    field,
+    buttons,
     (await p.call("read_page", {})).result,
     (await p.call("read_page", { filter: "all" })).result,
     (await p.call("get_page_text", {})).result,
     (await p.call("find", { query: "card" })).result,
-    (await p.call("read_fields", {})).result,
   ]);
-  for (const s of SECRETS) assert.ok(!outputs.includes(s), "leaked " + s);
-  assert.equal((await p.call("clear_payment", {})).ok, true);
-  for (const n of ["cc-number", "cc-name", "cc-exp", "cc-csc"]) assert.equal(d.querySelector(`[name="${n}"]`).value, "", n);
-  assert.equal(d.querySelector('[name="address"]').value, "1 Main St, Springfield");
-});
-
-test("fill_payment validates input and errors never echo the card", async () => {
-  const p = load("checkout", "/checkout");
-  const bad = await p.call("fill_payment", { card: { ...CARD, number: "4111 1111 1111 111x" } });
-  assert.equal(bad.error.code, "bad_request");
-  assert.ok(!JSON.stringify(bad).includes("4111"));
-  const noField = load("product", "/product/mug");
-  const r = await noField.call("fill_payment", { card: CARD });
-  assert.equal(r.error.code, "no_element");
-  assert.ok(!JSON.stringify(r).includes("4111"));
-});
-
-test("fill_payment handles split month/year selects", async () => {
-  const p = loadPage(`<form>
-    <input autocomplete="cc-number" name="n">
-    <select autocomplete="cc-exp-month" name="m"><option value="">MM</option><option value="01">01</option><option value="12">12</option></select>
-    <select autocomplete="cc-exp-year" name="y"><option value="">YYYY</option><option value="2029">2029</option></select>
-  </form>`);
-  const r = await p.call("fill_payment", { card: CARD });
-  assert.equal(r.ok, true);
-  assert.equal(p.document.querySelector('[name="m"]').value, "12");
-  assert.equal(p.document.querySelector('[name="y"]').value, "2029");
+  for (const secret of SECRETS) assert.ok(!outputs.includes(secret), "leaked " + secret);
+  // With the card in, the page is read only for the agent: every check
+  // before a click, key, typing or form change refuses, on any field.
+  const addr = await refOf(p, "shipping address");
+  for (const [m, params] of [["click_ref", { ref: addr }], ["form_input", { ref: addr, value: "1 Main St" }], ["guard_ref", { ref: addr }], ["guard_point", { x: 1, y: 1 }], ["guard_key", { key: "Enter" }], ["focused_field", {}], ["press_check_user", { ref: addr, label: "x", cls: "checkout" }]]) {
+    const r = await p.call(m, params);
+    assert.deepEqual([r.ok, r.error?.code], [false, "locked"], m);
+    assert.match(r.error.message, /card is in this page/, m);
+  }
 });
 
 test("read_page and get_page_text report origin and path only, never the query string or fragment", async () => {

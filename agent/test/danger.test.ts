@@ -78,35 +78,50 @@ test("spoken notice: 'Danger mode is on.' once per session, only while it is on"
 });
 
 test("checkout still needs the spoken yes with Danger mode on", async () => {
+  // A checkout tab whose page shows the total.
+  const orig = (extBridge as any).call;
+  (extBridge as any).call = async (m: string) =>
+    m === "tab_info" ? { url: "https://shop.example/checkout" } : m === "get_page_text" ? { text: "Order total $9.00" } : null;
+  const session7 = () => {
+    const f = session();
+    (f.s as any).state.lastTabId = 7;
+    return f;
+  };
+  // The read-back reads the page first: wait until it waits for the answer.
+  const asked = async (f: ReturnType<typeof session>) => {
+    for (let i = 0; i < 100 && !(f.s as any).awaitingAnswer; i++) await new Promise((r) => setImmediate(r));
+  };
   await withDanger(true, async () => {
     for (const answer of ["sure, maybe", "go ahead and buy whatever", "no", "Danger mode is on", ""]) {
-      const f = session();
+      const f = session7();
       const done = f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
-      await new Promise((r) => setImmediate(r));
+      await asked(f);
       f.s.userText(answer || " ");
       if (!answer) f.s.close();
       const r = await done;
       assert.notEqual(r.content[0].text, "confirmed", JSON.stringify(answer));
       f.s.close();
     }
-    const f = session();
+    const f = session7();
     const done = f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
-    await new Promise((r) => setImmediate(r));
+    await asked(f);
     f.s.userText("yes");
     assert.equal((await done).content[0].text, "confirmed");
     f.s.close();
     assert.equal(isExplicitYes("Danger mode is on."), false);
+  }).finally(() => {
+    (extBridge as any).call = orig;
   });
 });
 
 test("pay_now and the order unlock refuse without a confirmed yes, Danger mode or not", async () => {
   await withDanger(true, async () => {
-    assert.equal(claimConfirmation({ lastTabId: 3, confirmation: null, cardFieldsLive: false } as any).ok, false);
+    assert.equal(claimConfirmation({ lastTabId: 3, confirmation: null, payBusy: false }).ok, false);
     const calls: string[] = [];
     const bridge = { call: async (m: string) => (calls.push(m), {}) } as any;
-    const r = await payNowExt({ lastTabId: 3, confirmation: null, cardFieldsLive: false } as any, { bridge });
+    const r = await payNowExt({ lastTabId: 3, confirmation: null, payBusy: false }, { bridge });
     assert.equal(r.ok, false);
-    assert.ok(!calls.includes("lock_arm") && !calls.includes("press_protected") && !calls.includes("fill_payment"), calls.join(","));
+    assert.ok(!calls.includes("lock_arm") && !calls.includes("press_protected"), calls.join(","));
     const gate = new UnlockGate({ isAllowed: () => true });
     for (const confirmation of [null, { total: "$9.00", state: "pending" }, { total: "$9.00", state: "used" }]) {
       assert.equal(gate.issue({ confirmation, tabId: 3, href: "https://shop.example/checkout", pageTotal: "$9.00" }).ok, false);

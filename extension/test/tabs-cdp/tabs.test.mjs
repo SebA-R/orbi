@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { installChrome } from "./chrome-mock.mjs";
 import {
   BLANK_PAGE, LEGACY_GROUP_TITLE, STATE_KEY, agentTabs, assertPageAllowed, navigate, navigateAndWait, onTabRemoved, originPath, resolveAllowedTab, resolveTab,
-  isPaySite, tabInfo, tabsActivate, tabsClose, tabsContext, tabsCreate, ungroupLegacy,
+  tabInfo, tabsActivate, tabsClose, tabsContext, tabsCreate, ungroupLegacy,
 } from "../../background/tabs.js";
 import * as netguard from "../../background/netguard.js";
 import { ERR } from "../../lib/protocol.js";
@@ -251,14 +251,6 @@ test("open mode: blocked sites are refused before the tab moves", async () => {
   }
   assert.equal(c._tabs.get(tabId).url, "https://www.etsy.com/");
   await assert.rejects(tabsCreate({ url: "https://mail.google.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
-});
-
-test("pay sites stay the allowlist in open mode, and there are none by default", async () => {
-  fresh();
-  assert.equal(await isPaySite(`${SHOP}/checkout`), false);
-  fresh({ local: { allowlist: [SHOP] } });
-  assert.equal(await isPaySite(`${SHOP}/checkout`), true);
-  assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
 });
 
 test("incognito: the manifest keeps Clearcart out, and an incognito tab is hidden and refused", async () => {
