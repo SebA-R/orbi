@@ -66,3 +66,33 @@ test("allowlist mode keeps the old origin check", () => {
   assert.equal(siteBlockReason("https://www.etsy.com/", p), "not on the allowlist");
   assert.equal(siteBlockReason("http://localhost:4000@evil.example/", p), "not on the allowlist");
 });
+
+test("local addresses in every spelling are blocked, the store still passes", () => {
+  const local = new Set([STORE]);
+  for (const u of [
+    "http://[::ffff:127.0.0.1]:5050/cartesia-token", "http://[::ffff:192.168.1.1]/", "http://[::7f00:1]:5050/", "http://[fec0::]/",
+    "http://[::1]:5050/", "http://[::]/", "http://[fe80::1]/", "http://[fd00::1]/", "http://[64:ff9b::7f00:1]/", "http://[2002:c0a8:101::]/",
+    "http://localtest.me:5050/cartesia-token", "http://127.0.0.1.nip.io:5050/", "http://app.lvh.me/", "http://10-0-0-1.sslip.io/",
+    "http://2130706433:5050/", "http://0x7f.1:5050/", "http://0/", "http://100.64.0.1/", "http://router/", "http://printer.local/",
+    "http://nas.home.arpa/", "http://x.localhost/", "http://172.20.0.1/", "http://169.254.169.254/latest/meta-data",
+  ]) {
+    assert.match(agentList.builtinBlockReason(u, local) || "", /local address/, u);
+    assert.equal(agentList.builtinBlockReason(u, local), extList.builtinBlockReason(u, local), u);
+  }
+  assert.equal(builtinBlockReason(`${STORE}/cart`, local), null);
+  for (const u of ["http://[2606:4700::1111]/", "http://8.8.8.8/", "http://[::ffff:8.8.8.8]/", "https://www.etsy.com/"]) {
+    assert.equal(builtinBlockReason(u, local), null, u);
+  }
+});
+
+test("isLocalIp: the address Chrome actually connected to", () => {
+  for (const ip of ["127.0.0.1", "::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "10.1.2.3", "192.168.0.10", "fe80::1", "fec0::1", "fc00::", "0.0.0.0", "", "garbage"]) {
+    assert.equal(agentList.isLocalIp(ip), true, ip);
+    assert.equal(extList.isLocalIp(ip), true, ip);
+  }
+  for (const ip of ["8.8.8.8", "2606:4700::1111", "::ffff:1.1.1.1", "151.101.1.69"]) {
+    assert.equal(agentList.isLocalIp(ip), false, ip);
+    assert.equal(extList.isLocalIp(ip), false, ip);
+  }
+  assert.deepEqual(agentList.LOCAL_DNS, extList.LOCAL_DNS);
+});

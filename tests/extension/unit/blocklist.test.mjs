@@ -82,3 +82,11 @@ test("every list entry is a bare lowercase hostname", () => {
     for (const d of list) assert.match(d, /^[a-z0-9-]+(\.[a-z0-9-]+)+$/, `${kind}: ${d}`);
   }
 });
+
+test("IPv4-mapped, compatible and site-local IPv6 and loopback DNS names are local", () => {
+  for (const u of [
+    "http://[::ffff:127.0.0.1]:5050/", "http://[::ffff:192.168.1.1]/", "http://[::7f00:1]/", "http://[fec0::]/",
+    "http://localtest.me:5050/cartesia-token", "http://127.0.0.1.nip.io:5050/",
+  ]) assert.match(builtinBlockReason(u, new Set([STORE])) || "", /local address/, u);
+  assert.equal(builtinBlockReason(`${STORE}/`, new Set([STORE])), null);
+});

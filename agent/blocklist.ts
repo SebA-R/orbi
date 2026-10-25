@@ -73,8 +73,81 @@ export const AMAZON_ACCOUNT_PATH = /^\/(ap|gp\/css|gp\/your-account|gp\/yourpaym
 
 const LABELS: Record<string, string> = { email: "email", passwords: "a password manager", money: "a bank or money site", government: "a government or tax site", health: "a health site", accounts: "an account settings page" };
 
-const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0|\[::\])$/;
-const PRIVATE = /^(10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|169\.254(\.\d{1,3}){2}|\[f[cd][0-9a-f:]*\]|\[fe80:[0-9a-f:]*\])$/i;
+// Host names that point at this computer or the local network by design
+// (wildcard DNS services such as localtest.me and 127.0.0.1.nip.io), and
+// names that only resolve on a local network. Matched as the name or any
+// subdomain of it.
+export const LOCAL_DNS: readonly string[] = Object.freeze([
+  "localhost", "localtest.me", "lvh.me", "vcap.me", "lacolhost.com", "localhost.direct", "local.gd",
+  "nip.io", "sslip.io", "xip.io", "traefik.me", "nip.direct", "home.arpa", "local", "localdomain", "internal", "lan",
+]);
+
+function privateV4(o: number[]): boolean {
+  const [a, b] = o;
+  return a === 0 || a === 127 || a === 10 || a >= 224 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+    (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || (a === 192 && b === 0 && o[2] === 0) || (a === 198 && (b === 18 || b === 19));
+}
+
+function v4Octets(s: string): number[] | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  return o.every((n) => n <= 255) ? o : null;
+}
+
+// Eight 16-bit groups, or null when `s` is not an IPv6 address.
+function v6Groups(s: string): number[] | null {
+  let t = s.toLowerCase();
+  const dotted = /(\d{1,3}(\.\d{1,3}){3})$/.exec(t);
+  if (dotted) {
+    const o = v4Octets(dotted[1]);
+    if (!o) return null;
+    t = t.slice(0, -dotted[1].length) + ((o[0] << 8) | o[1]).toString(16) + ":" + ((o[2] << 8) | o[3]).toString(16);
+  }
+  const halves = t.split("::");
+  if (halves.length > 2) return null;
+  const part = (x: string) => (x ? x.split(":") : []);
+  const head = part(halves[0]);
+  const tail = halves.length === 2 ? part(halves[1]) : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0 || (halves.length === 2 && fill < 1)) return null;
+  const all = [...head, ...Array<string>(fill).fill("0"), ...tail];
+  if (all.length !== 8 || !all.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+  return all.map((g) => parseInt(g, 16));
+}
+
+const embedded = (hi: number, lo: number) => [hi >> 8, hi & 255, lo >> 8, lo & 255];
+
+// True when `ip` (IPv4, or IPv6 with or without brackets) is loopback,
+// private, link-local, site-local, unspecified or multicast, including IPv4
+// addresses carried inside IPv6 (::ffff:127.0.0.1, ::7f00:1, 64:ff9b::,
+// 2002::). Anything it cannot parse counts as local, so callers fail closed.
+export function isLocalIp(ip: string | null | undefined): boolean {
+  const s = String(ip ?? "").trim().replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+  const o = v4Octets(s);
+  if (o) return privateV4(o);
+  const g = v6Groups(s);
+  if (!g) return true;
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0) return true; // ::, ::1, IPv4-compatible
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return privateV4(embedded(g[6], g[7]));
+  if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0xffff && g[5] === 0) return privateV4(embedded(g[6], g[7]));
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return privateV4(embedded(g[6], g[7]));
+  if (g[0] === 0x2002) return privateV4(embedded(g[1], g[2]));
+  return (g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xff80) === 0xfe80 || (g[0] & 0xff00) === 0xff00;
+}
+
+// True when a URL hostname names this computer or the local network: an IP
+// literal isLocalIp accepts, a LOCAL_DNS name, or a bare name with no dot
+// (resolved through the local network's search domains).
+export function isLocalHost(hostname: string | null | undefined): boolean {
+  const host = String(hostname ?? "").toLowerCase().replace(/\.$/, "");
+  if (!host) return true;
+  if (host.startsWith("[") || v4Octets(host)) return isLocalIp(host);
+  if (/^[\d.]+$/.test(host) || /^0x/i.test(host)) return true;
+  if (!host.includes(".")) return true;
+  return LOCAL_DNS.some((d) => host === d || host.endsWith("." + d));
+}
+
 
 function underDomain(host: string, domain: string): boolean {
   return host === domain || host.endsWith("." + domain);
@@ -93,7 +166,7 @@ export function builtinBlockReason(href: string | null | undefined, local: Reado
   if (u.protocol !== "http:" && u.protocol !== "https:") return "not a web page";
   if (u.username || u.password) return "the address has a login in it";
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
-  if (LOOPBACK.test(host) || host.endsWith(".localhost") || PRIVATE.test(host)) {
+  if (isLocalHost(host)) {
     return local.has(u.origin) ? null : "a local address on this computer or network";
   }
   for (const [kind, domains] of Object.entries(BLOCKED_DOMAINS)) {
