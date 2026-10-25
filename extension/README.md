@@ -14,7 +14,7 @@ Our own Chrome extension (Manifest V3) for Clearcart. It replaces the third-part
 ## Install
 
 1. Open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and pick this `extension/` folder. The extension id is fixed by the manifest key (`dhgknfenfoidnchmjfaicafhieepefoc`).
-2. The setup page opens on first install, and after an update when something is still missing. It checks site access on all sites (Chrome can hold back `<all_urls>` after an update if site access was limited before), the microphone (the offscreen voice document can't ask for it; it inherits this grant), the agent server's `/healthz` and the talk key, each with one button. The toolbar icon shows **!** while site access or the mic is missing, and its popup shows the live voice state on an orb (Ready, Listening, Thinking, Speaking), a setup pill ("Setup: N of 4" opens the setup page) and the everyday settings: browse mode, talk key, speed, subtitles and quiet other tabs. Run it again from the options page.
+2. The setup page opens on first install, and after an update when something is still missing. It checks site access on all sites (Chrome can hold back `<all_urls>` after an update if site access was limited before), the microphone (the offscreen voice document can't ask for it; it inherits this grant), the agent server's `/healthz` and the talk key, each with one button. The toolbar icon shows **!** while site access or the mic is missing, and its popup shows the live voice state on an orb (Ready, Listening, Thinking, Speaking), a setup line ("Setup: N of 4" opens the setup page) and the everyday settings: model provider, browse mode, talk key, speed, Guided mode, Speak replies, subtitles, error pages, sounds, quiet other tabs, follow, watchable pace, cursor and Danger mode. Run it again from the options page.
 3. In the repo's `.env`, set `CLEARCART_BROWSER=ext`, then restart the agent server (`npm --prefix agent start`). The server log should say `ext: extension connected`.
 4. Hold Space on any page to talk.
 
@@ -38,6 +38,13 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | Quiet other tabs while talking | on | fades out and mutes audible tabs while you talk and Clearcart answers |
 | Use the Clearcart new tab page | on | off: new tabs forward to `chrome://new-tab-page/`, see [New tab page](#new-tab-page) |
 | Replace Chrome error pages with Clearcart's page | on | off: Chrome's own network error page stays, where only the toggle shortcut works, see [Error pages](#error-pages) |
+| Play sounds | on | earcons for listening, sent, cut off, order placed, not placed, errors and a lost agent link (`lib/voice/chime.js`) |
+| Follow Clearcart to its tab | on | see [Tabs](#tabs) |
+| Show actions at a watchable pace | on | off: clicks and scrolls happen at once; typing is always key by key (`background/actor.js`) |
+| Show Clearcart's cursor | on | a second pointer shows where Clearcart clicks, types and scrolls; your mouse never moves |
+| Danger mode | off | no button lock and orders placed without a spoken yes; masking, the blocklist and the CAPTCHA hand-off stay. Turning it on takes a second press (`lib/danger-toggle.js`) |
+| Remember things about me | on | Memory: saved facts and the last two hours of conversation, kept by the agent server (`lib/memory.js`) |
+| Model provider | Claude | Claude or Local, with `localBaseUrl` (`http://localhost:11434/v1`, loopback only) and `localModel` (`llama3.1:8b`); sent to the agent server in the `settings` message, which does not act on it yet |
 
 Allowed sites take one site address per line (`https://www.etsy.com`; a path is dropped, a login in the address is refused). Only extension pages can change these settings; the agent server cannot.
 
@@ -66,10 +73,13 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field`, the button lock classifier, its checks and badges |
 | `content/context.js` | Declared content script (top frame): remembers the element under the mouse and the last one clicked or focused, for `page_context` |
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP`, Option+Space latch, double-tap Space hush |
-| `content/orb-face.js` | The mini orb face (eyes and a smile) that shows the voice state; loaded before `subtitles.js` and by the popup |
+| `content/orb-face.js` | The mini orb face (eyes and a mouth) that shows the voice state and lip-syncs while Clearcart speaks; loaded before `subtitles.js` and by the popup and new tab page |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
-| `content/frame.js`, `background/frame.js` | Active-tab frame: a faint rotating spectrum ring around the tab Clearcart is acting on during a turn or within 10 s of an agent call (declared content script, top frame; the worker sends `FRAME {on}`) |
-| `content/cursor.js`, `background/cursor.js` | Clearcart's cursor: the orb tag arrow following the actor's pointer samples (`CURSOR`), with a ripple, ring pulse and highlight on each press; its action ("Clicking Add to cart") shows as a small line in the subtitle card. Setting `showCursor`, default on |
+| `content/frame.js`, `background/frame.js` | Active-tab frame: an 8px rotating spectrum ring with rounded corners (design R6b) around the tab Clearcart is acting on during a turn or within 10 s of an agent call (declared content script, top frame; the worker sends `FRAME {on}`) |
+| `content/cursor.js`, `background/cursor.js` | Clearcart's cursor: an arrow (no orb face) that stays at its last position, following the actor's pointer samples (`CURSOR`), with a ripple, ring pulse and highlight on each press; its action ("Clicking Add to cart") shows as a small line in the subtitle card. Setting `showCursor`, default on |
+| `background/actor.js`, `background/humanize.js` | Plays clicks, typing and scrolls over CDP as humanized plans: curved pointer paths, typing rhythm, eased wheel steps |
+| `background/follow.js` | Brings the user to the tab Clearcart acts on |
+| `background/errpage.js`, `newtab/` | Clearcart's new tab page and "Can't reach this site" page, see [New tab page](#new-tab-page) and [Error pages](#error-pages) |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, earcons, its own `/session` socket |
 | `options/` | Options page |
 | `setup/`, `popup/` | Setup page (install and update), drawn by `setup/checklist.js`, and the toolbar popup, which follows `VOICE_STATE` and counts the same checks |
@@ -92,7 +102,7 @@ The agent server sends `{ type: "request", id, method, params }` and the worker 
 - `tabs_create` opens the tab right after your current tab. `tabs_activate` brings a tab to the front, only when you ask to see it.
 - Follow (`background/follow.js`, setting "Follow Clearcart to its tab", on by default): when Clearcart opens a tab or navigates, clicks, types, presses a key or scrolls in one, that tab is made active and its window focused. Reads (`read_page`, `find`, `get_page_text`, `screenshot`...) never switch. If you switch to another tab or window yourself during a turn, following stops until your next turn. Subtitles come along through the relay's tab-switch replay. `tabs_close` only closes tabs Clearcart opened.
 - The prompt tells the agent to open a new tab rather than navigate away from a page you had open. The agent server's tab sweep only looks at tabs Clearcart opened itself, through `agent_tabs`. Navigating, clicking or typing in one of your own tabs never makes it sweepable, so a blocked site you later open there is left alone.
-- The tab being acted on gets the faint active-tab frame (`content/frame.js`); there is no text badge.
+- The tab being acted on gets the active-tab ring (`content/frame.js`); there is no text badge or pill.
 - A tab on a new tab page (Chrome's, or Clearcart's, which tabs report as `chrome://newtab/`) is listed with that url, and `navigate` may open a site in it (an allowed address only, never `back` or `forward`, and not while it is loading another address); every other call refuses it, the tab stays one of yours (the sweep leaves it alone), and `page_context` reports it as an empty new tab rather than a blocked site.
 - Earlier versions kept agent tabs in a "Clearcart" tab group. On install or update the worker takes those tabs out of it, closing none.
 
