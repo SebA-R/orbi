@@ -4,13 +4,14 @@
 // offscreen document, same origin, inherits the permission).
 import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, normalizeAgentUrl, parseOriginLines } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
+import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/blocklist.js";
 
 const $ = (id) => document.getElementById(id);
 const els = {
   form: $("form"), hotkey: $("hotkey"), speed: $("speed"), speedOut: $("speed-out"),
   subtitles: $("subtitles"), agentUrl: $("agent-url"), status: $("status"),
   grant: $("grant-mic"), micStatus: $("mic-status"), reset: $("reset"),
-  allowlist: $("allowlist"), blocklist: $("blocklist"),
+  allowlist: $("allowlist"), blocklist: $("blocklist"), blockErrors: $("blocklist-errors"), restore: $("restore-blocklist"),
 };
 const modeInput = (mode) => document.querySelector(`input[name="browseMode"][value="${mode}"]`);
 
@@ -61,15 +62,22 @@ els.form.addEventListener("submit", async (e) => {
   }
   els.agentUrl.removeAttribute("aria-invalid");
   const allow = parseOriginLines(els.allowlist.value);
-  const block = parseOriginLines(els.blocklist.value);
-  for (const [el, r, name] of [[els.allowlist, allow, "allowed"], [els.blocklist, block, "blocked"]]) {
-    el.removeAttribute("aria-invalid");
-    if (r.bad.length) {
-      el.setAttribute("aria-invalid", "true");
-      el.focus();
-      say(els.status, `Not a site address in the ${name} sites: ${r.bad.join(", ")}. Use addresses like https://www.etsy.com, with no login in them.`);
-      return;
-    }
+  els.allowlist.removeAttribute("aria-invalid");
+  if (allow.bad.length) {
+    els.allowlist.setAttribute("aria-invalid", "true");
+    els.allowlist.focus();
+    say(els.status, `Not a site address in the allowed sites: ${allow.bad.join(", ")}. Use addresses like https://www.etsy.com, with no login in them.`);
+    return;
+  }
+  const block = parseBlockLines(els.blocklist.value);
+  els.blocklist.removeAttribute("aria-invalid");
+  els.blockErrors.hidden = !block.bad.length;
+  els.blockErrors.textContent = `Not a blocked site entry:\n${block.bad.join("\n")}`;
+  if (block.bad.length) {
+    els.blocklist.setAttribute("aria-invalid", "true");
+    els.blocklist.focus();
+    say(els.status, `Fix the blocked sites first: ${block.bad.join(", ")}. Use forms like chase.com, amazon.com/ap, *bank* or *.gov.`);
+    return;
   }
   if (!allow.origins.length) {
     els.allowlist.setAttribute("aria-invalid", "true");
@@ -80,7 +88,7 @@ els.form.addEventListener("submit", async (e) => {
   const saved = await saveSettings({
     browseMode: document.querySelector('input[name="browseMode"]:checked')?.value || DEFAULTS.browseMode,
     allowlist: allow.origins,
-    blocklist: block.origins,
+    blocklist: block.lines,
     hotkey: els.hotkey.value,
     speed: Number(els.speed.value),
     subtitles: els.subtitles.checked,
@@ -99,6 +107,15 @@ els.reset.addEventListener("click", async () => {
   fill(saved);
   notify(saved);
   say(els.status, "Reset to defaults.");
+});
+
+// Puts back the suggested entries the user removed and keeps their own
+// additions after them, then saves like the Save button.
+els.restore.addEventListener("click", () => {
+  const ours = new Set(SUGGESTED_ENTRIES.map((e) => e.text));
+  const mine = parseBlockLines(els.blocklist.value).entries.map((e) => e.text).filter((t) => !ours.has(t));
+  els.blocklist.value = [...SUGGESTED_BLOCKLIST, ...(mine.length ? ["", "# Your sites", ...mine] : [])].join("\n");
+  els.form.requestSubmit();
 });
 
 async function micPermission() {

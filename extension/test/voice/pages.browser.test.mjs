@@ -78,22 +78,49 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   const stored = await page.evaluate(() => chrome.storage.local.get(["hotkey", "speed", "subtitles"]));
   assert.deepEqual(stored, { hotkey: "F9", speed: 1.4, subtitles: false });
 
-  // Sites: open web by default, editable lists, origins only.
+  // Sites: open web by default, editable allowlist, origins only.
   assert.equal(await page.isChecked("#mode-open"), true);
   assert.equal(await page.inputValue("#allowlist"), "http://localhost:4000");
-  await page.fill("#blocklist", "https://www.nordstrom.com/s/1\nhttps://me:pw@shop.example");
+  await page.fill("#allowlist", "http://localhost:4000\nhttps://me:pw@shop.example");
   await page.click("button[type=submit]");
-  await page.waitForFunction(() => /Not a site address in the blocked sites: https:\/\/me:pw@shop\.example/.test(document.getElementById("status").textContent));
-  assert.equal(await page.getAttribute("#blocklist", "aria-invalid"), "true");
+  await page.waitForFunction(() => /Not a site address in the allowed sites: https:\/\/me:pw@shop\.example/.test(document.getElementById("status").textContent));
+  assert.equal(await page.getAttribute("#allowlist", "aria-invalid"), "true");
+
+  // Blocked sites: seeded on install, shown grouped, user editable.
+  const suggested = await page.evaluate(async () => (await import("/lib/blocklist.js")).SUGGESTED_BLOCKLIST);
+  assert.equal(await page.inputValue("#blocklist"), suggested.join("\n"));
+  assert.deepEqual((await page.evaluate(() => chrome.storage.local.get("blocklist"))).blocklist, suggested, "seeded on install");
+  assert.match(await page.textContent("#blocked-sites"), /Always blocked: non-web pages, local network addresses, addresses with a login in them/);
   await page.fill("#allowlist", "http://localhost:4000\nwww.etsy.com/c/home");
-  await page.fill("#blocklist", "https://www.nordstrom.com/s/1");
+  await page.fill("#blocklist", "# mine\nhttps://www.nordstrom.com/s/1\nnot a site\n*shoe*\nchase");
+  await page.click("button[type=submit]");
+  await page.waitForFunction(() => /Fix the blocked sites first: not a site, chase/.test(document.getElementById("status").textContent));
+  assert.equal(await page.getAttribute("#blocklist", "aria-invalid"), "true");
+  assert.equal(await page.isVisible("#blocklist-errors"), true);
+  assert.match(await page.textContent("#blocklist-errors"), /not a site\nchase/);
+  await page.fill("#blocklist", "# mine\nhttps://www.nordstrom.com/\n*shoe*\namazon.com/ap/");
   await page.check("#mode-allowlist");
   await page.click("button[type=submit]");
   await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
   assert.deepEqual(await page.evaluate(() => chrome.storage.local.get(["browseMode", "allowlist", "blocklist"])), {
-    browseMode: "allowlist", allowlist: ["http://localhost:4000", "https://www.etsy.com"], blocklist: ["https://www.nordstrom.com"],
+    browseMode: "allowlist", allowlist: ["http://localhost:4000", "https://www.etsy.com"], blocklist: ["# mine", "nordstrom.com", "*shoe*", "amazon.com/ap"],
   });
   assert.equal(await page.inputValue("#allowlist"), "http://localhost:4000\nhttps://www.etsy.com");
+  assert.equal(await page.inputValue("#blocklist"), "# mine\nnordstrom.com\n*shoe*\namazon.com/ap");
+  assert.equal(await page.isVisible("#blocklist-errors"), false);
+
+  // Restore puts the suggested list back and keeps the user's own entries.
+  await page.evaluate(() => { document.getElementById("status").textContent = ""; });
+  await page.click("#restore-blocklist");
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
+  assert.deepEqual((await page.evaluate(() => chrome.storage.local.get("blocklist"))).blocklist, [...suggested, "", "# Your sites", "nordstrom.com", "*shoe*", "amazon.com/ap"]);
+
+  // An emptied list stays empty.
+  await page.evaluate(() => { document.getElementById("status").textContent = ""; });
+  await page.fill("#blocklist", "");
+  await page.click("button[type=submit]");
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
+  assert.deepEqual((await page.evaluate(() => chrome.storage.local.get("blocklist"))).blocklist, []);
 
   await page.fill("#agent-url", "ws://evil.example:5050");
   await page.click("button[type=submit]");
@@ -105,7 +132,7 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   await page.waitForFunction(() => document.getElementById("status").textContent === "Reset to defaults.");
   assert.equal(await page.isChecked("#mode-open"), true);
   assert.deepEqual(await page.evaluate(() => chrome.storage.local.get(["browseMode", "allowlist", "blocklist"])), {
-    browseMode: "open", allowlist: ["http://localhost:4000"], blocklist: [],
+    browseMode: "open", allowlist: ["http://localhost:4000"], blocklist: suggested,
   });
   await page.close();
 });
