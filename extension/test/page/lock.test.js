@@ -451,3 +451,27 @@ test("get_page_text lists the locked controls with refs shared with read_page", 
   const product = (await load("product", "/product/cetirizine-30").call("get_page_text", {})).result;
   assert.equal(product.locked, undefined);
 });
+
+test("controls in a card form, and a password form with no button, never point at request_unlock", async () => {
+  const p = loadPage(`<!doctype html><body>
+<form id="card"><input autocomplete="cc-number" name="cardnumber"><button id="co" type="submit">Continue to checkout</button><button id="si" type="submit">Sign in</button></form>
+<form id="pwf"><input id="u" name="u"><input id="pw" type="password" name="pw"></form>
+</body>`, { url: "https://shop.example/pay" });
+  const d = p.document;
+  const refOf = (id) => p.window.__clearcartPage.refFor(d.getElementById(id));
+  for (const id of ["co", "si"]) {
+    const f = await p.call("form_input", { ref: refOf(id), value: "x" });
+    assert.equal(f.error.code, "locked", id);
+    assert.doesNotMatch(f.error.message, /call request_unlock with/, id);
+    const g = await p.call("guard_ref", { ref: refOf(id) });
+    assert.doesNotMatch(g.error.message, /call request_unlock with/, id);
+    assert.equal((await p.call("lock_info", { ref: refOf(id) })).result.cls, null, id);
+  }
+  d.getElementById("u").focus();
+  const k = await p.call("guard_key", { key: "Enter" });
+  assert.equal(k.error.code, "locked");
+  assert.doesNotMatch(k.error.message, /call request_unlock with/);
+  const text = (await p.call("get_page_text", {})).result;
+  assert.ok(text.locked.length >= 2);
+  assert.ok(text.locked.every((x) => x.userOnly === true));
+});

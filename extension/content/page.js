@@ -40,7 +40,7 @@
     if (!lock) return;
     var target = el || lock.el;
     var ref = target && target.nodeType === 1 && target.ownerDocument === document ? refFor(target) : null;
-    throw PageError(ERR.LOCKED, Protect.message(lock, ref));
+    throw PageError(ERR.LOCKED, Protect.message(lock, ref, target));
   }
 
   // Lock marker for read_page and find: only on the control itself (or the
@@ -386,7 +386,7 @@
   }
 
   // The page's locked controls for get_page_text, which has no refs of its
-  // own: [{ ref, name, uncheckOnly? }], so Claude knows them without a
+  // own: [{ ref, name, uncheckOnly?, userOnly? }], so Claude knows them without a
   // read_page and can pass the ref to request_unlock. An uncheck-only box
   // that is already off is listed too (it may never be turned on).
   var LOCKED_LIST_MAX = 40;
@@ -398,6 +398,8 @@
       if (!Protect.blocks(x.lock) || hiddenByStyle(x.el) || (x.el.closest && x.el.closest("[hidden],[aria-hidden=true]"))) continue;
       var m = { ref: refFor(x.el), name: x.lock.label };
       if (x.lock.optin) m.uncheckOnly = true;
+      // Never unlocks on request (Place order, wallets, card forms, marked).
+      if (!Protect.unlockClass(x.lock, x.el)) m.userOnly = true;
       out.push(m);
     }
     return out;

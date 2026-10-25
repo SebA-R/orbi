@@ -118,7 +118,7 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "get_page_text",
-      "Readable text of the page, main content first. Returns { url, title, text, locked? }. locked lists the page's locked controls as [{ ref, name, uncheckOnly? }], the same as [locked] in read_page.",
+      "Readable text of the page, main content first. Returns { url, title, text, locked? }. locked lists the page's locked controls as [{ ref, name, uncheckOnly?, userOnly? }], the same as [locked] in read_page; userOnly ones (Place order, Buy now, Pay, wallets) never go through request_unlock.",
       { tabId, maxChars: z.number().int().positive().max(100_000).optional() },
       pass("get_page_text")
     ),

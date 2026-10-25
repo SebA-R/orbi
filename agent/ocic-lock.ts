@@ -80,7 +80,7 @@ const defaultDeps: Deps = {
   readRef: async (tabId, ref) => resultText(await callBrowserTool("read_page", { tabId, ref_id: ref, filter: "all" })),
 };
 
-const LOCK_JSON = "function J(l){ return l ? { kind: l.kind, label: l.label, optin: !!l.optin, checked: !!l.checked, cls: P.unlockClass(l, l.el) } : null; }";
+const LOCK_JSON = "function J(l){ return l ? { kind: l.kind, label: l.label, optin: !!l.optin, checked: !!l.checked, cls: l.cls !== undefined ? l.cls : P.unlockClass(l, l.el) } : null; }";
 
 const CLICKS = new Set(["left_click", "right_click", "double_click", "triple_click", "left_click_drag", "left_mouse_down", "left_mouse_up", "diag_input"]);
 
@@ -116,14 +116,19 @@ export function parseRefLine(text: string): { role: string; name: string; type: 
 
 const CHECKABLE_ROLES = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio", "option", "tab"]);
 
-type PageLock = { name: string; kind: string; optin: boolean; checked: boolean; cls?: string | null };
+// name: the full accessible name, for matching refs; label: the lock's
+// clipped, masked label; hidden: not shown on the page.
+type PageLock = { name: string; label?: string; hidden?: boolean; kind: string; optin: boolean; checked: boolean; cls?: string | null };
 
 // The page's locked controls with their full accessible names.
 async function pageLocks(deps: Deps, tabId: number): Promise<PageLock[]> {
   const r = await deps.evalInTab<PageLock[]>(
     tabId,
     pageScript(`return P.listLocks(document, 300).map(function (x) {
-  return { name: P.labelOf(x.el), kind: x.lock.kind, optin: !!x.lock.optin, checked: !!x.lock.checked, cls: P.unlockClass(x.lock, x.el) };
+  var el = x.el, cs = null;
+  try { cs = getComputedStyle(el); } catch (e) {}
+  var hidden = !!(el.hidden || (el.closest && el.closest("[hidden],[aria-hidden=true]")) || (cs && (cs.display === "none" || cs.visibility === "hidden")));
+  return { name: P.labelOf(el), label: x.lock.label, hidden: hidden, kind: x.lock.kind, optin: !!x.lock.optin, checked: !!x.lock.checked, cls: P.unlockClass(x.lock, el) };
 });`, dangerOf(deps))
   );
   if (!Array.isArray(r)) throw new Error("no lock list");
@@ -149,10 +154,18 @@ async function refLock(deps: Deps, tabId: number, ref: string, out?: { role?: st
   const checkable = CHECKABLE_ROLES.has(info.role) || info.type === "checkbox" || info.type === "radio";
   const kind = Protect.classifyLabel(info.name, { checkable });
   const label = info.name.slice(0, 60);
-  const byName = kind ? { kind, label, optin: checkable, checked: false } : null;
+  const byName: Lock | null = kind ? { kind, label, optin: checkable, checked: false } : null;
   // Danger mode lifts sign in and sign up by name; the page's own list
   // (checked below, with the same mode) still has anything else.
-  if (byName && !(dangerOf(deps) && Protect.dangerLifts(byName))) return byName;
+  if (byName && !(dangerOf(deps) && Protect.dangerLifts(byName))) {
+    // Locked by name whatever the page says; the page, which sees the
+    // element, says whether it unlocks on request (a card form's submit or
+    // a marked control never does). Unknown: judge by name alone.
+    const seen = await pageLocks(deps, tabId).catch(() => null);
+    const same = seen?.find((l) => sameName(l.name, info.name));
+    byName.cls = same ? same.cls ?? null : Protect.unlockClass(byName);
+    return byName;
+  }
   const hit = (await pageLocks(deps, tabId)).find((l) => sameName(l.name, info.name));
   return hit ? { kind: hit.kind, label: hit.name.slice(0, 60), optin: hit.optin, checked: hit.checked, cls: hit.cls } : null;
 }
@@ -248,9 +261,11 @@ export async function ocicLockNote(tool: string, args: Record<string, unknown>, 
   const uncheck: string[] = [];
   if (tool === "get_page_text") {
     // No refs in page text: name the page's own locked controls.
-    for (const l of page.slice(0, 40)) {
-      if (!Protect.blocks({ kind: l.kind, label: l.name, optin: l.optin, checked: l.checked })) continue;
-      (l.optin ? uncheck : locked).push(`"${l.name.slice(0, 60)}"`);
+    for (const l of page) {
+      if (locked.length + uncheck.length >= 40) break;
+      const label = typeof l.label === "string" ? l.label : "";
+      if (l.hidden !== false || !label || !Protect.blocks({ kind: l.kind, label, optin: l.optin, checked: l.checked })) continue;
+      (l.optin ? uncheck : locked).push(JSON.stringify(label.slice(0, 60)) + (l.cls ? "" : " (only the user can press it)"));
     }
   } else {
     const re = /(?:^|\s)(?:\[(ref_\d+)\]\s+)?(\S+)\s+"((?:[^"\\]|\\.)*)"(?:\s+\[(ref_\d+)\])?/;

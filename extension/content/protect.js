@@ -697,7 +697,12 @@
     if (fk) {
       var fl = { kind: fk, label: clip(formLabel(form) || "this form"), optin: false, checked: false };
       // A card form always locks; a password form only while it is kept.
-      if (fk !== "account" || !danger || !plainSignInForm(form) || keep(fl)) return withEl(fl, submitsOf(form)[0]);
+      if (fk !== "account" || !danger || !plainSignInForm(form) || keep(fl)) {
+        var first = submitsOf(form)[0];
+        // No submit button: nothing request_unlock could press.
+        if (!first) Object.defineProperty(fl, "cls", { value: null, configurable: true, writable: true, enumerable: false });
+        return withEl(fl, first);
+      }
     }
     var subs = submitsOf(form);
     for (var i = 0; i < subs.length; i++) {
@@ -728,10 +733,11 @@
   // control the user may unlock on request (unlockClass), never for one
   // that pays. lock.cls, when set, is unlockClass worked out where the
   // element was (the OCIC path's page script).
-  function message(lock, ref) {
+  // el (optional): the control, when the caller found it and lock.el is unset.
+  function message(lock, ref, el) {
     var label = lock && lock.label ? lock.label : "this control";
     var name = "'" + label + "'" + (ref ? " (" + ref + ")" : "");
-    var cls = lock && lock.cls !== undefined ? lock.cls : unlockClass(lock, lock && lock.el);
+    var cls = lock && lock.cls !== undefined ? lock.cls : unlockClass(lock, el || (lock && lock.el));
     var unlock = "call request_unlock with " + (ref ? "ref " + ref + " and label '" + label + "'" : "label '" + label + "' and its ref from read_page or find") +
       "; it asks the user itself when needed. Do not retry the click or look for another way around it.";
     var userOnly = " Only the user can press it. Never call request_unlock for it; tell the user where it is if they want it.";

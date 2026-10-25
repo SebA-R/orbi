@@ -51,7 +51,7 @@ The worker sends `chrome.tabs.sendMessage(tabId, { type: RT.PAGE_CALL, method, p
 | --- | --- | --- |
 | `read_page` | `{ filter?: "interactive"\|"all", maxNodes?: 400 }` | `{ url, title, tree: string }` indented lines like `- button "Add to bag" [ref_12]`, payment field values always masked |
 | `find` | `{ query: string, limit?: 20 }` | `{ matches: [{ ref, role, name }] }` (text/role/label match) |
-| `get_page_text` | `{ maxChars?: 20000 }` | `{ url, title, text, locked? }` (main content first, payment values masked; `locked`: the page's blocking locked controls as `[{ ref, name, uncheckOnly? }]`) |
+| `get_page_text` | `{ maxChars?: 20000 }` | `{ url, title, text, locked? }` (main content first, payment values masked; `locked`: the page's blocking locked controls as `[{ ref, name, uncheckOnly?, userOnly? }]`; `userOnly`: never unlocks on request) |
 | `form_input` | `{ ref, value }` | `{ ok: true }`; refuses payment fields with ERR.PAYMENT_FIELD |
 | `rect` | `{ ref }` | `{ x, y, width, height }` viewport CSS px after `scrollIntoView({block:"center"})` (worker passes the centre to `cdp.click`) |
 | `read_fields` | `{}` | `{ fields: [{ name, autocomplete, kind: "cc-number"\|"cc-name"\|"cc-exp"\|"cc-csc"\|"address"\|"other", filled: boolean }] }` (never values) |
