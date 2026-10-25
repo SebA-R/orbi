@@ -1,0 +1,4 @@
+[submodule "vendor/open-claude-in-chrome"]
+	path = vendor/open-claude-in-chrome
+	url = https://github.com/seba-r/open-claude-in-chrome.git
+	branch = main
