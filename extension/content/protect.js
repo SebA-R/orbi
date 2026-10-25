@@ -184,8 +184,57 @@
   var DANGER_LIFTS = { account: 1 };
   var danger = false;
 
+  // Danger mode lifts a control only when its whole name is a plain sign
+  // in or sign up ("Sign in", "Create account", "Continue with Google").
+  // "Sign in and pay", "Log in with PayPal", "Sign up for Prime", "Register
+  // to bid" or a password form's "Continue" stay locked: the name must be
+  // on this list, not merely start with it.
+  var DANGER_NAMES = [
+    "sign in", "signin", "log in", "login", "sign up", "signup", "register",
+    "create account", "create an account", "create my account", "create your account",
+    "sign in with google", "sign in with apple", "sign in with facebook", "sign in with email",
+    "log in with google", "log in with apple", "log in with facebook", "log in with email",
+    "continue with google", "continue with apple", "continue with facebook", "continue with email",
+  ];
+  var DANGER_FILLER = /^(.*?)( now| here| instead)?$/;
+
+  function plainSignIn(label) {
+    var norm = normalize(label).trim();
+    var core = DANGER_FILLER.exec(norm)[1];
+    return DANGER_NAMES.indexOf(core) !== -1 || DANGER_NAMES.indexOf(norm) !== -1;
+  }
+
+  // Money words anywhere: an order, wallet, subscription or saved card.
+  var MONEY_KINDS = ["order", "express", "subscription", "payment-method"];
+
+  function hasMoneyWords(s) {
+    var norm = normalize(s);
+    for (var k = 0; k < MONEY_KINDS.length; k++) {
+      var list = PHRASES[MONEY_KINDS[k]];
+      for (var j = 0; j < list.length; j++) if (has(norm, list[j])) return true;
+    }
+    return false;
+  }
+
+  // A form Danger mode may submit: no card fields, every submit button a
+  // plain sign in or sign up, and no money words in the form at all (a
+  // "confirm your password to pay" prompt stays locked).
+  function plainSignInForm(form) {
+    if (!form) return true;
+    if (formKind(form) === "payment-form") return false;
+    var subs = submitsOf(form);
+    for (var i = 0; i < subs.length; i++) if (!plainSignIn(labelOf(subs[i]))) return false;
+    return !hasMoneyWords(text(form)) && !hasMoneyWords(form.getAttribute("action") || "");
+  }
+
   function dangerLifts(lock, el) {
-    return !!lock && !!DANGER_LIFTS[unlockClass(lock, el)];
+    if (!lock || !DANGER_LIFTS[unlockClass(lock, el)]) return false;
+    if (!plainSignIn(lock.label)) return false;
+    if (el && el.nodeType === 1) {
+      var form = el.form || (el.closest ? el.closest("form") : null);
+      if (form && !plainSignInForm(form)) return false;
+    }
+    return true;
   }
 
   // Returns true when this lock stays on: always when Danger mode is off.
@@ -638,7 +687,7 @@
     if (fk) {
       var fl = { kind: fk, label: clip(formLabel(form) || "this form"), optin: false, checked: false };
       // A card form always locks; a password form only while it is kept.
-      if (fk !== "account" || keep(fl)) return fl;
+      if (fk !== "account" || !danger || !plainSignInForm(form) || keep(fl)) return fl;
     }
     var subs = submitsOf(form);
     for (var i = 0; i < subs.length; i++) {

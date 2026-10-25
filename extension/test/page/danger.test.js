@@ -24,7 +24,18 @@ const HTML = `
 <button type="button">Subscribe &amp; Save</button>
 <button type="button">Save card</button>
 <div data-clearcart-protected><button type="button">Confirm</button></div>
-<button type="button">Add to cart</button>`;
+<button type="button">Add to cart</button>
+<form id="reauth" action="/account/confirm-purchase" method="post">
+  <p>Enter your password to confirm this purchase.</p>
+  <label>Your password <input id="pw2" type="password" name="pw2"></label>
+  <button type="submit">Continue to confirm</button>
+</form>
+<form id="mixed" action="/login" method="post">
+  <label>Password again <input id="pw3" type="password" name="pw3"></label>
+  <button type="submit">Sign in</button>
+  <button type="submit">Sign in and pay</button>
+</form>
+<button type="button">Sign up for Prime</button>`;
 
 const lineOf = (tree, re) => tree.split("\n").find((l) => re.test(l));
 const refIn = (line) => /\[(ref_\d+)\]/.exec(line)[1];
@@ -58,6 +69,20 @@ test("Danger mode on: sign in and sign up are pressable; every money and checkou
     assert.equal(r.ok, false, String(re));
     assert.equal(r.error.code, "locked", String(re));
   }
+  // A password form that pays, or whose other submit pays, stays locked.
+  assert.match(lineOf(t, /"Continue to confirm"/), /\[locked\]$/);
+  assert.match(lineOf(t, /"Sign in and pay"/), /\[locked\]$/);
+  const mixed = t.split("\n").filter((l) => /button "Sign in"/.test(l));
+  assert.equal(mixed.length, 2);
+  assert.match(mixed[1], /\[locked\]$/, "a Sign in next to Sign in and pay stays locked");
+  assert.match(lineOf(t, /"Sign up for Prime"/), /\[locked\]$/);
+  p.document.getElementById("pw2").focus();
+  assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).error.code, "locked");
+  p.document.getElementById("pw3").focus();
+  assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).error.code, "locked");
+  // Enter in the plain login form is allowed.
+  p.document.getElementById("email").focus();
+  assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).ok, true);
   // Enter in the card form still submits nothing.
   p.document.getElementById("cvc").focus();
   assert.equal((await call(p, "guard_key", { key: "Enter" }, true)).error.code, "locked");

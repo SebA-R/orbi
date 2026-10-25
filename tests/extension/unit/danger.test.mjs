@@ -53,7 +53,30 @@ test("classifier: Danger mode lifts sign in and sign up only", () => {
     lock("marked", "Confirm"),
     lock("frame", "embedded frame"),
     lock("shadow", "hidden component"),
+    // Read as account first, but they also buy, pay or save a card.
+    lock("account", "Sign in and place order"),
+    lock("account", "Log in with PayPal"),
+    lock("account", "Sign in to check out"),
+    lock("account", "Create an account and save my card", true),
+    lock("account", "Sign up and subscribe"),
+    lock("account", "Sign in and pay"),
+    lock("account", "Sign in with PayPal"),
+    lock("account", "Log in with Apple Pay"),
+    lock("account", "Register and buy now"),
+    lock("account", "Sign in to confirm"),
+    lock("account", "Log in to finish your order"),
+    lock("account", "Sign up for Prime"),
+    lock("account", "Sign up for Walmart+", true),
+    lock("account", "Sign up for Subscribe & Save autoship", true),
+    lock("account", "Register to bid"),
+    lock("account", "Register and reserve"),
+    // A password form's plain submit (formKind): not a sign in by name.
+    lock("account", "Continue"),
+    lock("account", "Confirm"),
   ]) assert.equal(P.dangerLifts(l), false, `${l.kind} ${l.label}`);
+  for (const l of [lock("account", "Sign in now"), lock("account", "Continue with Google"), lock("account", "Create an account", true)]) {
+    assert.equal(P.dangerLifts(l), true, l.label);
+  }
   assert.equal(P.dangerLifts(null), false);
 });
 
