@@ -1,12 +1,13 @@
 // Clearcart new tab page (chrome_url_overrides). Chrome pages can't run
-// content scripts, so this page loads content/hotkey.js and
-// content/subtitles.js itself (see newtab.html; guard.js keeps them to the
-// worker's messages for this tab). The worker sees it as any other tab:
+// content scripts, so this page loads content/hotkey.js itself (see
+// newtab.html; guard.js keeps it to the worker's messages for this tab). No
+// subtitle card here: it would sit over the centered orb, which already
+// shows the voice state. The worker sees it as any other tab:
 // hold-to-talk, the latch, double-tap, replay on tab switch.
 //
-// voice.js adds the orb and the voice state. This file adds the search box
-// and the setting: with "Use the Clearcart new tab page" off it forwards to
-// Chrome's own new tab page.
+// voice.js adds the orb face and the voice state. This file adds the search
+// box and the setting: with "Use the Clearcart new tab page" off it forwards
+// to Chrome's own new tab page.
 import { loadSettings } from "../lib/settings.js";
 import { startVoice } from "./voice.js";
 
@@ -29,7 +30,7 @@ if (!settings.newTabPage) {
     await forward();
   } catch (e) {
     document.documentElement.dataset.ready = "true";
-    for (const el of document.querySelectorAll("main > :not(#off, .brand)")) el.hidden = true;
+    for (const el of document.querySelectorAll("main > :not(#off, h1)")) el.hidden = true;
     $("off").hidden = false;
     $("off-text").textContent = back
       ? "The Clearcart new tab page is turned off in Clearcart settings."

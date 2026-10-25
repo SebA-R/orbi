@@ -138,3 +138,42 @@ test("CLEARCART_VOICE=false: no Cartesia token is minted", async () => {
     child.kill();
   }
 });
+
+// A /session socket that keeps every message it gets.
+async function sessionSocket(port: number) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/session`);
+  const got: any[] = [];
+  ws.on("message", (raw) => got.push(JSON.parse(String(raw))));
+  await new Promise((res, rej) => (ws.once("open", res), ws.once("error", rej)));
+  return { ws, got, send: (m: unknown) => ws.send(JSON.stringify(m)) };
+}
+
+async function until(ok: () => boolean, what: string) {
+  const deadline = Date.now() + 5_000;
+  while (!ok()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+test("one session across /session sockets: the one that talks takes over, the other is told and its late words are dropped", async () => {
+  const port = 5175;
+  const child = await startServer(port, {});
+  try {
+    const a = await sessionSocket(port);
+    const b = await sessionSocket(port);
+    a.send({ type: "user_text", text: "hi from a" });
+    await until(() => a.got.some((m) => m.text === "You said: hi from a"), "a's echo");
+    b.send({ type: "interrupt" });
+    b.send({ type: "user_text", text: "hi from b" });
+    await until(() => b.got.some((m) => m.text === "You said: hi from b") && a.got.some((m) => m.type === "standby" && m.reason === "moved"), "b takes over");
+    a.send({ type: "user_text", text: "late words" });
+    await until(() => a.got.some((m) => m.type === "standby" && m.reason === "stale"), "a told its words were dropped");
+    assert.ok(![...a.got, ...b.got].some((m) => m.text === "You said: late words"));
+    assert.ok(!a.got.some((m) => m.text === "You said: hi from b"), "b's reply went to b only");
+    a.ws.close();
+    b.ws.close();
+  } finally {
+    child.kill();
+  }
+});

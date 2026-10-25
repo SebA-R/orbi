@@ -131,6 +131,8 @@ export const RT = Object.freeze({
   STATUS: "status",
   // Clearcart's "Can't reach this site" page: the user pressed Retry.
   ERROR_PAGE_RETRY: "errorpage.retry",
+  // worker -> offscreen: say your VOICE_STATE again (a restarted worker asks).
+  VOICE_SYNC: "voice.sync",
 });
 
 export class BridgeError extends Error {

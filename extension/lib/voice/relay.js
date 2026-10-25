@@ -18,6 +18,12 @@
 //   quiets other tabs while listening, thinking and speaking
 //   every VOICE_STATE also goes to onVoiceState(state, tabId), with the tab it
 //   went to (the worker's active-tab frame, background/frame.js)
+//
+// There is one offscreen document, so one mic and one voice turn for every
+// tab and frame: a press from another tab while a turn is listening goes to
+// that turn, never to a second listener (controller.js). The document
+// outlives a worker restart; the new worker sends it VOICE_SYNC and learns
+// the state of a turn already in progress from its VOICE_STATE reply.
 import { RT } from "../protocol.js";
 import { loadSettings } from "../settings.js";
 import { createDucker } from "./duck.js";
@@ -245,7 +251,14 @@ export function createVoiceRelay({
     if (tab && tab.id != null) await onTabActivated({ tabId: tab.id });
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, ducker, idle: () => chain, statesIdle: () => stateChain };
+  // Worker start: an open offscreen document may be mid-turn (listening,
+  // speaking). Ask it to say its state again, so ducking does not restore
+  // tabs under a live turn and captions can follow it. Never creates one.
+  function resync() {
+    return toOffscreen({ type: RT.VOICE_SYNC }, { create: false });
+  }
+
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, resync, ducker, idle: () => chain, statesIdle: () => stateChain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.
@@ -259,5 +272,6 @@ export function installVoiceRelay(opts = {}) {
   chromeApi.windows?.onFocusChanged?.addListener((id) => relay.onWindowFocused(id));
   chromeApi.tabs.onUpdated?.addListener((id, change) => relay.ducker.onTabUpdated?.(id, change));
   relay.ducker.recover?.().catch(() => {});
+  relay.resync().catch(() => {});
   return relay;
 }

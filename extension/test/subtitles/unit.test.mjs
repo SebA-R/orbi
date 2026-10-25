@@ -336,19 +336,28 @@ test("the orb face replaces the dot: decorative, inside the card, eyes and a smi
   assert.equal(f.textContent, "", "no text: the state is said elsewhere");
 });
 
-test("the face shows only at rest: listening, thinking and speaking are faceless", () => {
+test("every state has a face: F1 at idle, thinking and speaking, F2 while listening", () => {
   const t = setup();
   t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });
-  assert.equal(face(t).classList.contains("ccf-noface"), false, "idle smiles");
-  for (const state of ["listening", "thinking", "speaking"]) {
+  for (const state of ["idle", "listening", "thinking", "speaking", "idle"]) {
     t.send({ type: "voice.state", state });
-    assert.equal(face(t).classList.contains("ccf-noface"), true, state);
+    assert.equal(face(t).classList.contains("ccf-noface"), false, state);
   }
-  t.send({ type: "voice.state", state: "idle" });
-  assert.equal(face(t).classList.contains("ccf-noface"), false, "face back at rest");
+  assert.equal(face(t).querySelectorAll(".ccf-arcs path.ccf-ae").length, 2, "F2 arc eyes");
+  assert.equal(face(t).querySelectorAll("path.ccf-t").length, 1, "talking mouth");
   const css = t.window.__clearcartOrbFace.CSS;
-  assert.match(css, /\.ccf\.ccf-noface \.ccf-f \{ opacity: 0; \}/);
-  assert.match(css, /\.ccf-f \{[^}]*transition: opacity \.15s/, "fades over 150 ms");
+  assert.doesNotMatch(css, /ccf-noface/);
+  assert.match(css, /\.ccf\.ccf--listening \.ccf-dots \{ opacity: 0; \}/);
+  assert.match(css, /\.ccf\.ccf--listening \.ccf-arcs \{ opacity: 1; \}/);
+  assert.match(css, /\.ccf\.ccf--speaking \.ccf-t \{ opacity: 1; animation: ccf-talk/);
+  assert.match(css, /\.ccf-m \{[^}]*transition: opacity \.18s ease-out, d \.18s/, "morphs over 180 ms");
+  assert.match(css, /stroke-linecap: round/, "no pointed smile corners");
+});
+
+test("the face is 26 px unless a page sets --ccf-size (the new tab hero does)", () => {
+  const css = setup().window.__clearcartOrbFace.CSS;
+  assert.match(css, /width: var\(--ccf-size, 26px\) !important; height: var\(--ccf-size, 26px\) !important;/);
+  assert.match(css, /box-shadow: var\(--ccf-glow, 0 0 8px \.5px rgb\(94 139 255 \/ \.4\)\) !important;/);
 });
 
 test("the orb face gets one state class per voice state", () => {

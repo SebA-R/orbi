@@ -1,6 +1,6 @@
 // Network error pages: Chrome's own runs no content scripts, so a failed
 // main frame goes on to Clearcart's "Can't reach this site" page, where the
-// hotkey and subtitles run. Back keeps working; Retry comes back here.
+// hotkey and the orb face run. Back keeps working; Retry comes back here.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -52,7 +52,7 @@ test("an unreachable address opens Clearcart's page with the hotkey, Retry and t
   await failTo(page, BAD);
   assert.ok(!page.url().includes("nowhere"), page.url());
   assert.equal(await page.title(), "Can't reach this site");
-  assert.equal(await page.evaluate(() => !!window.__clearcartHotkey && globalThis.__clearcartSubtitles === true), true);
+  assert.equal(await page.evaluate(() => !!window.__clearcartHotkey && !!document.querySelector("#orb > .ccf")), true);
   assert.equal(await page.getByRole("heading", { level: 1, name: "Can't reach this site" }).count(), 1);
   assert.equal(await page.getByRole("heading", { level: 2, name: "Hold Space to talk" }).count(), 1);
   assert.equal(await page.locator("#failed-url").textContent(), BAD);

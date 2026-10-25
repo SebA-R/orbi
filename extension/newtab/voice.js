@@ -1,9 +1,9 @@
 // The voice part of Clearcart's own pages (the new tab page and the "Can't
-// reach this site" page): the orb, the voice state in words, the focus hint
-// and the toggle shortcut. Each page's HTML loads guard.js,
-// content/hotkey.js, content/orb-face.js and content/subtitles.js first and
-// has the elements this looks up by id (orb, mini-orb, voice-title,
-// voice-sub, voice-live, focus-hint, shortcut).
+// reach this site" page): the orb face, the voice state in words, the focus
+// hint and the toggle shortcut. Each page's HTML loads guard.js,
+// content/hotkey.js and content/orb-face.js first and has the elements this
+// looks up by id (orb, voice-title, voice-sub, voice-live, focus-hint,
+// shortcut).
 import { RT } from "../lib/protocol.js";
 import { keyName } from "../lib/setup.js";
 
@@ -28,7 +28,9 @@ export function startVoice(settings) {
     thinking: () => ["Thinking", "Working on your request."],
     speaking: (k) => ["Speaking", `Hold ${k} to interrupt${k === "Space" ? ", or tap it twice to stop" : ""}.`],
   };
-  // The popup's mini orb face beside the name. Decorative: the heading says the state.
+  // The hero orb is the face (content/orb-face.js): it smiles at rest and
+  // goes faceless while listening, thinking or speaking. Decorative: the
+  // heading and the live region say the state.
   let face = null;
   const FACE = globalThis.__clearcartOrbFace;
   if (FACE) {
@@ -36,8 +38,8 @@ export function startVoice(settings) {
       const sheet = new CSSStyleSheet();
       sheet.replaceSync(FACE.CSS);
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-      face = FACE.create(document);
-      $("mini-orb").append(face.el);
+      face = FACE.create(document, { canPlay: () => !document.hidden });
+      $("orb").append(face.el);
     } catch {}
   }
   const show = (next = state) => {
@@ -48,7 +50,18 @@ export function startVoice(settings) {
     const [title, sub] = TEXT[state](keyName(hotkey));
     $("orb").dataset.state = state;
     face?.setState(state);
-    if ($("voice-title").textContent !== title) $("voice-title").textContent = title;
+    document.body.dataset.state = state;
+    if ($("voice-title").textContent !== title) {
+      // The key shows as a keycap, as in "Hold [Space] to talk".
+      const k = keyName(hotkey);
+      const at = title.indexOf(k);
+      if (at < 0) $("voice-title").textContent = title;
+      else {
+        const kbd = document.createElement("kbd");
+        kbd.textContent = k;
+        $("voice-title").replaceChildren(title.slice(0, at), kbd, title.slice(at + k.length));
+      }
+    }
     if ($("voice-sub").textContent !== sub) $("voice-sub").textContent = sub;
   };
 
@@ -59,7 +72,7 @@ export function startVoice(settings) {
   });
   document.addEventListener("visibilitychange", () => { if (document.hidden) show("idle"); });
   // A tab opened with Command + T may load after the worker's tab-switch
-  // replay, so ask once (hotkey.js and subtitles.js hear the answer too).
+  // replay, so ask once (hotkey.js hears the answer too).
   chrome.runtime.sendMessage({ type: RT.VOICE_STATE_QUERY }).catch(() => {});
 
   chrome.storage.onChanged.addListener((changes, area) => {

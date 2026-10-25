@@ -15,7 +15,7 @@
   </header>
 
   <main id="main">
-    <p class="brand"><span class="mini-orb" id="mini-orb"></span>Clearcart</p>
+    <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
 
     <section class="failed" aria-labelledby="failed-title">
       <h1 id="failed-title">Can't reach this site</h1>
@@ -23,25 +23,26 @@
       <p class="address" id="failed-url" hidden></p>
       <p class="code" id="failed-code" hidden></p>
       <button type="button" id="retry" hidden>Retry</button>
+      <p class="error" id="error" role="alert" hidden></p>
     </section>
 
-    <section class="hero" aria-labelledby="voice-title">
-      <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
-      <h2 class="voice-title" id="voice-title">Hold Space to talk</h2>
+    <section class="voice" aria-labelledby="voice-title">
+      <h2 class="voice-title" id="voice-title">Hold <kbd>Space</kbd> to talk</h2>
       <p class="voice-sub" id="voice-sub">Option + Space keeps listening until you press Space.</p>
-      <p class="hint">Ask Clearcart to go somewhere else.</p>
-      <p class="hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
+      <p class="voice-sub">Ask Clearcart to go somewhere else.</p>
+      <p class="focus-hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
     </section>
 
-    <p class="shortcut" id="shortcut" hidden></p>
-    <p class="error" id="error" role="alert" hidden></p>
     <p class="visually-hidden" id="voice-live" role="status" aria-live="polite"></p>
   </main>
+
+  <footer class="foot">
+    <p class="shortcut" id="shortcut" hidden></p>
+  </footer>
 
   <script src="guard.js"></script>
   <script src="../content/hotkey.js"></script>
   <script src="../content/orb-face.js"></script>
-  <script src="../content/subtitles.js"></script>
   <script type="module" src="error.js"></script>
 </body>
 </html>
