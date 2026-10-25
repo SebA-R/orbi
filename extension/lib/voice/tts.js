@@ -4,9 +4,11 @@ import {
 
 // Speaks text with Sonic over one shared TTS websocket. Each utterance is its own context;
 // requests go out immediately, audio plays strictly in order, and stop() cuts everything (barge-in).
-// duck() fades our speech to near silence while the talk key is touched; unduck() brings it back.
+// duck() fades our speech to near silence while the talk key is touched (20 ms: fast
+// enough to be gone at once, slow enough not to click); unduck() brings it back over 80 ms.
 export const DUCK_LEVEL = 0.03;
-export const DUCK_SECONDS = 0.08;
+export const DUCK_SECONDS = 0.02;
+export const UNDUCK_SECONDS = 0.08;
 
 export class Speaker {
   constructor({ ctx, getToken, getSpeed, voiceId, log, onSpeakingChange }) {
@@ -64,17 +66,17 @@ export class Speaker {
     return out;
   }
 
-  #rampTo(level) {
+  #rampTo(level, seconds) {
     const g = this.out.gain;
     const now = this.ctx.currentTime;
     g.cancelScheduledValues(now);
     g.setValueAtTime(g.value, now);
-    g.linearRampToValueAtTime(level, now + DUCK_SECONDS);
+    g.linearRampToValueAtTime(level, now + seconds);
   }
 
-  duck() { this.#rampTo(DUCK_LEVEL); }
+  duck() { this.#rampTo(DUCK_LEVEL, DUCK_SECONDS); }
 
-  unduck() { this.#rampTo(1); }
+  unduck() { this.#rampTo(1, UNDUCK_SECONDS); }
 
   // Barge-in: silence now, cancel anything still generating.
   stop() {
