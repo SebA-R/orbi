@@ -304,7 +304,7 @@ export function decideUnlock(
       default:
         return {
           kind: "refuse",
-          message: `'${label}' places the order or pays. Only request_checkout and pay_now can do that, after the user's yes, and only on the demo store. Elsewhere, tell the user they can finish it themselves.`,
+          message: `'${label}' places the order or pays. Only request_checkout and pay_now can do that, after the user's yes, and only on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.`,
         };
     }
   }

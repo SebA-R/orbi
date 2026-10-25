@@ -5,10 +5,9 @@
 // a grant; the gate issues one only when all of these hold:
 //   - the user said an explicit yes to request_checkout's read-back
 //     (confirmation.state === "confirmed"),
-//   - the tab's page is on a pay site (CLEARCART_PAY_ORIGINS, default the
-//     store only; the gate itself is not tied to the demo store). This is
-//     not the browse policy: open web browsing lets Claude read almost any
-//     store, but never makes one of them a pay site,
+//   - the tab's page is on a pay site (CLEARCART_PAY_ORIGINS, default
+//     none). This is not the browse policy: open web browsing lets Claude
+//     read almost any site, but never makes one of them a pay site,
 //   - the total on the page matches the total the user said yes to.
 // A grant is a random token bound to that tab and origin, good for one press
 // within GRANT_TTL_MS. On the extension path, pressing also needs a
@@ -16,9 +15,7 @@
 // the target is an order button (press_protected), so the model cannot
 // unlock anything by any tool call.
 //
-// Today only pay_now's demo store flow asks for grants, because it is the
-// only flow that knows how to fill a checkout form. A later generic pay flow
-// for real sites calls issue() and pressProtectedExt() the same way.
+// pay_now is the only flow that asks for grants.
 
 import { randomBytes } from "node:crypto";
 

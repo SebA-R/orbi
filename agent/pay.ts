@@ -1,31 +1,33 @@
-// pay_now: our code, not Claude, fills the card and places the order.
+// pay_now: our code, not Claude, fills the card and places the order, on a
+// pay site (CLEARCART_PAY_ORIGINS, none by default) and only over the
+// Clearcart extension (CLEARCART_BROWSER=ext).
 //
-// The card is read from the vault and written into the checkout inputs with a
-// javascript_tool call over our own bridge client (bridge.ts). Claude only
-// ever sees { ok, last4 } or an error string. While the inputs hold card
-// values the session's guard flag is up, and the PreToolUse hook in session.ts
-// blocks every page-reading browser tool.
+// The card is read from the vault and written into the checkout inputs with
+// one fill_payment call over our own bridge socket. Claude only ever sees
+// { ok, last4 } or an error string. While the inputs hold card values the
+// session's guard flag is up, and the PreToolUse hook in session.ts blocks
+// every page-reading browser tool.
 
-import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 import { getCard, last4, type Card } from "../vault/index.ts";
 import { extBridge, extMode, type ExtBridge } from "./extbridge.ts";
+import { isCheckoutUrl, paySite } from "./origins.ts";
 import { pressProtectedExt, unlockGate, type Grant, type UnlockGate } from "./unlock.ts";
-import { STORE_ORIGIN } from "./origins.ts";
 
-export { STORE_ORIGIN };
-const CHECKOUT_PREFIX = `${STORE_ORIGIN}/checkout`;
+// A checkout page on a pay site. Parsed, so tricks like
+// https://pay.example@evil.example/ fail.
+export function onPayCheckout(href: string | null | undefined): boolean {
+  return paySite(href) && isCheckoutUrl(href);
+}
 
-// Parsed comparison, so tricks like http://localhost:4000@evil.example/ fail.
-export function onStore(href: string | null | undefined, pathPrefix = "/"): boolean {
-  if (!href) return false;
+// An order confirmation page on a pay site (/order/<id>, /orders/<id>).
+export function onPayOrder(href: string | null | undefined): boolean {
+  if (!paySite(href)) return false;
   try {
-    const u = new URL(href);
-    return u.origin === STORE_ORIGIN && u.pathname.startsWith(pathPrefix);
+    return /\/orders?\/[^/]/i.test(new URL(String(href)).pathname);
   } catch {
     return false;
   }
 }
-const DEFAULT_ADDRESS = process.env.CLEARCART_SHIP_ADDRESS || "2150 Shattuck Ave, Berkeley, CA 94704";
 
 // What the user said yes to. confirmedAt, tabId and cart pin the yes to a
 // moment, a tab and a cart: pay_now refuses a yes older than
@@ -66,7 +68,7 @@ export function claimConfirmation(state: PayState, now = Date.now()): { ok: true
     return { ok: false, error: "The user's yes is more than a minute old. Call request_checkout again before paying." };
   }
   if (typeof c.tabId !== "number") {
-    return { ok: false, error: `No checkout tab was open when the user said yes. Open ${CHECKOUT_PREFIX} and call request_checkout again.` };
+    return { ok: false, error: "No checkout tab was open when the user said yes. Open the checkout page and call request_checkout again." };
   }
   return { ok: true, c };
 }
@@ -80,15 +82,13 @@ const TAB_CHANGED = "The checkout tab is not the one the user said yes on. Call 
 const CART_CHANGED = "The cart changed since the user said yes. Call request_checkout again with the page as it is now.";
 
 // The checkout tab and its priced lines, for request_checkout to pin the
-// yes to. Either may be null or "" when there is no checkout tab.
+// yes to. Either may be null or "" when there is no checkout tab (always on
+// the Open Claude in Chrome path, where pay_now does not run).
 export async function checkoutSnapshot(preferred: number | null): Promise<{ tabId: number | null; cart: string }> {
+  if (!extMode()) return { tabId: null, cart: "" };
   try {
-    if (extMode()) {
-      const tabId = await findCheckoutTabExt(extBridge, preferred);
-      return { tabId, cart: tabId == null ? "" : cartLines(await pageText(extBridge, tabId)) };
-    }
-    const tabId = await findCheckoutTab(preferred);
-    return { tabId, cart: tabId == null ? "" : cartLines(String(await evalInTab<string>(tabId, "document.body ? document.body.innerText : ''").catch(() => ""))) };
+    const tabId = await findCheckoutTabExt(extBridge, preferred);
+    return { tabId, cart: tabId == null ? "" : cartLines(await pageText(extBridge, tabId)) };
   } catch {
     return { tabId: null, cart: "" };
   }
@@ -104,10 +104,6 @@ export type Receipt = { item: string; total: string; last4: string };
 
 export type PayResult = { ok: true; last4: string; receipt: Receipt } | { ok: false; error: string };
 
-// argSummary() in the extension's debug log keeps the first 60 characters of
-// each string argument. This prefix pushes everything secret past that cut.
-const PAD = "/* clearcart vault fill: values below are never logged or returned to the model */\n";
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function money(s: string): number {
@@ -115,185 +111,23 @@ function money(s: string): number {
   return Number.isFinite(n) ? n : NaN;
 }
 
-async function tabHref(tabId: number): Promise<string | null> {
-  try {
-    const href = await evalInTab<string>(tabId, "location.href");
-    return typeof href === "string" ? href : null;
-  } catch {
-    return null;
-  }
-}
-
-async function findCheckoutTab(preferred: number | null): Promise<number | null> {
-  if (preferred != null) {
-    const href = await tabHref(preferred);
-    if (onStore(href, "/checkout")) return preferred;
-  }
-  // Fall back to the MCP tab group: tabs_context_mcp starts with a JSON line.
-  try {
-    const text = resultText(await callBrowserTool("tabs_context_mcp", {}));
-    const first = text.split("\n")[0];
-    const tabs: Array<{ tabId?: number; id?: number; url?: string }> = JSON.parse(first).availableTabs || [];
-    const hits = tabs.filter((t) => onStore(t.url, "/checkout"));
-    if (hits.length === 1) return (hits[0].tabId ?? hits[0].id) as number;
-  } catch {}
-  return null;
-}
-
-const CLEAR_FIELDS = `(() => {
-  for (const n of ["cc-name", "cc-number", "cc-exp", "cc-csc"]) {
-    const el = document.querySelector('[name="' + n + '"]');
-    if (el) { el.value = ""; el.removeAttribute("value"); }
-  }
-  return true;
-})()`;
-
+// The Open Claude in Chrome path has no extension-side lock_arm nonce and
+// runs its checks in the page's main world, so it never pays. The yes is
+// spent all the same.
 export async function payNow(state: PayState): Promise<PayResult> {
   if (extMode()) return payNowExt(state);
   const claim = claimConfirmation(state);
   if (!claim.ok) return claim;
-  const c = claim.c;
-
-  const tabId = await findCheckoutTab(c.tabId!);
-  if (tabId == null) {
-    return { ok: false, error: `The current tab is not the checkout page. Navigate to ${CHECKOUT_PREFIX} first.` };
-  }
-  if (tabId !== c.tabId) return { ok: false, error: TAB_CHANGED };
-
-  // The amount on the page must match what the user said yes to.
-  let pageTotal = "";
-  try {
-    pageTotal = String(await evalInTab<string>(tabId, `(document.getElementById("order-total")||{}).textContent||""`));
-  } catch {}
-  if (Math.abs(money(pageTotal) - money(c.total)) > 0.005) {
-    return {
-      ok: false,
-      error: `The checkout total is ${pageTotal || "unknown"}, but the user confirmed ${c.total}. Call request_checkout again with the page total.`,
-    };
-  }
-
-  // The extension's "audit" mode records each tab's DOM with rrweb, inputs
-  // unmasked, to ~/.config/open-claude-in-chrome/audits. Card values would land
-  // on disk, so refuse rather than fill.
-  if (!process.env.CLEARCART_ALLOW_AUDIT) {
-    try {
-      const cfg = JSON.parse(resultText(await callBrowserTool("get_config", { tabId })));
-      const mode = cfg?.effectiveForTab?.config?.audit_mode ?? cfg?.default?.audit_mode;
-      // Extensions that mask payment fields in recordings say so; older ones don't.
-      if (mode && mode !== "off" && cfg?.auditMasksPayment !== true) {
-        return {
-          ok: false,
-          error: "Payment is paused because the browser extension's audit recording is on, and it would record the card. Ask the user to turn audit mode off in the Open Claude in Chrome options.",
-        };
-      }
-    } catch {}
-  }
-
-  if (c.cart) {
-    const now = cartLines(String(await evalInTab<string>(tabId, "document.body ? document.body.innerText : ''").catch(() => "")));
-    if (now !== c.cart) return { ok: false, error: CART_CHANGED };
-  }
-
-  // Button lock: the grant is the only thing that lets our code press the
-  // protected #place-order (see unlock.ts). Issued while the yes is fresh.
-  const issued = unlockGate.issue({ confirmation: claimedYes(c), tabId, href: await tabHref(tabId), pageTotal });
-  if (!issued.ok) return { ok: false, error: issued.error };
-
-  let card;
-  try {
-    card = await getCard();
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
-  }
-  const four = last4(card.number);
-
-  const values = JSON.stringify({ name: card.name, number: card.number, exp: card.exp, csc: card.csc, address: DEFAULT_ADDRESS });
-  const fill =
-    PAD +
-    `(() => {
-  const v = ${values};
-  const set = (sel, val) => {
-    const el = document.querySelector(sel);
-    if (!el) return false;
-    const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    Object.getOwnPropertyDescriptor(proto, "value").set.call(el, val);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    return true;
-  };
-  const addr = document.querySelector('[name="address"]');
-  if (addr && !addr.value.trim()) set('[name="address"]', v.address);
-  const ok = set('[name="cc-name"]', v.name) && set('[name="cc-number"]', v.number) &&
-    set('[name="cc-exp"]', v.exp) && set('[name="cc-csc"]', v.csc);
-  const btn = document.getElementById("place-order");
-  if (!ok || !btn) return "missing";
-  setTimeout(() => btn.click(), 50);
-  return "submitted";
-})()`;
-
-  if (!unlockGate.consume(issued.grant, { tabId, href: await tabHref(tabId) })) {
-    return { ok: false, error: "The checkout page changed before payment. Check the page and confirm again." };
-  }
-
-  state.cardFieldsLive = true;
-  try {
-    let status: string;
-    try {
-      status = String(await evalInTab<string>(tabId, fill));
-    } catch {
-      status = "failed";
-    }
-    if (status !== "submitted") {
-      return { ok: false, error: "Could not find the checkout fields on the page." };
-    }
-
-    // Wait for the order page (or the checkout page re-rendered with an error).
-    const deadline = Date.now() + 20_000;
-    await sleep(600);
-    while (Date.now() < deadline) {
-      const href = await tabHref(tabId);
-      if (onStore(href, "/order/")) {
-        const r = await evalInTab<{ items: string; total: string; last4: string; ready: boolean }>(
-          tabId,
-          `(() => {
-  const t = (id) => (document.getElementById(id) || {}).textContent || "";
-  const items = Array.from(document.querySelectorAll("#order-items li")).map((li) => li.textContent.trim()).join("; ");
-  return { items, total: t("order-total").trim(), last4: t("card-last4").trim(), ready: !!document.getElementById("order-total") };
-})()`
-        ).catch(() => null);
-        if (r && r.ready) {
-          state.cardFieldsLive = false;
-          const receipt = { item: r.items || c.item, total: r.total || c.total, last4: r.last4 || four };
-          return { ok: true, last4: receipt.last4, receipt };
-        }
-      } else if (onStore(href, "/checkout")) {
-        const err = await evalInTab<string>(
-          tabId,
-          `document.readyState === "complete" ? ((document.getElementById("checkout-error") || {}).textContent || "") : ""`
-        ).catch(() => "");
-        if (err) {
-          return { ok: false, error: `The store rejected the payment: ${String(err).trim()}` };
-        }
-      }
-      await sleep(400);
-    }
-    return { ok: false, error: "The order page did not load in time. Check the page before trying again." };
-  } finally {
-    if (state.cardFieldsLive) {
-      // Not on the order page: wipe whatever card values are still in the form.
-      const cleared = await evalInTab(tabId, CLEAR_FIELDS).then(() => true, () => false);
-      if (cleared) state.cardFieldsLive = false;
-    }
-  }
+  return { ok: false, error: "Paying needs the Clearcart extension. Tell the user they can finish checkout on the page themselves." };
 }
 
 // ---------------------------------------------------------------------------
-// CLEARCART_BROWSER=ext: the same pay_now over the Clearcart extension.
+// pay_now over the Clearcart extension (CLEARCART_BROWSER=ext).
 //
 // The card goes to the page in one fill_payment call over our own bridge
 // socket; the extension sets the fields by autocomplete kind and answers
-// { ok, last4 } without echoing anything. Our code then clicks #place-order
-// (find + rect + CDP click, or a DOM click_ref) and waits for /order/:id.
+// { ok, last4 } without echoing anything. Our code then presses Place order
+// (find, then press_protected with the unlock) and waits for an order page.
 // Errors from fill_payment are reduced to their code so nothing the page or
 // extension says about the card can reach Claude.
 
@@ -344,10 +178,10 @@ async function extTabUrl(bridge: Pick<ExtBridge, "call">, tabId: number): Promis
 }
 
 async function findCheckoutTabExt(bridge: Pick<ExtBridge, "call">, preferred: number | null): Promise<number | null> {
-  if (preferred != null && onStore(await extTabUrl(bridge, preferred), "/checkout")) return preferred;
+  if (preferred != null && onPayCheckout(await extTabUrl(bridge, preferred))) return preferred;
   try {
     const ctx = await bridge.call<{ tabs?: Array<{ tabId: number; url?: string }> }>("tabs_context", {}, 10_000);
-    const hits = (ctx?.tabs || []).filter((t) => onStore(t.url, "/checkout"));
+    const hits = (ctx?.tabs || []).filter((t) => onPayCheckout(t.url));
     if (hits.length === 1) return hits[0].tabId;
   } catch {}
   return null;
@@ -362,7 +196,7 @@ async function pageText(bridge: Pick<ExtBridge, "call">, tabId: number): Promise
   }
 }
 
-// #place-order is locked for every agent tool; only the grant plus the
+// Place order is locked for every agent tool; only the grant plus the
 // extension's lock_arm nonce gets one press through press_protected.
 async function clickPlaceOrder(bridge: Pick<ExtBridge, "call">, tabId: number, grant: Grant, gate: UnlockGate): Promise<void> {
   const r = await bridge.call<{ matches?: Array<{ ref: string; role?: string; name?: string }> }>("find", { tabId, query: "Place order", limit: 10 });
@@ -384,7 +218,7 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
 
   const tabId = await findCheckoutTabExt(bridge, c.tabId!);
   if (tabId == null) {
-    return { ok: false, error: `The current tab is not the checkout page. Navigate to ${CHECKOUT_PREFIX} first.` };
+    return { ok: false, error: "The current tab is not the checkout page of a pay site. Open the checkout page first." };
   }
   if (tabId !== c.tabId) return { ok: false, error: TAB_CHANGED };
 
@@ -408,8 +242,6 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
   if (!CARD_KINDS.every((k) => kinds.has(k))) {
     return { ok: false, error: "Could not find the checkout fields on the page." };
   }
-  // Like the default path: only fill the address when it is empty.
-  const addressFilled = fields.some((f) => f.kind === "address" && f.filled);
 
   // Button lock: issue the grant while the yes is fresh (see unlock.ts).
   const issued = gate.issue({ confirmation: claimedYes(c), tabId, href: await extTabUrl(bridge, tabId), pageTotal });
@@ -430,7 +262,6 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
       filled = await bridge.call("fill_payment", {
         tabId,
         card: { name: card.name, number: card.number, exp: card.exp, csc: card.csc },
-        ...(addressFilled ? {} : { address: DEFAULT_ADDRESS }),
       });
     } catch (e) {
       const code = (e as { code?: string }).code || "error";
@@ -450,19 +281,19 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
     await sleep(Math.min(600, pollMs));
     while (Date.now() < deadline) {
       const href = await extTabUrl(bridge, tabId);
-      if (onStore(href, "/order/")) {
+      if (onPayOrder(href)) {
         state.cardFieldsLive = false;
         const text = await pageText(bridge, tabId);
         const total = pageMoney(text, /Total charged\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i) || c.total;
         const shown = /ending in\s*(\d{4})/i.exec(text)?.[1];
         const receipt = { item: c.item, total, last4: shown || filled.last4 || four };
         return { ok: true, last4: receipt.last4, receipt };
-      } else if (onStore(href, "/checkout")) {
+      } else if (onPayCheckout(href)) {
         // A rejected payment re-renders checkout with a role="alert" banner.
         try {
           const page = await bridge.call<{ tree?: string }>("read_page", { tabId, filter: "all", maxNodes: 400 }, 10_000);
           const err = alertText(String(page?.tree || ""));
-          if (err) return { ok: false, error: `The store rejected the payment: ${err.trim()}` };
+          if (err) return { ok: false, error: `The site rejected the payment: ${err.trim()}` };
         } catch {}
       }
       await sleep(pollMs);
