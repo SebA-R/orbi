@@ -103,8 +103,9 @@ final class KeyComboTests: XCTestCase {
 
 final class ProtocolTests: XCTestCase {
   func testHelloAndEvents() throws {
-    let hello = try JSON.decode(Outbound.hello(Permissions(accessibility: true, screen: false, mic: true), token: "abc"))
-    XCTAssertEqual(hello["token"], "abc")
+    let hello = try JSON.decode(Outbound.hello(Permissions(accessibility: true, screen: false, mic: true), nonce: "n1"))
+    XCTAssertEqual(hello["nonce"], "n1")
+    XCTAssertNil(hello["token"])
     XCTAssertEqual(hello["features"], ["element", "focused", "expectRef", "exclude"])
     XCTAssertEqual(hello["type"], "hello")
     XCTAssertEqual(hello["name"], "orbi-desktop")
@@ -112,6 +113,23 @@ final class ProtocolTests: XCTestCase {
     XCTAssertEqual(hello["permissions"]?["screen"], false)
     XCTAssertEqual(hello["permissions"]?["accessibility"], true)
     XCTAssertEqual(try JSON.decode(Outbound.event(.latchToggle)), ["type": "event", "name": "latch_toggle"])
+  }
+
+  func testHandshakeVectorsMatchTheServer() throws {
+    // Same vectors as agent/test/desktop.test.ts.
+    let token = String(repeating: "ab", count: 32), hn = String(repeating: "01", count: 32), sn = String(repeating: "02", count: 32)
+    let server = Handshake.serverProof(token: token, helperNonce: hn, serverNonce: sn)
+    XCTAssertEqual(server, "7d46559683f397d70ec8e45465080ec9b7557ad68430e55a5829e63d39c5e0ab")
+    XCTAssertEqual(Handshake.helperProof(token: token, serverNonce: sn, helperNonce: hn),
+                   "83ebbb5f69b3e568dbdef5bded7af8a37e2e967972decb3ed1b10e9525bee479")
+    XCTAssertTrue(Handshake.matches(server, server))
+    XCTAssertFalse(Handshake.matches(server, String(repeating: "0", count: 64)))
+    XCTAssertFalse(Handshake.matches(server, "short"))
+    let n = Handshake.nonce()
+    XCTAssertTrue(Handshake.isHex64(n))
+    XCTAssertNotEqual(n, Handshake.nonce())
+    XCTAssertEqual(try decodeInbound(#"{"type":"challenge","nonce":"a","proof":"b"}"#), .challenge(nonce: "a", proof: "b"))
+    XCTAssertEqual(try JSON.decode(Outbound.auth(proof: "p")), ["type": "auth", "proof": "p"])
   }
 
   func testResultAndErrorEchoId() throws {
@@ -240,5 +258,28 @@ final class PushToTalkTests: XCTestCase {
     _ = m.down(at: 0); _ = m.up(at: 50); _ = m.down(at: 100); _ = m.up(at: 150)
     XCTAssertEqual(m.tick(at: 1200), [.micClose, .send(.latchToggle)])
     XCTAssertEqual(m.state, .idle)
+  }
+}
+
+final class FrameTests: XCTestCase {
+  func testRoundTripSplitAnyway() {
+    let bytes = Frame.encode(Frame.json, Data(#"{"a":1}"#.utf8)) + Frame.encode(Frame.binary, Data([1, 2]))
+    // Same bytes as agent/desktop/link.ts encodeFrame.
+    XCTAssertEqual(Array(bytes.prefix(5)), [0, 0, 0, 8, 1])
+    var dec = FrameDecoder()
+    var got: [(UInt8, Data)] = []
+    for b in bytes { XCTAssertTrue(dec.push(Data([b])) { got.append(($0, $1)) }) }
+    XCTAssertEqual(got.map(\.0), [1, 2])
+    XCTAssertEqual(String(data: got[0].1, encoding: .utf8), #"{"a":1}"#)
+    XCTAssertEqual(got[1].1, Data([1, 2]))
+  }
+
+  func testBadFrames() {
+    var a = FrameDecoder()
+    XCTAssertFalse(a.push(Data([0, 0, 0, 0])) { _, _ in })
+    var b = FrameDecoder()
+    XCTAssertFalse(b.push(Data([0, 0, 0, 2, 9, 0])) { _, _ in })
+    var c = FrameDecoder()
+    XCTAssertFalse(c.push(Data([0x7f, 0xff, 0xff, 0xff])) { _, _ in })
   }
 }

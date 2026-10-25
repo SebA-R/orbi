@@ -1,9 +1,9 @@
 # Orbi Desktop
 
 A native macOS menu-bar helper that lets Orbi see and act on the whole Mac,
-not just Chrome. It connects to the Orbi server at
-`ws://127.0.0.1:5050/desktop` (the server side lives in `agent/desktop/`)
-and answers its requests: read the frontmost app and its Accessibility tree,
+not just Chrome. It connects to the Orbi server over a private Unix socket,
+`~/Library/Application Support/Orbi/desktop.sock` (the server side lives in
+`agent/desktop/`), and answers its requests: read the frontmost app and its Accessibility tree,
 click, type, press keys, scroll, take redacted screenshots, and draw Orbi's
 overlay. Hold Right Option to talk; double-tap it to keep listening.
 
@@ -52,14 +52,19 @@ again after rebuilding (or remove the old entry first).
   "code" or "verification" are blacked out. If redaction fails the request
   fails; the unredacted image is never sent.
 - Nothing acts while the screen is locked (`locked`).
-- It dials 127.0.0.1 only, and only when a process of the same user listens
-  on the port, so another account cannot pose as the server. hello carries
-  the token from `~/Library/Application Support/Orbi/desktop.token` (made by
-  the server), so nothing else can pose as the helper.
+- The link is a Unix domain socket, not TCP, so there is no port to take,
+  shadow or relay through. The helper connects only to this user's socket,
+  in this user's 0700 directory, and getpeereid must report the same user.
+  Both sides then prove they hold the token from
+  `~/Library/Application Support/Orbi/desktop.token` (made by the server)
+  with an HMAC challenge-response, and the token never crosses the socket.
+  A server that can't prove it gets nothing but a nonce.
 
 ## Protocol notes (v1)
 
-hello carries `token` and `features: ["element","focused","expectRef","exclude"]`.
+The handshake is hello `{nonce, features}`, then challenge `{nonce, proof}`, auth
+`{proof}`, welcome (see docs/desktop-protocol.md). features is
+`["element","focused","expectRef","exclude"]`.
 `element {ref}`, `focused {}` and `element_at {x,y}` return
 `{bundleId, appName, windowTitle, element|null, defaultButton?}`.
 `click {x,y,expectRef}` and `click {ref}` hit-test again right before the
@@ -79,7 +84,7 @@ ends by itself after 5 minutes.
 
 ## Development switches
 
-`ORBI_DESKTOP_URL`, `ORBI_DESKTOP_LOG=1`, `ORBI_DESKTOP_NO_MIC=1`,
+`ORBI_DESKTOP_SOCKET`, `ORBI_DESKTOP_TOKEN_FILE`, `ORBI_DESKTOP_LOG=1`, `ORBI_DESKTOP_NO_MIC=1`,
 `ORBI_DESKTOP_NO_SCREEN=1`, and `ORBI_DESKTOP_DRY_RUN=1` (no UI, no input,
 no capture, all permissions reported off).
 
@@ -87,12 +92,12 @@ no capture, all permissions reported off).
 
 - Only tested by unit tests and a dry-run protocol smoke test, never against
   a live desktop (that needs the user's permissions).
-- The token and the same-user listener check do not stop a process that
-  runs as the same user. That process can read the token and take the port
-  before the server starts.
-- Hit-test checks rely on Accessibility looking through other apps'
-  click-through windows. A click-through overlay from another app can
-  hide what is under it.
+- The token does not stop an unsandboxed process running as the same user.
+  That process can read the token file, so it can pass the handshake.
+- Clicks and scrolls are refused unless the window list and Accessibility's
+  hit test agree on the app under the point. Whether Accessibility looks
+  through another app's click-through overlay still needs a manual test (a
+  click-through window over Terminal must be refused).
 - The pointer's glide sends hover (mouse-moved) events across any window
   in its path, including blocked apps'. Presses, keys and scrolls are always
   checked.

@@ -4,9 +4,12 @@ The contract between the Orbi agent server (`agent/desktop/`) and the Orbi Deskt
 
 ## Connection
 
-- URL: `ws://localhost:5050/desktop` (the agent server's port, `AGENT_PORT`). It is only available when `CLEARCART_BROWSER=ext`.
-- The server only accepts loopback peers with a local `Host` header. The upgrade must carry **no** `Origin` header, since any Origin means a browser and is refused with HTTP 403.
-- Frames are JSON text, plus binary frames for audio. Keepalive uses WebSocket protocol pings. The server also answers `{type:"ping", t}` with `{type:"pong", t}`.
+- Transport: a Unix domain socket at `~/Library/Application Support/Orbi/desktop.sock` (`ORBI_DESKTOP_SOCKET` overrides). It is only available when `CLEARCART_BROWSER=ext`. There is no TCP endpoint for the helper: `/desktop` on the HTTP port answers 400 like any unknown path. With no port, nothing can shadow it, take it first or relay through it.
+- The directory is mode `0700` and the socket `0600`, so only this user (and root) can connect. Node has no `getpeereid`, so that file mode is the server's uid check. The helper refuses a socket that isn't this user's, in a directory that isn't this user's and private, and after connecting it requires `getpeereid` to report the same uid.
+- On start, the server clears a stale socket only if it is this user's socket and nothing answers on it. A live socket, or a path that isn't this user's socket, is left alone, and the desktop link doesn't start. The path must be under 104 bytes, the macOS limit.
+- Frames: a 4-byte big-endian length, then that many bytes: one type byte (`1` = JSON text, `2` = binary audio) and the payload, at most 32 MB. A frame of length 0, too large, or of an unknown type ends the link.
+- The server closes a link with a JSON frame `{"type":"close","code","reason"}` and then ends the stream. The codes are the ones below.
+- Keepalive: the helper sends `{type:"ping", t}` every 15 s, and the server answers `{type:"pong", t}`. No pong within 10 s counts as a drop.
 - Only one helper is connected at a time, and the newest one wins: when a new helper authenticates, the older socket is closed with `4002 replaced`.
 
 ## Auth
@@ -18,25 +21,47 @@ On startup the server creates `~/Library/Application Support/Orbi/desktop.token`
 
 The token keeps out other users, sandboxed apps and web pages. A program running unsandboxed as the same user can read the file, so it is not a defense against that (such a program can already reach `/session` as well).
 
-The helper reads the file fresh on each connect and sends the token, trimmed, in `hello.token`. If the file does not exist yet, the helper retries with backoff. The server compares the token in constant time. A missing or wrong token closes the socket with `4004 unauthorized`, and no welcome is sent. Until an authenticated helper is connected, every desktop tool fails with `not_connected`. The token is never logged.
+The helper reads the file fresh on each connect. If the file does not exist yet, the helper retries with backoff. The token itself never crosses the socket. Both sides prove they know it, so a program squatting on the port can't pose as the server, and nothing else can pose as the helper. The token is never logged.
 
 ## Handshake
 
-The helper sends:
+1. The helper sends a hello with a fresh nonce (32 random bytes, 64 lowercase hex characters):
 
 ```json
-{"type":"hello","name":"orbi-desktop","version":1,"token":"<64 hex>",
+{"type":"hello","name":"orbi-desktop","version":1,"nonce":"<64 hex>",
  "features":["element","focused","expectRef","exclude"],
  "permissions":{"accessibility":true,"screen":true,"mic":true}}
 ```
 
-The server answers:
+2. The server answers with its own nonce and proof:
+
+```json
+{"type":"challenge","nonce":"<64 hex>","proof":"<64 hex>"}
+```
+
+Here `proof = hex(HMAC-SHA256(key = token, "orbi-desktop server " + helperNonce + " " + serverNonce))`.
+
+3. The helper checks that proof in constant time. On a mismatch it closes the socket and sends nothing else. On a match it replies:
+
+```json
+{"type":"auth","proof":"<64 hex>"}
+```
+
+Here `proof = hex(HMAC-SHA256(key = token, "orbi-desktop helper " + serverNonce + " " + helperNonce))`.
+
+4. The server checks that proof in constant time and answers:
 
 ```json
 {"type":"welcome","version":1,"blockedApps":["com.apple.keychainaccess", "..."]}
 ```
 
-- A wrong `name` or `version` closes with `4003`. No hello within 5 s closes with `4001`.
+The key is the token's 64 hex characters as UTF-8.
+
+The handshake runs on the private socket. The socket keeps out other users, and the proofs show that each side holds the token.
+
+- A missing nonce, a wrong proof, or any other message before auth closes with `4004 unauthorized`, and no welcome is sent. Until an authenticated helper is connected, every desktop tool fails with `not_connected`.
+- A wrong `name` or `version` closes with `4003`. No completed handshake within 5 s closes with `4001`.
+- The helper answers no request, and sends no event or audio, before welcome.
 - `features` lists the additions below that the helper supports. Without `expectRef`, the server refuses point clicks on unlabeled spots. Without `exclude`, it refuses screenshots.
 - `blockedApps` holds the server's well-known blocked bundle ids plus the user's own list (`~/.config/orbi/desktop-blocked-apps.txt`). The helper refuses these apps in addition to its own hardcoded list, comparing ids case-insensitively.
 

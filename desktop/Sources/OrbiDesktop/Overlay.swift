@@ -390,6 +390,8 @@ final class Overlay {
     w.hasShadow = false
     w.isReleasedWhenClosed = false
     w.animationBehavior = .none
+    // Not an accessibility element, so hit tests look through it.
+    w.setAccessibilityElement(false)
     let content = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
     let ring = RingView(frame: content.bounds)
     let cursor = CursorView(frame: content.bounds)
@@ -465,6 +467,15 @@ final class Overlay {
   func press(_ p: CGPoint) { cursor?.press(at: p) }
 
   func highlight(_ r: CGRect) { cursor?.highlight(r) }
+
+  // Runs body with the overlay window off screen, for a hit test that must
+  // see what is under it. Put back at once, within the same run loop turn.
+  func withoutWindow<T>(_ body: () -> T) -> T {
+    guard let w = window, w.isVisible else { return body() }
+    w.orderOut(nil)
+    defer { w.orderFrontRegardless() }
+    return body()
+  }
 
   // Only the drawn cursor, not the real pointer (that is input's job).
   private func glide(to p: CGPoint) {

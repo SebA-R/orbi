@@ -58,6 +58,9 @@ process.env.CLEARCART_BROWSER = "ext";
 process.env.AGENT_PORT = String(AGENT_PORT);
 process.env.AGENT_MODE = "echo"; // /session without Claude; the bridge is unaffected
 process.env.CLEARCART_VOICE = "false"; // never spend Cartesia credits in tests
+// Orbi Desktop's token and socket in a temp dir, never the real ones.
+process.env.ORBI_DESKTOP_TOKEN_FILE = `${process.env.TMPDIR || "/tmp"}/orbi-e2e-${process.pid}/desktop.token`;
+process.env.ORBI_DESKTOP_SOCKET = `${process.env.TMPDIR || "/tmp"}/orbi-e2e-${process.pid}/desktop.sock`;
 process.env.CLEARCART_ALLOWED_ORIGINS = `${SHOP},${FRAMED}`;
 // Memory and saved cards in a temp dir, never the agent's own .data.
 process.env.CLEARCART_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "clearcart-e2e-data-"));
