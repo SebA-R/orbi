@@ -68,7 +68,7 @@
   // Inline !important beats any page rule and the UA popover styles.
   const HOST_STYLE = [
     ["all", "initial"], ["position", "fixed"], ["inset", "0"], ["display", "block"],
-    ["width", "100vw"], ["height", "100vh"], ["max-width", "none"], ["max-height", "none"],
+    ["width", "auto"], ["height", "auto"], ["max-width", "none"], ["max-height", "none"],
     ["margin", "0"], ["padding", "0"], ["border", "0"], ["background", "transparent"],
     ["overflow", "visible"], ["opacity", "1"], ["visibility", "visible"],
     ["transform", "none"], ["filter", "none"], ["clip-path", "none"],
@@ -171,11 +171,25 @@
 
   const chromeApi = globalThis.chrome;
   if (chromeApi && chromeApi.runtime && chromeApi.runtime.onMessage) {
-    chromeApi.runtime.onMessage.addListener((msg) => {
+    chromeApi.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (!msg || typeof msg !== "object" || msg.type !== RT.FRAME) return;
       if (msg.on === true) show();
       else hide();
-      // No response: never hold the message channel open.
+      // Answered at once, so the worker knows the frame script is here;
+      // the channel is never held open.
+      try { sendResponse({ frame: true }); } catch {}
     });
   }
+
+  // A page put in the back/forward cache comes back without a message: drop
+  // the ring on the way out; the worker sends "on" again if it should show.
+  globalThis.addEventListener?.("pagehide", () => {
+    ui.on = false;
+    clearTimeout(ui.removeTimer);
+    ui.removeTimer = 0;
+    if (ui.watcher) ui.watcher.disconnect();
+    ui.watcher = null;
+    if (ui.host) ui.host.remove();
+    ui.host = ui.ring = null;
+  });
 })();

@@ -37,10 +37,11 @@ function setup() {
   const listeners = [];
   window.chrome = { runtime: { onMessage: { addListener: (f) => listeners.push(f) } } };
   window.eval(SRC);
-  const send = (msg) => listeners.map((f) => f(msg, {}, () => {}));
+  const replies = [];
+  const send = (msg) => listeners.map((f) => f(msg, {}, (r) => replies.push(r)));
   const host = () => window.document.querySelector("clearcart-frame");
   const ring = () => shadow && shadow.querySelector(".ring");
-  return { window, send, host, ring, tick, listeners, getShadow: () => shadow };
+  return { window, send, host, ring, tick, listeners, replies, getShadow: () => shadow };
 }
 
 test("nothing is added to the page before the first show", () => {
@@ -131,4 +132,21 @@ test("runs in the top frame only, and only once", () => {
   const top = setup();
   top.window.eval(SRC);
   assert.equal(top.listeners.length, 1);
+});
+
+test("answers frame messages at once so the worker knows it is there, and nothing else", () => {
+  const { send, replies } = setup();
+  send({ type: "subtitle", text: "x" });
+  assert.deepEqual(replies, []);
+  send({ type: "frame", on: false });
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].frame, true); // object from the page realm
+});
+
+test("pagehide drops the ring at once, so a back/forward cache restore has none", () => {
+  const { send, host, window } = setup();
+  send({ type: "frame", on: true });
+  assert.ok(host());
+  window.dispatchEvent(new window.Event("pagehide"));
+  assert.equal(host(), null);
 });

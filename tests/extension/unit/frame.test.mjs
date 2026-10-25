@@ -6,7 +6,7 @@ import { createFrame, FRAME_FILES } from "../../../extension/background/frame.js
 import { createRouter } from "../../../extension/background/router.js";
 import { createVoiceRelay } from "../../../extension/lib/voice/relay.js";
 
-function setup({ noScript = new Set() } = {}) {
+function setup({ noScript = new Set(), session = {}, slowInject = null } = {}) {
   const sent = [];
   const injected = [];
   const timers = new Map();
@@ -16,9 +16,15 @@ function setup({ noScript = new Set() } = {}) {
       sendMessage: async (tabId, msg, opts) => {
         if (noScript.has(tabId)) throw new Error("Could not establish connection");
         sent.push({ tabId, on: msg.on, type: msg.type, frameId: opts && opts.frameId });
+        return { frame: true };
       },
     },
-    scripting: { executeScript: async (o) => { injected.push(o); noScript.delete(o.target.tabId); } },
+    scripting: { executeScript: async (o) => { if (slowInject) await slowInject; injected.push(o); noScript.delete(o.target.tabId); } },
+    storage: { session: {
+      get: async (k) => (k in session ? { [k]: session[k] } : {}),
+      set: async (o) => { Object.assign(session, o); },
+      remove: async (k) => { delete session[k]; },
+    } },
   };
   const frame = createFrame({
     chromeApi,
@@ -127,10 +133,62 @@ test("the relay reports each voice state with the tab it went to", async () => {
     onVoiceState: (state, tabId) => seen.push([state, tabId]),
   });
   relay.onMessage({ from: "offscreen", type: RT.VOICE_STATE, state: "listening" });
-  await new Promise((r) => setImmediate(r));
+  await relay.statesIdle();
   relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
   relay.onMessage({ from: "offscreen", type: RT.VOICE_STATE, state: "thinking" });
   relay.onMessage({ from: "offscreen", type: RT.VOICE_STATE, state: "idle" });
+  await relay.statesIdle();
   assert.deepEqual(seen, [["listening", 7], ["thinking", 3], ["idle", 3]]);
   await relay.idle();
+});
+
+test("a quick on/off while the script is being injected ends with the frame off", async () => {
+  let go;
+  const slowInject = new Promise((r) => { go = r; });
+  const { frame, sent, flush } = setup({ noScript: new Set([7]), slowInject });
+  frame.onVoiceState("listening", 7);
+  frame.onVoiceState("idle", 7);
+  await flush();
+  go();
+  await flush(); await flush(); await flush();
+  assert.deepEqual(sent.map((s) => [s.tabId, s.on]), [[7, false]]);
+});
+
+test("a reply from another content script is not taken for the frame script", async () => {
+  const f = setup();
+  f.frame.onVoiceState("idle", 1); // nothing
+  const injected = [];
+  const other = createFrame({
+    chromeApi: {
+      tabs: { sendMessage: async () => undefined },
+      scripting: { executeScript: async (o) => { injected.push(o); } },
+    },
+  });
+  other.onVoiceState("thinking", 2);
+  await f.flush(); await f.flush();
+  assert.equal(injected.length, 1);
+});
+
+test("repeated idle states do not cut the hold of agent calls short; unknown states are idle", async () => {
+  const { frame, flush } = setup();
+  frame.onAgentTab(5);
+  frame.onVoiceState("idle", 3);
+  frame.onVoiceState("idle", 3);
+  await flush();
+  assert.equal(frame.shownTab(), 5);
+  frame.onVoiceState("error", 3);
+  frame.onVoiceState(undefined, 3);
+  assert.equal(frame.shownTab(), 5);
+});
+
+test("a restarted worker turns off the frame the last one left on", async () => {
+  const session = {};
+  const a = setup({ session });
+  a.frame.onAgentTab(5);
+  await a.flush();
+  assert.equal(session.clearcartFrameTab, 5);
+  const b = setup({ session });
+  await b.frame.recover();
+  assert.deepEqual(b.sent, [{ tabId: 5, on: false, type: RT.FRAME, frameId: 0 }]);
+  assert.equal("clearcartFrameTab" in session, false);
 });
