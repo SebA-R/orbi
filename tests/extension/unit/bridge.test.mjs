@@ -60,3 +60,28 @@ test("reports closed when the server goes away", async () => {
   sock.close();
   await waitFor(() => c.state === "closed");
 });
+
+async function openClient(opts = {}) {
+  const { wss, url } = await server();
+  const { c, states } = client(url, opts);
+  c.start();
+  const [sock] = await once(wss, "connection");
+  await once(sock, "message"); // hello
+  sock.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+  await waitFor(() => c.state === "open");
+  return { wss, url, c, states, sock };
+}
+
+test("pings on the heartbeat interval and answers server pings", async () => {
+  const { sock } = await openClient({ timing: { HEARTBEAT_MS: 30, DEAD_AFTER_MS: 5000 } });
+  const got = [];
+  sock.on("message", (raw) => got.push(JSON.parse(String(raw))));
+  sock.send(JSON.stringify({ type: "ping", t: 42 }));
+  await waitFor(() => got.some((m) => m.type === "pong" && m.t === 42) && got.filter((m) => m.type === "ping").length >= 2);
+});
+
+test("drops a silent link after DEAD_AFTER_MS", async () => {
+  // The fake server never answers pings.
+  const { c } = await openClient({ timing: { HEARTBEAT_MS: 20, DEAD_AFTER_MS: 80 } });
+  await waitFor(() => c.state === "closed", 2000);
+});

@@ -4,13 +4,14 @@
 // extension runs them and answers. Written against the standard WebSocket
 // API so it runs unchanged in the service worker and in Node tests.
 
-import { MSG, hello, parseMessage } from "./protocol.js";
+import { MSG, TIMING, hello, parseMessage } from "./protocol.js";
 
 const HELLO_TIMEOUT_MS = 5_000;
 
 export class BridgeClient {
-  constructor({ url, version = "0", log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {} }) {
+  constructor({ url, version = "0", log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, timing = {} }) {
     this.url = url;
+    this.timing = { ...TIMING, ...timing };
     this.version = version;
     this.log = log;
     this.WebSocketImpl = WebSocketImpl;
@@ -19,6 +20,8 @@ export class BridgeClient {
     this.state = "idle"; // idle | connecting | open | closed
     this.wanted = false;
     this.helloTimer = null;
+    this.beatTimer = null;
+    this.lastSeen = 0;
   }
 
   start() {
@@ -57,6 +60,7 @@ export class BridgeClient {
     };
     ws.onmessage = (e) => {
       if (this.ws !== ws) return;
+      this.lastSeen = Date.now();
       const m = parseMessage(typeof e.data === "string" ? e.data : "");
       if (m) this.handle(m);
     };
@@ -64,6 +68,7 @@ export class BridgeClient {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       clearTimeout(this.helloTimer);
+      clearInterval(this.beatTimer);
       this.ws = null;
       this.setState("closed");
     };
@@ -82,6 +87,36 @@ export class BridgeClient {
       clearTimeout(this.helloTimer);
       this.log.info(`bridge: connected to ${m.server || "agent server"} (protocol ${m.protocol})`);
       this.setState("open");
+      this.startHeartbeat();
+    } else if (m.type === MSG.PING) {
+      this.send({ type: MSG.PONG, t: m.t });
     }
+  }
+
+  // Keepalive. Chrome 116+ resets the service worker's idle timer on
+  // WebSocket traffic, so a ping every 20 s keeps the worker (and the socket)
+  // alive. Silence for DEAD_AFTER_MS means the link is gone even if the
+  // socket still claims to be open (sleep, network change), so drop it.
+  startHeartbeat() {
+    clearInterval(this.beatTimer);
+    this.lastSeen = Date.now();
+    const ws = this.ws;
+    this.beatTimer = setInterval(() => {
+      if (this.ws !== ws) return clearInterval(this.beatTimer);
+      if (Date.now() - this.lastSeen > this.timing.DEAD_AFTER_MS) {
+        this.log.warn("bridge: no traffic from the agent server, reconnecting");
+        this.drop(ws);
+        return;
+      }
+      this.send({ type: MSG.PING, t: Date.now() });
+    }, this.timing.HEARTBEAT_MS);
+  }
+
+  // Close and forget a socket now, without waiting for the close handshake.
+  drop(ws) {
+    try {
+      ws.close(4001, "heartbeat timeout");
+    } catch {}
+    ws.onclose?.({ code: 4001 });
   }
 }
