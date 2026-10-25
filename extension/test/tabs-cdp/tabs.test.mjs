@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { installChrome } from "./chrome-mock.mjs";
 import {
   GROUP_KEY, GROUP_TITLE, groupId, navigate, navigateAndWait, onGroupRemoved, resolveAllowedTab, resolveTab,
-  tabInfo, tabsContext, tabsCreate,
+  isPaySite, tabInfo, tabsContext, tabsCreate,
 } from "../../background/tabs.js";
 import { ERR } from "../../lib/protocol.js";
 
@@ -36,8 +36,8 @@ test("a second tab joins the same group", async () => {
   assert.equal((await tabsContext()).tabs.length, 2);
 });
 
-test("tabsCreate refuses a non-allowlisted url before opening anything", async () => {
-  const c = installChrome();
+test("allowlist mode: tabsCreate refuses a non-allowlisted url before opening anything", async () => {
+  const c = installChrome({ local: { browseMode: "allowlist" } });
   await assert.rejects(tabsCreate({ url: "https://evil.example/" }), (e) => e.code === ERR.NOT_ALLOWED);
   assert.equal(c._tabs.size, 0);
 });
@@ -80,8 +80,8 @@ test("resolveTab defaults to the active agent tab and rejects outsiders", async 
   await assert.rejects(resolveTab("1"), (e) => e.code === ERR.BAD_REQUEST);
 });
 
-test("navigate checks the allowlist, waits for complete and reports url/title", async () => {
-  const c = installChrome();
+test("allowlist mode: navigate checks the allowlist, waits for complete and reports url/title", async () => {
+  const c = installChrome({ local: { browseMode: "allowlist" } });
   const { tabId } = await tabsCreate({ url: `${STORE}/` });
   const r = await navigate({ tabId, url: `${STORE}/cart` });
   assert.deepEqual(r, { tabId, url: `${STORE}/cart`, title: `Title of ${STORE}/cart` });
@@ -132,4 +132,51 @@ test("tabInfo returns the resolved tab", async () => {
   const { tabId } = await tabsCreate({ url: `${STORE}/` });
   assert.deepEqual(await tabInfo({}), { tabId, url: `${STORE}/`, title: `Title of ${STORE}/` });
   assert.equal(await resolveAllowedTab(tabId), tabId);
+});
+
+// Open web (the default browseMode).
+
+test("open mode: tabs may load any ordinary store", async () => {
+  installChrome();
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/search?q=mug" });
+  const r = await navigate({ tabId, url: "https://www.aritzia.com/us/en" });
+  assert.equal(r.url, "https://www.aritzia.com/us/en");
+  assert.equal(await resolveAllowedTab(tabId), tabId);
+  assert.equal((await navigate({ tabId, url: `${STORE}/cart` })).url, `${STORE}/cart`, "the allowlisted store passes the localhost block");
+});
+
+test("open mode: blocked sites are refused before the tab moves", async () => {
+  const c = installChrome({ local: { blocklist: ["https://www.nordstrom.com"] } });
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
+  for (const url of [
+    "https://mail.google.com/", "https://vault.bitwarden.com/", "https://secure.chase.com/", "https://www.irs.gov/",
+    "https://accounts.google.com/", "http://localhost:5050/", "http://localhost:4001/", "chrome://settings",
+    "file:///etc/passwd", "javascript:alert(1)", "https://www.nordstrom.com/s/1",
+  ]) {
+    await assert.rejects(navigate({ tabId, url }), (e) => e.code === ERR.NOT_ALLOWED && /blocked/.test(e.message), url);
+  }
+  assert.equal(c._tabs.get(tabId).url, "https://www.etsy.com/");
+  await assert.rejects(tabsCreate({ url: "https://mail.google.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
+});
+
+test("open mode: a tab that lands on a blocked site cannot be driven", async () => {
+  const c = installChrome();
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
+  // A clicked link or redirect, not a navigate call.
+  await navigateAndWait(tabId, () => c.tabs.update(tabId, { url: "https://www.paypal.com/signin" }));
+  await assert.rejects(resolveAllowedTab(tabId), (e) => e.code === ERR.NOT_ALLOWED);
+});
+
+test("open mode: tabs outside the Clearcart group stay off limits", async () => {
+  const c = installChrome();
+  const mine = await c.tabs.create({ url: "https://www.etsy.com/", active: false });
+  await tabsCreate({ url: "https://www.etsy.com/" });
+  await assert.rejects(resolveAllowedTab(mine.id), (e) => e.code === ERR.NO_TAB);
+  await assert.rejects(navigate({ tabId: mine.id, url: "https://www.etsy.com/x" }), (e) => e.code === ERR.NO_TAB);
+});
+
+test("pay sites stay the allowlist in open mode", async () => {
+  installChrome();
+  assert.equal(await isPaySite(`${STORE}/checkout`), true);
+  assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
 });
