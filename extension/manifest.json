@@ -73,6 +73,16 @@
         "<all_urls>"
       ],
       "js": [
+        "content/frame.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
         "content/context.js"
       ],
       "run_at": "document_idle",

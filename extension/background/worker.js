@@ -14,6 +14,7 @@ import { createLogger } from "../lib/log.js";
 import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
 import { MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
+import { installFrame } from "./frame.js";
 import { onInstalledSetup, refreshBadge } from "../lib/setup.js";
 import { injectIntoOpenTabs } from "../lib/inject.js";
 
@@ -79,7 +80,10 @@ loadAllowlist();
 // Voice: hold-to-talk relay between content scripts and the offscreen
 // document; SUBTITLE and VOICE_STATE go to the talking (or active) tab, where
 // content/subtitles.js shows them.
-const voice = installVoiceRelay();
+// The active-tab frame (content/frame.js) goes on the tab Clearcart is
+// acting on during a turn; the relay reports voice states, the router calls.
+const frame = installFrame();
+const voice = installVoiceRelay({ onVoiceState: frame.onVoiceState });
 
 // Bridge to the agent server: each request is routed to tabs/CDP or the page
 // script. Results never include card values (fill_payment answers last4).
@@ -94,7 +98,7 @@ const follow = createFollower();
 chrome.tabs.onActivated.addListener((info) => follow.onActivated(info));
 chrome.windows?.onFocusChanged?.addListener((id) => follow.onWindowFocused(id));
 chrome.tabs.onRemoved.addListener((tabId) => follow.forget(tabId));
-const router = createRouter({ follow, dangerMode: () => dangerReady.then(() => dangerMode) });
+const router = createRouter({ follow, onAgentTab: frame.onAgentTab, dangerMode: () => dangerReady.then(() => dangerMode) });
 
 // The user started talking: snapshot what they are looking at and pointing
 // at now, for the page_context call that comes with their words.
@@ -155,4 +159,4 @@ chrome.storage.onChanged.addListener((changes, area) => {
 startBridge().catch((e) => log.warn(`bridge start failed: ${e.message}`));
 
 // For tests and the console.
-globalThis.clearcart = { router, voice, get bridge() { return bridge; } };
+globalThis.clearcart = { router, voice, frame, get bridge() { return bridge; } };
