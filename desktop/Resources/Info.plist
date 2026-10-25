@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>dev.orbi.desktop</string>
+  <key>CFBundleName</key><string>Orbi Desktop</string>
+  <key>CFBundleDisplayName</key><string>Orbi Desktop</string>
+  <key>CFBundleExecutable</key><string>OrbiDesktop</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Orbi listens only while you hold Right Option, or after you double-tap it, so you can talk to it.</string>
+  <key>NSAccessibilityUsageDescription</key><string>Orbi reads what is on screen and uses the mouse and keyboard for you. It never acts in password managers, Keychain Access, System Settings, Terminal, iTerm2 or Chrome.</string>
+  <key>NSScreenCaptureUsageDescription</key><string>Orbi takes screenshots of your main display to see what you see. Passwords, card numbers and verification codes are blacked out before anything leaves your Mac.</string>
+</dict>
+</plist>
