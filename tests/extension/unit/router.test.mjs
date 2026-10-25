@@ -33,6 +33,7 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
       calls.push(["cdp.click", o]);
     },
     type: async (o) => calls.push(["cdp.type", o]),
+    send: async (_t, method, p) => calls.push(["cdp.send", method, p]),
     key: async (o) => calls.push(["cdp.key", o]),
   };
   return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
@@ -76,14 +77,17 @@ test("click by ref clicks the rect centre over CDP, and falls back to click_ref"
   assert.ok(b.calls.some((c) => c[0] === "page" && c[2] === "click_ref"));
 });
 
+// Typing goes key by key through the actor (background/actor.js).
+const typed = (calls) => calls.filter((c) => c[0] === "cdp.send" && (c[1] === "Input.insertText" || c[2]?.type === "char")).map((c) => c[2].text).join("");
+
 test("type refuses card numbers and payment fields, and allows normal text", async () => {
   const ok = fakes();
   await ok.router.route("type", { text: "wool sweater" });
-  assert.ok(ok.calls.some((c) => c[0] === "cdp.type"));
+  assert.equal(typed(ok.calls), "wool sweater");
 
   const num = fakes();
   await assert.rejects(num.router.route("type", { text: "4111111111111111" }), { code: "payment_field" });
-  assert.ok(!num.calls.some((c) => c[0] === "cdp.type"));
+  assert.ok(!num.calls.some((c) => c[0] === "cdp.type" || c[0] === "cdp.send"));
 
   const field = fakes({ focus: { kind: "cc-csc", payment: true } });
   await assert.rejects(field.router.route("type", { text: "123" }), { code: "payment_field" });
@@ -123,7 +127,7 @@ function contextFakes({ blocked = false, page = { selection: "Blue mug", pointin
     tabsClose: async ({ tabId }) => (calls.push(["close", tabId]), { ok: true }),
     assertPageAllowed: async () => {},
   };
-  const cdp = { click: async () => {}, scroll: async () => {}, type: async () => {}, key: async () => {} };
+  const cdp = { click: async () => {}, scroll: async () => {}, type: async () => {}, key: async () => {}, send: async () => {} };
   return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
 }
 
