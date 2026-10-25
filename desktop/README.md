@@ -82,3 +82,20 @@ ends by itself after 5 minutes.
 `ORBI_DESKTOP_URL`, `ORBI_DESKTOP_LOG=1`, `ORBI_DESKTOP_NO_MIC=1`,
 `ORBI_DESKTOP_NO_SCREEN=1`, and `ORBI_DESKTOP_DRY_RUN=1` (no UI, no input,
 no capture, all permissions reported off).
+
+## Known limits
+
+- Only tested by unit tests and a dry-run protocol smoke test, never against
+  a live desktop (that needs the user's permissions).
+- The token and the same-user listener check do not stop a process that
+  runs as the same user. That process can read the token and take the port
+  before the server starts.
+- Hit-test checks rely on Accessibility looking through other apps'
+  click-through windows. A click-through overlay from another app can
+  hide what is under it.
+- The pointer's glide sends hover (mouse-moved) events across any window
+  in its path, including blocked apps'. Presses, keys and scrolls are always
+  checked.
+- Card numbers that OCR splits across separate text lines are not joined.
+- Overlay, ring and cursor are on the main display only.
+- Ad hoc signing means permissions must be granted again after each rebuild.

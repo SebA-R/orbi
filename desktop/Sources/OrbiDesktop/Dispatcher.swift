@@ -158,7 +158,10 @@ final class Dispatcher {
     let now = AX.focusedElement()
     if secureCheck {
       if IsSecureEventInputEnabled() { throw ProtoError(.secureField, "secure keyboard entry is on (a password field has the focus)") }
-      if let now, AX.node(now, pid: AX.pid(now) ?? 0).secure {
+      // Role and subrole only (never the value), on every key; an
+      // unreadable role counts as secure.
+      if let now, AX.string(now, kAXRoleAttribute) == nil
+        || AX.isSecure(role: AX.string(now, kAXRoleAttribute), subrole: AX.string(now, kAXSubroleAttribute)) {
         throw ProtoError(.secureField, "the focused field is a password field")
       }
     }
@@ -174,7 +177,9 @@ final class Dispatcher {
     try refuseBlocked(id, what: "the app under the pointer")
     // A second opinion from Accessibility, which looks through other apps'
     // click-through windows. Our own overlay is ignored.
-    if let sys = AX.hitTest(x: p.x, y: p.y), sys.pid != getpid() {
+    // No answer at all fails closed.
+    guard let sys = AX.hitTest(x: p.x, y: p.y) else { throw ProtoError(.blockedApp, "Orbi cannot tell which app is under the pointer") }
+    if sys.pid != getpid() {
       guard let other = bundleId(sys.pid) else { throw ProtoError(.blockedApp, "Orbi cannot tell which app is under the pointer") }
       try refuseBlocked(other, what: "the app under the pointer")
     }
@@ -192,6 +197,11 @@ final class Dispatcher {
     let ref = "e\(nextRef)"
     nextRef += 1
     refs[ref] = n
+    // Bounded: past 3000 live refs the oldest go stale.
+    if refs.count > 3000 {
+      let cut = nextRef - 2000
+      refs = refs.filter { (Int($0.key.dropFirst()) ?? 0) >= cut }
+    }
     return n.json(ref: ref)
   }
 
@@ -403,7 +413,7 @@ final class Dispatcher {
           }
         }
         try await Task.sleep(nanoseconds: 150_000_000) // let focus land
-        guard let now = AX.focusedElement(), AX.same(now, orInside: el) || AX.same(el, orInside: now) else {
+        guard let now = AX.focusedElement(), AX.same(now, orInside: el) else {
           throw ProtoError(.targetChanged, "the field did not take the focus")
         }
         focus = now
