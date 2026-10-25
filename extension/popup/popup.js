@@ -74,6 +74,7 @@ function fill(s) {
   $("speed").value = String(s.speed);
   $("subtitles").checked = s.subtitles;
   $("quiet-tabs").checked = s.quietTabs;
+  $("follow-tab").checked = s.followTab;
   showSpeed();
   showVoice();
 }
@@ -87,6 +88,7 @@ $("speed").addEventListener("input", showSpeed);
 $("speed").addEventListener("change", () => save({ speed: Number($("speed").value) }));
 $("subtitles").addEventListener("change", () => save({ subtitles: $("subtitles").checked }));
 $("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));
+$("follow-tab").addEventListener("change", () => save({ followTab: $("follow-tab").checked }));
 
 // Links
 const allSettings = (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); window.close(); };

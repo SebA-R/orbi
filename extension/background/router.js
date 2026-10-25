@@ -14,9 +14,14 @@
 // control is press_protected (pay flow) or press_unlocked (the user asked
 // for that control) with a single-use nonce from lock_arm, INTERNAL methods
 // the agent server calls and Claude never sees.
+//
+// Follow: a call that acts on a tab (follow.js ACT_METHODS, and tabs_create)
+// brings that tab to the front first, unless the setting is off or the user
+// switched away themselves this turn. Reads never switch.
 
 import * as tabsModule from "./tabs.js";
 import * as cdpModule from "./cdp.js";
+import { ACT_METHODS, createFollower } from "./follow.js";
 import { parseKey } from "./cdp.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
 import { luhnValid } from "../lib/log.js";
@@ -114,6 +119,7 @@ export function createRouter({
   cdp = cdpModule,
   now = () => Date.now(),
   newNonce = () => globalThis.crypto.randomUUID(),
+  follow = createFollower({ chromeApi }),
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
@@ -178,6 +184,7 @@ export function createRouter({
   // PTT_START: take the snapshot now, while the user is still pointing.
   let talkContext = null;
   function noteTalkStart() {
+    follow.newTurn();
     const at = now();
     const p = collectContext().catch(() => null);
     talkContext = { at, p };
@@ -314,6 +321,20 @@ export function createRouter({
     return clickCentre(tabId, r, params.ref, "press_ref");
   }
 
+  // Brings the tab a navigate call will use to the front, when it is one
+  // Clearcart may use now. A tab on a blocked page (the agent server's sweep
+  // sending a stray tab back) is not shown; navigate itself decides the rest.
+  async function followBeforeNavigate(tabId) {
+    if (typeof tabs.resolveTab !== "function") return;
+    let id;
+    try {
+      id = await tabs.resolveTab(tabId);
+    } catch {
+      return;
+    }
+    await follow.to(id);
+  }
+
   // Presses one control the user asked for: the page re-checks the ref is
   // of unlock class cls with that label (content/page.js press_check_user),
   // then re-resolves it and hit-tests the click point right before the CDP
@@ -343,28 +364,41 @@ export function createRouter({
       case "tabs_context":
         return tabs.tabsContext();
       case "tabs_create": {
-        const r = await tabs.tabsCreate({ url: params.url });
+        // The new tab comes to the front as soon as it exists.
+        const r = await tabs.tabsCreate({ url: params.url, onCreated: (id) => follow.to(id) });
         if (params.url != null) indicate(r.tabId);
         return r;
       }
       case "navigate": {
+        await followBeforeNavigate(params.tabId);
         const r = await tabs.navigate({ tabId: params.tabId, url: params.url });
         indicate(r.tabId);
         return r;
       }
-      case "tabs_close":
-        return tabs.tabsClose({ tabId: params.tabId });
-      case "tabs_activate":
-        return tabs.tabsActivate({ tabId: params.tabId });
+      case "tabs_close": {
+        // Closing the front tab makes Chrome show another: not the user's doing.
+        const r = await follow.own(() => tabs.tabsClose({ tabId: params.tabId }));
+        follow.forget(params.tabId);
+        return r;
+      }
+      case "tabs_activate": {
+        const r = await follow.own(() => tabs.tabsActivate({ tabId: params.tabId }));
+        const shown = r && Number.isInteger(r.tabId) ? await chromeApi.tabs.get(r.tabId).catch(() => null) : null;
+        if (shown) follow.claim(shown.id, shown.windowId ?? null);
+        return r;
+      }
       case "tab_info":
         return tabs.tabInfo({ tabId: params.tabId });
       case "agent_tabs":
         return tabs.agentTabs();
       case "page_context":
+        // Asked once per user turn: following starts again.
+        follow.newTurn();
         return pageContext();
     }
     const tabId = await tabs.resolveAllowedTab(params.tabId);
     indicate(tabId);
+    if (ACT_METHODS.has(method)) await follow.to(tabId);
     switch (method) {
       case "click":
         return clickAt(tabId, params);
