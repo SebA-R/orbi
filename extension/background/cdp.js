@@ -176,10 +176,83 @@ export async function scroll({ tabId, x, y, dx = 0, dy = 0 } = {}) {
   });
 }
 
+// The tab's viewport in CSS pixels, the space Input.dispatchMouseEvent
+// takes, and its device pixel ratio (device px per CSS px).
+export async function viewport(tabId) {
+  assertTabId(tabId);
+  const m = (await send(tabId, "Page.getLayoutMetrics")) || {};
+  const css = m.cssVisualViewport || m.cssLayoutViewport;
+  if (!css || !(css.clientWidth > 0) || !(css.clientHeight > 0)) throw new BridgeError(ERR.INTERNAL, "no viewport size");
+  const dev = m.visualViewport || m.layoutViewport;
+  let dpr = dev && dev.clientWidth > 0 ? dev.clientWidth / css.clientWidth : 1;
+  if (!Number.isFinite(dpr) || dpr <= 0) dpr = 1;
+  return { width: Math.round(css.clientWidth), height: Math.round(css.clientHeight), dpr };
+}
+
+// Refuses a point outside the viewport, in words the model can act on: on a
+// 2x screen a coordinate read off a device-pixel image lands past the edge.
+export function assertInViewport(vp, x, y) {
+  if (x < 0 || y < 0 || x > vp.width || y > vp.height) {
+    throw new BridgeError(
+      ERR.BAD_REQUEST,
+      `x ${Math.round(x)}, y ${Math.round(y)} is outside the ${vp.width}x${vp.height} viewport. Coordinates are CSS pixels, the same as the screenshot's size; take a new screenshot, or click by ref.`
+    );
+  }
+}
+
+// Width and height of a base64 JPEG, from its frame header.
+export function jpegSize(data) {
+  const bin = atob(data.slice(0, 87_384)); // the header sits near the start
+  for (let i = 2; i + 8 < bin.length; ) {
+    if (bin.charCodeAt(i) !== 0xff) return null;
+    const m = bin.charCodeAt(i + 1);
+    const len = (bin.charCodeAt(i + 2) << 8) | bin.charCodeAt(i + 3);
+    if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+      return { height: (bin.charCodeAt(i + 5) << 8) | bin.charCodeAt(i + 6), width: (bin.charCodeAt(i + 7) << 8) | bin.charCodeAt(i + 8) };
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+// Shrinks a device-pixel capture to w x h. Needs createImageBitmap and
+// OffscreenCanvas (a service worker has both); null without them.
+async function resize(data, w, h) {
+  const g = globalThis;
+  if (typeof g.createImageBitmap !== "function" || typeof g.OffscreenCanvas !== "function") return null;
+  const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+  const bitmap = await g.createImageBitmap(new Blob([bytes], { type: "image/jpeg" }), { resizeWidth: w, resizeHeight: h, resizeQuality: "high" });
+  const canvas = new g.OffscreenCanvas(w, h);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0);
+  bitmap.close?.();
+  const out = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality: 0.7 })).arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < out.length; i += 0x8000) bin += String.fromCharCode(...out.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+// A JPEG of the viewport at CSS-pixel size: on a 2x screen Chrome captures
+// device pixels (2880x1800 for a 1440x900 viewport), and coordinates read
+// off that image would land outside the page. width and height are the
+// image's size in CSS px; scale is image px per CSS px (1 unless the
+// capture could not be resized).
 export async function screenshot({ tabId } = {}) {
   assertTabId(tabId);
+  const vp = await viewport(tabId);
   const { data } = await send(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70 });
-  return { data, mimeType: "image/jpeg" };
+  let size = null;
+  try {
+    size = jpegSize(data);
+  } catch {}
+  const img = size || { width: Math.round(vp.width * vp.dpr), height: Math.round(vp.height * vp.dpr) };
+  // Image px per CSS px: the device pixel ratio, or 1 when Chrome already
+  // captured at CSS size.
+  const ratio = Math.abs(img.width / vp.width - 1) < 0.05 ? 1 : vp.dpr;
+  const css = { width: Math.round(img.width / ratio), height: Math.round(img.height / ratio) };
+  if (ratio === 1) return { data, mimeType: "image/jpeg", ...css, scale: 1 };
+  const small = await resize(data, css.width, css.height).catch(() => null);
+  if (small) return { data: small, mimeType: "image/jpeg", ...css, scale: 1 };
+  return { data, mimeType: "image/jpeg", ...css, scale: ratio };
 }
 
 export function _resetForTests() {
