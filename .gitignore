@@ -17,3 +17,6 @@ coverage/
 docs/demo/raw/*/frames/
 docs/demo/raw/*/*.mp4
 .claude/
+
+# Local HyperFrames project and large renders for the demo video
+docs/demo/out/
