@@ -227,7 +227,7 @@ els.localModel.addEventListener("change", () => {
   if (normalizeLocalModel(els.localModel.value)) fieldError(els.localModel, els.localModelError, "");
 });
 
-// The installed models from the agent server's GET /local-models. A server
+// The installed models from the agent server's POST /local-models. A server
 // without it (404) leaves just the text field.
 function showPicker(models, current) {
   els.localPickLine.hidden = !models.length;

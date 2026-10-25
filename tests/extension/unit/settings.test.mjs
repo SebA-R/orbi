@@ -192,8 +192,9 @@ test("the worker sends the provider fields in the settings message and on change
 });
 
 test("local model list: ok, down, and missing on an older server", async () => {
-  const reply = (status, body) => async (url) => {
+  const reply = (status, body) => async (url, init) => {
     assert.equal(url, "http://localhost:5050/local-models");
+    assert.equal(init?.method, "POST", "Chrome sends no Origin on a GET from an extension page");
     return { ok: status < 400, status, json: async () => body };
   };
   assert.deepEqual(await localModels("ws://localhost:5050", reply(200, { models: ["llama3.1:8b", { id: "qwen2.5:7b" }, "<b>"] })),
