@@ -1,4 +1,4 @@
-// Cartesia settings, checked against docs.cartesia.ai on 2026-10-24. See voice/README.md.
+// Cartesia settings, ported from voice/public/js/config.js (checked against docs.cartesia.ai on 2026-10-24). See voice/README.md.
 export const CARTESIA_VERSION = '2026-08-14';
 
 export const STT_URL = 'wss://api.cartesia.ai/stt/turns/websocket';
@@ -26,7 +26,7 @@ export const STT_TURN_PARAMS = {
 
 export const TTS_URL = 'wss://api.cartesia.ai/tts/websocket';
 export const TTS_MODEL = 'sonic-3.6';
-// Voice used in Cartesia's own Sonic 3.6 examples. Override with ?voice=<id>.
+// Voice used in Cartesia's own Sonic 3.6 examples.
 export const DEFAULT_VOICE_ID = '6ccbfb76-1fc6-48f7-b71d-91ac6298247b';
 export const TTS_SAMPLE_RATE = 44100;
 export const TTS_OUTPUT_FORMAT = { container: 'raw', encoding: 'pcm_f32le', sample_rate: TTS_SAMPLE_RATE };
