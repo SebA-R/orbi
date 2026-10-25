@@ -2,7 +2,7 @@
 // (content/hotkey.js), the real VoiceController and the real Speaker, with a
 // fake AudioContext whose gain params follow their automation, a fake TTS
 // socket, and the offscreen document's routing (a page's PTT_START is heard
-// directly, so preDuck runs before VOICE_START comes round via the worker).
+// directly, so onPageKey ducks before VOICE_START comes round via the worker).
 //
 // "If it's talking and I hold Space, it just immediately stops talking and
 // starts listening to me."
@@ -14,7 +14,7 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 import { RT } from "../../lib/protocol.js";
-import { VoiceController, PREDUCK_MS } from "../../lib/voice/controller.js";
+import { VoiceController, PREDUCK_MS, pageKey } from "../../lib/voice/controller.js";
 import { Speaker, DUCK_LEVEL } from "../../lib/voice/tts.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -45,7 +45,10 @@ function clock() {
 }
 
 // An AudioParam that evaluates setValueAtTime / linearRampToValueAtTime.
+// Like Chrome, reading .value right after cancelScheduledValues gives the
+// level it had reached (mid-ramp), and setting .value is setValueAtTime(now).
 function param(ctx, initial) {
+  let pinned = null;
   let base = initial;
   let events = [];
   const at = (t) => {
@@ -63,10 +66,13 @@ function param(ctx, initial) {
   };
   return {
     at,
-    get value() { return at(ctx.currentTime); },
-    set value(v) { base = v; events = []; },
-    cancelScheduledValues(t) { events = events.filter((e) => e.t < t); },
-    setValueAtTime(v, t) { events.push({ kind: "set", v, t }); events.sort((a, b) => a.t - b.t); },
+    get value() { return pinned && pinned.t === ctx.currentTime ? pinned.v : at(ctx.currentTime); },
+    set value(v) { this.setValueAtTime(v, ctx.currentTime); },
+    cancelScheduledValues(t) {
+      pinned = { t: ctx.currentTime, v: at(ctx.currentTime) };
+      events = events.filter((e) => e.t < t);
+    },
+    setValueAtTime(v, t) { pinned = null; events.push({ kind: "set", v, t }); events.sort((a, b) => a.t - b.t); },
     linearRampToValueAtTime(v, t) { events.push({ kind: "ramp", v, t }); events.sort((a, b) => a.t - b.t); },
   };
 }
@@ -83,9 +89,16 @@ function audio(clk) {
       return g;
     },
     createBuffer(_ch, length, rate) { return { duration: length / rate, copyToChannel() {} }; },
+    // A source ends (onended) when its buffer has played out.
     createBufferSource() {
-      const s = { playbackRate: { value: 1 }, dest: null, at: null, stopped: false,
-        connect(d) { s.dest = d; }, start(t) { s.at = t; }, stop() { s.stopped = true; } };
+      const s = { playbackRate: { value: 1 }, dest: null, at: null, stopped: false, ended: false,
+        connect(d) { s.dest = d; },
+        start(t) {
+          s.at = t;
+          const end = (t + s.buffer.duration / s.playbackRate.value) * 1000;
+          clk.setTimer(() => { if (s.stopped) return; s.ended = true; s.onended?.(); }, end - clk.now);
+        },
+        stop() { s.stopped = true; } };
       sources.push(s);
       return s;
     },
@@ -93,7 +106,7 @@ function audio(clk) {
   // How loud our speech is at time t (seconds): the loudest source still
   // scheduled on an output node that reaches the speakers.
   const level = (t = ctx.currentTime) => Math.max(0, ...sources
-    .filter((s) => !s.stopped && s.dest && s.dest.connected)
+    .filter((s) => !s.stopped && !s.ended && s.dest && s.dest.connected)
     .map((s) => s.dest.gain.at(t)));
   return { ctx, sources, level };
 }
@@ -121,7 +134,10 @@ afterEach(() => { globalThis.WebSocket = realWebSocket; });
 
 const flush = () => new Promise((r) => setImmediate(r));
 
-function rig() {
+// workerMs: how long the worker takes to pass each PTT_* on as VOICE_*
+// (asleep, the document check, the settings read). The page's own broadcast
+// reaches the offscreen document at once.
+function rig({ workerMs = 0 } = {}) {
   globalThis.WebSocket = FakeTtsSocket;
   const clk = clock();
   const a = audio(clk);
@@ -149,9 +165,9 @@ function rig() {
     now: () => clk.now,
   });
 
-  // The page side: the real hold detector on the same clock. Its messages go
-  // where the offscreen document sends them: a page's PTT_START is heard
-  // directly (preDuck), then the worker's VOICE_* copy drives the controller.
+  // The page side: the real hold detector on the same clock. Each message is
+  // heard twice by the offscreen document: the page's broadcast at once
+  // (pageKey -> onPageKey), then the worker's VOICE_* copy, in order.
   const hooks = {};
   vm.runInNewContext(HOTKEY_SRC, { __clearcartHotkeyTest: hooks, Promise });
   const sent = [];
@@ -160,13 +176,18 @@ function rig() {
     hotkey: "Space",
     send: (type, extra = {}) => {
       sent.push(type);
-      if (type === RT.PTT_START) {
-        c.preDuck();
-        c.start({ silent: !!extra.silent, latch: !!extra.latch });
-      } else if (type === RT.PTT_CONFIRM) c.confirm();
-      else if (type === RT.PTT_CANCEL) c.cancel();
-      else if (type === RT.PTT_STOP) c.stop();
-      else if (type === RT.PTT_HUSH) c.hush();
+      const msg = { type, ...extra };
+      const k = pageKey(msg);
+      if (k) c.onPageKey(k);
+      const viaWorker = () => {
+        if (type === RT.PTT_START) c.start({ silent: !!extra.silent, latch: !!extra.latch });
+        else if (type === RT.PTT_CONFIRM) c.confirm();
+        else if (type === RT.PTT_CANCEL) c.cancel();
+        else if (type === RT.PTT_STOP) c.stop();
+        else if (type === RT.PTT_HUSH) c.hush();
+      };
+      if (workerMs) clk.setTimer(viaWorker, workerMs);
+      else viaWorker();
     },
     onTap: (e) => taps.push(e.code),
     setTimer: (fn, ms) => clk.setTimer(fn, ms),
@@ -179,15 +200,14 @@ function rig() {
   const down = (mods) => detector.onKeyDown(key("Space", mods));
   const up = (mods) => detector.onKeyUp(key("Space", mods));
 
-  // Clearcart starts saying a line and its first audio is playing.
+  // Clearcart starts saying a line, 8 s of audio, and it is playing.
   async function speaking(text = "Here are three options for allergy pills") {
     c.onAgentMessage({ type: "agent_text", text });
     await flush();
     const ws = FakeTtsSocket.last;
     const req = ws.sent.at(-1);
     assert.equal(req.transcript, text);
-    ws.chunk(req.context_id);
-    ws.chunk(req.context_id);
+    for (let i = 0; i < 8; i++) ws.chunk(req.context_id, 44100, i === 7);
     assert.equal(c.state, "speaking");
     assert.ok(a.level() > 0.9, "speech is playing at full level");
     return { ws, contextId: req.context_id };
@@ -222,7 +242,7 @@ test("holding Space while speaking: silent within 20 ms, hard stop at 200 ms, li
   assert.equal(r.c.state, "listening");
   assert.deepEqual(r.states().slice(-1), ["listening"]);
   assert.deepEqual(r.agent.sent, [{ type: "interrupt" }]);
-  assert.deepEqual(ws.sent.filter((m) => m.cancel).map((m) => m.context_id), [contextId], "the line still generating is cancelled");
+  assert.equal(r.speaker.queue.length, 0, "nothing left queued to play");
   assert.deepEqual(r.stt.audio, ["pcm-0ms", "pcm-100ms"], "audio from the first moment is kept");
   assert.ok(r.emitted.some((m) => m.type === RT.VOICE_PARTIAL && m.text === "I want"), "first syllables shown once confirmed");
   assert.deepEqual(r.cues.map(([k]) => k), ["cut", "listen"]);
@@ -270,28 +290,127 @@ test("the fade does not wait for the page to know Clearcart is speaking", async 
   assert.equal(r.a.level(), 0);
 });
 
-test("the touch ducks even before VOICE_START arrives (preDuck), and comes back if it never does", async () => {
+const unducks = (r) => {
+  let n = 0;
+  const real = r.speaker.unduck.bind(r.speaker);
+  r.speaker.unduck = () => { n++; real(); };
+  return () => n;
+};
+
+test("pageKey: only a page's own hotkey broadcast, never the worker's or the offscreen document's copies", () => {
+  for (const type of [RT.PTT_START, RT.PTT_CONFIRM, RT.PTT_CANCEL, RT.PTT_STOP, RT.PTT_HUSH]) {
+    assert.equal(pageKey({ type, silent: true }), type);
+    assert.equal(pageKey({ type, target: "offscreen" }), null, "the worker's copy");
+    assert.equal(pageKey({ type, from: "offscreen" }), null);
+  }
+  for (const type of [RT.VOICE_START, RT.VOICE_CONFIRM, RT.PTT_TOGGLE, RT.TTS_STOP, RT.VOICE_STATE, RT.SETTINGS_CHANGED]) {
+    assert.equal(pageKey({ type }), null, type);
+  }
+  assert.equal(pageKey(null), null);
+  assert.equal(pageKey("ptt.start"), null);
+});
+
+test("a slow worker: the touch ducks at once and stays down for the whole hold, then the hold barges in", async () => {
+  const r = rig({ workerMs: 6000 }); // asleep: longer than PREDUCK_MS
+  await r.speaking();
+  r.down();
+  r.clk.advance(20);
+  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "ducked before VOICE_START");
+  assert.equal(r.c.listening, false, "the worker has not passed the start on yet");
+  for (let t = 20; t < 5980; t += 100) { r.clk.advance(100); assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, `ducked at ${r.clk.now} ms`); }
+  r.clk.advance(300); // VOICE_START (6 s), VOICE_CONFIRM (6.2 s)
+  assert.equal(r.c.state, "listening");
+  assert.equal(r.a.level(), 0);
+  assert.deepEqual(r.agent.sent, [{ type: "interrupt" }]);
+});
+
+test("a slow worker and back-to-back presses: the first cancel does not bring the speech back", async () => {
+  const r = rig({ workerMs: 150 });
+  await r.speaking();
+  const count = unducks(r);
+  r.down(); // the page thinks it is idle, so this tap cancels at once
+  r.clk.advance(30);
+  r.up();
+  r.clk.advance(20);
+  r.down(); // a second press, before the worker caught up with the first
+  for (let t = 0; t < 200; t += 10) { r.clk.advance(10); assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, `ducked at ${r.clk.now} ms`); }
+  assert.equal(count(), 0, "no blip back up between the presses");
+  r.clk.advance(200); // the second press's VOICE_CONFIRM lands
+  assert.equal(r.c.state, "listening");
+  assert.equal(r.a.level(), 0);
+});
+
+test("the page's touch with no start ever passed on: speech comes back after the key is let go", async () => {
   const r = rig();
   await r.speaking();
-  r.c.preDuck(); // the page's broadcast; the worker's copy is late
+  r.c.onPageKey(RT.PTT_START); // the worker never sends VOICE_START
   r.clk.advance(20);
   assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "ducked without VOICE_START");
-  r.clk.advance(PREDUCK_MS + 100); // plus the 80 ms fade back in
+  r.c.onPageKey(RT.PTT_CONFIRM);
+  r.clk.advance(PREDUCK_MS / 4); // the 8 s line is still playing throughout
+  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "held: stays down");
+  r.c.onPageKey(RT.PTT_STOP);
+  r.clk.advance(PREDUCK_MS - 10);
+  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "the start still gets its chance");
+  r.clk.advance(100); // plus the 80 ms fade back in
   assert.ok(r.a.level() > 0.99, "no start ever came: the speech is back");
   assert.deepEqual(r.agent.sent, []);
 });
 
-test("preDuck never touches a turn already listening, and start() takes it over", async () => {
+test("the page's touch does nothing while idle", () => {
+  const r = rig();
+  let ducks = 0;
+  r.speaker.duck = () => { ducks++; };
+  const count = unducks(r);
+  r.c.onPageKey(RT.PTT_START); // not speaking
+  r.clk.advance(PREDUCK_MS + 100);
+  assert.equal(ducks, 0);
+  assert.equal(count(), 0);
+});
+
+test("the page's touch does nothing during a turn already listening", async () => {
   const r = rig();
   await r.speaking();
-  r.c.preDuck();
+  const count = unducks(r);
+  r.c.onPageKey(RT.PTT_START);
   await r.c.start({ silent: true });
-  r.clk.advance(PREDUCK_MS + 10);
-  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "still ducked: the silent start owns it now");
+  r.clk.advance(20);
+  r.c.onPageKey(RT.PTT_START); // another frame, during the silent start
+  r.c.start({ silent: true }); // its worker copy: ignored, the turn is on
+  r.clk.advance(PREDUCK_MS + 100);
+  assert.equal(count(), 0, "no timer of its own");
+  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "still ducked: the silent start owns it");
   r.c.cancel(); // a tap
   r.clk.advance(100);
   assert.ok(r.a.level() > 0.99, "the tap brings the speech back");
   assert.deepEqual(r.agent.sent, []);
+});
+
+test("start() takes the duck over: no late restore after the turn is done", async () => {
+  const r = rig();
+  await r.speaking();
+  const count = unducks(r);
+  r.down();
+  r.clk.advance(200);
+  assert.equal(r.c.state, "listening");
+  r.clk.advance(300);
+  r.up();
+  r.clk.advance(PREDUCK_MS + 100);
+  assert.equal(count(), 0, "the page press's timer was cleared by start()");
+});
+
+test("speech that ends during a touch: the next line is not left ducked", async () => {
+  const r = rig({ workerMs: 6000 });
+  await r.speaking();
+  r.c.onPageKey(RT.PTT_START);
+  r.c.onPageKey(RT.PTT_CANCEL); // a tap; the worker is far behind
+  r.clk.advance(9000); // the 8 s line plays out, ducked
+  assert.equal(r.c.speaking, false);
+  r.clk.advance(PREDUCK_MS);
+  r.c.onAgentMessage({ type: "agent_text", text: "Anything else?" });
+  await flush();
+  FakeTtsSocket.last.chunk(FakeTtsSocket.last.sent.at(-1).context_id, 44100);
+  assert.ok(r.a.level() > 0.99, "the next line plays at full level");
 });
 
 test("a quick tap while speaking ducks, then restores the speech after the double-tap window", async () => {
@@ -319,8 +438,10 @@ test("a tap then a hold while speaking: the hold is not delayed and still barges
   r.up();
   r.clk.advance(90);
   r.down(); // 150 ms after the first touch, inside the double-tap window
-  for (let t = 0; t < 199; t += 20) { r.clk.advance(20); assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9); }
-  r.clk.advance(1); // 200 ms after the second press
+  for (let t = 0; t < 180; t += 20) { r.clk.advance(20); assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9); }
+  r.clk.advance(19);
+  assert.equal(r.c.confirmed, false, "199 ms: not yet");
+  r.clk.advance(1); // exactly 200 ms after the second press
   assert.equal(r.c.state, "listening");
   assert.equal(r.a.level(), 0);
   assert.deepEqual(r.agent.sent, [{ type: "interrupt" }]);
@@ -354,4 +475,23 @@ test("a line still connecting to TTS when the hold confirms is never sent", asyn
   assert.equal(r.c.state, "listening");
   assert.equal(r.ttsRequests().length, 0, "stopped while connecting: no request goes out");
   assert.equal(r.a.sources.length, 0);
+});
+
+test("a line still generating when the hold confirms is cancelled at Cartesia, and its late audio never plays", async () => {
+  const r = rig();
+  r.c.onAgentMessage({ type: "agent_text", text: "Let me read the whole list" });
+  await flush();
+  const ws = FakeTtsSocket.last;
+  const id = ws.sent.at(-1).context_id;
+  ws.chunk(id, 44100); // more is still coming
+  r.down();
+  r.clk.advance(200);
+  assert.equal(r.c.state, "listening");
+  assert.deepEqual(ws.sent.filter((m) => m.cancel).map((m) => m.context_id), [id]);
+  const before = r.a.sources.length;
+  ws.chunk(id, 44100);
+  ws.chunk(id, 44100, true);
+  r.clk.advance(3000);
+  assert.equal(r.a.sources.length, before);
+  assert.equal(r.a.level(), 0);
 });
