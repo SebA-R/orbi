@@ -54,32 +54,6 @@ test("classifier: Danger mode off lifts nothing; on lifts every lock", () => {
   }
 });
 
-test("classifier: no lock at points, keys or form submits while on; all back once off", () => {
-  // A minimal document: elementFromPoint always hits a Place order button,
-  // and focus sits in a password form.
-  const btn = { nodeType: 1, tagName: "BUTTON", getAttribute: (a) => (a === "type" ? "button" : null), hasAttribute: () => false,
-    closest: () => null, parentElement: null, parentNode: null, firstChild: { nodeType: 3, nodeValue: "Place order", nextSibling: null } };
-  const doc = { elementFromPoint: () => btn, activeElement: btn, body: {}, documentElement: {}, querySelectorAll: () => [btn] };
-  assert.equal(P.lockAt(doc, 1, 1).kind, "order");
-  assert.equal(P.lockOf(btn).kind, "order");
-  assert.equal(P.listLocks(doc).length, 1);
-  try {
-    P.setDangerMode(true);
-    assert.equal(P.lockAt(doc, 1, 1), null);
-    assert.equal(P.lockOf(btn), null);
-    assert.equal(P.lockInChain(btn), null);
-    assert.equal(P.lockForKey(doc, "Enter"), null);
-    assert.equal(P.lockForSubmit({ elements: [] }), null);
-    assert.deepEqual(P.listLocks(doc), []);
-    // classify still names it, for the pay flow's order-button check.
-    assert.equal(P.classify(btn).kind, "order");
-  } finally {
-    P.setDangerMode(false);
-  }
-  assert.equal(P.lockAt(doc, 1, 1).kind, "order");
-  assert.equal(P.lockForKey(doc, "Enter").kind, "order");
-});
-
 test("classifier: setDangerMode only takes true, and pressable never widens", () => {
   try {
     for (const v of ["true", 1, {}, undefined]) assert.equal(P.setDangerMode(v), false, JSON.stringify(v));

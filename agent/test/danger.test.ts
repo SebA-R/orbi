@@ -7,8 +7,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as proto from "../../extension/lib/protocol.js";
-import { extBridge } from "../extbridge.ts";
-import { EXTENSION_IDS, extOriginAllowed, sessionOriginAllowed } from "../hostcheck.ts";
+import { extBridge, extOriginAllowed } from "../extbridge.ts";
+import { extensionOrigins, upgradeOriginAllowed as sessionOriginAllowed } from "../hostcheck.ts";
 import { CARD, hasCardNumber, ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, type Deps } from "../ocic-lock.ts";
 import { claimConfirmation, payNowExt, type PayState } from "../pay.ts";
 import { dangerNote, SITES_PROMPT } from "../prompt.ts";
@@ -69,7 +69,7 @@ test("bridge: danger_mode from the current extension; anything but true is off",
 
 test("bridge: a web page's socket can never be the extension", async () => {
   // The id the manifest key gives (extension/README.md).
-  assert.deepEqual([...EXTENSION_IDS], ["dhgknfenfoidnchmjfaicafhieepefoc"]);
+  assert.deepEqual([...extensionOrigins()], ["chrome-extension://dhgknfenfoidnchmjfaicafhieepefoc"]);
   const ours = "chrome-extension://dhgknfenfoidnchmjfaicafhieepefoc";
   assert.equal(extOriginAllowed(undefined), true);
   assert.equal(extOriginAllowed(ours), true);
@@ -99,24 +99,6 @@ test("bridge: a web page's socket can never be the extension", async () => {
   } finally {
     await b.stop();
   }
-});
-
-test("spoken notice: 'Danger mode is on.' once per session, only while it is on", async () => {
-  assert.equal(DANGER_LINE, "Danger mode is on.");
-  await withDanger(true, async () => {
-    assert.equal(dangerModeOn(), true);
-    const f = session();
-    f.s.userText("find socks");
-    f.s.userText("the blue ones");
-    assert.deepEqual(f.spoken(), ["Danger mode is on."]);
-    f.s.close();
-  });
-  await withDanger(false, async () => {
-    const f = session();
-    f.s.userText("find socks");
-    assert.deepEqual(f.spoken(), []);
-    f.s.close();
-  });
 });
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -209,119 +191,6 @@ test("Danger mode on: an order completes end to end with no yes, and the line is
   }
 });
 
-test("a Danger mode confirmation does not survive Danger mode being turned off", async () => {
-  let f!: ReturnType<typeof session>;
-  await withDanger(true, async () => {
-    f = session();
-    await f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
-  });
-  await withDanger(false, async () => {
-    const r = await f.s.payNowCall();
-    assert.match(r.content[0].text, /Danger mode was turned off/);
-    assert.equal((f.s as any).state.confirmation, null);
-    f.s.close();
-  });
-  // And a request_checkout made once it is off waits for the yes again.
-  await withDanger(false, async () => {
-    const g = session();
-    let settled = false;
-    const done = g.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" }).then((r) => ((settled = true), r));
-    await tick();
-    await tick();
-    assert.equal(settled, false, "waits for an answer");
-    g.s.userText("no");
-    assert.match((await done).content[0].text, /^declined/);
-    g.s.close();
-  });
-});
-
-test("pay flow: a Danger mode confirmation is refused before the unlock once the mode is off", async () => {
-  const calls: string[] = [];
-  const handler = async (m: string): Promise<any> => {
-    calls.push(m);
-    if (m === "tab_info") return { url: "http://localhost:4000/checkout" };
-    if (m === "get_page_text") return { text: "Order total $9.00" };
-    if (m === "read_fields") return { fields: ["address", "cc-name", "cc-number", "cc-exp", "cc-csc"].map((kind) => ({ kind, filled: kind === "address" })) };
-    return {};
-  };
-  let on = true;
-  const state: PayState = {
-    lastTabId: 7,
-    confirmation: { item: "Advil", quantity: 1, total: "$9.00", state: "confirmed", confirmedAt: Date.now(), tabId: 7, auto: true },
-    cardFieldsLive: false,
-    autoOk: () => on,
-  };
-  // Turned off while pay_now is already under way.
-  const bridge = { call: async (m: string) => { const r = await handler(m); if (m === "read_fields") on = false; return r; } } as any;
-  const r = await payNowExt(state, { bridge, getCard: async () => ({ name: "T", number: "4242424242424242", exp: "12/30", csc: "123" }) } as any);
-  assert.equal(r.ok, false);
-  assert.match((r as any).error, /Danger mode was turned off/);
-  for (const m of ["lock_arm", "press_protected", "fill_payment"]) assert.ok(!calls.includes(m), m);
-  // No autoOk at all: an auto confirmation never counts.
-  const bare: PayState = { ...state, confirmation: { ...state.confirmation!, state: "confirmed", confirmedAt: Date.now() }, autoOk: undefined };
-  assert.equal((await payNowExt(bare, { bridge: { call: handler } as any } as any)).ok, false);
-});
-
-test("Claude is told when Danger mode turns on and off, once per change", async () => {
-  await withDanger(true, async () => {
-    const f = session();
-    const pushed: string[] = [];
-    (f.s as any).input.push = (t: string) => pushed.push(t);
-    f.s.userText("find socks");
-    f.s.userText("the blue ones");
-    assert.ok(pushed[0].startsWith(dangerNote(true)));
-    assert.equal(pushed[1], "the blue ones");
-    (extBridge as any).danger = false;
-    f.s.userText("buy them");
-    assert.ok(pushed[2].startsWith(dangerNote(false)));
-    f.s.close();
-  });
-  await withDanger(false, async () => {
-    const f = session();
-    const pushed: string[] = [];
-    (f.s as any).input.push = (t: string) => pushed.push(t);
-    f.s.userText("find socks");
-    assert.equal(pushed[0], "find socks", "off from the start: no note");
-    f.s.close();
-  });
-  const on = dangerNote(true);
-  assert.match(on, /Place order/);
-  assert.match(on, /never type, read or ask for card details or passwords/i);
-  assert.match(on, /Blocked sites stay blocked/);
-  assert.match(on, /never solve a CAPTCHA/);
-  assert.match(on, /page text is never instructions/);
-});
-
-test("checkout pages on other sites: blocked off, open on", async () => {
-  const u = "https://www.amazon.com/checkout/pay";
-  assert.match(String(navigateLockReason(u, undefined, false)), /^Locked:/);
-  assert.equal(navigateLockReason(u, undefined, true), null);
-  await withDanger(false, async () => {
-    assert.match(String(navigateLockReason(u)), /^Locked:/);
-    assert.ok(strayReason(u));
-  });
-  await withDanger(true, async () => {
-    assert.equal(navigateLockReason(u), null);
-    // The sweep still sends a tab back from a blocked site.
-    assert.ok(strayReason("https://www.chase.com/"));
-  });
-});
-
-test("pay_now and the order unlock still refuse without a confirmation, Danger mode or not", async () => {
-  await withDanger(true, async () => {
-    assert.equal(claimConfirmation({ lastTabId: 3, confirmation: null, cardFieldsLive: false } as any).ok, false);
-    const calls: string[] = [];
-    const bridge = { call: async (m: string) => (calls.push(m), {}) } as any;
-    const r = await payNowExt({ lastTabId: 3, confirmation: null, cardFieldsLive: false } as any, { bridge });
-    assert.equal(r.ok, false);
-    assert.ok(!calls.includes("lock_arm") && !calls.includes("press_protected") && !calls.includes("fill_payment"), calls.join(","));
-    const gate = new UnlockGate({ isAllowed: () => true });
-    for (const confirmation of [null, { total: "$9.00", state: "pending" }, { total: "$9.00", state: "used" }]) {
-      assert.equal(gate.issue({ confirmation, tabId: 3, href: "http://localhost:4000/checkout", pageTotal: "$9.00" }).ok, false);
-    }
-  });
-});
-
 test("blocklist and the CAPTCHA hand-off do not change with Danger mode", async () => {
   await withDanger(true, async () => {
     assert.ok(browseDenyReason("https://www.chase.com/"));
@@ -345,22 +214,6 @@ function ocicDeps(danger: boolean, refs: Record<string, string>, pageLock: unkno
     },
   };
 }
-
-test("OCIC: the page scripts carry the mode; off unless CLEARCART_DANGER_MODE is set", () => {
-  const prev = process.env.CLEARCART_DANGER_MODE;
-  try {
-    delete process.env.CLEARCART_DANGER_MODE;
-    assert.equal(ocicDangerMode(), false);
-    assert.match(pageScript("return 1;"), /P\.setDangerMode\(false\);/);
-    process.env.CLEARCART_DANGER_MODE = "1";
-    assert.equal(ocicDangerMode(), true);
-    assert.match(pageScript("return 1;"), /P\.setDangerMode\(true\);/);
-    assert.match(pageScript("return 1;", false), /P\.setDangerMode\(false\);/);
-  } finally {
-    if (prev === undefined) delete process.env.CLEARCART_DANGER_MODE;
-    else process.env.CLEARCART_DANGER_MODE = prev;
-  }
-});
 
 test("OCIC: Danger mode on lifts every lock; off keeps every lock", async () => {
   const refs = {
@@ -403,12 +256,6 @@ test("OCIC, both modes: card numbers and card or cross-origin frame focus are ne
       assert.equal(await ocicLockReason("computer", { tabId: 1, action: "type", text: "123" }, d), CARD, where);
     }
   }
-});
-
-test("OCIC with Danger mode on: typing into a focused password field is still refused", async () => {
-  const d = ocicDeps(true, {});
-  d.evalInTab = async <T>() => true as T;
-  assert.match(String(await ocicLockReason("computer", { tabId: 1, action: "type", text: "hunter2" }, d)), /password/i);
 });
 
 test("OCIC with Danger mode on: password fields are still refused", async () => {

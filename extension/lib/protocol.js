@@ -27,7 +27,7 @@ export const MSG = Object.freeze({
   PING: "ping",
   PONG: "pong",
   BLOCKLIST: "blocklist",
-  // { type: "settings", guidedMode }: agent behavior settings, worker to agent.
+  // { type: "settings", guidedMode, memory }: agent behavior settings, worker to agent.
   SETTINGS: "settings",
   DANGER_MODE: "danger_mode",
 });
@@ -130,6 +130,8 @@ export const RT = Object.freeze({
   // ({utteranceId, index, done?, frozen?, fallback?}).
   SUBTITLE_WORD: "subtitle.word",
   FRAME: "frame",
+  // worker -> top frame: an agent pointer sample for content/cursor.js.
+  CURSOR: "cursor",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
   // Clearcart's "Can't reach this site" page: the user pressed Retry.

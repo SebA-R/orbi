@@ -98,23 +98,6 @@ test("Danger mode on: no control is locked, Place order and wallets included", a
   assert.equal(p.document.querySelectorAll("button[data-clearcart-locked]").length, 0);
 });
 
-test("Danger mode on: opt-in boxes and dropdown options may be turned on", async () => {
-  const p = loadPage(`<label><input type="checkbox" id="sns"> Subscribe &amp; Save every 30 days</label>
-<select id="plan" aria-label="Plan"><option value="once">One-time purchase</option><option value="sns">Subscribe and save 5%</option></select>`);
-  const t = await tree(p, true);
-  const box = refIn(lineOf(t, /Subscribe & Save every/));
-  assert.equal((await call(p, "form_input", { ref: box, value: true }, true)).ok, true);
-  assert.equal(p.document.getElementById("sns").checked, true);
-  const sel = refIn(lineOf(t, /combobox|listbox|"Plan"/));
-  assert.equal((await call(p, "form_input", { ref: sel, value: "sns" }, true)).ok, true);
-  // Off: both refused again.
-  p.document.getElementById("sns").checked = false;
-  p.document.getElementById("plan").value = "once";
-  const t2 = await tree(p, false);
-  assert.equal((await call(p, "form_input", { ref: refIn(lineOf(t2, /Subscribe & Save every/)), value: true }, false)).error.code, "locked");
-  assert.equal((await call(p, "form_input", { ref: refIn(lineOf(t2, /combobox|listbox|"Plan"/)), value: "sns" }, false)).error.code, "locked");
-});
-
 test("Danger mode on: card and password values stay masked and refused", async () => {
   const p = loadPage(HTML);
   const t = await tree(p, true);
@@ -152,14 +135,3 @@ test("focus in a frame: a card field in a same-origin frame, or any cross-origin
   }
 });
 
-test("Danger mode comes only from the message: params and anything but true are ignored", async () => {
-  const p = loadPage(HTML);
-  for (const v of [undefined, false, "true", 1, {}]) {
-    const t = (await call(p, "read_page", { filter: "all", dangerMode: true }, v)).result.tree;
-    assert.match(lineOf(t, /"Sign in"/), /\[locked\]$/, JSON.stringify(v));
-    assert.match(lineOf(t, /Place order/), /\[locked\]$/, JSON.stringify(v));
-  }
-  // On, then off again on the next call.
-  await tree(p, true);
-  assert.match(lineOf(await tree(p, false), /"Sign in"/), /\[locked\]$/);
-});

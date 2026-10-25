@@ -13,7 +13,7 @@ import type http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { parseBlockLines, type BlockEntry } from "./blocklist.ts";
-import { extOriginAllowed } from "./hostcheck.ts";
+import { extensionOrigins } from "./hostcheck.ts";
 
 // Mirrors extension/lib/protocol.js (the test checks they agree). Kept as a
 // copy because that file is plain JS outside this tsconfig.
@@ -68,8 +68,15 @@ export interface ExtBridgeEvents {
   connect: [ExtInfo];
   disconnect: [{ reason: string }];
   blocklist: [readonly BlockEntry[]];
-  settings: [{ guidedMode: boolean }];
+  settings: [{ guidedMode: boolean; memory: boolean | null }];
   danger_mode: [boolean];
+}
+
+// The Origin of an /ext upgrade: none (not a browser) or Clearcart's own
+// extension (hostcheck.ts extensionOrigins).
+export function extOriginAllowed(origin: string | string[] | undefined, origins: ReadonlySet<string> = extensionOrigins()): boolean {
+  if (origin === undefined) return true;
+  return typeof origin === "string" && origins.has(origin);
 }
 
 export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
@@ -81,6 +88,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   private entries: readonly BlockEntry[] | null = null;
   private guided: boolean | null = null;
   private danger = false;
+  private memory: boolean | null = null;
 
   constructor(private log: (line: string) => void = (l) => console.log(l)) {
     super();
@@ -105,6 +113,13 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   // across a reconnect), or null before the first one arrives.
   guidedMode(): boolean | null {
     return this.guided;
+  }
+
+  // The user's Memory setting as the extension last sent it (kept across a
+  // reconnect), or null before the first one arrives (an older extension
+  // never sends it).
+  memoryEnabled(): boolean | null {
+    return this.memory;
   }
 
   // The user's Danger mode setting as the extension last sent it (false
@@ -171,10 +186,10 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
         socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
         return;
       }
-      // Only the extension may be the extension: a web page's socket names
-      // its own origin, which is never chrome-extension://. Otherwise any
-      // open tab could connect here, take over the bridge and send settings
-      // such as Danger mode. Clients outside a browser send no Origin.
+      // Only the extension may be the extension: not a web page, not the
+      // voice console, not another extension. Otherwise it could take over
+      // the bridge and send settings such as Danger mode, or receive the
+      // card pay_now fills. Clients outside a browser send no Origin.
       if (target === this.wss && !extOriginAllowed(req.headers.origin)) {
         socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
@@ -238,8 +253,9 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       }
       if (m.type === "settings" && ws === this.current && typeof m.guidedMode === "boolean") {
         this.guided = m.guidedMode;
-        this.log(`ext: guided mode ${this.guided ? "on" : "off"}`);
-        this.emit("settings", { guidedMode: m.guidedMode });
+        if (typeof m.memory === "boolean") this.memory = m.memory;
+        this.log(`ext: guided mode ${this.guided ? "on" : "off"}, memory ${this.memory === false ? "off" : "on"}`);
+        this.emit("settings", { guidedMode: m.guidedMode, memory: this.memory });
       }
       if (m.type === "danger_mode" && ws === this.current) {
         this.danger = m.on === true;

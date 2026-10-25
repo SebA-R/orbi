@@ -1,13 +1,13 @@
-import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
 // DNS rebinding defense for the agent server. A page on any site can point
 // its own host name at 127.0.0.1 and then read this server as same origin
 // (the voice token at /cartesia-token, the /session socket). The browser
 // still sends that site's name in the Host header, so every HTTP request
 // and WebSocket upgrade must name this computer and this server's port.
+
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const LOCAL_NAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -17,48 +17,52 @@ export function hostAllowed(host: string | string[] | undefined, port: number): 
   return !!m && LOCAL_NAMES.has(m[1]) && Number(m[2]) === port;
 }
 
-// The Origin header of a WebSocket upgrade. A browser always sends one, so
-// a web page cannot hide its own; a client outside a browser sends none.
-// /ext takes only Clearcart's extension (its id comes from the manifest
-// key) or no Origin. /session also takes this server's own page. Any other
-// page, on any site, is refused: it could otherwise talk to the agent as
-// the user (or, on /ext, pose as the extension and send its settings).
-
-// Chrome's id for an extension: sha256 of its public key, first 32 hex
-// digits written with a-p. null when the manifest has no key.
-export function extensionIdFromKey(key: string): string {
-  const hex = crypto.createHash("sha256").update(Buffer.from(key.replace(/\s+/g, ""), "base64")).digest("hex").slice(0, 32);
-  return hex.replace(/[0-9a-f]/g, (c) => String.fromCharCode(97 + parseInt(c, 16)));
+// The /memory endpoint (server.ts) is for the Clearcart extension's
+// settings page only. On top of the Host check it needs:
+//   - a loopback peer (the server listens on every interface), and
+//   - an Origin that is the Clearcart extension. A web page cannot set
+//     Origin, so no site can read or delete saved facts, even with the
+//     Host header right. A request with no Origin is refused too.
+export function isLoopbackAddress(addr: string | undefined): boolean {
+  if (!addr) return false;
+  const a = addr.toLowerCase().replace(/^::ffff:/, "");
+  return a === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(a);
 }
 
-function manifestExtensionId(): string | null {
+// The extension id Chrome derives from a manifest key: the first 128 bits
+// of the key's SHA-256, each hex digit written as a to p.
+export function extensionIdFromKey(keyBase64: string): string {
+  const hex = crypto.createHash("sha256").update(Buffer.from(keyBase64, "base64")).digest("hex").slice(0, 32);
+  return [...hex].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join("");
+}
+
+// chrome-extension:// origins allowed at /memory: CLEARCART_EXT_IDS
+// (comma-separated), else the id fixed by extension/manifest.json's key.
+export function extensionOrigins(): Set<string> {
+  const env = process.env.CLEARCART_EXT_IDS?.split(",").map((s) => s.trim()).filter((s) => /^[a-p]{32}$/.test(s));
+  if (env?.length) return new Set(env.map((id) => `chrome-extension://${id}`));
   try {
-    const file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "extension", "manifest.json");
-    const key = JSON.parse(fs.readFileSync(file, "utf8")).key;
-    return typeof key === "string" && key ? extensionIdFromKey(key) : null;
+    const key = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "extension", "manifest.json"), "utf8")).key;
+    return new Set(typeof key === "string" ? [`chrome-extension://${extensionIdFromKey(key)}`] : []);
   } catch {
-    return null;
+    return new Set();
   }
 }
 
-// Clearcart's extension ids: the manifest's, plus CLEARCART_EXTENSION_IDS
-// (comma separated) for a build with another key.
-export const EXTENSION_IDS: ReadonlySet<string> = new Set(
-  [manifestExtensionId(), ...String(process.env.CLEARCART_EXTENSION_IDS || "").split(",")]
-    .map((s) => (s || "").trim())
-    .filter((s): s is string => /^[a-p]{32}$/.test(s))
-);
-
-export function extOriginAllowed(origin: string | string[] | undefined, ids: ReadonlySet<string> = EXTENSION_IDS): boolean {
-  if (origin === undefined) return true;
-  if (typeof origin !== "string") return false;
-  const m = /^chrome-extension:\/\/([a-p]{32})$/.exec(origin.trim());
-  return !!m && ids.has(m[1]);
+export function memoryRequestAllowed(req: { headers: Record<string, string | string[] | undefined>; socket: { remoteAddress?: string } }, port: number, origins = extensionOrigins()): boolean {
+  const origin = req.headers.origin;
+  return hostAllowed(req.headers.host, port) && isLoopbackAddress(req.socket.remoteAddress) && typeof origin === "string" && origins.has(origin);
 }
 
-export function sessionOriginAllowed(origin: string | string[] | undefined, port: number, ids: ReadonlySet<string> = EXTENSION_IDS): boolean {
-  if (extOriginAllowed(origin, ids)) return true;
+// WebSocket upgrades (/session, /ext). Browsers send an Origin with every
+// WebSocket, and a page cannot change it, so a site that opens
+// ws://localhost:5050/session (its Host header is right) is refused here.
+// Allowed: the Clearcart extension, this server's own pages (the voice
+// console) and clients that are not browsers (no Origin: tests, scripts on
+// this computer).
+export function upgradeOriginAllowed(origin: string | string[] | undefined, port: number, extOrigins = extensionOrigins()): boolean {
+  if (origin === undefined) return true;
   if (typeof origin !== "string") return false;
-  const m = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]):(\d+)$/.exec(origin.trim().toLowerCase());
-  return !!m && Number(m[2]) === port;
+  if (extOrigins.has(origin)) return true;
+  return [`http://localhost:${port}`, `http://127.0.0.1:${port}`, `http://[::1]:${port}`].includes(origin.toLowerCase());
 }
