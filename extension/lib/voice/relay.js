@@ -2,10 +2,12 @@
 // messages between content scripts and it. The worker only has to call
 // installVoiceRelay() at top level (see "Voice and subtitles" in extension/README.md).
 //
-//   content PTT_START {silent} -> ensure offscreen, VOICE_START {settings, silent} to offscreen
+//   content PTT_START {silent, latch} -> ensure offscreen, VOICE_START {settings, silent, latch} to offscreen
 //   content PTT_CONFIRM        -> VOICE_CONFIRM (the key is held: chime, show it)
 //   content PTT_CANCEL         -> VOICE_CANCEL (a quick tap: drop the audio)
 //   content PTT_STOP           -> VOICE_STOP to offscreen
+//   content PTT_HUSH           -> VOICE_HUSH (double-tap Space while speaking: hard-stop
+//                                 the speech), only from the tab that is talking
 //   command "toggle-listening" -> PTT_TOGGLE {settings} to offscreen
 //   content/popup TTS_STOP     -> TTS_STOP to offscreen
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
@@ -118,7 +120,7 @@ export function createVoiceRelay({
     switch (msg.type) {
       case RT.PTT_START:
         if (sender.tab && sender.tab.id != null) lastTabId = sender.tab.id;
-        toOffscreen(async () => ({ type: RT.VOICE_START, settings: await getSettings(), ...(msg.silent ? { silent: true } : {}) }));
+        toOffscreen(async () => ({ type: RT.VOICE_START, settings: await getSettings(), ...(msg.silent ? { silent: true } : {}), ...(msg.latch ? { latch: true } : {}) }));
         return true;
       case RT.PTT_CONFIRM:
         // Ducking waits for the offscreen doc's "listening" state, so a turn
@@ -130,6 +132,11 @@ export function createVoiceRelay({
         return true;
       case RT.PTT_STOP:
         toOffscreen({ type: RT.VOICE_STOP }, { create: false });
+        return true;
+      case RT.PTT_HUSH:
+        // A double-tap in another tab must not stop this one.
+        if (sender.tab && sender.tab.id != null && lastTabId != null && sender.tab.id !== lastTabId) return true;
+        toOffscreen({ type: RT.VOICE_HUSH }, { create: false });
         return true;
       case RT.PTT_TOGGLE:
         toggle(sender.tab && sender.tab.id);
