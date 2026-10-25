@@ -35,9 +35,9 @@ test("origins are parsed and credentials are refused", () => {
 
 test("normalize falls back to defaults for bad values", () => {
   assert.deepEqual(normalize({}), { ...DEFAULTS, allowlist: ["http://localhost:4000"] });
-  const s = normalize({ agentUrl: "ws://x.example", hotkey: "Space", speed: 9, subtitles: "yes", allowlist: ["bad"] });
+  const s = normalize({ agentUrl: "ws://x.example", hotkey: "bogus", speed: 9, subtitles: "yes", allowlist: ["bad"] });
   assert.equal(s.agentUrl, DEFAULTS.agentUrl);
-  assert.equal(s.hotkey, "Alt+Space");
+  assert.equal(s.hotkey, "Space");
   assert.equal(s.speed, 2);
   assert.equal(s.subtitles, true);
   assert.deepEqual(s.allowlist, ["http://localhost:4000"]);

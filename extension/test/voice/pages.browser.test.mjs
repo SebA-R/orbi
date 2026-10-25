@@ -68,7 +68,7 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   const page = await context.newPage();
   await page.goto(`chrome-extension://${EXT_ID}/options/options.html`);
   await page.waitForSelector("html[data-ready=true]");
-  assert.equal(await page.locator("#hotkey option").count(), 3);
+  assert.equal(await page.locator("#hotkey option").count(), 4);
   assert.equal(await page.inputValue("#agent-url"), "ws://localhost:5050");
   await page.selectOption("#hotkey", "F9");
   await page.fill("#speed", "1.4");
