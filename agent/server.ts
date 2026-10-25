@@ -145,6 +145,8 @@ wss.on("connection", (ws: WebSocket) => {
     } catch {
       return send({ type: "status", text: "ignored a message that was not JSON" });
     }
+    // Barge-in: the user held the talk key over our speech.
+    if (msg?.type === "interrupt") return void session?.interrupt();
     if (msg?.type !== "user_text" || typeof msg.text !== "string") {
       return send({ type: "status", text: `ignored message type ${String(msg?.type)}` });
     }

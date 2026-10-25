@@ -206,6 +206,20 @@ test("a new turn drops the last turn's lines, and stale lines never replay even 
   assert.deepEqual(state.tabSent.map((x) => x.m.text || x.m.state), ["listening"], "state yes, 6 s old line no");
 });
 
+test("a barge-in drops the cut-off agent line from the replay", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  const off = (m) => relay.onMessage({ ...m, from: "offscreen" });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  off({ type: RT.SUBTITLE, speaker: "user", text: "find pills", final: true });
+  off({ type: RT.VOICE_STATE, state: "speaking" });
+  off({ type: RT.SUBTITLE, speaker: "agent", text: "I found three options", final: true });
+  off({ type: RT.VOICE_STATE, state: "listening" }); // user held Space over us
+  await relay.idle();
+  state.tabSent.length = 0;
+  await relay.onTabActivated({ tabId: 8 });
+  assert.deepEqual(state.tabSent.map((x) => x.m.text || x.m.state), ["listening", "find pills"]);
+});
+
 test("a replayed line is skipped once a newer live line for that speaker has gone out", async () => {
   const { relay, state, chromeApi } = make({ activeTab: 3 });
   const off = (m) => relay.onMessage({ ...m, from: "offscreen" });

@@ -33,6 +33,7 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | Hold-to-talk key | Space | also Option+Space, Ctrl+Shift+Space or F9 |
 | Speech speed | 1 | 0.6 to 2 |
 | Subtitles | on | |
+| Quiet other tabs while talking | on | fades out and mutes audible tabs while you talk and Clearcart answers |
 
 Allowed sites take one site address per line (`https://www.etsy.com`; a path is dropped, a login in the address is refused). Only extension pages can change these settings; the agent server cannot.
 
@@ -126,6 +127,8 @@ Enforcement, all in the extension and failing closed (if a check cannot run, the
 ### Voice and subtitles
 
 `installVoiceRelay()` (`lib/voice/relay.js`) creates the offscreen document on the first press (`USER_MEDIA`, `AUDIO_PLAYBACK`), relays `PTT_START`/`PTT_STOP` and the toggle command to it in order, and sends its `SUBTITLE`, `VOICE_STATE`, `VOICE_ERROR` and `STATUS` messages to the tab that started talking (or the active tab), where `subtitles.js` shows them. A first `mic_blocked` error opens the options page. The offscreen document opens its own `/session` socket; the server accepts any number of session clients.
+
+Quiet other tabs (`lib/voice/duck.js`): from `PTT_CONFIRM` (never on a quick tap) through thinking and speaking, every audible tab the user hasn't muted gets its `<video>` and `<audio>` faded to 0 over 200 ms (`chrome.scripting`, all frames, original volumes kept in the isolated world) and is then muted with `chrome.tabs.update`, which also covers WebAudio and frames the fade can't reach; where injection fails (chrome:// pages, PDFs, the Web Store) it is just muted. 600 ms after the state returns to idle, each ducked tab still muted by this extension is unmuted and its volumes fade back in over 300 ms; a tab the user muted or unmuted meanwhile keeps their choice. Ducked tab ids live in `chrome.storage.session`, so a restarted worker still restores them.
 
 ## Tests
 
