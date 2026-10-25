@@ -200,6 +200,17 @@
     return clean(el.getAttribute("title"));
   }
 
+  // True when Chrome's autofill filled el (the :autofill pseudo-class, or the
+  // older -webkit- one). Says nothing about the value; false where neither
+  // selector is known (jsdom).
+  function autofilled(el) {
+    for (var i = 0; i < AUTOFILL.length; i++) {
+      try { if (el.matches(AUTOFILL[i])) return true; } catch (_) { /* selector unknown here */ }
+    }
+    return false;
+  }
+  var AUTOFILL = [":autofill", ":-webkit-autofill"];
+
   // State annotations, value masked through ClearcartMask.
   function statesOf(el, role) {
     var parts = [];
@@ -227,7 +238,9 @@
       if (t !== "checkbox" && t !== "radio" && t !== "submit" && t !== "button" && t !== "reset" && t !== "image" && t !== "hidden") {
         var v = el.value;
         var pw = isPassword(el);
-        if (Mask.isPaymentField(el) || pw) parts.push(v ? 'value="' + Mask.MASK + '"' : "empty");
+        // A field Chrome autofilled is masked whatever it is called: Chrome
+        // can put card details into fields these heuristics miss.
+        if (Mask.isPaymentField(el) || pw || autofilled(el)) parts.push(v ? 'value="' + Mask.MASK + '"' : "empty");
         else if (v) parts.push('value="' + clean(Mask.maskValue(v, null), 120) + '"');
         if (Mask.isPaymentField(el)) parts.push("payment");
         else if (pw) parts.push("password");
@@ -404,7 +417,7 @@
 
   function formInput(params) {
     var el = elementFor(params.ref);
-    if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; payment is entered only by pay_now");
+    if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; the user picks the card in Chrome's own list");
     if (isPassword(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a password field; Clearcart never types passwords, the user types it themselves");
     if (!("value" in params)) throw PageError(ERR.BAD_REQUEST, "value is required");
     var value = params.value;
@@ -646,7 +659,7 @@
     try { Protect.showBadges(document, { alive: extensionAlive }); } catch (_) { /* cosmetic */ }
   }
 
-  // -------------------------------------------- read_fields / fill_payment
+  // ------------------------------------------------------ the card hand-off
   function kindOf(el) {
     var ac = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
     if (ac.indexOf("cc-number") !== -1) return "cc-number";
@@ -679,83 +692,92 @@
     return out;
   }
 
-  function readFields() {
+  // The pay hand-off (agent pick_card, pay_now). The user picks a saved card
+  // in Chrome's own list; Clearcart never reads or returns a card value.
+  // filled says only whether a field is empty, autofilled only that Chrome
+  // filled or is previewing it.
+  function isFilled(el) {
+    var t = (el.type || "").toLowerCase();
+    if (t === "checkbox" || t === "radio") return !!el.checked;
+    return String(el.value || "").length > 0;
+  }
+
+  function isCardField(el) {
+    return kindOf(el).indexOf("cc-") === 0 || !!Mask.isPaymentField(el);
+  }
+
+  function cardNumberField() {
+    var els = formFields();
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (kindOf(el) === "cc-number" && !el.disabled && !el.readOnly) return el;
+    }
+    return null;
+  }
+
+  // Visible frames that look like hosted card fields: Stripe ("Secure card
+  // payment input frame", "Secure payment input frame"), Braintree hosted
+  // fields, Adyen secured fields, Shopify's card fields, Square and the
+  // like. Clearcart never looks inside them, so a card the user picks there
+  // is out of sight: counted so the router treats the page as holding one.
+  var CARD_FRAME = /card|cvc|cvv|security code|expir|payment input|hosted.?field|secured.?field|payment.?field|shopifycs|pci\b/i;
+  function cardFrames() {
+    var n = 0;
+    var frames = document.querySelectorAll("iframe,frame");
+    for (var i = 0; i < frames.length; i++) {
+      var f = frames[i];
+      if (hiddenByStyle(f)) continue;
+      var r = f.getBoundingClientRect();
+      if (!(r.width >= 30 && r.height >= 10)) continue;
+      var hay = [f.getAttribute("title"), f.getAttribute("name"), f.id, f.getAttribute("aria-label"), f.getAttribute("src")].join(" ");
+      if (CARD_FRAME.test(hay)) n++;
+    }
+    return n;
+  }
+
+  // The card number field in this document, scrolled into view, for the
+  // router to click (card_autofill): a real click on it opens Chrome's
+  // saved cards there. Not a bridge method.
+  function cardField() {
+    var el = cardNumberField();
+    if (!el) return { found: false, frames: cardFrames() };
+    if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    return { found: true, ref: refFor(el), filled: isFilled(el), autofilled: autofilled(el), frames: cardFrames() };
+  }
+
+  // Counts only: card fields in this document, how many hold something, how
+  // many Chrome filled or previews, the card number field's state, and the
+  // card frames. live: a card is or may be in the page (router.js keeps the
+  // agent's hands off it then).
+  function cardState() {
+    var fields = formFields().filter(isCardField);
+    var number = cardNumberField();
+    var filled = fields.filter(isFilled).length;
+    var auto = fields.filter(autofilled).length;
+    var frames = cardFrames();
     return {
-      fields: formFields().map(function (el) {
-        var t = (el.type || "").toLowerCase();
-        return {
-          name: el.getAttribute("name") || el.id || "",
-          autocomplete: el.getAttribute("autocomplete") || "",
-          kind: kindOf(el),
-          filled: t === "checkbox" || t === "radio" ? !!el.checked : String(el.value || "").length > 0,
-        };
-      }),
+      fields: fields.length,
+      filled: filled,
+      autofilled: auto,
+      number: number ? { filled: isFilled(number), autofilled: autofilled(number) } : null,
+      frames: frames,
+      live: filled > 0 || auto > 0 || frames > 0,
     };
   }
 
-  function expParts(exp) {
-    var m = /^\s*(\d{1,2})\s*[\/\-]\s*(\d{2}|\d{4})\s*$/.exec(String(exp || ""));
-    if (!m) return null;
-    var mm = ("0" + m[1]).slice(-2);
-    var yy = m[2].slice(-2);
-    return { mm: mm, yy: yy, yyyy: m[2].length === 4 ? m[2] : "20" + yy };
-  }
-
-  function fillPayment(params) {
-    var card = params.card;
-    if (!card || typeof card !== "object") throw PageError(ERR.BAD_REQUEST, "card is required");
-    var number = String(card.number || "").replace(/[\s-]/g, "");
-    if (!/^\d{12,19}$/.test(number)) throw PageError(ERR.BAD_REQUEST, "card.number must be 12-19 digits");
-    var exp = expParts(card.exp);
-    if (card.exp && !exp) throw PageError(ERR.BAD_REQUEST, "card.exp must be MM/YY");
-    var fields = formFields();
-    var byKind = { "cc-number": [], "cc-name": [], "cc-exp": [], "cc-csc": [], address: [] };
-    fields.forEach(function (el) { var k = kindOf(el); if (byKind[k]) byKind[k].push(el); });
-    if (!byKind["cc-number"].length) throw PageError(ERR.NO_ELEMENT, "no card number field on this page");
-
-    function put(el, v) {
-      if (v == null || v === "") return;
-      if (el.tagName === "SELECT") {
-        var opts = Array.prototype.slice.call(el.options);
-        var hit = opts.find(function (o) { return o.value === v || Number(o.value) === Number(v) || clean(o.textContent) === v; });
-        if (!hit) return;
-        v = hit.value;
-      }
-      nativeSet(el, v);
-      fire(el);
+  // The controls pay_now may press once after the user's yes: order
+  // commits and card form submits, not the ones that only go to checkout.
+  function orderButtons() {
+    var out = [];
+    var locks = Protect.listLocks(document, 300);
+    for (var i = 0; i < locks.length && out.length < 10; i++) {
+      var x = locks[i];
+      if (!Protect.pressable(x.lock) || !Protect.blocks(x.lock) || Protect.isCheckoutNav(x.lock.label)) continue;
+      if (hiddenByStyle(x.el) || (x.el.closest && x.el.closest("[hidden],[aria-hidden=true]"))) continue;
+      var off = !!x.el.disabled || x.el.getAttribute("aria-disabled") === "true";
+      out.push({ ref: refFor(x.el), label: Mask.maskCardRuns(x.lock.label), kind: x.lock.kind, disabled: off });
     }
-
-    byKind["cc-number"].forEach(function (el) { put(el, number); });
-    byKind["cc-name"].forEach(function (el) { put(el, card.name ? String(card.name) : ""); });
-    byKind["cc-csc"].forEach(function (el) { put(el, card.csc ? String(card.csc) : ""); });
-    byKind["cc-exp"].forEach(function (el) {
-      if (!exp) return;
-      var ac = (el.getAttribute("autocomplete") || "").toLowerCase();
-      if (/cc-exp-month/.test(ac)) put(el, exp.mm);
-      else if (/cc-exp-year/.test(ac)) put(el, el.tagName === "SELECT" || (el.maxLength > 0 && el.maxLength < 4) ? (el.maxLength === 2 ? exp.yy : exp.yyyy) : exp.yyyy);
-      else put(el, exp.mm + "/" + exp.yy);
-    });
-    if (params.address != null && byKind.address.length) {
-      var addr = typeof params.address === "string" ? params.address
-        : [params.address.line1, params.address.line2, params.address.city, params.address.region, params.address.postal, params.address.country]
-          .filter(Boolean).join(", ");
-      byKind.address.forEach(function (el) {
-        if (!el.value) put(el, addr);
-      });
-    }
-    return { ok: true, last4: number.slice(-4) };
-  }
-
-  function clearPayment() {
-    formFields().forEach(function (el) {
-      var k = kindOf(el);
-      if (k.indexOf("cc-") === 0 || Mask.isPaymentField(el)) {
-        if (el.tagName === "SELECT") el.selectedIndex = -1;
-        else nativeSet(el, "");
-        fire(el);
-      }
-    });
-    return { ok: true };
+    return { buttons: out };
   }
 
   // Kind of the element that has keyboard focus, so the worker can refuse
@@ -773,7 +795,9 @@
     // types (watchable typing sends key events only then).
     var text = !el.disabled && !el.readOnly && (tag === "TEXTAREA" ||
       (tag === "INPUT" && /^(text|search|email|url|tel|number)$/.test(String(el.type || "text").toLowerCase())));
-    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el), text: text };
+    // A field Chrome filled counts as a payment field too: its card
+    // heuristics can find card fields these miss.
+    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el) || autofilled(el), password: isPassword(el), text: text };
   }
 
   // ---------------------------------------------------------- page_context
@@ -870,9 +894,9 @@
     form_input: formInput,
     rect: rect,
     click_ref: clickRef,
-    read_fields: readFields,
-    fill_payment: fillPayment,
-    clear_payment: clearPayment,
+    card_field: cardField,
+    card_state: cardState,
+    order_buttons: orderButtons,
     guard_ref: guardRef,
     guard_point: guardPoint,
     guard_key: guardKey,
