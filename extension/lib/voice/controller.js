@@ -21,16 +21,20 @@
 //            agent stops the turn, and drop any agent_text that still arrives
 //            from it until the next user_text goes out.
 //   stop()   PTT_STOP: sent cue, 300 ms tail, then finish() so Ink flushes.
-//            state -> thinking once something was said, else idle
+//            state -> thinking once something was said, else idle.
+//            Every turn (held or latched) holds its finished phrases until
+//            stop(): Ink ends a turn on a pause, so a final mid-hold is only
+//            a segment. The first final after release, the STT closing, or
+//            FINAL_WAIT_MS after finish() (with the open partial) sends them
+//            as ONE user_text; anything later is dropped. Empty sends nothing.
 //   start({ latch: true }) hands-free (Option+Space, or the toggle command):
-//            listens until the next stop(). Finished phrases are held and sent
-//            as one user_text after stop(). VOICE_STATE carries latched: true
+//            listens until the next stop(), held like a hold. VOICE_STATE carries latched: true
 //            so the page can say "Press Space to send" and end it on Space.
 //            LATCH_IDLE_MS without speech stops it, so the mic never stays open.
 //   hush()   double-tap Space while speaking: drop the first tap's silent
 //            start, hard-stop the speech like a barge-in (the cut cue).
 //            Never listens or sends user_text (can't answer a read-back).
-//   each STT turn.end -> {type:"user_text"} to the agent + VOICE_FINAL + SUBTITLE
+//   the turn's one user_text -> the agent + VOICE_FINAL + SUBTITLE
 //   agent_text -> Sonic; status/receipt -> STATUS
 //   speakReplies() false (the Speak replies setting): agent_text is never
 //            sent to Sonic. Its SUBTITLE(agent) goes out whole at once, with
@@ -60,6 +64,7 @@ export const STATES = Object.freeze({ IDLE: "idle", LISTENING: "listening", THIN
 export const TAIL_MS = 300;
 export const LATCH_IDLE_MS = 60_000;
 export const PREDUCK_MS = 4000;
+export const FINAL_WAIT_MS = 600; // after finish(): how long the trailing final gets
 const PAGE_KEYS = new Set([RT.PTT_START, RT.PTT_CONFIRM, RT.PTT_CANCEL, RT.PTT_STOP, RT.PTT_HUSH]);
 
 // The type of a page's own hotkey broadcast, or null. The worker's copies
@@ -86,7 +91,7 @@ export class VoiceController {
     this.held = []; // transcript events from a silent start, replayed on confirm()
     this.muted = false; // after a barge-in: agent_text from the interrupted turn is not spoken
     this.latched = false; // hands-free: listening until the next stop()
-    this.turn = null; // this session's held phrases while latched: { latched, open, parts }
+    this.turn = null; // this session's held phrases: { latched, open, parts, partial, sent }
     this.latchTimer = null;
     this.errorPending = false; // the mic failed before a silent start was confirmed
     this.listenUntil = 0; // now() when the last listen cue ends; the error buzz waits for it
@@ -175,11 +180,20 @@ export class VoiceController {
     this.#settle();
   }
 
-  // A latched turn is over: send what was held as one user_text.
+  // The turn is over: send what was held as one user_text, once.
   #flush(turn, last = "") {
+    if (turn.sent || turn.dropped) return;
+    turn.sent = true;
+    if (turn.waitTimer != null) this.clearTimer(turn.waitTimer);
+    turn.waitTimer = null;
     const text = join([...turn.parts, last]);
     turn.parts = [];
+    turn.partial = "";
     if (text) this.#sendUserText(text);
+    else if (turn.expected) {
+      this.awaitingReply = false; // stop() expected words that never came
+      this.#settle();
+    }
   }
 
   async start({ silent = false, latch = false } = {}) {
@@ -207,7 +221,7 @@ export class VoiceController {
     this.confirmed = false;
     this.held = [];
     this.latched = latch;
-    const turn = { latched: latch, open: true, parts: [] };
+    const turn = { latched: latch, open: true, parts: [], partial: "", sent: false };
     this.turn = turn;
     if (latch) silent = false;
     this.resumeAudio();
@@ -221,16 +235,20 @@ export class VoiceController {
     const s = this.createStt({
       onTurnStart: gate(() => { heard(); this.speaker.stop(); }),
       onPartial: gate((text) => {
+        if (turn.sent || turn.dropped) return;
         heard();
-        const shown = turn.latched ? join([...turn.parts, text]) : text;
+        turn.partial = text;
+        const shown = join([...turn.parts, text]);
         this.emit({ type: RT.VOICE_PARTIAL, text: shown });
         this.emit({ type: RT.SUBTITLE, speaker: "user", text: shown, final: false });
       }),
       onFinal: gate((text) => {
         if (turn.dropped) return;
-        if (!turn.latched) return this.#sendUserText(text);
+        if (turn.sent) return this.log(`late final dropped: ${text.slice(0, 80)}`);
         if (!turn.open) return this.#flush(turn, text);
+        // Still held: Ink's pause-ended turn is only a segment of ours.
         heard();
+        turn.partial = "";
         turn.parts.push(text);
         this.emit({ type: RT.SUBTITLE, speaker: "user", text: join(turn.parts), final: false });
       }),
@@ -250,7 +268,7 @@ export class VoiceController {
           this.#endLatch();
           this.chime("sent");
         }
-        if (turn.latched && !turn.dropped) this.#flush(turn);
+        if (!turn.open) this.#flush(turn, turn.partial);
         this.#settle();
       },
     });
@@ -384,7 +402,8 @@ export class VoiceController {
     const turn = this.turn;
     if (turn) {
       turn.open = false;
-      if (turn.parts.length) this.awaitingReply = true; // sent after the tail
+      turn.expected = turn.parts.length > 0 || !!turn.partial.trim();
+      if (turn.expected) this.awaitingReply = true; // sent after the tail
     }
     this.#endLatch();
     this.listening = false;
@@ -394,7 +413,14 @@ export class VoiceController {
     // Keep a short tail so the last word isn't clipped, then let Ink finalize.
     this.setTimer(() => {
       if (!this.listening) this.mic.sink = null;
-      if (s) s.finish();
+      if (!turn) return;
+      if (!s || turn.sent) return this.#flush(turn, turn.partial); // the STT already closed
+      s.finish();
+      // Don't wait on Ink forever: send what we have, with the open partial.
+      turn.waitTimer = this.setTimer(() => {
+        turn.waitTimer = null;
+        this.#flush(turn, turn.partial);
+      }, FINAL_WAIT_MS);
     }, TAIL_MS);
   }
 
