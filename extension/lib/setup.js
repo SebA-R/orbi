@@ -95,7 +95,7 @@ export const keyName = (hotkey) => (HOTKEYS[hotkey] || HOTKEYS.Space).split(" ("
 export function talkKeyHelp(hotkey) {
   const name = keyName(hotkey);
   const hold = `Hold ${name}, wait for the chime, speak, then let go.`;
-  if (name === "Space") return `${hold} In a text field, Space types a space. To talk from a text field, change the talk key to Option + Space.`;
+  if (name === "Space") return `${hold} In a text field, Space types a space, so hold Option + Space there instead.`;
   return `${hold} It works in text fields too.`;
 }
 
