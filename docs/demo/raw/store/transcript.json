@@ -1,0 +1,150 @@
+{
+ "site": "store",
+ "clock": "t_start = seconds since the /session WebSocket opened (same clock as frames.json and footage_realtime.mp4)",
+ "seq_start": "start of the line in conversation_sequential.wav (lines back to back, 0.45 s gaps)",
+ "voices": {
+  "shopper": {
+   "id": "3a01612e-07da-4a85-bba8-ce10481df477",
+   "name": "Gareth"
+  },
+  "clearcart": {
+   "id": "6ccbfb76-1fc6-48f7-b71d-91ac6298247b",
+   "name": "Tessa"
+  }
+ },
+ "tts_model": "sonic-3.6",
+ "lines": [
+  {
+   "i": 0,
+   "speaker": "shopper",
+   "text": "Reorder my allergy pills, cheapest same dose.",
+   "t_start": 0.02,
+   "audio": "audio/00_shopper.wav",
+   "audio_duration_s": 3.6,
+   "seq_start": 0.0,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 1,
+   "speaker": "clearcart",
+   "text": "I don't have your order history, so I can't tell which allergy pill you use. The store has cetirizine 10 milligram, loratadine 10 milligram, and fexofenadine 180 milligram. The cheapest is Elm Health Loratadine, 30 tablets, for $6.49. The cheapest cetirizine is Elm Health, 30 tablets, for $8.99. Which medicine do you take?",
+   "t_start": 7.92,
+   "audio": "audio/01_clearcart.wav",
+   "audio_duration_s": 26.24,
+   "seq_start": 4.05,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 2,
+   "speaker": "shopper",
+   "text": "Cetirizine 10 milligram, the Elm Health one with 30 tablets please.",
+   "t_start": 16.11,
+   "audio": "audio/02_shopper.wav",
+   "audio_duration_s": 5.36,
+   "seq_start": 30.74,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 3,
+   "speaker": "clearcart",
+   "text": "Seems checked; verify and uncheck.",
+   "t_start": 24.23,
+   "audio": "audio/03_clearcart.wav",
+   "audio_duration_s": 2.96,
+   "seq_start": 36.55,
+   "aside": true,
+   "tail": false
+  },
+  {
+   "i": 4,
+   "speaker": "clearcart",
+   "text": "The membership is off, and the total is $9.64.",
+   "t_start": 26.25,
+   "audio": "audio/04_clearcart.wav",
+   "audio_duration_s": 4.8,
+   "seq_start": 39.96,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 5,
+   "speaker": "clearcart",
+   "text": "You're buying 1 Elm Health Cetirizine Allergy Relief 10mg Tablets, 30 tablets for $9.64. Say yes to pay, or no to change it.",
+   "t_start": 27.02,
+   "audio": "audio/05_clearcart.wav",
+   "audio_duration_s": 10.8,
+   "seq_start": 45.21,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 6,
+   "speaker": "shopper",
+   "text": "Yes.",
+   "t_start": 34.07,
+   "audio": "audio/06_shopper.wav",
+   "audio_duration_s": 0.96,
+   "seq_start": 56.46,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 7,
+   "speaker": "clearcart",
+   "text": "Your order is placed. It's one 30-count box of Elm Health Cetirizine 10 milligram. The total was $9.64, charged to the card ending 1111. I unchecked a Subscribe and Save membership that would have added $4.99.",
+   "t_start": 37.51,
+   "audio": "audio/07_clearcart.wav",
+   "audio_duration_s": 16.32,
+   "seq_start": 57.87,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 8,
+   "speaker": "shopper",
+   "text": "Great, thanks for catching that. Appreciate the help!",
+   "t_start": 45.68,
+   "audio": "audio/08_shopper.wav",
+   "audio_duration_s": 3.44,
+   "seq_start": 74.64,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 9,
+   "speaker": "clearcart",
+   "text": "You're welcome. Enjoy, and feel free to ask if you need anything else.",
+   "t_start": 46.61,
+   "audio": "audio/09_clearcart.wav",
+   "audio_duration_s": 4.32,
+   "seq_start": 78.53,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 10,
+   "speaker": "shopper",
+   "text": "You too, thanks. Bye!",
+   "t_start": 55.7,
+   "audio": "audio/10_shopper.wav",
+   "audio_duration_s": 2.24,
+   "seq_start": 83.3,
+   "aside": false,
+   "tail": true
+  },
+  {
+   "i": 11,
+   "speaker": "clearcart",
+   "text": "Goodbye!",
+   "t_start": 56.75,
+   "audio": "audio/11_clearcart.wav",
+   "audio_duration_s": 0.88,
+   "seq_start": 85.99,
+   "aside": false,
+   "tail": true
+  }
+ ]
+}

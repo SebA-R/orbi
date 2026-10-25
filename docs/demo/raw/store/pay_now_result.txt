@@ -1,0 +1,15 @@
+pay_now tool call and tool result, exactly as sent to the Claude API in the
+next model request of this run (captured by a logging pass-through on the
+recording instance's ANTHROPIC_BASE_URL; request bodies only, no headers).
+
+tool_use (Claude -> Clearcart):
+{"type": "tool_use", "id": "toolu_01Wh6vUs6REmvKDVtipgT3it", "name": "mcp__clearcart__pay_now", "input": {}, "cache_control": {"type": "ephemeral"}}
+(cache_control is a prompt-caching marker the Claude Code client adds; it is as logged.)
+
+tool_result (what Claude received):
+{"tool_use_id": "toolu_01Wh6vUs6REmvKDVtipgT3it", "type": "tool_result", "content": [{"type": "text", "text": "{\"ok\":true,\"last4\":\"1111\",\"total\":\"$9.64\"}"}]}
+
+Decoded text: {"ok":true,"last4":"1111","total":"$9.64"}
+
+Across all 17 model requests in the run (every prompt, tool call and tool
+result Claude was sent), the string "4111" appears 0 times.

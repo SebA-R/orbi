@@ -1,0 +1,397 @@
+[
+ {
+  "t": 0.04,
+  "file": "frames/f_0000040.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 0.755,
+  "file": "frames/f_0000755.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 1.496,
+  "file": "frames/f_0001496.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 2.223,
+  "file": "frames/f_0002223.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 2.95,
+  "file": "frames/f_0002950.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 3.706,
+  "file": "frames/f_0003706.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 4.438,
+  "file": "frames/f_0004438.jpg",
+  "url": "http://localhost:4000/orders"
+ },
+ {
+  "t": 5.154,
+  "file": "frames/f_0005154.jpg",
+  "url": "http://localhost:4000/orders"
+ },
+ {
+  "t": 5.874,
+  "file": "frames/f_0005874.jpg",
+  "url": "http://localhost:4000/orders"
+ },
+ {
+  "t": 6.612,
+  "file": "frames/f_0006612.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 7.33,
+  "file": "frames/f_0007330.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 8.062,
+  "file": "frames/f_0008062.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 8.809,
+  "file": "frames/f_0008809.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 9.548,
+  "file": "frames/f_0009548.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 10.284,
+  "file": "frames/f_0010284.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 11.018,
+  "file": "frames/f_0011018.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 11.741,
+  "file": "frames/f_0011741.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 12.477,
+  "file": "frames/f_0012477.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 13.199,
+  "file": "frames/f_0013199.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 13.936,
+  "file": "frames/f_0013936.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 14.658,
+  "file": "frames/f_0014658.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 15.39,
+  "file": "frames/f_0015390.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 16.126,
+  "file": "frames/f_0016126.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 16.861,
+  "file": "frames/f_0016861.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 17.583,
+  "file": "frames/f_0017583.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 18.309,
+  "file": "frames/f_0018309.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 19.04,
+  "file": "frames/f_0019040.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 19.773,
+  "file": "frames/f_0019773.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 20.522,
+  "file": "frames/f_0020522.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 21.242,
+  "file": "frames/f_0021242.jpg",
+  "url": "http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 21.973,
+  "file": "frames/f_0021973.jpg",
+  "url": "http://localhost:4000/product/cetirizine-30"
+ },
+ {
+  "t": 22.723,
+  "file": "frames/f_0022723.jpg",
+  "url": "http://localhost:4000/product/cetirizine-30"
+ },
+ {
+  "t": 23.461,
+  "file": "frames/f_0023461.jpg",
+  "url": "http://localhost:4000/product/cetirizine-30"
+ },
+ {
+  "t": 24.206,
+  "file": "frames/f_0024206.jpg",
+  "url": "http://localhost:4000/cart"
+ },
+ {
+  "t": 24.942,
+  "file": "frames/f_0024942.jpg",
+  "url": "http://localhost:4000/cart"
+ },
+ {
+  "t": 25.669,
+  "file": "frames/f_0025669.jpg",
+  "url": "http://localhost:4000/cart"
+ },
+ {
+  "t": 26.393,
+  "file": "frames/f_0026393.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 27.12,
+  "file": "frames/f_0027120.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 27.849,
+  "file": "frames/f_0027849.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 28.58,
+  "file": "frames/f_0028580.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 29.302,
+  "file": "frames/f_0029302.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 30.018,
+  "file": "frames/f_0030018.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 30.754,
+  "file": "frames/f_0030754.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 31.488,
+  "file": "frames/f_0031488.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 32.215,
+  "file": "frames/f_0032215.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 32.951,
+  "file": "frames/f_0032951.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 33.673,
+  "file": "frames/f_0033673.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 34.4,
+  "file": "frames/f_0034400.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 35.123,
+  "file": "frames/f_0035123.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 36.55,
+  "file": "frames/f_0036550.jpg",
+  "url": "http://localhost:4000/checkout"
+ },
+ {
+  "t": 37.278,
+  "file": "frames/f_0037278.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 38,
+  "file": "frames/f_0038000.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 38.732,
+  "file": "frames/f_0038732.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 39.464,
+  "file": "frames/f_0039464.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 40.193,
+  "file": "frames/f_0040193.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 40.923,
+  "file": "frames/f_0040923.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 41.65,
+  "file": "frames/f_0041650.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 42.384,
+  "file": "frames/f_0042384.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 43.119,
+  "file": "frames/f_0043119.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 43.85,
+  "file": "frames/f_0043850.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 44.576,
+  "file": "frames/f_0044576.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 45.301,
+  "file": "frames/f_0045301.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 46.034,
+  "file": "frames/f_0046034.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 46.767,
+  "file": "frames/f_0046767.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 47.492,
+  "file": "frames/f_0047492.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 48.216,
+  "file": "frames/f_0048216.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 48.944,
+  "file": "frames/f_0048944.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 49.666,
+  "file": "frames/f_0049666.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 50.391,
+  "file": "frames/f_0050391.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 51.119,
+  "file": "frames/f_0051119.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 51.85,
+  "file": "frames/f_0051850.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 52.572,
+  "file": "frames/f_0052572.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 53.298,
+  "file": "frames/f_0053298.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 54.024,
+  "file": "frames/f_0054024.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 54.76,
+  "file": "frames/f_0054760.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 55.483,
+  "file": "frames/f_0055483.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 56.209,
+  "file": "frames/f_0056209.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 56.935,
+  "file": "frames/f_0056935.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ },
+ {
+  "t": 57.672,
+  "file": "frames/f_0057672.jpg",
+  "url": "http://localhost:4000/order/EL-MVN6NZRF81E2"
+ }
+]

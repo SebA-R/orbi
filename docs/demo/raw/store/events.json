@@ -1,0 +1,238 @@
+[
+ {
+  "t": 0.01,
+  "kind": "open"
+ },
+ {
+  "t": 0.01,
+  "kind": "recorder",
+  "text": "recording tab 582729715"
+ },
+ {
+  "t": 0.01,
+  "kind": "status",
+  "text": "connected"
+ },
+ {
+  "t": 0.02,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Reorder my allergy pills, cheapest same dose."
+ },
+ {
+  "t": 0.38,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 2.19,
+  "kind": "status",
+  "text": "tabs_context_mcp"
+ },
+ {
+  "t": 3.61,
+  "kind": "status",
+  "text": "navigate http://localhost:4000/orders"
+ },
+ {
+  "t": 4.66,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 6.04,
+  "kind": "status",
+  "text": "navigate http://localhost:4000/search?q=allergy"
+ },
+ {
+  "t": 6.09,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 7.92,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "I don't have your order history, so I can't tell which allergy pill you use. The store has cetirizine 10 milligram, loratadine 10 milligram, and fexofenadine 180 milligram. The cheapest is Elm Health Loratadine, 30 tablets, for $6.49. The cheapest cetirizine is Elm Health, 30 tablets, for $8.99. Which medicine do you take?"
+ },
+ {
+  "t": 16.11,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Cetirizine 10 milligram, the Elm Health one with 30 tablets please."
+ },
+ {
+  "t": 16.12,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 17.36,
+  "kind": "status",
+  "text": "find \"Elm Health Cetirizine 30 tablets product link or add to cart\""
+ },
+ {
+  "t": 18.6,
+  "kind": "status",
+  "text": "read_page"
+ },
+ {
+  "t": 20.23,
+  "kind": "status",
+  "text": "navigate http://localhost:4000/product/cetirizine-30"
+ },
+ {
+  "t": 20.62,
+  "kind": "status",
+  "text": "read_page"
+ },
+ {
+  "t": 22.37,
+  "kind": "status",
+  "text": "computer left_click"
+ },
+ {
+  "t": 22.52,
+  "kind": "status",
+  "text": "navigate http://localhost:4000/cart"
+ },
+ {
+  "t": 23.12,
+  "kind": "status",
+  "text": "read_page"
+ },
+ {
+  "t": 23.12,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 24.23,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Seems checked; verify and uncheck."
+ },
+ {
+  "t": 24.93,
+  "kind": "status",
+  "text": "form_input"
+ },
+ {
+  "t": 25.12,
+  "kind": "status",
+  "text": "navigate http://localhost:4000/checkout"
+ },
+ {
+  "t": 25.2,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 26.25,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "The membership is off, and the total is $9.64."
+ },
+ {
+  "t": 26.99,
+  "kind": "status",
+  "text": "request_checkout"
+ },
+ {
+  "t": 27.02,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "You're buying 1 Elm Health Cetirizine Allergy Relief 10mg Tablets, 30 tablets for $9.64. Say yes to pay, or no to change it."
+ },
+ {
+  "t": 34.07,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Yes."
+ },
+ {
+  "t": 34.08,
+  "kind": "status",
+  "text": "checkout confirmed"
+ },
+ {
+  "t": 35.33,
+  "kind": "status",
+  "text": "pay_now"
+ },
+ {
+  "t": 35.33,
+  "kind": "recorder",
+  "text": "frames paused (pay_now)"
+ },
+ {
+  "t": 35.34,
+  "kind": "status",
+  "text": "paying"
+ },
+ {
+  "t": 36,
+  "kind": "receipt",
+  "text": {
+   "type": "receipt",
+   "item": "1 × Elm Health Cetirizine Allergy Relief 10mg Tablets, 30 tablets ($8.99)",
+   "total": "$9.64",
+   "last4": "1111"
+  }
+ },
+ {
+  "t": 36,
+  "kind": "status",
+  "text": "order placed"
+ },
+ {
+  "t": 36,
+  "kind": "recorder",
+  "text": "frames resumed (order placed)"
+ },
+ {
+  "t": 37.51,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Your order is placed. It's one 30-count box of Elm Health Cetirizine 10 milligram. The total was $9.64, charged to the card ending 1111. I unchecked a Subscribe and Save membership that would have added $4.99."
+ },
+ {
+  "t": 45.68,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Great, thanks for catching that. Appreciate the help!"
+ },
+ {
+  "t": 45.7,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 46.61,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "You're welcome. Enjoy, and feel free to ask if you need anything else."
+ },
+ {
+  "t": 55.7,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "You too, thanks. Bye!"
+ },
+ {
+  "t": 55.71,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 56.75,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Goodbye!"
+ },
+ {
+  "t": 57.69,
+  "kind": "end",
+  "text": "shopper finished"
+ }
+]
