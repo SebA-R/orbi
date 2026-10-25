@@ -13,6 +13,7 @@
 
 import * as tabsModule from "./tabs.js";
 import * as cdpModule from "./cdp.js";
+import { parseKey } from "./cdp.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
 import { luhnValid } from "../lib/log.js";
 
@@ -28,10 +29,27 @@ const SPACE_KEY = /^( |space|spacebar)$/i;
 // True for keys that activate the focused control: Enter, Space, with or
 // without modifiers ("ctrl+Enter").
 export function isActivationKey(spec) {
-  const s = String(spec ?? "");
-  if (s === " ") return true;
-  const k = s.split("+").pop().trim();
-  return ENTER_KEY.test(k) || SPACE_KEY.test(k);
+  return activationOf(spec) !== null;
+}
+
+// "Enter" or " " when pressing spec would activate the focused control,
+// else null. Decided on what parseKey (and so CDP) will actually send, not
+// on the spelling: "Shift+ " sends a space. A spec parseKey refuses ("\r"
+// and other control characters) is not sent, so it activates nothing; the
+// key route parses first and throws.
+export function activationOf(spec) {
+  let k;
+  try {
+    k = parseKey(spec);
+  } catch {
+    const s = String(spec ?? "");
+    const last = s === " " ? " " : s.split("+").pop().trim();
+    return ENTER_KEY.test(last) || /[\r\n]/.test(s) ? "Enter" : SPACE_KEY.test(last) ? " " : null;
+  }
+  const text = String(k.text ?? "");
+  if (k.key === "Enter" || k.code === "Enter" || k.code === "NumpadEnter" || k.windowsVirtualKeyCode === 13 || /[\r\n]/.test(text)) return "Enter";
+  if (k.key === " " || k.code === "Space" || k.windowsVirtualKeyCode === 32 || /\s/.test(text)) return " ";
+  return null;
 }
 
 // Page-script methods the bridge may call. focused_field is used by the type
@@ -211,12 +229,16 @@ export function createRouter({
         if (/[\r\n]/.test(String(params.text ?? ""))) await pageCall(tabId, "guard_key", { key: "Enter" });
         await cdp.type({ tabId, text: params.text });
         return { ok: true };
-      case "key":
+      case "key": {
+        // Parse first: a spec CDP would not send is refused before any check.
+        const parsed = parseKey(params.key);
         // A single printable key is typing too.
-        if (typeof params.key === "string" && params.key.length === 1) await guardType(tabId, params.key);
-        if (isActivationKey(params.key)) await pageCall(tabId, "guard_key", { key: params.key });
+        if (parsed.text && !/[\r\n]/.test(parsed.text)) await guardType(tabId, parsed.text);
+        const act = activationOf(params.key);
+        if (act) await pageCall(tabId, "guard_key", { key: act === "Enter" ? "Enter" : "Space" });
         await cdp.key({ tabId, key: params.key });
         return { ok: true };
+      }
       case "lock_arm":
         return lockArm(tabId);
       case "press_protected":
