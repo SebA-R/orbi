@@ -140,10 +140,12 @@ test("setupDone counts the four setup checks; the talk key is always done", () =
   assert.equal(setupDone({ site: false, mic: "granted", agent: { connected: true } }), 3);
 });
 
-test("popup text keeps 4.5:1 contrast and the switch track 3:1", async () => {
+test("popup and options text keeps 4.5:1 contrast and controls 3:1", async () => {
   const { readFile } = await import("node:fs/promises");
-  const css = await readFile(new URL("../../../extension/popup/popup.css", import.meta.url), "utf8");
-  const blocks = css.match(/:root \{[^}]*\}/g);
+  const read = (path) => readFile(new URL(`../../../extension/${path}`, import.meta.url), "utf8");
+  // The tokens live in lib/ui.css, shared by both pages.
+  const css = await read("lib/ui.css");
+  const blocks = css.match(/:root \{[^}]*\}/g).filter((b) => b.includes("--bg:"));
   assert.equal(blocks.length, 2, "light and dark tokens");
   const lum = (hex) => {
     const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
@@ -153,13 +155,22 @@ test("popup text keeps 4.5:1 contrast and the switch track 3:1", async () => {
   for (const block of blocks) {
     const v = (name) => block.match(new RegExp(`--${name}: (#[0-9a-f]{6})`, "i"))[1];
     const ratio = (a, b) => { const [x, y] = [lum(v(a)), lum(v(b))].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-    for (const [fg, bg] of [["fg", "bg"], ["muted", "bg"], ["fg", "sheet"], ["soft", "fill"], ["fg", "fill"],
-      ["ok-fg", "ok-bg"], ["warn-fg", "warn-bg"], ["wait-fg", "wait-bg"]]) {
+    for (const [fg, bg] of [["fg", "bg"], ["muted", "bg"], ["fg", "sheet"], ["muted", "sheet"], ["soft", "sheet"], ["soft", "fill"], ["fg", "fill"],
+      ["fg", "hover"], ["ok-fg", "ok-bg"], ["warn-fg", "warn-bg"], ["wait-fg", "wait-bg"], ["primary-fg", "primary-bg"], ["error", "sheet"]]) {
       assert.ok(ratio(fg, bg) >= 4.5, `${fg} on ${bg}: ${ratio(fg, bg).toFixed(2)}`);
     }
-    for (const [a, b] of [["switch-off", "sheet"], ["sw-on", "sheet"], ["knob", "sw-on"], ["focus", "bg"], ["focus", "sheet"]]) {
+    for (const [a, b] of [["switch-off", "sheet"], ["sw-on", "sheet"], ["knob", "sw-on"], ["focus", "bg"], ["focus", "sheet"],
+      ["field-line", "sheet"], ["field-line", "bg"]]) {
       assert.ok(ratio(a, b) >= 3, `${a} on ${b}: ${ratio(a, b).toFixed(2)}`);
     }
   }
-  assert.doesNotMatch(css, /@import|url\(\s*["']?https?:/, "no remote fonts or images");
+  const amber = (name) => css.match(new RegExp(`--${name}: (#[0-9a-f]{6})`, "i"))[1];
+  const [x, y] = [lum(amber("on-amber")), lum(amber("amber"))].sort((p, q) => q - p);
+  assert.ok((x + 0.05) / (y + 0.05) >= 4.5, "Danger mode button text");
+  for (const path of ["lib/ui.css", "popup/popup.css", "options/options.css"]) {
+    assert.doesNotMatch(await read(path), /@import|url\(\s*["']?https?:/, `${path}: no remote fonts or images`);
+  }
+  for (const path of ["popup/popup.html", "options/options.html"]) {
+    assert.match(await read(path), /<link rel="stylesheet" href="\.\.\/lib\/ui\.css">/, `${path} uses the shared look`);
+  }
 });
