@@ -70,7 +70,13 @@ function serveStatic(pathname: string, res: http.ServerResponse) {
   });
 }
 
+// CLEARCART_VOICE=false: for tests and recordings that don't need audio. No
+// token is minted, so nothing reaches Cartesia: replies show as text only and
+// the mic reports that voice is off. Unset or true keeps voice on.
+const VOICE_OFF = /^(false|0)$/i.test((process.env.CLEARCART_VOICE || "").trim());
+
 async function cartesiaToken(res: http.ServerResponse) {
+  if (VOICE_OFF) return json(res, 503, { error: "Voice is off (CLEARCART_VOICE=false)", voice: false });
   const key = process.env.CARTESIA_API_KEY;
   if (!key) return json(res, 500, { error: "CARTESIA_API_KEY is not set in .env" });
   try {
@@ -91,8 +97,8 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
   if (req.method === "GET" && url.pathname === "/healthz") {
-    if (EXT) return json(res, 200, { ok: true, echo: ECHO, browser: "ext", extension: extBridge.connected() });
-    return json(res, 200, { ok: true, echo: ECHO });
+    if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: !VOICE_OFF, browser: "ext", extension: extBridge.connected() });
+    return json(res, 200, { ok: true, echo: ECHO, voice: !VOICE_OFF });
   }
   if (req.method === "GET" || req.method === "HEAD") return serveStatic(url.pathname, res);
   res.writeHead(405).end();
