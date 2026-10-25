@@ -16,6 +16,7 @@ import {
   isRememberAsk,
   MEMORY_MAX_FACTS,
   MemoryStore,
+  redactRule,
   redactTurn,
   sensitiveReason,
   Transcript,
@@ -505,6 +506,22 @@ test("transcript: only the last two hours, capped", () => {
   assert.equal(log.recent(now + TRANSCRIPT_WINDOW_MS + 1).length, 0);
   assert.match(redactTurn("call 519 555 0199 please"), /^\(removed/);
   assert.equal(redactTurn("x".repeat(500), "assistant").length, 160);
+});
+
+test("transcript: the log names the scrubber rule that fired, never the words", () => {
+  const lines: string[] = [];
+  const log = new Transcript(path.join(tmp(), "t.json"), TRANSCRIPT_WINDOW_MS, (l) => lines.push(l));
+  log.add("assistant", "The demo shows test card 4242 4242 4242 4242.");
+  log.add("assistant", "Open https://example.com to see it.");
+  log.add("user", "my password is hunter2");
+  log.add("user", "a blue sweater");
+  assert.deepEqual(lines, [
+    "transcript: assistant turn scrubbed (long number)",
+    "transcript: assistant turn scrubbed (instruction or link)",
+    "transcript: user turn scrubbed (a password)",
+  ]);
+  assert.equal(redactRule("a blue sweater"), null);
+  assert.equal(redactRule("Open https://example.com"), null, "links only drop Orbi's own replies");
 });
 
 test("no memory given (tests, echo): nothing is read or written", async () => {

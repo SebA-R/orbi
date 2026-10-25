@@ -458,6 +458,11 @@ export function createRouter({
   }
 
   async function clickAt(tabId, params, epoch) {
+    // Attach first: on a tab's first CDP call Chrome's debugging bar opens
+    // and shrinks the viewport, so a centred page moves under the pointer.
+    // A ref's rect is read after this; a point the model read off the page
+    // before it is stale.
+    const barOpened = typeof cdp.attach === "function" ? await cdp.attach(tabId).catch(() => false) : false;
     if (params.ref != null && (params.x == null || params.y == null)) {
       // guard_ref checks the element and whatever covers its centre, and
       // answers its rect like "rect" does.
@@ -468,6 +473,9 @@ export function createRouter({
     // One point for the guard and the press, exactly as asked, and inside
     // the viewport (a device-pixel coordinate from a 2x screenshot is not).
     const at = { x: point(params.x, "x"), y: point(params.y, "y") };
+    if (barOpened) {
+      throw new BridgeError(ERR.BAD_REQUEST, "Not clicked: Chrome's debugging bar just opened and the page moved, so that point is out of date. Take a new screenshot, or click by ref.");
+    }
     await inViewport(tabId, at);
     const guard = () => pageCall(tabId, "guard_point", at);
     await guard();

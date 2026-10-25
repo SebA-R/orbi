@@ -569,6 +569,11 @@ export class Session {
   private log: Transcript | null;
   // Past purchases (history.ts). Null in tests that do not give it.
   private history: PurchaseHistory | null;
+  // The server log: each tool call's name and outcome (ok, error code or a
+  // short refusal reason), never its params, results or page text.
+  private toolLog: (line: string) => void;
+  // Tool names by tool_use id, until the result comes back.
+  private toolNames = new Map<string, string>();
   // Card endings pay_with_saved_card reported this session: never sent in a search.
   private seenLast4 = new Set<string>();
   // Saved memory as the model last heard it (see withMemoryNote).
@@ -579,8 +584,9 @@ export class Session {
   // The remember or forget question waiting for an answer, if any.
   private memoryAsk: ((text: string | null) => void) | null = null;
 
-  constructor(private send: (m: ServerMessage) => void, opts: { memory?: MemoryStore | null; log?: Transcript | null; history?: PurchaseHistory | null; carry?: SessionCarry | null; vault?: CardVault } = {}) {
+  constructor(private send: (m: ServerMessage) => void, opts: { memory?: MemoryStore | null; log?: Transcript | null; history?: PurchaseHistory | null; carry?: SessionCarry | null; vault?: CardVault; toolLog?: (line: string) => void } = {}) {
     this.vault = opts.vault;
+    this.toolLog = opts.toolLog ?? (() => {});
     if (opts.carry) {
       this.state.cardFieldsLive = opts.carry.cardFieldsLive;
       this.state.cardTabId = opts.carry.cardTabId ?? null;
@@ -877,9 +883,10 @@ export class Session {
     if (input.hook_event_name !== "PreToolUse") return {};
     const name = input.tool_name;
     const args = (input.tool_input || {}) as Record<string, unknown>;
-    const deny = (reason: string) => ({
-      hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: reason },
-    });
+    const deny = (reason: string) => {
+      this.toolLog(`tool ${shortName(name)} refused: ${refusalGist(reason)}`);
+      return { hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: reason } };
+    };
 
     if (name === WEB_SEARCH) {
       if (this.state.cardFieldsLive) {
@@ -984,8 +991,11 @@ export class Session {
   // be listed or a stray would not move. Clears sweepBroken on success.
   private async runSweep(): Promise<number> {
     const policy = sitePolicy();
-    const n = await returnStrays(this.passTabs(await this.listTabs(), policy), (id, url) => this.navTab(id, url), policy);
+    const tabs = this.passTabs(await this.listTabs(), policy);
+    const n = await returnStrays(tabs, (id, url) => this.navTab(id, url), policy);
     if (n) {
+      const why = tabs.filter((t) => isStrayTab(t.url, policy)).map((t) => (siteBlockReason(t.url!, policy) ? "blocked site" : "checkout page lock"));
+      this.toolLog(`sweep: sent back ${n} tab(s) (${[...new Set(why)].join(", ")})`);
       const left = this.passTabs(await this.listTabs(), policy).filter((t) => isStrayTab(t.url, policy));
       if (left.length) throw new Error(`${left.length} tab(s) still on a blocked site`);
     }
@@ -1686,12 +1696,19 @@ export class Session {
           if (working || this.muted) this.unspoken(block.text.trim());
           else this.held.push(block.text.trim());
         } else if (block.type === "tool_use") {
+          this.toolNames.set(block.id, shortName(block.name));
           this.status(toolLabel(block.name, block.input));
           timing.toolStart(block.id, toolLabel(block.name, block.input));
         }
       }
-    } else if (m.type === "user" && timing.timingOn() && Array.isArray((m as any).message?.content)) {
-      for (const b of (m as any).message.content) if (b?.type === "tool_result") timing.toolEnd(b.tool_use_id);
+    } else if (m.type === "user" && Array.isArray((m as any).message?.content)) {
+      for (const b of (m as any).message.content) {
+        if (b?.type !== "tool_result") continue;
+        const name = this.toolNames.get(b.tool_use_id);
+        this.toolNames.delete(b.tool_use_id);
+        if (name) this.toolLog(`tool ${name} ${b.is_error ? `error ${errorCode(b.content)}` : "ok"}`);
+        if (timing.timingOn()) timing.toolEnd(b.tool_use_id);
+      }
     } else if (m.type === "stream_event" && timing.timingOn()) {
       const e = (m as any).event;
       if (e?.type === "message_start") {
@@ -1810,8 +1827,29 @@ export class Session {
   }
 }
 
+const shortName = (name: string) => name.replace(B, "").replace(C, "");
+
+// The code of a failed tool result ("Error (no_element): ..." from
+// exttools.ts), or a word for what kind of failure it was. Never its text.
+function errorCode(content: unknown): string {
+  const t = responseText(content);
+  const code = /\bError \(([a-z_]+)\)/.exec(t)?.[1];
+  if (code) return code;
+  if (/\bLocked:/.test(t)) return "locked";
+  if (/\bBlocked:/.test(t)) return "blocked";
+  return "other";
+}
+
+// A refusal's first sentence, with site names and long numbers taken out,
+// for the log.
+function refusalGist(reason: string): string {
+  const first = reason.split(/(?<=\.)\s/)[0];
+  const t = first.replace(/https?:\/\/\S+|\b[a-z0-9-]+(\.[a-z0-9-]+)+\b/gi, "<site>").replace(/\d{3,}/g, "#");
+  return t.length > 100 ? t.slice(0, 99) + "…" : t;
+}
+
 function toolLabel(name: string, input: any): string {
-  const short = name.replace(B, "").replace(C, "");
+  const short = shortName(name);
   if (short === "navigate") return `navigate ${input?.url ?? ""}`;
   if (short === "computer") return `computer ${input?.action ?? ""}`;
   if (short === "find") return `find "${input?.query ?? ""}"`;

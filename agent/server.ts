@@ -265,7 +265,7 @@ const hub = new SessionHub(
     if (ECHO) return echoSession(send);
     // carry: the fail-closed browser state of the session this one replaces
     // (a provider switch), so a card left in a form stays guarded.
-    const session = new Session(send, { memory: memoryStore(), log: conversationLog(), history: purchaseHistory(), carry: carry as SessionCarry | undefined });
+    const session = new Session(send, { memory: memoryStore(), log: conversationLog(), history: purchaseHistory(), carry: carry as SessionCarry | undefined, toolLog: (l) => console.log(l) });
     void session.run().finally(() => {
       console.log("session agent stopped");
       ended();
