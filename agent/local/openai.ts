@@ -67,6 +67,29 @@ function stripThinking(s: string): string {
   return s.replace(/<think>[\s\S]*?(<\/think>|$)/g, "").trim();
 }
 
+// The body of res as text, refusing more than max bytes, so a misbehaving
+// local server cannot fill this process's memory.
+async function readCapped(res: Response, max: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      void reader.cancel().catch(() => {});
+      throw new Error(`answer larger than ${max} bytes`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+const CHAT_MAX_BYTES = 8 * 1024 * 1024;
+const LIST_MAX_BYTES = 2 * 1024 * 1024;
+
 let callCounter = 0;
 
 function toolCallsOf(raw: unknown): ToolCall[] {
@@ -108,16 +131,16 @@ const rootOf = (baseUrl: string) => baseUrl.replace(/\/v1$/, "");
 // "ollama" when the server answers Ollama's /api/version, "openai" when it
 // answers anything else, null when it can't be reached (ask again later).
 export async function detectFlavor(baseUrl: string, f: Fetch = fetch): Promise<Flavor | null> {
+  let res: Response;
   try {
-    const res = await f(`${rootOf(baseUrl)}/api/version`, { redirect: "error", signal: AbortSignal.timeout(2_000) });
-    const text = await res.text();
-    try {
-      if (res.ok && typeof JSON.parse(text)?.version === "string") return "ollama";
-    } catch {}
-    return "openai";
+    res = await f(`${rootOf(baseUrl)}/api/version`, { redirect: "error", signal: AbortSignal.timeout(2_000) });
   } catch {
     return null;
   }
+  try {
+    if (res.ok && typeof JSON.parse(await readCapped(res, 64 * 1024))?.version === "string") return "ollama";
+  } catch {}
+  return "openai";
 }
 
 function argsObject(raw: string): Record<string, unknown> {
@@ -187,7 +210,7 @@ export async function chat(r: ChatRequest): Promise<ChatReply> {
   }
   let text: string;
   try {
-    text = await res.text();
+    text = await readCapped(res, CHAT_MAX_BYTES);
   } catch (e) {
     if (r.signal.aborted) throw e;
     if (timeout.aborted) throw timedOut(r.timeoutMs);
@@ -218,9 +241,8 @@ export type LocalModel = { id: string; tools?: boolean };
 
 async function getJson(url: string, timeoutMs: number, f: Fetch): Promise<any> {
   const res = await f(url, { redirect: "error", signal: AbortSignal.timeout(timeoutMs), headers: { Accept: "application/json" } });
-  const text = await res.text();
+  const text = await readCapped(res, LIST_MAX_BYTES);
   if (!res.ok) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status });
-  if (text.length > 2_000_000) throw new Error("answer too large");
   return JSON.parse(text);
 }
 

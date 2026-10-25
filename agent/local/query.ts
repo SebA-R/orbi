@@ -96,6 +96,7 @@ export function stdioToolServer(name: string, command: string, args: string[], t
   return {
     timeoutMs,
     async start() {
+      if (client) return;
       const c = new Client({ name: "clearcart-local", version: "0.1.0" });
       try {
         const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => typeof e[1] === "string"));
@@ -137,7 +138,9 @@ export type LocalOptions = {
   vision?: boolean;
   // Ollama only: the context window to load the model with.
   contextTokens?: number;
-  systemPrompt: string;
+  // A function is called for every request, so it can say the settings
+  // as they are now.
+  systemPrompt: string | (() => string);
   // By MCP server name: "browser", "clearcart". Tool names are
   // mcp__<server>__<tool>, as on the SDK path.
   servers: Record<string, ToolServer>;
@@ -171,9 +174,16 @@ function unlessAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T | typeo
   });
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T | CallResult> {
+// p, or a timeout error after ms; onTimeout runs then (it cancels the call,
+// so a question the tool asked stops waiting for an answer).
+function withTimeout<T>(p: Promise<T>, ms: number, what: string, onTimeout: () => void): Promise<T | CallResult> {
   let timer: NodeJS.Timeout;
-  const late = new Promise<CallResult>((r) => (timer = setTimeout(() => r(errorResult(`Error: ${what} timed out after ${Math.round(ms / 1000)} s.`)), ms)));
+  const late = new Promise<CallResult>((r) => {
+    timer = setTimeout(() => {
+      r(errorResult(`Error: ${what} timed out after ${Math.round(ms / 1000)} s.`));
+      onTimeout();
+    }, ms);
+  });
   return Promise.race([p, late]).finally(() => clearTimeout(timer));
 }
 
@@ -299,7 +309,8 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         }
         this.fit();
         let reply;
-        const messages: ChatMessage[] = [{ role: "system", content: this.o.systemPrompt }, ...this.turns.flat()];
+        const system = typeof this.o.systemPrompt === "function" ? this.o.systemPrompt() : this.o.systemPrompt;
+        const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat()];
         try {
           this.flavor ??= await unlessAborted(detectFlavor(this.o.baseUrl, this.o.fetch), signal).then((f) => (f === ABORTED ? null : f));
           reply = await chat({
@@ -385,8 +396,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     const pre = await unlessAborted(this.preToolUse(t.full, args, call.id, signal), signal);
     if (pre === ABORTED || signal.aborted) return refuse(NOT_RUN);
     if (pre !== null) return refuse(pre);
-    // 3. The tool itself.
-    const running = withTimeout(t.server.call(t.tool, args, signal), t.server.timeoutMs, t.tool);
+    // 3. The tool itself. Its signal fires on interrupt, on close and when
+    // it runs out of time.
+    const cancel = new AbortController();
+    const running = withTimeout(t.server.call(t.tool, args, AbortSignal.any([signal, cancel.signal])), t.server.timeoutMs, t.tool, () => cancel.abort());
     const res = await unlessAborted(running, signal);
     if (res === ABORTED) {
       // Not waited for, but the PostToolUse hooks (the tab sweep) still run
