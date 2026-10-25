@@ -5,7 +5,7 @@
 // time: a newer hello replaces the older socket (newest wins), so a reloaded
 // service worker takes over without waiting for the old socket to time out.
 //
-// Request params can hold card values (fill_payment), so nothing here ever
+// Request params can hold card values (fill_card), so nothing here ever
 // logs params or results; only method names and error codes.
 
 import { EventEmitter } from "node:events";
@@ -36,7 +36,7 @@ export const TOOLS = [
   "scroll",
   "screenshot",
 ] as const;
-export const INTERNAL = ["tab_info", "agent_tabs", "page_context", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref", "lock_arm", "press_protected", "press_unlocked", "lock_info", "actions_stop"] as const;
+export const INTERNAL = ["tab_info", "agent_tabs", "page_context", "fill_card", "clear_card", "card_state", "order_buttons", "rect", "click_ref", "lock_arm", "press_protected", "press_unlocked", "lock_info", "actions_stop"] as const;
 export const ERR = {
   BAD_REQUEST: "bad_request",
   UNKNOWN_METHOD: "unknown_method",
@@ -189,7 +189,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       // Only the extension may be the extension: not a web page, not the
       // voice console, not another extension. Otherwise it could take over
       // the bridge and send settings such as Danger mode, or receive the
-      // card pay_now fills. Clients outside a browser send no Origin.
+      // card pay_with_saved_card fills. Clients outside a browser send no Origin.
       if (target === this.wss && !extOriginAllowed(req.headers.origin)) {
         socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;

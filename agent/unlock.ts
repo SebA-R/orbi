@@ -5,21 +5,22 @@
 // a grant; the gate issues one only when all of these hold:
 //   - the user said an explicit yes to request_checkout's read-back
 //     (confirmation.state === "confirmed"),
-//   - the tab's page is on a pay site (CLEARCART_PAY_ORIGINS, default
-//     none). This is not the browse policy: open web browsing lets Claude
-//     read almost any site, but never makes one of them a pay site,
-//   - the total on the page matches the total the user said yes to.
+//   - the tab's page is on a site Clearcart may use (origins.ts usableSite:
+//     the browse policy in force, the user's blocked sites included),
+//   - the total on the page matches, to the cent and currency, the total
+//     the user said yes to.
 // A grant is a random token bound to that tab and origin, good for one press
 // within GRANT_TTL_MS. On the extension path, pressing also needs a
 // single-use nonce from the extension (lock_arm) and the extension checks
 // the target is an order button (press_protected), so the model cannot
 // unlock anything by any tool call.
 //
-// pay_now is the only flow that asks for grants.
+// pay_with_saved_card is the only flow that asks for grants.
 
 import { randomBytes } from "node:crypto";
 
-import { originOf, paySite } from "./origins.ts";
+import { parseMoney, sameMoney } from "./money.ts";
+import { originOf, usableSite } from "./origins.ts";
 import type { ExtBridge } from "./extbridge.ts";
 
 export const GRANT_TTL_MS = 60_000;
@@ -37,11 +38,6 @@ export type Grant = { token: string };
 
 type Live = { tabId: number; origin: string; expires: number };
 
-export function money(s: string): number {
-  const n = Number(String(s).replace(/[^0-9.]/g, ""));
-  return Number.isFinite(n) && String(s).match(/\d/) ? n : NaN;
-}
-
 export class UnlockGate {
   private live = new Map<string, Live>();
   private isAllowed: (href: string | null) => boolean;
@@ -49,7 +45,7 @@ export class UnlockGate {
   private ttlMs: number;
 
   constructor(opts: { isAllowed?: (href: string | null) => boolean; now?: () => number; ttlMs?: number } = {}) {
-    this.isAllowed = opts.isAllowed ?? paySite;
+    this.isAllowed = opts.isAllowed ?? usableSite;
     this.now = opts.now ?? Date.now;
     this.ttlMs = opts.ttlMs ?? GRANT_TTL_MS;
   }
@@ -60,10 +56,10 @@ export class UnlockGate {
     }
     const origin = originOf(req.href);
     if (!origin || !this.isAllowed(req.href)) {
-      return { ok: false, error: "This site is not a Clearcart pay site, so its order button stays locked." };
+      return { ok: false, error: "This page is on a site Clearcart does not use, so its order button stays locked." };
     }
-    const page = money(req.pageTotal);
-    if (!Number.isFinite(page) || Math.abs(page - money(req.confirmation.total)) > 0.005) {
+    const page = parseMoney(req.pageTotal);
+    if (!page || !sameMoney(page, parseMoney(req.confirmation.total))) {
       return { ok: false, error: `The page total ${req.pageTotal || "is unknown and"} does not match the ${req.confirmation.total} the user said yes to.` };
     }
     for (const [t, l] of this.live) if (l.expires <= this.now()) this.live.delete(t);

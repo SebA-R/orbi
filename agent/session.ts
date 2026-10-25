@@ -27,8 +27,9 @@ import { createExtToolsServer } from "./exttools.ts";
 import { withContext, type PageContext } from "./context.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
-import { isCheckoutUrl, originOf, paySite, SITE_POLICY, siteBlockReason, type SitePolicy } from "./origins.ts";
+import { isCheckoutUrl, originOf, siteBlockReason, sitePolicy, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
+import type { CardVault } from "../vault/index.ts";
 import { buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, MEMORY_OFF_PROMPT, MEMORY_PROMPT } from "./prompt.ts";
 import { factFromUserWords, factNamedBy, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
@@ -50,8 +51,8 @@ const BROWSER_SERVER =
   process.env.OCIC_SERVER || "/Users/sebastianarellano-rubach/code/open-claude-in-chrome/host/mcp-server.js";
 
 // Which sites may be browsed comes from origins.ts (CLEARCART_BROWSE_MODE:
-// open web minus a blocklist, or the allowlist). pay_now and the unlock gate
-// only serve CLEARCART_PAY_ORIGINS.
+// open web minus a blocklist, or the allowlist). pay_with_saved_card pays on
+// any of them, only right after the user's yes (pay.ts, unlock.ts).
 
 const B = "mcp__browser__";
 const C = "mcp__clearcart__";
@@ -97,7 +98,7 @@ export const ALLOWED = [
   "read_page",
   "read_console_messages",
   "set_tab_focus",
-].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
+].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_with_saved_card", C + "request_unlock"], MEMORY_TOOLS);
 
 // Blocked while card values sit in the checkout form: anything that can read
 // or screenshot the page, or change it.
@@ -108,7 +109,15 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
 // CLEARCART_BROWSER=ext: Claude's browser tools are the Clearcart extension's
 // TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
 // key and scroll stand in for "computer" in the card-live block list.
-const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
+const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_with_saved_card", C + "request_unlock"], MEMORY_TOOLS);
+
+// Browser tools that change a page or a tab. One of them between the
+// user's spoken yes and pay_with_saved_card withdraws the yes: paying runs
+// only right after the read-back. Danger mode's announced confirmation is
+// left as it always was.
+const ACTS = new Set(
+  ["navigate", "tabs_create", "tabs_create_mcp", "tabs_close", "tabs_close_mcp", "computer", "click", "type", "key", "form_input"].map((t) => B + t)
+);
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
   ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
@@ -140,11 +149,8 @@ export function memoryOn(): boolean {
 const CONTEXT_TIMEOUT_MS = 1_500;
 
 // In ext mode the extension's blocked sites list replaces the suggested one
-// once it has sent it.
-export function sitePolicy(): SitePolicy {
-  const entries = extMode() ? extBridge.blocklist() : null;
-  return entries ? { ...SITE_POLICY, entries } : SITE_POLICY;
-}
+// once it has sent it (origins.ts).
+export { sitePolicy };
 
 // The browse policy for a URL Claude asked to open (navigate, tabs_create).
 // Null when it may open.
@@ -236,14 +242,14 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
 }
 
 // Button lock for navigation: checkout and payment pages are off limits on
-// every site except the pay sites, where pay_now runs. Both browser paths,
+// every site, unless the user asked to check out. Both browser paths,
 // for navigate and for tabs_create / tabs_create_mcp with a url. passed:
 // true when the user asked to go to checkout on this tab and origin
 // (request_unlock's checkout pass), which lifts the block for that visit.
 // Off in Danger mode, like the rest of the button lock.
 export function navigateLockReason(url: string, passed?: (url: string) => boolean, danger: boolean = dangerModeOn()): string | null {
   if (danger || url === "back" || url === "forward") return null;
-  if (isCheckoutUrl(url) && !paySite(url) && !passed?.(url)) {
+  if (isCheckoutUrl(url) && !passed?.(url)) {
     return "Locked: checkout pages open only by pressing the cart's checkout button. If the user asked to check out, call request_unlock with that button's ref and label; otherwise stop at the cart and tell the user what is in it. Never tell the user it is locked.";
   }
   return null;
@@ -388,6 +394,10 @@ export class Session {
   private abort = new AbortController();
   private awaitingAnswer: ((text: string | null) => void) | null = null;
   private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false, autoOk: () => dangerModeOn() };
+  // pay_with_saved_card is running.
+  private paying = false;
+  // Saved cards (vault/index.ts); pay.ts uses agent/cards.ts's when unset.
+  private vault: CardVault | undefined;
   private closed = false;
   private q: Query | null = null;
   // The user's most recent words, for request_unlock's direct-ask match.
@@ -436,7 +446,8 @@ export class Session {
   // The remember or forget question waiting for an answer, if any.
   private memoryAsk: ((text: string | null) => void) | null = null;
 
-  constructor(private send: (m: ServerMessage) => void, opts: { memory?: MemoryStore | null; log?: Transcript | null } = {}) {
+  constructor(private send: (m: ServerMessage) => void, opts: { memory?: MemoryStore | null; log?: Transcript | null; vault?: CardVault } = {}) {
+    this.vault = opts.vault;
     this.mem = opts.memory ?? null;
     this.log = opts.log ?? null;
     this.restore = this.log?.recent() ?? null;
@@ -458,6 +469,10 @@ export class Session {
       origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
       passwordYes: pw && isExplicitYes(text) ? pw : null,
     };
+    // New words after a spoken yes that has not paid yet: the conversation
+    // moved on ("wait, no"), so that yes no longer counts. The answer to a
+    // read-back comes while it is still pending, so it is not this.
+    this.withdrawYes("the user spoke again");
     if (this.awaitingAnswer) {
       const resolve = this.awaitingAnswer;
       this.awaitingAnswer = null;
@@ -561,8 +576,8 @@ export class Session {
 
   // The user moved to another Clearcart window, or the one they used went
   // away (hub.ts). A read-back or unlock question still waiting was asked
-  // there, so it is declined, never confirmed. A yes given there that
-  // pay_now has not used yet is withdrawn too: paying needs a read-back the
+  // there, so it is declined, never confirmed. A yes given there that is
+  // not used yet is withdrawn too: paying needs a read-back the
   // user hears in the window they are in now. (A payment already under way
   // is left to finish; its receipt goes to the new window.) The words said
   // there stop counting for request_unlock, and the turn in progress is
@@ -617,6 +632,30 @@ export class Session {
     this.send({ type: "status", text });
   }
 
+  // A spoken yes not yet used by pay_with_saved_card stops counting. Never a
+  // Danger mode announcement, whose rules stay as they were.
+  private withdrawYes(why: string) {
+    const c = this.state.confirmation;
+    if (c?.state !== "confirmed" || c.auto) return;
+    c.state = "declined";
+    this.status(`checkout yes withdrawn: ${why}`);
+  }
+
+  // The guard's way down when no payment is running and the card's page no
+  // longer holds it (the tab closed or moved on, or its card fields are
+  // empty or could be emptied now).
+  private async cardGone(): Promise<boolean> {
+    const tabId = this.state.cardTabId;
+    if (this.paying || !extMode() || tabId == null) return false;
+    try {
+      const s = await extBridge.call<{ filled?: number }>("card_state", { tabId }, 10_000);
+      if (s && s.filled === 0) return true;
+    } catch (e) {
+      if ((e as { code?: string }).code === "no_tab") return true;
+    }
+    return extBridge.call("clear_card", { tabId }, 10_000).then(() => true, () => false);
+  }
+
   private guard: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const name = input.tool_name;
@@ -632,8 +671,11 @@ export class Session {
         if (!ok) return deny("Blocked: Clearcart could not check which sites its tabs are on, so browser tools are paused. Try again in a moment, and tell the user if it keeps failing.");
       }
       if (this.state.cardFieldsLive && (extMode() ? EXT_BLOCKED_WHILE_CARD_LIVE : BLOCKED_WHILE_CARD_LIVE).has(name)) {
-        return deny("Blocked: card details are in the checkout form. Wait for pay_now to finish.");
+        if (!(await this.cardGone())) return deny("Blocked: card details are in the checkout form. Wait for pay_with_saved_card to finish.");
+        this.state.cardFieldsLive = false;
+        this.state.cardTabId = null;
       }
+      if (ACTS.has(name)) this.withdrawYes("another browser action came first");
       const opens = name === B + "navigate" || ((name === B + "tabs_create" || name === B + "tabs_create_mcp") && args.url != null);
       if (opens && checkSites) {
         const url = String(args.url || "");
@@ -804,16 +846,17 @@ export class Session {
       this.status("checkout not read back: the user interrupted");
       return { content: [{ type: "text" as const, text: "declined. The user interrupted before the order was read back." }] };
     }
-    // Pin the yes to this checkout tab and the cart on it (pay.ts). Taken while
-    // the read-back plays; if it can't be read in 5 s the tab stays unknown and
-    // pay_now refuses (fail closed).
+    // Pin the yes to this checkout tab, its site and the cart on it (pay.ts).
+    // Taken while the read-back plays; if it can't be read in 5 s the tab
+    // stays unknown and pay_with_saved_card refuses (fail closed).
     this.cancelMemoryAsk();
-    const conf: Confirmation = { item, quantity, total, state: "pending", tabId: null, cart: "" };
+    const conf: Confirmation = { item, quantity, total, state: "pending", tabId: null, origin: null, cart: "" };
     this.state.confirmation = conf;
-    // No browser tab used yet: nothing to pin, and pay_now will refuse.
-    const snap = this.state.lastTabId == null ? Promise.resolve({ tabId: null, cart: "" }) : Promise.race([
+    // No browser tab used yet: nothing to pin, and paying will refuse.
+    const none = { tabId: null, origin: null, cart: "" };
+    const snap = this.state.lastTabId == null ? Promise.resolve(none) : Promise.race([
       checkoutSnapshot(this.state.lastTabId),
-      new Promise<{ tabId: null; cart: string }>((r) => setTimeout(() => r({ tabId: null, cart: "" }), 5_000).unref()),
+      new Promise<typeof none>((r) => setTimeout(() => r(none), 5_000).unref()),
     ]);
     const changed = changes?.trim() ? changes.trim().replace(/([^.!?])$/, "$1.") : "";
     // Danger mode: the user chose no spoken yes. Say what is being bought,
@@ -831,7 +874,7 @@ export class Session {
       conf.state = "confirmed";
       conf.confirmedAt = Date.now();
       this.status("checkout announced: Danger mode, no yes needed");
-      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. On a Clearcart pay site call pay_now now; on another site press its Place order button yourself now." }] };
+      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. Call pay_with_saved_card now to fill the card saved in Clearcart and place the order, or, if the site already has the user's card, press its Place order button yourself now." }] };
     }
     this.send({ type: "confirm", item, quantity, total, changes: changed });
     this.say(`You're buying ${quantity} ${item} for ${total}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
@@ -964,17 +1007,16 @@ export class Session {
     this.status(`unlocked once: ${d.cls} "${label}" (${how})`);
     const next =
       d.cls === "checkout"
-        ? paySite(href)
-          ? " Continue as usual; paying still goes through request_checkout and pay_now."
-          : " Read the checkout page for the user. Never enter an address, card or other details there, and never press Place order; tell the user they can finish it themselves."
+        ? " Read the checkout page for the user. Never enter an address, card or other details there, and never press Place order yourself: when the order is right, paying goes through request_checkout and pay_with_saved_card."
         : d.cls === "account"
           ? " Never type a password or card number; the user types those themselves."
           : "";
     return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""} Do not click it again; another press needs another request_unlock.${next}`);
   }
 
-  // The pay_now tool body.
-  async payNowCall(): Promise<ToolText> {
+  // The pay_with_saved_card tool body. Claude gets { ok, last4, nickname }
+  // or { ok: false, error }, never a card field.
+  async payNowCall(args: { cardNickname?: string } = {}): Promise<ToolText> {
     // A yes Danger mode skipped counts only while Danger mode is still on.
     const c = this.state.confirmation;
     if (c?.auto && !dangerModeOn()) {
@@ -982,13 +1024,20 @@ export class Session {
       this.status("payment not started: Danger mode was turned off");
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Danger mode was turned off. Call request_checkout again; the user now says yes first." }) }] };
     }
+    if (this.paying) return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "A payment is already running. Wait for it." }) }] };
+    this.paying = true;
     this.status("paying");
-    const r = await payNow(this.state);
+    let r: Awaited<ReturnType<typeof payNow>>;
+    try {
+      r = await payNow(this.state, { cardNickname: args.cardNickname }, this.vault ? { vault: this.vault } : {});
+    } finally {
+      this.paying = false;
+    }
     if (r.ok) {
       this.send({ type: "receipt", ...r.receipt });
       this.send({ type: "confirm_done", outcome: "paid" });
       this.status("order placed");
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, last4: r.last4, total: r.receipt.total }) }] };
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, last4: r.last4, nickname: r.nickname }) }] };
     }
     this.status(`payment not completed: ${r.error}`);
     this.send({ type: "confirm_done", outcome: "failed" });
@@ -1136,15 +1185,17 @@ export class Session {
     );
 
     const payNowTool = tool(
-      "pay_now",
-      "Pay for the confirmed order. Only works right after request_checkout returned confirmed, with the checkout page open. Fills payment from the secure vault and places the order. Returns { ok, last4 } or { ok: false, error }.",
-      {},
-      () => this.payNowCall()
+      "pay_with_saved_card",
+      "Pay for the order the user just confirmed, with a card saved in Clearcart. Call it right after request_checkout returned confirmed, on that checkout page, with no other step in between. Clearcart fills the card into the page and places the order itself; you never see the card. Returns { ok, last4, nickname } or { ok: false, error }.",
+      {
+        cardNickname: z.string().max(60).optional().describe("The saved card's nickname, only if the user named one, e.g. \"Work Visa\". Omit to use the default card."),
+      },
+      (args) => this.payNowCall(args)
     );
 
     const requestUnlockTool = tool(
       "request_unlock",
-      "Press a [locked] or [uncheck only] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card. Use it whenever the task needs a locked control or a click comes back Locked, with the ref and label it names; do not give up, retry the click or look for a workaround. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_now. Returns what happened.",
+      "Press a [locked] or [uncheck only] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card. Use it whenever the task needs a locked control or a click comes back Locked, with the ref and label it names; do not give up, retry the click or look for a workaround. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_with_saved_card. Returns what happened.",
       {
         tabId: z.number().int().optional().describe("Tab id of the page with the control. Default: the last tab used."),
         ref: z.string().optional().describe("The control's ref from read_page or find, e.g. ref_12"),

@@ -18,7 +18,7 @@
 //   - When the owner changes or goes away the Session hands off
 //     (Session.handOff): a read-back or unlock question still waiting is
 //     declined, never confirmed, so only the window that heard it can answer
-//     it; a yes pay_now has not used is withdrawn; the turn in progress
+//     it; a yes not used for paying yet is withdrawn; the turn in progress
 //     stops talking. The old owner gets
 //     {type:"standby", reason:"moved"} and stops speaking and listening.
 //   - The Session ends when the last socket closes, or when its agent loop
