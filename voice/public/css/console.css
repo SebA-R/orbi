@@ -16,6 +16,8 @@
   --core-lo: #d9dbe2;
   --core-shadow: rgb(30 34 60 / .16);
   --aura-strength: .55;
+  --sheen-opacity: .14;
+  --sheen-blend: soft-light;
   /* The one accent: a light spectrum, close to Apple Intelligence's. */
   --s1: #2e8bff;
   --s2: #b65cff;
@@ -29,7 +31,7 @@
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #000000;
     --surface: #161618;
     --ink: #f5f5f7;
@@ -43,8 +45,31 @@
     --core-lo: #050506;
     --core-shadow: rgb(0 0 0 / .6);
     --aura-strength: .75;
+    --sheen-opacity: .28;
+    --sheen-blend: screen;
+    color-scheme: dark;
   }
 }
+/* Same tokens when a page forces the theme (?theme=dark). */
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --surface: #161618;
+  --ink: #f5f5f7;
+  --muted: #a1a1a6;
+  --hairline: rgb(255 255 255 / .1);
+  --accent: #2997ff;
+  --ok: #30d158;
+  --warn: #ff6961;
+  --core-hi: #3a3a42;
+  --core-mid: #16161b;
+  --core-lo: #050506;
+  --core-shadow: rgb(0 0 0 / .6);
+  --aura-strength: .75;
+  --sheen-opacity: .28;
+  --sheen-blend: screen;
+  color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -152,12 +177,9 @@ main { max-width: 44rem; margin: 0 auto; padding: 0 24px 4rem; }
   position: absolute; inset: -30%;
   background: var(--spectrum);
   filter: blur(44px);
-  opacity: .14;
-  mix-blend-mode: soft-light;
+  opacity: var(--sheen-opacity);
+  mix-blend-mode: var(--sheen-blend);
   transition: opacity .6s var(--ease);
-}
-@media (prefers-color-scheme: dark) {
-  .orb-sheen { opacity: .28; mix-blend-mode: screen; }
 }
 
 body[data-ui="listening"] .orb-aura { opacity: var(--aura-strength); }
@@ -397,6 +419,11 @@ input[type="range"]:focus-visible { outline-offset: 2px; }
   border: 0; border-radius: 12px; background: var(--hairline); cursor: pointer;
 }
 .done:hover { background: color-mix(in srgb, var(--ink) 12%, transparent); }
+
+/* ---------- gallery previews (?demo=) ---------- */
+[data-demo] .connection { visibility: hidden; }
+[data-demo] :focus-visible { outline: none; }
+.orb-bars { display: none; }
 
 /* ---------- small screens ---------- */
 @media (max-width: 520px) {

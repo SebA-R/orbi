@@ -253,6 +253,7 @@ function frame(now) {
   // Fast attack, slower release, like a VU meter.
   level += (target - level) * (target > level ? 0.35 : 0.08);
   spin += (SPIN[state] - spin) * 0.04;
+  document.body.style.setProperty('--level', reducedMotion.matches ? '0' : level.toFixed(3));
   if (reducedMotion.matches) {
     orbParts.aura.style.transform = orbParts.ring.style.transform = orbParts.sheen.style.transform = '';
     els.orb.style.transform = '';
