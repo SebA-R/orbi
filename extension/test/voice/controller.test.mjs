@@ -646,3 +646,52 @@ test("send on release: the STT closing mid-hold keeps the words for the release"
   fire(r, TAIL_MS);
   assert.deepEqual(userTexts(r), [{ type: "user_text", text: "oat milk" }]);
 });
+
+test("send on release: a final in the tail still finishes the STT socket", async () => {
+  const r = rig();
+  await r.c.start();
+  r.c.stop();
+  r.stt.h.onFinal("milk");
+  assert.equal(userTexts(r).length, 1);
+  fire(r, TAIL_MS);
+  assert.equal(r.stt.finished, true);
+});
+
+test("send on release: nothing heard yet (slow connect) waits for the close, not the window", async () => {
+  const r = rig();
+  await r.c.start();
+  r.c.stop();
+  fire(r, TAIL_MS);
+  fire(r, FINAL_WAIT_MS);
+  r.stt.h.onFinal("eggs");
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs" }]);
+});
+
+test("send on release: standby moved after release drops the unsent turn", async () => {
+  const r = rig();
+  await r.c.start();
+  r.stt.h.onFinal("eggs");
+  r.c.stop();
+  r.c.onAgentMessage({ type: "standby", reason: "moved" });
+  fire(r, TAIL_MS);
+  r.stt.h.onFinal("and milk");
+  fire(r, FINAL_WAIT_MS);
+  assert.deepEqual(userTexts(r), []);
+  assert.ok(r.log.includes("chime:error"));
+});
+
+test("send on release: pressing again before the send joins the turn, no cut", async () => {
+  const r = rig();
+  await r.c.start();
+  r.stt.h.onFinal("eggs");
+  r.c.stop();
+  const before = r.agent.sent.length;
+  await r.c.start();
+  assert.ok(!r.log.slice(-2).includes("chime:cut"), "no cut for our own pending turn");
+  r.stt.h.onFinal("and milk");
+  r.c.stop();
+  fire(r, TAIL_MS);
+  fire(r, FINAL_WAIT_MS);
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs and milk" }]);
+  assert.equal(r.agent.sent.slice(before).filter((m) => m.type === "user_text").length, 1);
+});

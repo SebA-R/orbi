@@ -217,11 +217,22 @@ export class VoiceController {
         return;
       }
     }
+    // Pressed again before the last turn went out: its words join this one,
+    // so it is never interrupted by its own next press or sent mid-hold.
+    const prev = this.turn;
+    let carried = "";
+    if (prev && !prev.open && !prev.sent && !prev.dropped) {
+      carried = join([...prev.parts, prev.partial]);
+      prev.dropped = true;
+      if (prev.waitTimer != null) this.clearTimer(prev.waitTimer);
+      prev.waitTimer = null;
+      if (prev.expected) this.awaitingReply = false;
+    }
     this.listening = true;
     this.confirmed = false;
     this.held = [];
     this.latched = latch;
-    const turn = { latched: latch, open: true, parts: [], partial: "", sent: false };
+    const turn = { latched: latch, open: true, parts: carried ? [carried] : [], partial: "", sent: false, carried };
     this.turn = turn;
     if (latch) silent = false;
     this.resumeAudio();
@@ -341,6 +352,7 @@ export class VoiceController {
   // A quick tap: drop the recording without a sound or a state change.
   cancel() {
     if (!this.listening || this.confirmed) return;
+    const carried = this.turn && this.turn.carried;
     if (this.turn) this.turn.dropped = true;
     this.#endLatch();
     this.listening = false;
@@ -354,7 +366,8 @@ export class VoiceController {
       this.preDucked = true;
       this.#armPreDuck();
     } else this.speaker.unduck?.();
-    this.#settle();
+    if (carried) this.#sendUserText(carried); // a tap doesn't lose the last turn's words
+    else this.#settle();
   }
 
   // Silence our speech now and tell the agent to drop the rest of its turn.
@@ -413,13 +426,15 @@ export class VoiceController {
     // Keep a short tail so the last word isn't clipped, then let Ink finalize.
     this.setTimer(() => {
       if (!this.listening) this.mic.sink = null;
-      if (!turn) return;
-      if (!s || turn.sent) return this.#flush(turn, turn.partial); // the STT already closed
-      s.finish();
+      if (s) s.finish();
+      if (!turn || turn.sent || turn.dropped) return;
+      if (!s) return this.#flush(turn, turn.partial); // the STT already closed
       // Don't wait on Ink forever: send what we have, with the open partial.
+      // Heard nothing yet (a slow connect): wait for the close instead, which
+      // stt.js bounds, so a short press's only final is never dropped.
       turn.waitTimer = this.setTimer(() => {
         turn.waitTimer = null;
-        this.#flush(turn, turn.partial);
+        if (turn.parts.length || turn.partial.trim()) this.#flush(turn, turn.partial);
       }, FINAL_WAIT_MS);
     }, TAIL_MS);
   }
@@ -454,7 +469,10 @@ export class VoiceController {
   // here that will never be answered get the error cue, so the loss is
   // heard, not silent.
   standby(reason) {
-    const lost = reason === "moved" ? this.listening && this.confirmed : !this.listening;
+    const t = this.turn;
+    const pending = !this.listening && t && !t.sent && !t.dropped && !!(t.parts.length || t.partial.trim());
+    const lost = reason === "moved" ? (this.listening && this.confirmed) || pending : !this.listening;
+    if (reason === "moved" && pending) t.dropped = true; // released but not sent yet
     if (reason === "moved" && this.listening) {
       if (this.turn) this.turn.dropped = true;
       this.#endLatch();
