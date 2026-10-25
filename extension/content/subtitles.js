@@ -213,13 +213,29 @@
     watcher.observe(root, { childList: true });
   }
 
+  // A fade-out was about to empty the card: empty it now, so the old words
+  // don't come back with the new ones.
+  function flushPendingClear() {
+    if (!ui.clearTimer) return;
+    clearTimeout(ui.clearTimer);
+    ui.clearTimer = 0;
+    clearText();
+  }
+
   function show() {
     if (!ui.enabled || !mount()) return;
-    clearTimeout(ui.clearTimer);
+    flushPendingClear();
     clearTimeout(ui.staleTimer);
     ui.staleTimer = setTimeout(hide, STALE_MS);
     ui.wrap.classList.add("on");
     raise();
+  }
+
+  function clearText() {
+    ui.agentWords = [];
+    ui.lastSpeaker = null;
+    if (ui.agent) ui.agent.textContent = "";
+    if (ui.user) ui.user.textContent = "";
   }
 
   // Fade out first, then empty the card, so the words don't vanish mid-fade.
@@ -230,11 +246,9 @@
     if (ui.wrap) ui.wrap.classList.remove("on");
     clearTimeout(ui.clearTimer);
     ui.clearTimer = setTimeout(() => {
+      ui.clearTimer = 0;
       if (ui.wrap && ui.wrap.classList.contains("on")) return;
-      ui.agentWords = [];
-      ui.lastSpeaker = null;
-      if (ui.agent) ui.agent.textContent = "";
-      if (ui.user) ui.user.textContent = "";
+      clearText();
     }, FADE_MS);
   }
 
@@ -280,6 +294,7 @@
     if (typeof text !== "string") return;
     text = text.replace(/\s+/g, " ").trim().slice(-MAX_CHARS);
     if (!ui.enabled || !mount()) return;
+    flushPendingClear(); // before the new text goes in
     final = final === true;
 
     if (speaker === "user") {

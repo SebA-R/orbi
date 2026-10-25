@@ -234,3 +234,20 @@ test("stylesheet honors reduced motion, dark mode and stays inside the shadow ro
   assert.match(css, /max-width: min\(720px/);
   assert.equal(t.window.document.head.querySelectorAll("style,link").length, 0, "no page-level styles added");
 });
+
+test("a line arriving mid-fade clears the old words at once instead of bringing them back", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "user", text: "old question", final: true });
+  t.send({ type: "subtitle", speaker: "agent", text: "Old answer.", final: true });
+  t.tick(5000);
+  assert.equal(t.visible(), false, "fading");
+  t.send({ type: "voice.state", state: "listening" });
+  assert.ok(t.visible());
+  assert.equal(t.$(".agent").textContent, "");
+  assert.equal(t.$(".user").textContent, "");
+  t.tick(5000);
+  t.send({ type: "subtitle", speaker: "agent", text: "New.", final: true });
+  t.tick(5000);
+  t.send({ type: "subtitle", speaker: "agent", text: "Newer.", final: false });
+  assert.equal(t.$(".agent").textContent.trim(), "Newer.");
+});
