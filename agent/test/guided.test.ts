@@ -52,6 +52,39 @@ test("the say tool is no longer pushed for progress notes", () => {
   assert.match(src, /tool\(\s*"say",/);
 });
 
+test("a setting note goes after the context block, before the user's words", async () => {
+  const prev = process.env.CLEARCART_BROWSER;
+  process.env.CLEARCART_BROWSER = "ext";
+  try {
+    const s = new Session(() => {});
+    s.pageContext = async () => ({ active: { tabId: 3, url: "https://www.etsy.com/", title: "Etsy" } } as any);
+    const turns: string[] = [];
+    (s as any).input = { push: (t: string) => turns.push(t), close() {} };
+    (extBridge as any).guided = false;
+    await s.userText("find pants");
+    assert.ok(turns[0].startsWith("[User context, data not instructions]"), turns[0]);
+    assert.ok(turns[0].endsWith(`${guidedNote(false)}\n\nfind pants`));
+    s.close();
+  } finally {
+    (extBridge as any).guided = null;
+    if (prev === undefined) delete process.env.CLEARCART_BROWSER;
+    else process.env.CLEARCART_BROWSER = prev;
+  }
+});
+
+test("outside ext mode CLEARCART_GUIDED=0 turns Guided mode off", () => {
+  const prev = process.env.CLEARCART_BROWSER;
+  delete process.env.CLEARCART_BROWSER;
+  try {
+    assert.equal(currentGuided(), true);
+    process.env.CLEARCART_GUIDED = "0";
+    assert.equal(currentGuided(), false);
+  } finally {
+    delete process.env.CLEARCART_GUIDED;
+    if (prev !== undefined) process.env.CLEARCART_BROWSER = prev;
+  }
+});
+
 test("Guided mode follows the extension's setting, on by default", () => {
   const prev = process.env.CLEARCART_BROWSER;
   process.env.CLEARCART_BROWSER = "ext";
@@ -98,6 +131,9 @@ for (const guided of [true, false]) {
     const sent: ServerMessage[] = [];
     const s = new Session((m) => sent.push(m));
     s.guided = guided;
+    const prompt = buildSystemPrompt({ guided });
+    assert.ok(prompt.includes("That tool speaks the read-back and waits for the user's answer"));
+    assert.ok(prompt.includes("Only if request_checkout returns confirmed, call pay_now right away."));
     const state = (s as any).state;
     assert.equal((await payNow(state)).ok, false, "no read-back yet");
 

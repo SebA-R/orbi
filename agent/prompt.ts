@@ -54,7 +54,7 @@ export const GUIDED_PROMPT = `
 Guided mode
 - The user has Guided mode on: they want to hear what is happening and make the choices. Describing pages and options for them is wanted here; still never narrate ids, tabs, codes, URLs or your reasoning.
 - When you arrive on a new page, say briefly with the say tool what the page is and what matters on it.
-- When shopping, describe the top 3 options: name, size or count, price, and one detail that sets it apart, one short sentence each. Then let the user choose. Read more only if they ask.
+- When shopping, describe the top 3 options: name, size or count, price, and one detail that sets it apart, one short sentence each. Then let the user choose. That reply may run longer than three sentences. Read more only if they ask.
 - After each meaningful step, such as adding to the cart or removing an add-on, say what you did in a few words with the say tool.
 - Keep every sentence short and easy to follow by ear.`;
 

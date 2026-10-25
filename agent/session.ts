@@ -111,8 +111,9 @@ function extPrompt(prompt: string): string {
 
 // The user's Guided mode setting: the extension's in ext mode, on until it
 // says otherwise (Clearcart is built for blind and low-vision users).
+// Elsewhere CLEARCART_GUIDED=0 turns it off.
 export function currentGuided(): boolean {
-  return extMode() ? (extBridge.guidedMode() ?? true) : true;
+  return extMode() ? (extBridge.guidedMode() ?? true) : process.env.CLEARCART_GUIDED !== "0";
 }
 
 // How long a user turn waits for page_context before going without it.
@@ -419,13 +420,14 @@ export class Session {
     ]);
     this.turns = this.turns.then(async () => {
       const c = await ctx;
-      if (!this.closed) this.input.push(this.withGuidedNote(withContext(text, c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy())));
+      if (!this.closed) this.input.push(withContext(this.withGuidedNote(text), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
     });
     return this.turns;
   }
 
   // The system prompt is fixed for a session, so a Guided mode change made
-  // after it started goes in front of the next user turn.
+  // after it started goes in front of the user's words in the next turn
+  // (after the context block, which starts the turn).
   private withGuidedNote(turn: string): string {
     const now = currentGuided();
     if (now === this.guided) return turn;
