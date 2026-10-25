@@ -15,7 +15,7 @@ export const STATES = Object.freeze({ IDLE: "idle", LISTENING: "listening", THIN
 export const TAIL_MS = 300;
 
 export class VoiceController {
-  constructor({ createStt, speaker, mic, chime, agent, emit, setTimer = setTimeout, resumeAudio = () => {}, log = () => {} }) {
+  constructor({ createStt, speaker, mic, chime, agent, emit, setTimer = (fn, ms) => setTimeout(fn, ms), resumeAudio = () => {}, log = () => {} }) {
     Object.assign(this, { createStt, speaker, mic, chime, agent, emit, setTimer, resumeAudio, log });
     this.listening = false;
     this.session = null;
