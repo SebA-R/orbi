@@ -147,24 +147,40 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
     toOffscreen(async () => ({ type: RT.SETTINGS_CHANGED, settings: await getSettings() }), { create: false });
   }
 
+  // Each saved line keeps the time it arrived; a new turn (idle -> listening)
+  // drops the last turn's lines.
   function remember(msg) {
     const { from, target, ...clean } = msg;
-    if (msg.type === RT.VOICE_STATE) replay.state = clean;
-    else if (msg.type === RT.SUBTITLE) replay.lines = [...replay.lines.filter((l) => l.speaker !== clean.speaker), clean];
-    else return;
-    replay.at = Date.now();
+    const now = Date.now();
+    if (msg.type === RT.VOICE_STATE) {
+      const was = replay.state ? replay.state.state : "idle";
+      if (clean.state === "listening" && was === "idle") replay.lines = [];
+      replay.state = clean;
+    } else if (msg.type === RT.SUBTITLE) {
+      replay.lines = [...replay.lines.filter((l) => l.msg.speaker !== clean.speaker), { msg: clean, at: now }];
+    } else return;
+    replay.at = now;
   }
 
   // Switching tabs carries the caption along while Clearcart is listening,
-  // thinking or speaking, or its last words are still on screen.
+  // thinking or speaking, or its last words are still on screen. Lines older
+  // than REPLAY_MS are never replayed. Live messages keep flowing to the new
+  // tab meanwhile, so a saved message that a newer one has replaced is skipped
+  // rather than sent after it.
   async function onTabActivated({ tabId }) {
     if (tabId == null || tabId === lastTabId) return;
     lastTabId = tabId;
-    const active = replay.state && replay.state.state !== "idle";
-    if (!active && (!replay.lines.length || Date.now() - replay.at > REPLAY_MS)) return;
-    for (const m of [replay.state, ...replay.lines].filter(Boolean)) {
+    const now = Date.now();
+    const state = replay.state;
+    const active = state && state.state !== "idle";
+    const lines = replay.lines.filter((l) => now - l.at <= REPLAY_MS);
+    if (!active && !lines.length) return;
+    const queue = [...(state ? [{ kind: "state", msg: state }] : []), ...lines.map((l) => ({ kind: "line", entry: l, msg: l.msg }))];
+    for (const item of queue) {
+      if (lastTabId !== tabId) return; // the user moved on again
+      if (item.kind === "state" ? replay.state !== item.msg : !replay.lines.includes(item.entry)) continue;
       try {
-        await chromeApi.tabs.sendMessage(tabId, m);
+        await chromeApi.tabs.sendMessage(tabId, item.msg);
       } catch {
         return; // no content script there (chrome:// page); nothing to show
       }
