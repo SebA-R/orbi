@@ -376,3 +376,23 @@ test("hiding the tab forgets the voice state and the latch", () => {
   tap(d);
   assert.deepEqual(sent, ["ptt.start", "ptt.cancel"]);
 });
+
+test("install learns the voice state from runtime messages and a hidden tab forgets it", () => {
+  const { install } = load();
+  const listeners = {};
+  let onMsg;
+  const win = { addEventListener: (t, fn) => { (listeners[t] ||= []).push(fn); } };
+  const doc = { visibilityState: "visible", activeElement: null, addEventListener: (t, fn) => { (listeners[`doc:${t}`] ||= []).push(fn); } };
+  const messages = [];
+  const chromeApi = { runtime: { sendMessage: (m) => { messages.push(m.type); }, onMessage: { addListener: (fn) => { onMsg = fn; } } } };
+  const d = install({ win, doc, chromeApi });
+  onMsg({ type: "voice.state", state: "listening", latched: true });
+  assert.equal(d.latched, true);
+  onMsg({ type: "voice.error", message: "x" });
+  assert.equal(d.latched, false);
+  onMsg({ type: "voice.state", state: "listening", latched: true });
+  doc.visibilityState = "hidden";
+  listeners["doc:visibilitychange"].forEach((fn) => fn());
+  assert.equal(d.latched, false);
+  assert.deepEqual(messages, []);
+});
