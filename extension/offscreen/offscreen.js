@@ -6,7 +6,7 @@
 //
 // In:  runtime messages with target "offscreen":
 //        VOICE_START {settings?, silent?, latch?}, VOICE_CONFIRM, VOICE_CANCEL, VOICE_HUSH, VOICE_STOP, PTT_TOGGLE, TTS_STOP,
-//        TTS_SPEAK {text}, CHIME {kind}, SETTINGS_CHANGED {settings}
+//        TTS_SPEAK {text}, SETTINGS_CHANGED {settings}
 //      Anything else (including PTT_* that content scripts broadcast to every
 //      extension page) is ignored; the worker is the only router.
 // Out: runtime messages with from "offscreen": VOICE_STATE, VOICE_PARTIAL,
@@ -18,7 +18,7 @@ import { DEFAULT_VOICE_ID } from "../lib/voice/config.js";
 import { SttSession } from "../lib/voice/stt.js";
 import { Speaker } from "../lib/voice/tts.js";
 import { Mic } from "../lib/voice/mic.js";
-import { earcon } from "../lib/voice/chime.js";
+import { createChime, linkCues } from "../lib/voice/chime.js";
 import { createTokenSource } from "../lib/voice/token.js";
 import { AgentSession } from "../lib/voice/agent-session.js";
 import { VoiceController } from "../lib/voice/controller.js";
@@ -38,6 +38,11 @@ function emit(msg) {
 const ctx = new AudioContext();
 const resumeAudio = () => { if (ctx.state === "suspended") ctx.resume().catch(() => {}); };
 
+// Every earcon goes through here; "Play sounds" off means silence.
+const chime = createChime({ ctx, sounds: () => settings.sounds, resume: resumeAudio });
+// The agent link: closed once it has stayed down 2 s, listen at 0.6 when back.
+const linkCue = linkCues({ play: chime });
+
 const getToken = createTokenSource({ url: () => endpoints(settings.agentUrl).token });
 const prefetchToken = () => getToken().catch((err) => say(`token prefetch failed: ${err.message}`));
 
@@ -55,7 +60,10 @@ const mic = new Mic(ctx);
 const agent = new AgentSession({
   url: () => endpoints(settings.agentUrl).session,
   onMessage: (m) => controller.onAgentMessage(m),
-  onState: (s) => emit({ type: RT.STATUS, kind: "agent", state: s }),
+  onState: (s) => {
+    linkCue(s);
+    emit({ type: RT.STATUS, kind: "agent", state: s });
+  },
   log: say,
 });
 
@@ -68,7 +76,7 @@ controller = new VoiceController({
   }),
   speaker,
   mic,
-  chime: (kind) => { resumeAudio(); earcon(ctx, kind); },
+  chime,
   agent,
   emit,
   resumeAudio,
@@ -113,10 +121,6 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
     case RT.TTS_SPEAK:
       if (msg.text) speaker.speak(String(msg.text));
-      break;
-    case RT.CHIME:
-      resumeAudio();
-      earcon(ctx, msg.kind === "stop" ? "stop" : "start");
       break;
     case RT.SETTINGS_CHANGED:
       applySettings(msg.settings);
