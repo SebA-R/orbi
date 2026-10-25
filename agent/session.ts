@@ -113,12 +113,27 @@ export type ServerMessage =
   | { type: "status"; text: string }
   | { type: "receipt"; item: string; total: string; last4: string };
 
-const NEGATIVE = /\b(no|nope|not|don'?t|do not|stop|wait|cancel|change|hold on|never mind|nevermind)\b/i;
-const AFFIRMATIVE = /^(yes|yeah|yep|yup|yes please|confirm|confirmed|go ahead|pay|pay now|do it|place the order)\b/i;
+// The whole answer must be a yes: affirmative phrases plus polite filler and
+// nothing else, so "yes, but two of them", "do it later" or "pay attention"
+// are not a yes. Longer phrases first so "pay now" is not read as "pay".
+const AFFIRMATIVE = ["place the order", "place order", "go ahead", "pay now", "do it", "confirmed", "confirm", "yes", "yeah", "yep", "yup", "pay"];
+const FILLER = ["thank you", "all right", "please", "thanks", "okay", "ok", "alright", "sure"];
 
 export function isExplicitYes(text: string): boolean {
-  const t = text.trim().toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
-  return AFFIRMATIVE.test(t) && !NEGATIVE.test(t);
+  let rest = ` ${text.toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim()} `;
+  let affirmed = false;
+  for (let progress = true; progress && rest.trim(); ) {
+    progress = false;
+    for (const [phrase, strong] of [...AFFIRMATIVE.map((p) => [p, true] as const), ...FILLER.map((p) => [p, false] as const)]) {
+      if (rest.startsWith(` ${phrase} `)) {
+        rest = rest.slice(phrase.length + 1);
+        affirmed ||= strong;
+        progress = true;
+        break;
+      }
+    }
+  }
+  return affirmed && !rest.trim();
 }
 
 class InputQueue implements AsyncIterable<SDKUserMessage> {
