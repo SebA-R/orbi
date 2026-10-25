@@ -15,6 +15,13 @@
 // for that control) with a single-use nonce from lock_arm, INTERNAL methods
 // the agent server calls and Claude never sees.
 //
+// Saved cards: fill_card (pay_with_saved_card on the agent server) puts the
+// card into the checkout's card fields in every frame of the tab, the
+// cross-origin payment frames (Stripe, Adyen, Braintree) included, through
+// content/cardfill.js in each frame's isolated world. Like the other
+// INTERNAL methods Claude never sees it, and it answers kinds and counts,
+// never a value.
+//
 // Follow: a call that acts on a tab (follow.js ACT_METHODS, and tabs_create)
 // brings that tab to the front first, unless the setting is off or the user
 // switched away themselves this turn. Reads never switch.
@@ -87,10 +94,13 @@ export const PAGE_METHODS = new Set([
   "form_input",
   "rect",
   "click_ref",
-  "read_fields",
-  "fill_payment",
-  "clear_payment",
+  "order_buttons",
 ]);
+
+// The card fill's own script, injected into every frame after mask.js.
+export const CARD_FILES = ["content/mask.js", "content/cardfill.js"];
+export const NO_CARD_FIELDS = "couldn't find the card fields on this page";
+const NOT_FILLED = "couldn't fill the card fields on this page";
 
 const NO_RECEIVER = /Receiving end does not exist|Could not establish connection/i;
 const DIGIT_RUN = /\d(?:[ -]?\d){12,18}/g;
@@ -118,6 +128,54 @@ function point(v, name) {
 }
 
 const msgOf = (e) => String((e && e.message) || e || "failed");
+
+// "12/30" or "12/2030" -> { mm: "12", yy: "30", yyyy: "2030" }, or null.
+export function expParts(exp) {
+  const m = /^\s*(\d{1,2})\s*[/-]\s*(\d{2}|\d{4})\s*$/.exec(String(exp || ""));
+  if (!m) return null;
+  const mm = ("0" + m[1]).slice(-2);
+  const yy = m[2].slice(-2);
+  return { mm, yy, yyyy: m[2].length === 4 ? m[2] : "20" + yy };
+}
+
+// Which frame gets which value: exactly one card number, one security code
+// and one expiry (one field, or a month and a year) across all the frames,
+// and a name or postal code only where there is exactly one. Anything else
+// fills nothing (never a guess). frames: [{ frameId, documentId, fields:
+// [{ kind }] }].
+export function planCard(frames) {
+  const all = [];
+  for (const fr of frames) for (const f of fr.fields) all.push({ fr, kind: f.kind });
+  const where = (k) => all.filter((x) => x.kind === k);
+  const one = (k) => {
+    const w = where(k);
+    return w.length === 1 ? w[0].fr : null;
+  };
+  const number = one("cc-number");
+  const csc = one("cc-csc");
+  const exp = where("cc-exp");
+  const mm = where("cc-exp-month");
+  const yy = where("cc-exp-year");
+  const expOk = (exp.length === 1 && !mm.length && !yy.length) || (!exp.length && mm.length === 1 && yy.length === 1);
+  if (!number || !csc || !expOk) throw new BridgeError(ERR.NO_ELEMENT, NO_CARD_FIELDS);
+  const plan = new Map();
+  const put = (fr, kind) => {
+    if (!plan.has(fr)) plan.set(fr, []);
+    plan.get(fr).push(kind);
+  };
+  put(number, "cc-number");
+  if (exp.length) put(exp[0].fr, "cc-exp");
+  else {
+    put(mm[0].fr, "cc-exp-month");
+    put(yy[0].fr, "cc-exp-year");
+  }
+  put(csc, "cc-csc");
+  const name = one("cc-name");
+  if (name) put(name, "cc-name");
+  const zip = one("postal-code");
+  if (zip) put(zip, "postal-code");
+  return { plan, name: !!name, zip: !!zip };
+}
 
 function originOf(url) {
   try {
@@ -283,11 +341,11 @@ export function createRouter({
   // focused field.
   async function guardType(tabId, text) {
     if (containsCardNumber(text)) {
-      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type a card number; pay_now fills payment fields");
+      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type a card number; only pay_with_saved_card fills card fields");
     }
     const focus = await pageCall(tabId, "focused_field");
     if (focus && focus.payment) {
-      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a payment field; pay_now fills payment fields");
+      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a payment field; only pay_with_saved_card fills card fields");
     }
     if (focus && focus.password) {
       throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a password field; the user types passwords themselves");
@@ -402,8 +460,11 @@ export function createRouter({
   }
 
   // The pay flow's half of the unlock: a nonce bound to this tab and its
-  // current origin, which must be a pay site (the allowlist setting). Open
-  // web browsing lets Claude read many more sites, never unlock on them.
+  // current origin, on a site the user's settings let Clearcart use (the
+  // tab was resolved that way already; checked again here, failing
+  // closed). The agent server asks for one only after the user's spoken
+  // yes to the exact total (agent/unlock.ts), and its nonce only works with
+  // press_protected, which presses one order button.
   //
   // scope "user" is the user-directed unlock (request_unlock on the server):
   // any allowed site, but its nonce only works with press_unlocked, which
@@ -413,8 +474,8 @@ export function createRouter({
     const info = await tabs.tabInfo({ tabId });
     const origin = originOf(info && info.url);
     if (!origin) throw new BridgeError(ERR.NOT_ALLOWED, "tab has no origin to unlock");
-    if (scope === "order" && (typeof tabs.isPaySite !== "function" || !(await tabs.isPaySite(info.url)))) {
-      throw new BridgeError(ERR.LOCKED, "Locked: this site is not a Clearcart pay site");
+    if (scope === "order" && (typeof tabs.isAllowed !== "function" || !(await tabs.isAllowed(info.url)))) {
+      throw new BridgeError(ERR.LOCKED, "Locked: this page is on a site Clearcart does not use");
     }
     for (const [n, a] of armed) if (a.expires <= now()) armed.delete(n);
     const nonce = newNonce();
@@ -447,6 +508,104 @@ export function createRouter({
     // press_ref does not check visibility or cover itself: a fallback after
     // a CDP failure runs press_check first, as the unpaced press does.
     return clickCentre(tabId, r, params.ref, "press_ref", check, check, epoch);
+  }
+
+  // The card fields in every frame of the tab, by kind ([{ frameId,
+  // documentId, fields: [{ kind, filled }] }]). The page itself must still
+  // pass the full site check; another frame (a payment provider's) only the
+  // fixed rules (a web page, not a local address unless allowed), since
+  // providers such as js.stripe.com are on the suggested blocked list.
+  async function cardFrames(tabId) {
+    let found;
+    try {
+      await chromeApi.scripting.executeScript({ target: { tabId, allFrames: true }, files: CARD_FILES });
+      found = await chromeApi.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => (globalThis.__clearcartCardFill ? globalThis.__clearcartCardFill.scan() : null),
+      });
+    } catch {
+      throw new BridgeError(ERR.INTERNAL, "could not reach the page's card fields");
+    }
+    const frames = [];
+    for (const r of found || []) {
+      const res = r && r.result;
+      if (!res || !Array.isArray(res.fields)) continue;
+      if (r.frameId === 0) await recheck(tabId, typeof res.href === "string" ? res.href : undefined);
+      else if (!(typeof tabs.frameAllowed === "function" && (await tabs.frameAllowed(res.href)))) continue;
+      const fields = res.fields.filter((f) => f && typeof f.kind === "string").map((f) => ({ kind: f.kind, filled: f.filled === true }));
+      frames.push({ frameId: r.frameId, documentId: r.documentId || null, fields });
+    }
+    return frames;
+  }
+
+  // fill_card: params.card is { name, number, exp, csc, zip }, from the
+  // agent server's vault. Each frame gets only its own fields' values, in
+  // the document that was scanned. Any frame that does not take them
+  // clears every card field again and fails the call.
+  async function fillCard(tabId, params) {
+    const c = params && params.card;
+    if (!c || typeof c !== "object") throw new BridgeError(ERR.BAD_REQUEST, "card is required");
+    const number = String(c.number || "").replace(/[\s-]/g, "");
+    const exp = expParts(c.exp);
+    const csc = String(c.csc || "");
+    if (!/^\d{12,19}$/.test(number) || !luhnValid(number) || !exp || !/^\d{3,4}$/.test(csc)) {
+      throw new BridgeError(ERR.BAD_REQUEST, "the saved card is not complete");
+    }
+    const { plan, name, zip } = planCard(await cardFrames(tabId));
+    const values = { "cc-number": number, "cc-exp": exp, "cc-exp-month": exp, "cc-exp-year": exp, "cc-csc": csc, "cc-name": String(c.name || ""), "postal-code": String(c.zip || "") };
+    try {
+      for (const [fr, kinds] of plan) {
+        const mine = {};
+        for (const k of kinds) if (values[k]) mine[k] = values[k];
+        const target = fr.documentId ? { tabId, documentIds: [fr.documentId] } : { tabId, frameIds: [fr.frameId] };
+        let r = null;
+        try {
+          [r] = await chromeApi.scripting.executeScript({
+            target,
+            func: (v) => (globalThis.__clearcartCardFill ? globalThis.__clearcartCardFill.fill(v) : { ok: false }),
+            args: [mine],
+          });
+        } catch {}
+        if (!r || !r.result || r.result.ok !== true) throw new BridgeError(ERR.NO_ELEMENT, NOT_FILLED);
+      }
+    } catch (e) {
+      await clearCard(tabId).catch(() => {});
+      throw e instanceof BridgeError ? e : new BridgeError(ERR.INTERNAL, NOT_FILLED);
+    }
+    return { ok: true, last4: number.slice(-4), name, zip, frames: plan.size };
+  }
+
+  // clear_card: empties every card field in every frame.
+  async function clearCard(tabId) {
+    let results;
+    try {
+      await chromeApi.scripting.executeScript({ target: { tabId, allFrames: true }, files: CARD_FILES });
+      results = await chromeApi.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => (globalThis.__clearcartCardFill ? globalThis.__clearcartCardFill.clear() : { ok: true, cleared: 0 }),
+      });
+    } catch {
+      throw new BridgeError(ERR.INTERNAL, "could not clear the card fields");
+    }
+    const cleared = (results || []).reduce((n, r) => n + (Number(r && r.result && r.result.cleared) || 0), 0);
+    return { ok: true, cleared };
+  }
+
+  // card_state: how many card fields the tab has, of which kinds, and how
+  // many hold something. Counts only.
+  async function cardState(tabId) {
+    const frames = await cardFrames(tabId);
+    const kinds = {};
+    let fields = 0;
+    let filled = 0;
+    for (const fr of frames) {
+      for (const f of fr.fields) {
+        kinds[f.kind] = (kinds[f.kind] || 0) + 1;
+        fields++;
+        if (f.filled) filled++;
+      }
+    }
+    return { fields, filled, kinds, frames: frames.filter((fr) => fr.fields.length).length };
   }
 
   // Brings the tab a navigate call will use to the front, when it is one
@@ -584,6 +743,12 @@ export function createRouter({
         return pageCall(tabId, "lock_info", { ref: params.ref });
       case "press_protected":
         return pressProtected(tabId, params, epoch);
+      case "fill_card":
+        return fillCard(tabId, params);
+      case "clear_card":
+        return clearCard(tabId);
+      case "card_state":
+        return cardState(tabId);
       case "scroll":
         if (await paced()) {
           const at = { x: point(params.x, "x"), y: point(params.y, "y"), dx: point(params.dx ?? 0, "dx"), dy: point(params.dy ?? 0, "dy") };

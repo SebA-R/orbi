@@ -433,7 +433,7 @@
 
   function formInput(params) {
     var el = elementFor(params.ref);
-    if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; payment is entered only by pay_now");
+    if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; only pay_with_saved_card fills card fields");
     if (isPassword(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a password field; Clearcart never types passwords, the user types it themselves");
     if (!("value" in params)) throw PageError(ERR.BAD_REQUEST, "value is required");
     var value = params.value;
@@ -677,7 +677,9 @@
     try { Protect.showBadges(document, { alive: extensionAlive }); } catch (_) { /* cosmetic */ }
   }
 
-  // -------------------------------------------- read_fields / fill_payment
+  // ------------------------------------------------------------ field kinds
+  // Card fields are found and filled by content/cardfill.js, in every frame;
+  // this is only for the typing guard (focused_field).
   function kindOf(el) {
     var ac = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
     if (ac.indexOf("cc-number") !== -1) return "cc-number";
@@ -697,96 +699,26 @@
     return "other";
   }
 
-  function formFields() {
+  // ------------------------------------------------------- order_buttons
+  // The controls pay_with_saved_card may press once after the user's yes:
+  // order commits and card form submits (Protect.pressable), never a
+  // wallet, a subscription, a saved card, an account control or one that
+  // only goes to checkout. Classified as with Danger mode off (classify),
+  // the same check press_protected makes in either mode. Refs and labels
+  // only; labels are masked like everything read from the page.
+  var ORDER_CANDIDATES = "button,input[type=submit],input[type=button],input[type=image],[role=button],a[href],[data-clearcart-protected]";
+  function orderButtons() {
     var out = [];
-    var els = document.querySelectorAll("input,textarea,select");
-    for (var i = 0; i < els.length; i++) {
+    var els = document.querySelectorAll(ORDER_CANDIDATES);
+    for (var i = 0; i < els.length && out.length < 10; i++) {
       var el = els[i];
-      var t = (el.type || "").toLowerCase();
-      if (/^(hidden|submit|button|reset|image|file)$/.test(t)) continue;
-      if (hiddenByStyle(el)) continue;
-      out.push(el);
+      var lk = Protect.classify(el);
+      if (!Protect.pressable(lk) || Protect.isCheckoutNav(lk.label)) continue;
+      if (hiddenByStyle(el) || (el.closest && el.closest("[hidden],[aria-hidden=true]"))) continue;
+      var off = !!el.disabled || el.getAttribute("aria-disabled") === "true";
+      out.push({ ref: refFor(el), label: Mask.maskCardRuns(lk.label), kind: lk.kind, disabled: off });
     }
-    return out;
-  }
-
-  function readFields() {
-    return {
-      fields: formFields().map(function (el) {
-        var t = (el.type || "").toLowerCase();
-        return {
-          name: el.getAttribute("name") || el.id || "",
-          autocomplete: el.getAttribute("autocomplete") || "",
-          kind: kindOf(el),
-          filled: t === "checkbox" || t === "radio" ? !!el.checked : String(el.value || "").length > 0,
-        };
-      }),
-    };
-  }
-
-  function expParts(exp) {
-    var m = /^\s*(\d{1,2})\s*[\/\-]\s*(\d{2}|\d{4})\s*$/.exec(String(exp || ""));
-    if (!m) return null;
-    var mm = ("0" + m[1]).slice(-2);
-    var yy = m[2].slice(-2);
-    return { mm: mm, yy: yy, yyyy: m[2].length === 4 ? m[2] : "20" + yy };
-  }
-
-  function fillPayment(params) {
-    var card = params.card;
-    if (!card || typeof card !== "object") throw PageError(ERR.BAD_REQUEST, "card is required");
-    var number = String(card.number || "").replace(/[\s-]/g, "");
-    if (!/^\d{12,19}$/.test(number)) throw PageError(ERR.BAD_REQUEST, "card.number must be 12-19 digits");
-    var exp = expParts(card.exp);
-    if (card.exp && !exp) throw PageError(ERR.BAD_REQUEST, "card.exp must be MM/YY");
-    var fields = formFields();
-    var byKind = { "cc-number": [], "cc-name": [], "cc-exp": [], "cc-csc": [], address: [] };
-    fields.forEach(function (el) { var k = kindOf(el); if (byKind[k]) byKind[k].push(el); });
-    if (!byKind["cc-number"].length) throw PageError(ERR.NO_ELEMENT, "no card number field on this page");
-
-    function put(el, v) {
-      if (v == null || v === "") return;
-      if (el.tagName === "SELECT") {
-        var opts = Array.prototype.slice.call(el.options);
-        var hit = opts.find(function (o) { return o.value === v || Number(o.value) === Number(v) || clean(o.textContent) === v; });
-        if (!hit) return;
-        v = hit.value;
-      }
-      nativeSet(el, v);
-      fire(el);
-    }
-
-    byKind["cc-number"].forEach(function (el) { put(el, number); });
-    byKind["cc-name"].forEach(function (el) { put(el, card.name ? String(card.name) : ""); });
-    byKind["cc-csc"].forEach(function (el) { put(el, card.csc ? String(card.csc) : ""); });
-    byKind["cc-exp"].forEach(function (el) {
-      if (!exp) return;
-      var ac = (el.getAttribute("autocomplete") || "").toLowerCase();
-      if (/cc-exp-month/.test(ac)) put(el, exp.mm);
-      else if (/cc-exp-year/.test(ac)) put(el, el.tagName === "SELECT" || (el.maxLength > 0 && el.maxLength < 4) ? (el.maxLength === 2 ? exp.yy : exp.yyyy) : exp.yyyy);
-      else put(el, exp.mm + "/" + exp.yy);
-    });
-    if (params.address != null && byKind.address.length) {
-      var addr = typeof params.address === "string" ? params.address
-        : [params.address.line1, params.address.line2, params.address.city, params.address.region, params.address.postal, params.address.country]
-          .filter(Boolean).join(", ");
-      byKind.address.forEach(function (el) {
-        if (!el.value) put(el, addr);
-      });
-    }
-    return { ok: true, last4: number.slice(-4) };
-  }
-
-  function clearPayment() {
-    formFields().forEach(function (el) {
-      var k = kindOf(el);
-      if (k.indexOf("cc-") === 0 || Mask.isPaymentField(el)) {
-        if (el.tagName === "SELECT") el.selectedIndex = -1;
-        else nativeSet(el, "");
-        fire(el);
-      }
-    });
-    return { ok: true };
+    return { buttons: out };
   }
 
   // Kind of the element that has keyboard focus, so the worker can refuse
@@ -913,9 +845,7 @@
     form_input: formInput,
     rect: rect,
     click_ref: clickRef,
-    read_fields: readFields,
-    fill_payment: fillPayment,
-    clear_payment: clearPayment,
+    order_buttons: orderButtons,
     guard_ref: guardRef,
     guard_point: guardPoint,
     guard_key: guardKey,

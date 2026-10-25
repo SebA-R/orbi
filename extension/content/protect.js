@@ -25,8 +25,8 @@
   // case, "&" read as "and", everything that is not a letter or digit turned
   // into a space. Keep every list here so the tests cover them in one place.
   var PHRASES = {
-    // Commits an order or moves money. pay_now may press these on an
-    // allowlisted origin after the user's spoken yes.
+    // Commits an order or moves money. pay_with_saved_card may press one of
+    // these once, after the user's spoken yes to the exact total.
     order: [
       "place order", "place your order", "place my order",
       "submit order", "submit my order", "submit payment",
@@ -91,7 +91,7 @@
   // control that goes to the checkout page ("Proceed to checkout"), never
   // one that pays. Placing an order, wallets, card or password form submits,
   // frames and hidden components never unlock this way: paying goes only
-  // through request_checkout and pay_now.
+  // through request_checkout and pay_with_saved_card.
   var CHECKOUT_NAV = ["checkout", "check out", "secure checkout", "proceed to checkout", "continue to checkout",
     "go to checkout"];
 
@@ -693,7 +693,7 @@
     var unlock = "call request_unlock with " + (ref ? "ref " + ref + " and label '" + label + "'" : "label '" + label + "' and its ref from read_page or find") +
       "; it asks the user itself when needed. Do not retry the click or look for another way around it.";
     var userOnly = " Only the user can press it. Never call request_unlock for it; tell the user where it is if they want it.";
-    var pay = " Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.";
+    var pay = " Never call request_unlock for it: paying goes only through request_checkout and pay_with_saved_card, after the user's yes.";
     switch (lock && lock.kind) {
       case "frame":
         return "Locked: that point is inside an embedded frame, often a payment widget, that Clearcart cannot inspect, so nothing was pressed. The AI may not click inside it; only the user can.";
@@ -761,7 +761,7 @@
   var MARK_STYLE_ID = "clearcart-lock-style";
   var MARK_CSS = "[" + MARK + "]{filter:grayscale(1)!important;opacity:.45!important;" +
     "outline:2px dashed #6b7280!important;outline-offset:2px!important}";
-  // Elements pay_now has been unlocked to press: no longer grayed.
+  // Elements pay_with_saved_card has been unlocked to press: no longer grayed.
   var released = typeof WeakSet === "function" ? new WeakSet() : null;
 
   // Card, password and other fields of a card or password form.
