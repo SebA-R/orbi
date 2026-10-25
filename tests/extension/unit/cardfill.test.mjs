@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { CARD_FILES, NO_CARD_FIELDS, createRouter, expParts, planCard } from "../../../extension/background/router.js";
 import { BridgeError, ERR, INTERNAL, TOOLS } from "../../../extension/lib/protocol.js";
 
+const SHOP = "https://shop.example";
 const CARD = { name: "Ada Lovelace", number: "4111 1111 1111 1111", exp: "12/30", csc: "737", zip: "94704" };
 const SECRETS = ["4111111111111111", "4111 1111", "Ada Lovelace", "12/30", "737", "94704"];
 const noSecrets = (v, what) => {
@@ -17,7 +18,8 @@ const noSecrets = (v, what) => {
 };
 
 // A checkout page with the name on the page, the rest in a Stripe-style
-// frame, and a frame on a local address nobody allowed.
+// frame, and a frame on a local address nobody allowed. A frame's `hidden`
+// kinds are fields a person cannot use (scan reports them unusable).
 function frames() {
   return [
     { frameId: 0, documentId: "top", href: "https://shop.example/checkout", kinds: ["cc-name"] },
@@ -31,8 +33,15 @@ function fakes({ list = frames(), refuse = new Set(), topBlocked = false } = {})
   const held = new Map(list.map((f) => [f.documentId, {}])); // what is in each frame's fields
   const injected = [];
   const checked = [];
+  const tops = [];
   const apiFor = (f) => ({
-    scan: () => ({ href: f.href, fields: f.kinds.map((k) => ({ kind: k, filled: !!held.get(f.documentId)[k] })) }),
+    scan: () => ({
+      href: f.href,
+      fields: [
+        ...f.kinds.map((k) => ({ kind: k, filled: !!held.get(f.documentId)[k], usable: true })),
+        ...(f.hidden || []).map((k) => ({ kind: k, filled: !!held.get(f.documentId)["hidden " + k], usable: false })),
+      ],
+    }),
     fill: (v) => {
       got.set(f.documentId, v);
       if (refuse.has(f.documentId)) return { ok: false, filled: {} };
@@ -75,11 +84,14 @@ function fakes({ list = frames(), refuse = new Set(), topBlocked = false } = {})
       checked.push([tabId, url]);
       if (topBlocked) throw new BridgeError(ERR.NOT_ALLOWED, "site blocked");
     },
-    frameAllowed: async (url) => !/^http:\/\/localhost[:/]/.test(url),
+    frameAllowed: async (url, topOrigin) => {
+      tops.push(topOrigin);
+      return !/^http:\/\/localhost[:/]/.test(url);
+    },
   };
   const follow = { to: async () => {}, own: (fn) => fn(), forget() {}, claim() {}, newTurn() {} };
   const router = createRouter({ chromeApi, tabs, cdp: {}, follow });
-  return { router, got, held, injected, checked };
+  return { router, got, held, injected, checked, tops };
 }
 
 const kinds = (...k) => k.map((kind) => ({ kind }));
@@ -121,43 +133,69 @@ test("planCard: one number, code and expiry across the frames; a name or ZIP onl
 
 test("fill_card: each frame gets only its own values, a frame Orbi may not use gets nothing, and the answer holds no card value", async () => {
   const f = fakes();
-  const r = await f.router.route("fill_card", { tabId: 7, card: CARD });
+  const r = await f.router.route("fill_card", { tabId: 7, origin: SHOP, card: CARD });
   assert.deepEqual(r, { ok: true, last4: "1111", name: true, zip: true, frames: 2 });
   noSecrets(r, "the answer");
   assert.deepEqual(f.got.get("top"), { "cc-name": "Ada Lovelace" });
   assert.deepEqual(f.got.get("stripe"), { "cc-number": "4111111111111111", "cc-exp": { mm: "12", yy: "30", yyyy: "2030" }, "cc-csc": "737", "postal-code": "94704" });
   assert.equal(f.got.has("stray"), false, "the local frame nobody allowed");
   assert.deepEqual(f.checked, [[7, "https://shop.example/checkout"]], "the page itself passes the full site check");
+  assert.deepEqual([...new Set(f.tops)], [SHOP], "frames are judged against the page's own origin");
   assert.deepEqual(f.injected[0], { allFrames: true, files: CARD_FILES });
+});
+
+test("fill_card: only on the origin the user said yes on; an email goes to the page's frame only", async () => {
+  const f = fakes();
+  await assert.rejects(f.router.route("fill_card", { tabId: 7, card: CARD }), { code: ERR.BAD_REQUEST, message: "origin is required" });
+  await assert.rejects(f.router.route("fill_card", { tabId: 7, origin: "https://other.example", card: CARD }), { code: ERR.NOT_ALLOWED });
+  assert.equal(f.got.size, 0);
+  await assert.rejects(f.router.route("card_state", { tabId: 7, origin: "https://other.example" }), { code: ERR.NOT_ALLOWED });
+  const e = fakes();
+  await e.router.route("fill_card", { tabId: 7, origin: SHOP, card: CARD, email: "demo@example.com" });
+  assert.equal(e.got.get("top").email, "demo@example.com");
+  assert.equal("email" in e.got.get("stripe"), false);
+});
+
+test("fields a person cannot use never get a value or count toward the plan, but a value left in one keeps the card counted", async () => {
+  const list = frames();
+  list[0].hidden = ["cc-number", "cc-csc"];
+  const f = fakes({ list });
+  const s = await f.router.route("card_state", { tabId: 7, origin: SHOP });
+  assert.deepEqual([s.fields, s.kinds["cc-number"], s.kinds["cc-csc"]], [5, 1, 1], "the hidden ones are not counted as fields");
+  const r = await f.router.route("fill_card", { tabId: 7, origin: SHOP, card: CARD });
+  assert.equal(r.ok, true);
+  assert.deepEqual(f.got.get("top"), { "cc-name": "Ada Lovelace" }, "nothing for the hidden fields");
+  f.held.get("top")["hidden cc-number"] = "left behind";
+  assert.equal((await f.router.route("card_state", { tabId: 7 })).filled, 6);
 });
 
 test("fill_card: when a frame does not take its values, every card field is emptied again and nothing is reported filled", async () => {
   const f = fakes({ refuse: new Set(["top"]) });
-  await assert.rejects(f.router.route("fill_card", { tabId: 7, card: CARD }), (e) => e.code === ERR.NO_ELEMENT && e.message === "couldn't fill the card fields on this page");
+  await assert.rejects(f.router.route("fill_card", { tabId: 7, origin: SHOP, card: CARD }), (e) => e.code === ERR.NO_ELEMENT && e.message === "couldn't fill the card fields on this page");
   assert.deepEqual(Object.fromEntries(f.held), { top: {}, stripe: {}, stray: {} }, "the card frame was emptied again");
 });
 
 test("fill_card refuses an incomplete card, a blocked page and a page without card fields before any value moves", async () => {
   for (const card of [{ ...CARD, number: "4111 1111 1111 1112" }, { ...CARD, exp: "13/30x" }, { ...CARD, csc: "7" }, null]) {
     const f = fakes();
-    await assert.rejects(f.router.route("fill_card", { tabId: 7, card }), (e) => {
+    await assert.rejects(f.router.route("fill_card", { tabId: 7, origin: SHOP, card }), (e) => {
       noSecrets({ m: e.message }, "the error");
       return e.code === ERR.BAD_REQUEST;
     });
     assert.equal(f.got.size, 0);
   }
   const blocked = fakes({ topBlocked: true });
-  await assert.rejects(blocked.router.route("fill_card", { tabId: 7, card: CARD }), { code: ERR.NOT_ALLOWED });
+  await assert.rejects(blocked.router.route("fill_card", { tabId: 7, origin: SHOP, card: CARD }), { code: ERR.NOT_ALLOWED });
   assert.equal(blocked.got.size, 0);
   const none = fakes({ list: [{ frameId: 0, documentId: "top", href: "https://shop.example/checkout", kinds: ["cc-name"] }, frames()[2]] });
-  await assert.rejects(none.router.route("fill_card", { tabId: 7, card: CARD }), { code: ERR.NO_ELEMENT, message: NO_CARD_FIELDS });
+  await assert.rejects(none.router.route("fill_card", { tabId: 7, origin: SHOP, card: CARD }), { code: ERR.NO_ELEMENT, message: NO_CARD_FIELDS });
   assert.equal(none.got.size, 0);
 });
 
 test("card_state counts card fields by kind in the frames Orbi may use; clear_card empties them all", async () => {
   const f = fakes();
   assert.deepEqual(await f.router.route("card_state", { tabId: 7 }), { fields: 5, filled: 0, kinds: { "cc-name": 1, "cc-number": 1, "cc-exp": 1, "cc-csc": 1, "postal-code": 1 }, frames: 2 });
-  await f.router.route("fill_card", { tabId: 7, card: CARD });
+  await f.router.route("fill_card", { tabId: 7, origin: SHOP, card: CARD });
   const s = await f.router.route("card_state", { tabId: 7 });
   assert.equal(s.filled, 5);
   noSecrets(s, "card_state");

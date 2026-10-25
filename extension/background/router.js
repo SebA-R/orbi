@@ -143,12 +143,12 @@ export function expParts(exp) {
 
 // Which frame gets which value: exactly one card number, one security code
 // and one expiry (one field, or a month and a year) across all the frames,
-// and a name or postal code only where there is exactly one. Anything else
-// fills nothing (never a guess). frames: [{ frameId, documentId, fields:
-// [{ kind }] }].
+// and a name or postal code only where there is exactly one. Only fields a
+// person can use now count. Anything else fills nothing (never a guess).
+// frames: [{ frameId, documentId, fields: [{ kind, usable }] }].
 export function planCard(frames) {
   const all = [];
-  for (const fr of frames) for (const f of fr.fields) all.push({ fr, kind: f.kind });
+  for (const fr of frames) for (const f of fr.fields) if (f.usable !== false) all.push({ fr, kind: f.kind });
   const where = (k) => all.filter((x) => x.kind === k);
   const one = (k) => {
     const w = where(k);
@@ -574,11 +574,12 @@ export function createRouter({
   }
 
   // The card fields in every frame of the tab, by kind ([{ frameId,
-  // documentId, fields: [{ kind, filled }] }]). The page itself must still
-  // pass the full site check; another frame (a payment provider's) only the
-  // fixed rules (a web page, not a local address unless allowed), since
-  // providers such as js.stripe.com are on the suggested blocked list.
-  async function cardFrames(tabId) {
+  // documentId, fields: [{ kind, filled, usable }] }]). The page itself must
+  // still pass the full site check and, when the pay flow names one
+  // (origin), be on the origin the user said yes on. Another frame counts
+  // only when it may get card values (tabs.frameAllowed: the page's own
+  // origin, a payment provider's hosted fields or an allowed site).
+  async function cardFrames(tabId, origin = null) {
     let found;
     try {
       await chromeApi.scripting.executeScript({ target: { tabId, allFrames: true }, files: CARD_FILES });
@@ -589,22 +590,27 @@ export function createRouter({
     } catch {
       throw new BridgeError(ERR.INTERNAL, "could not reach the page's card fields");
     }
+    const results = (found || []).filter((r) => r && r.result && Array.isArray(r.result.fields));
+    const top = results.find((r) => r.frameId === 0);
+    const topHref = top && typeof top.result.href === "string" ? top.result.href : undefined;
+    await recheck(tabId, topHref);
+    const topOrigin = originOf(topHref);
+    if (origin != null && topOrigin !== origin) throw new BridgeError(ERR.NOT_ALLOWED, "the page is not the checkout the user said yes on");
     const frames = [];
-    for (const r of found || []) {
-      const res = r && r.result;
-      if (!res || !Array.isArray(res.fields)) continue;
-      if (r.frameId === 0) await recheck(tabId, typeof res.href === "string" ? res.href : undefined);
-      else if (!(typeof tabs.frameAllowed === "function" && (await tabs.frameAllowed(res.href)))) continue;
-      const fields = res.fields.filter((f) => f && typeof f.kind === "string").map((f) => ({ kind: f.kind, filled: f.filled === true }));
+    for (const r of results) {
+      if (r.frameId !== 0 && !(typeof tabs.frameAllowed === "function" && (await tabs.frameAllowed(r.result.href, topOrigin)))) continue;
+      const fields = r.result.fields.filter((f) => f && typeof f.kind === "string").map((f) => ({ kind: f.kind, filled: f.filled === true, usable: f.usable !== false }));
       frames.push({ frameId: r.frameId, documentId: r.documentId || null, fields });
     }
     return frames;
   }
 
   // fill_card: params.card is { name, number, exp, csc, zip }, from the
-  // agent server's vault. Each frame gets only its own fields' values, in
-  // the document that was scanned. Any frame that does not take them
-  // clears every card field again and fails the call.
+  // agent server's vault, and params.origin the checkout's origin the user
+  // said yes on. Each frame gets only its own fields' values, in the
+  // document that was scanned. params.email (Stripe's test checkout only)
+  // goes into the page's one empty email field. Any frame that does not
+  // take its values clears every card field again and fails the call.
   async function fillCard(tabId, params) {
     const c = params && params.card;
     if (!c || typeof c !== "object") throw new BridgeError(ERR.BAD_REQUEST, "card is required");
@@ -614,12 +620,18 @@ export function createRouter({
     if (!/^\d{12,19}$/.test(number) || !luhnValid(number) || !exp || !/^\d{3,4}$/.test(csc)) {
       throw new BridgeError(ERR.BAD_REQUEST, "the saved card is not complete");
     }
-    const { plan, name, zip } = planCard(await cardFrames(tabId));
+    if (typeof params.origin !== "string" || !params.origin) throw new BridgeError(ERR.BAD_REQUEST, "origin is required");
+    const frames = await cardFrames(tabId, params.origin);
+    const { plan, name, zip } = planCard(frames);
+    const email = typeof params.email === "string" && params.email.length <= 254 ? params.email : "";
+    const topFrame = frames.find((fr) => fr.frameId === 0);
+    if (email && topFrame && !plan.has(topFrame)) plan.set(topFrame, []);
     const values = { "cc-number": number, "cc-exp": exp, "cc-exp-month": exp, "cc-exp-year": exp, "cc-csc": csc, "cc-name": String(c.name || ""), "postal-code": String(c.zip || "") };
     try {
       for (const [fr, kinds] of plan) {
         const mine = {};
         for (const k of kinds) if (values[k]) mine[k] = values[k];
+        if (email && fr.frameId === 0) mine.email = email;
         const target = fr.documentId ? { tabId, documentIds: [fr.documentId] } : { tabId, frameIds: [fr.frameId] };
         let r = null;
         try {
@@ -654,21 +666,24 @@ export function createRouter({
     return { ok: true, cleared };
   }
 
-  // card_state: how many card fields the tab has, of which kinds, and how
-  // many hold something. Counts only.
-  async function cardState(tabId) {
-    const frames = await cardFrames(tabId);
+  // card_state: how many usable card fields the tab has and of which kinds
+  // (in the frames fill_card would use), and how many card fields hold
+  // something, usable or not. Counts only. origin, when given, must be the
+  // page's origin.
+  async function cardState(tabId, origin = null) {
+    const frames = await cardFrames(tabId, origin);
     const kinds = {};
     let fields = 0;
     let filled = 0;
     for (const fr of frames) {
       for (const f of fr.fields) {
+        if (f.filled) filled++;
+        if (!f.usable) continue;
         kinds[f.kind] = (kinds[f.kind] || 0) + 1;
         fields++;
-        if (f.filled) filled++;
       }
     }
-    return { fields, filled, kinds, frames: frames.filter((fr) => fr.fields.length).length };
+    return { fields, filled, kinds, frames: frames.filter((fr) => fr.fields.some((f) => f.usable)).length };
   }
 
   // Brings the tab a navigate call will use to the front, when it is one
@@ -811,7 +826,7 @@ export function createRouter({
       case "clear_card":
         return clearCard(tabId);
       case "card_state":
-        return cardState(tabId);
+        return cardState(tabId, typeof params.origin === "string" && params.origin ? params.origin : null);
       case "scroll": {
         // No point given: the centre of the viewport.
         let { x, y } = params;

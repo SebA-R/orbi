@@ -32,9 +32,11 @@ function withDanger<T>(on: boolean, fn: () => Promise<T>): Promise<T> {
   });
 }
 
-function session() {
+// A session with its own saved cards (none by default), never the real vault.
+const emptyVault = () => new CardVault({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc-danger-")), "cards.json"), keys: memoryKeys() });
+function session(vault: CardVault = emptyVault()) {
   const sent: ServerMessage[] = [];
-  const s = new Session((m) => sent.push(m));
+  const s = new Session((m) => sent.push(m), { vault });
   s.pageContext = null;
   const spoken = () => sent.filter((m) => m.type === "agent_text").map((m: any) => m.text);
   return { s, sent, spoken };
@@ -175,12 +177,12 @@ test("Danger mode on: an order completes end to end with no yes, and the line is
   (extBridge as any).call = (m: string, p: any = {}) => handler(m, p);
   try {
     await withDanger(true, async () => {
-      const f = session();
+      const f = session(vault);
       (f.s as any).state.lastTabId = 7;
       const r = await f.s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
       assert.match(r.content[0].text, /^confirmed/);
       assert.match(r.content[0].text, /pay_with_saved_card/);
-      assert.deepEqual(f.spoken().filter((t) => /Placing/.test(t)), ["Placing your order for Blue mug, $9.00."]);
+      assert.deepEqual(f.spoken().filter((t) => /Placing/.test(t)), ["Placing your order for Blue mug, $9.00 on shop.example, with Test card ending 4242."], "the site and the card are said");
       assert.equal((f.s as any).state.confirmation.origin, SHOP, "pinned to the checkout's site");
       const before = calls.length;
       const paid = await payWithSavedCardExt((f.s as any).state, {}, {
@@ -188,6 +190,7 @@ test("Danger mode on: an order completes end to end with no yes, and the line is
         vault,
         pollMs: 5,
         orderTimeoutMs: 300,
+        settleMs: 0,
       });
       assert.equal(paid.ok, true, JSON.stringify(paid));
       assert.ok(calls.slice(before).includes("fill_card") && calls.slice(before).includes("press_protected"));

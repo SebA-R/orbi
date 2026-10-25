@@ -95,7 +95,18 @@ function fakeCheckout(o: CheckoutOpts = {}) {
   return { calls, handler, bridge: { call: (m: string, p: any = {}) => handler(m, p) }, setUrl: (u: string) => (url = u) };
 }
 
-const fast = { pollMs: 5, orderTimeoutMs: 300 };
+const fast = { pollMs: 5, orderTimeoutMs: 300, settleMs: 0 };
+
+// The read-back binds the yes to one saved card (session.ts
+// requestCheckout): here the vault's default, unless the test names one.
+function pay(state: PayState, args: { cardNickname?: string | null }, deps: Parameters<typeof payWithSavedCardExt>[2] & { vault: CardVault }) {
+  const c = state.confirmation;
+  if (c && c.card === undefined) {
+    const p = deps.vault.pick(null);
+    c.card = p.ok ? p.card : null;
+  }
+  return payWithSavedCardExt(state, args, deps);
+}
 const noCard = (value: unknown, what = "result") => {
   const s = typeof value === "string" ? value : JSON.stringify(value);
   for (const x of SECRETS) assert.ok(!s.includes(x), `${what} holds ${x}`);
@@ -105,13 +116,13 @@ test("happy path: checks, one fill with the saved card, one press, and only last
   const vault = await vaultWith(VISA);
   const s = fakeCheckout();
   const state = confirmed();
-  const r = await payWithSavedCardExt(state, {}, { ...fast, vault, bridge: s.bridge as any });
+  const r = await pay(state, {}, { ...fast, vault, bridge: s.bridge as any });
   assert.deepEqual(r, { ok: true, last4: "1111", nickname: "Work Visa", receipt: { item: "Blue mug", total: "$14.27", last4: "1111" } });
   noCard(r);
   assert.equal(state.confirmation?.state, "used");
   assert.equal(state.cardFieldsLive, false);
   const fill = s.calls.find((c) => c.method === "fill_card")!;
-  assert.deepEqual(fill.params, { tabId: 7, card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/30", csc: "123", zip: "94704" } });
+  assert.deepEqual(fill.params, { tabId: 7, origin: SHOP, card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/30", csc: "123", zip: "94704" } });
   assert.deepEqual(s.calls.filter((c) => JSON.stringify(c.params).includes("4111")).map((c) => c.method), ["fill_card"], "only fill_card carries the card");
   const order = s.calls.map((c) => c.method);
   assert.ok(order.indexOf("card_state") < order.indexOf("fill_card") && order.indexOf("order_buttons") < order.indexOf("fill_card"), "fields and button checked first");
@@ -128,7 +139,7 @@ test("refused without a confirmed yes: nothing is read, filled or pressed", asyn
     const state = confirmed();
     if (st) state.confirmation!.state = st;
     else state.confirmation = null;
-    const r = await payWithSavedCardExt(state, {}, { ...fast, vault, bridge: s.bridge as any });
+    const r = await pay(state, {}, { ...fast, vault, bridge: s.bridge as any });
     assert.equal(r.ok, false, String(st));
     assert.match((r as any).error, /No confirmed checkout/);
     assert.equal(s.calls.length, 0, String(st));
@@ -139,59 +150,94 @@ test("refused on a total mismatch: the yes is spent and no card value moves", as
   const vault = await vaultWith(VISA);
   const s = fakeCheckout({ total: "$19.99" });
   const state = confirmed("$14.27");
-  const r = await payWithSavedCardExt(state, {}, { ...fast, vault, bridge: s.bridge as any });
+  const r = await pay(state, {}, { ...fast, vault, bridge: s.bridge as any });
   assert.equal(r.ok, false);
   assert.match((r as any).error, /The page total is now \$19\.99, but the user said yes to \$14\.27/);
   assert.equal(state.confirmation?.state, "used");
   assert.ok(!s.calls.some((c) => c.method === "fill_card" || c.method === "lock_arm"));
   // A different currency is a mismatch too.
   const eur = fakeCheckout({ total: "€14.27" });
-  assert.equal((await payWithSavedCardExt(confirmed("$14.27"), {}, { ...fast, vault, bridge: eur.bridge as any })).ok, false);
+  assert.equal((await pay(confirmed("$14.27"), {}, { ...fast, vault, bridge: eur.bridge as any })).ok, false);
   assert.ok(!eur.calls.some((c) => c.method === "fill_card"));
 });
 
-test("no saved card, or no clear choice of card: the user is asked and the yes still counts", async () => {
+test("the card is the one the read-back named: none saved asks for one; another or a removed card needs a new read-back", async () => {
   const none = await vaultWith();
   const s = fakeCheckout();
   const state = confirmed();
-  assert.deepEqual(await payWithSavedCardExt(state, {}, { ...fast, vault: none, bridge: s.bridge as any }), { ok: false, error: NO_CARD });
+  assert.deepEqual(await pay(state, {}, { ...fast, vault: none, bridge: s.bridge as any }), { ok: false, error: NO_CARD });
   assert.match(NO_CARD, /add one in \w+ settings, under Payment cards/);
   assert.equal(state.confirmation?.state, "confirmed");
-  assert.equal(s.calls.length, 0);
   const two = await vaultWith(VISA, STRIPE);
-  const miss = await payWithSavedCardExt(state, { cardNickname: "Amex" }, { ...fast, vault: two, bridge: s.bridge as any });
-  assert.match((miss as any).error, /Work Visa \(Visa ending 1111\), Personal \(Visa ending 4242\)/);
-  assert.equal(state.confirmation?.state, "confirmed");
-  const r = await payWithSavedCardExt(state, { cardNickname: "personal" }, { ...fast, vault: two, bridge: s.bridge as any });
+  const [visa, personal] = two.list().cards;
+  for (const cardNickname of ["Amex", "personal"]) {
+    const st = confirmed("$14.27", { card: visa });
+    const miss = await pay(st, { cardNickname }, { ...fast, vault: two, bridge: s.bridge as any });
+    assert.match((miss as any).error, /said yes to paying with Work Visa ending 1111\. To pay with another card, call request_checkout again/, cardNickname);
+    assert.equal(st.confirmation?.state, "confirmed");
+  }
+  const unnamed = confirmed("$14.27", { card: null });
+  assert.match(((await pay(unnamed, {}, { ...fast, vault: two, bridge: s.bridge as any })) as any).error, /read-back did not name a saved card/);
+  assert.equal(s.calls.length, 0, "nothing on the page was touched");
+  const r = await pay(confirmed("$14.27", { card: personal }), { cardNickname: "personal" }, { ...fast, vault: two, bridge: s.bridge as any });
   assert.ok(r.ok && r.last4 === "4242" && r.nickname === "Personal", JSON.stringify(r));
   assert.equal(s.calls.find((c) => c.method === "fill_card")!.params.card.number, "4242424242424242");
+  assert.ok(await two.remove(personal.id));
+  const gone = await pay(confirmed("$14.27", { card: personal }), {}, { ...fast, vault: two, bridge: fakeCheckout().bridge as any });
+  assert.match((gone as any).error, /not saved any more/);
+});
+
+test("the total is read again once the card is in: a change presses nothing and empties the fields", async () => {
+  const vault = await vaultWith(VISA);
+  let filled = false;
+  const s = fakeCheckout({ onFill: (p) => ((filled = true), { ok: true, last4: p.card.number.slice(-4) }) });
+  const handler = s.handler;
+  const surcharge = async (m: string, p: any) => (m === "get_page_text" && filled ? { text: "1 x Blue mug: $12.00\nOrder total $15.27" } : handler(m, p));
+  const state = confirmed();
+  const r = await pay(state, {}, { ...fast, vault, bridge: { call: (m: string, p: any = {}) => surcharge(m, p) } as any });
+  assert.equal(r.ok, false);
+  assert.match((r as any).error, /total changed to \$15\.27 once the card went in, so nothing was pressed/);
+  assert.ok(!s.calls.some((c) => c.method === "press_protected"));
+  assert.ok(s.calls.some((c) => c.method === "clear_card"));
+  assert.equal(state.cardFieldsLive, false);
+});
+
+test("the user speaking stops a payment on a spoken yes before the next step", async () => {
+  const vault = await vaultWith(VISA);
+  const stop = new AbortController();
+  const s = fakeCheckout({ onFill: (p) => (stop.abort(), { ok: true, last4: p.card.number.slice(-4) }) });
+  const state = confirmed();
+  const r = await pay(state, {}, { ...fast, vault, signal: stop.signal, bridge: s.bridge as any });
+  assert.match((r as any).error, /^The user spoke before the order was placed, so nothing was pressed/);
+  assert.ok(!s.calls.some((c) => c.method === "press_protected"));
+  assert.ok(s.calls.some((c) => c.method === "clear_card"));
 });
 
 test("refused when the tab moved to another site, or the page is on a blocked site", async () => {
   const vault = await vaultWith(VISA);
   const s = fakeCheckout({ url: "https://other.example/checkout" });
-  const r = await payWithSavedCardExt(confirmed(), {}, { ...fast, vault, bridge: s.bridge as any });
+  const r = await pay(confirmed(), {}, { ...fast, vault, bridge: s.bridge as any });
   assert.match((r as any).error, /not on the page the user said yes on/);
   const bank = fakeCheckout({ url: "https://www.chase.com/checkout" });
-  const b = await payWithSavedCardExt(confirmed("$14.27", { origin: "https://www.chase.com" }), {}, { ...fast, vault, bridge: bank.bridge as any });
+  const b = await pay(confirmed("$14.27", { origin: "https://www.chase.com" }), {}, { ...fast, vault, bridge: bank.bridge as any });
   assert.match((b as any).error, /on a site \w+ does not use/);
   for (const x of [s, bank]) assert.ok(!x.calls.some((c) => c.method === "fill_card"));
   const none = confirmed("$14.27", { origin: null });
-  assert.match(((await payWithSavedCardExt(none, {}, { ...fast, vault, bridge: s.bridge as any })) as any).error, /No checkout tab/);
+  assert.match(((await pay(none, {}, { ...fast, vault, bridge: s.bridge as any })) as any).error, /No checkout tab/);
 });
 
 test("card fields that are missing or not one of each: nothing is filled or pressed", async () => {
   const vault = await vaultWith(VISA);
   for (const kinds of [{ "cc-number": 1, "cc-exp": 1 }, { "cc-number": 2, "cc-exp": 1, "cc-csc": 1 }, { "cc-name": 1 }, {}]) {
     const s = fakeCheckout({ kinds });
-    const r = await payWithSavedCardExt(confirmed(), {}, { ...fast, vault, bridge: s.bridge as any });
+    const r = await pay(confirmed(), {}, { ...fast, vault, bridge: s.bridge as any });
     assert.deepEqual(r, { ok: false, error: NO_FIELDS }, JSON.stringify(kinds));
     assert.match(NO_FIELDS, /^Couldn't find the card fields on this page/);
     assert.ok(!s.calls.some((c) => c.method === "fill_card" || c.method === "lock_arm"));
   }
   // Split month and year count as the expiry.
   const split = fakeCheckout({ kinds: { "cc-number": 1, "cc-exp-month": 1, "cc-exp-year": 1, "cc-csc": 1 } });
-  assert.equal((await payWithSavedCardExt(confirmed(), {}, { ...fast, vault, bridge: split.bridge as any })).ok, true);
+  assert.equal((await pay(confirmed(), {}, { ...fast, vault, bridge: split.bridge as any })).ok, true);
 });
 
 test("errors never carry what the extension or the page said about the card, and the fields are cleared", async () => {
@@ -202,7 +248,7 @@ test("errors never carry what the extension or the page said about the card, and
     },
   });
   const state = confirmed();
-  const r = await payWithSavedCardExt(state, {}, { ...fast, vault, bridge: s.bridge as any });
+  const r = await pay(state, {}, { ...fast, vault, bridge: s.bridge as any });
   assert.equal(r.ok, false);
   assert.match((r as any).error, /^Couldn't fill the card fields on this page/);
   noCard(r);
@@ -211,7 +257,7 @@ test("errors never carry what the extension or the page said about the card, and
   assert.ok(!s.calls.some((c) => c.method === "press_protected"));
   // A declined card: the alert comes back with every digit masked.
   const d = fakeCheckout({ outcome: "reject" });
-  const declined = await payWithSavedCardExt(confirmed(), {}, { ...fast, vault, bridge: d.bridge as any });
+  const declined = await pay(confirmed(), {}, { ...fast, vault, bridge: d.bridge as any });
   assert.deepEqual(declined, { ok: false, error: "The site did not take the payment: Card ending # declined, code #" });
   assert.ok(d.calls.some((c) => c.method === "clear_card"));
   assert.equal(safeAlert("4111 1111 1111 1111 expired 12/30, cvc 123"), "# expired #, cvc #");
@@ -222,7 +268,7 @@ test("a press the extension refuses, or no order page, clears the fields; nothin
   for (const o of [{ press: "locked" as const }, { outcome: "stuck" as const }]) {
     const s = fakeCheckout(o);
     const state = confirmed();
-    const r = await payWithSavedCardExt(state, {}, { ...fast, vault, bridge: s.bridge as any });
+    const r = await pay(state, {}, { ...fast, vault, bridge: s.bridge as any });
     assert.equal(r.ok, false);
     assert.match((r as any).error, o.press ? /Could not press 'Place order/ : /does not show the order as placed\. Do not press it again/);
     assert.ok(s.calls.some((c) => c.method === "clear_card"));
@@ -235,14 +281,14 @@ test("a yes that is stale, on another tab, or for a changed cart is refused; two
   const vault = await vaultWith(VISA);
   const stale = confirmed("$14.27", { confirmedAt: Date.now() - CONFIRM_TTL_MS - 1_000 });
   const s = fakeCheckout();
-  assert.match(((await payWithSavedCardExt(stale, {}, { ...fast, vault, bridge: s.bridge as any })) as any).error, /more than a minute old/);
-  assert.match(((await payWithSavedCardExt(confirmed("$14.27", { tabId: 3 }), {}, { ...fast, vault, bridge: s.bridge as any })) as any).error, /not on the page/);
+  assert.match(((await pay(stale, {}, { ...fast, vault, bridge: s.bridge as any })) as any).error, /more than a minute old/);
+  assert.match(((await pay(confirmed("$14.27", { tabId: 3 }), {}, { ...fast, vault, bridge: s.bridge as any })) as any).error, /not on the page/);
   const cart = cartLines("1 x Blue mug: $9.99\nOrder total $14.27");
-  assert.match(((await payWithSavedCardExt(confirmed("$14.27", { cart }), {}, { ...fast, vault, bridge: s.bridge as any })) as any).error, /cart changed/);
+  assert.match(((await pay(confirmed("$14.27", { cart }), {}, { ...fast, vault, bridge: s.bridge as any })) as any).error, /cart changed/);
   assert.ok(!s.calls.some((c) => c.method === "fill_card"));
   const both = fakeCheckout();
   const state = confirmed();
-  const [a, b] = await Promise.all([1, 2].map(() => payWithSavedCardExt(state, {}, { ...fast, vault, bridge: both.bridge as any })));
+  const [a, b] = await Promise.all([1, 2].map(() => pay(state, {}, { ...fast, vault, bridge: both.bridge as any })));
   assert.deepEqual([a.ok, b.ok].sort(), [false, true]);
   assert.equal(both.calls.filter((c) => c.method === "fill_card").length, 1);
   assert.equal(claimConfirmation(state).ok, false);
@@ -251,13 +297,13 @@ test("a yes that is stale, on another tab, or for a changed cart is refused; two
 test("more than one order button, or a disabled one, is never guessed", async () => {
   const vault = await vaultWith(VISA);
   const two = fakeCheckout({ buttons: [{ ref: "ref_1", label: "Continue", kind: "payment-form" }, { ref: "ref_2", label: "Submit", kind: "order" }] });
-  assert.match(((await payWithSavedCardExt(confirmed(), {}, { ...fast, vault, bridge: two.bridge as any })) as any).error, /more than one button/);
+  assert.match(((await pay(confirmed(), {}, { ...fast, vault, bridge: two.bridge as any })) as any).error, /more than one button/);
   const off = fakeCheckout({ buttons: [{ ref: "ref_9", label: "Place order", kind: "order", disabled: true }] });
-  assert.match(((await payWithSavedCardExt(confirmed(), {}, { ...fast, vault, bridge: off.bridge as any })) as any).error, /not active yet/);
+  assert.match(((await pay(confirmed(), {}, { ...fast, vault, bridge: off.bridge as any })) as any).error, /not active yet/);
   for (const x of [two, off]) assert.ok(!x.calls.some((c) => c.method === "fill_card"));
   // One that says it places the order wins over a plain Continue.
   const pick = fakeCheckout({ buttons: [{ ref: "ref_1", label: "Continue", kind: "payment-form" }, { ref: "ref_9", label: "Place order", kind: "order" }] });
-  assert.equal((await payWithSavedCardExt(confirmed(), {}, { ...fast, vault, bridge: pick.bridge as any })).ok, true);
+  assert.equal((await pay(confirmed(), {}, { ...fast, vault, bridge: pick.bridge as any })).ok, true);
   assert.equal(pick.calls.find((c) => c.method === "press_protected")!.params.ref, "ref_9");
 });
 
@@ -265,9 +311,9 @@ test("Danger mode: its announced confirmation pays while Danger mode is on, and 
   const vault = await vaultWith(VISA);
   const on = fakeCheckout();
   const st = { ...confirmed("$14.27", { auto: true }), autoOk: () => true };
-  assert.equal((await payWithSavedCardExt(st, {}, { ...fast, vault, bridge: on.bridge as any })).ok, true);
+  assert.equal((await pay(st, {}, { ...fast, vault, bridge: on.bridge as any })).ok, true);
   const off = fakeCheckout();
-  const r = await payWithSavedCardExt({ ...confirmed("$14.27", { auto: true }), autoOk: () => false }, {}, { ...fast, vault, bridge: off.bridge as any });
+  const r = await pay({ ...confirmed("$14.27", { auto: true }), autoOk: () => false }, {}, { ...fast, vault, bridge: off.bridge as any });
   assert.match((r as any).error, /Danger mode was turned off/);
   assert.ok(!off.calls.some((c) => c.method === "fill_card"));
 });
@@ -283,7 +329,7 @@ test("over a real socket: the card travels only in fill_card, and the bridge log
   const ext = new FakeExt(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/ext`, s.handler);
   try {
     await ext.open();
-    const r = await payWithSavedCardExt(confirmed(), {}, { ...fast, vault, bridge });
+    const r = await pay(confirmed(), {}, { ...fast, vault, bridge });
     assert.equal(r.ok, true, JSON.stringify(r));
     noCard(r);
     noCard(logs.join("\n"), "bridge log");
@@ -332,7 +378,7 @@ test("the tool: refused without a confirmed yes, and on success Claude gets ok, 
     assert.equal(no.ok, false);
     assert.ok(!sent.some((m) => m.type === "receipt"));
     assert.ok(!s.calls.some((c) => c.method === "fill_card"));
-    (session as any).state.confirmation = confirmed().confirmation;
+    (session as any).state.confirmation = confirmed("$14.27", { card: vault.list().cards[0] }).confirmation;
     const yes = JSON.parse((await session.payNowCall({})).content[0].text);
     assert.deepEqual(yes, { ok: true, last4: "1111", nickname: "Work Visa" });
     noCard(sent, "messages to the window");

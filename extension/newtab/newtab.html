@@ -37,6 +37,15 @@
       <p class="focus-hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
     </section>
 
+    <form class="type-box" id="type-form" hidden>
+      <p class="type-note" id="type-note">Basic voice (no Cartesia key). If talking doesn't work, type to Orbi here.</p>
+      <div class="type-row">
+        <label class="visually-hidden" for="type-text">Type to Orbi</label>
+        <input id="type-text" type="text" placeholder="Type to Orbi" autocomplete="off" spellcheck="true" maxlength="2000" enterkeyhint="send">
+        <button type="submit">Send</button>
+      </div>
+    </form>
+
     <p class="visually-hidden" id="voice-live" role="status" aria-live="polite"></p>
 
     <section class="off" id="off" aria-labelledby="off-title" hidden>

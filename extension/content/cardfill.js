@@ -9,10 +9,13 @@
 // the worker hands each frame only the values for the fields that frame
 // has (background/router.js fill_card).
 //
-//   scan()        the card fields here, by kind, and whether each is empty
+//   scan()        the card fields here, by kind, whether each holds
+//                 something, and whether it is one a person can use now
 //   fill(values)  puts the values in the way the browser's autofill does
-//                 (the native value setter, then input and change events)
-//   clear()       empties every card field here
+//                 (the native value setter, then input and change events),
+//                 into usable fields only
+//   clear()       empties every card field here, hidden, disabled and
+//                 read-only ones too, so no value is left behind a modal
 //
 // None of them returns or logs a value: kinds, counts and true/false only.
 // A field is a card field by its autocomplete kind (cc-number, cc-exp,
@@ -109,9 +112,10 @@
     try { return root.top !== root.self; } catch (_) { return true; }
   }
 
-  // The card fields here: [{ kind, el }]. A postal code counts only inside
-  // a payment frame that has a card number (hosted card fields), or when
-  // its autocomplete says billing: never a shipping ZIP.
+  // Every card field here: [{ kind, el, usable }], usable or not (fill
+  // takes only usable ones; scan and clear count them all). A postal code
+  // counts only inside a frame that has a card number (hosted card fields),
+  // or when its autocomplete says billing: never a shipping ZIP.
   function fieldsIn(doc) {
     var list = [];
     var hasNumber = false;
@@ -119,11 +123,10 @@
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
       if (el.tagName === "INPUT" && SKIP_TYPES.test(String(el.type || "text").toLowerCase())) continue;
-      if (!usable(el)) continue;
       var k = kindOf(el);
       if (!k) continue;
       if (k === "cc-number") hasNumber = true;
-      list.push({ kind: k, el: el });
+      list.push({ kind: k, el: el, usable: usable(el) });
     }
     var frame = inFrame();
     return list.filter(function (f) {
@@ -139,7 +142,7 @@
   function scan() {
     return {
       href: String((root.location && root.location.href) || ""),
-      fields: fieldsIn(root.document).map(function (f) { return { kind: f.kind, filled: filled(f.el) }; }),
+      fields: fieldsIn(root.document).map(function (f) { return { kind: f.kind, filled: filled(f.el), usable: f.usable }; }),
     };
   }
 
@@ -214,10 +217,20 @@
   // postal code goes in only when its field is empty. Answers which kinds
   // went in, never what.
   function fill(values) {
-    var fields = fieldsIn(root.document);
+    var fields = fieldsIn(root.document).filter(function (f) { return f.usable; });
     var done = {};
     var ok = true;
+    // An email (Stripe's test checkout asks for one): the one empty email
+    // field here, if there is exactly one; never a failure.
+    if (values && typeof values.email === "string") {
+      var emails = Array.prototype.filter.call(root.document.querySelectorAll("input"), function (el) {
+        var t = tokens(el);
+        return t.indexOf("email") !== -1 && t.indexOf("shipping") === -1 && usable(el);
+      });
+      done.email = emails.length === 1 && !filled(emails[0]) && put(emails[0], "email", values.email);
+    }
     Object.keys(values || {}).forEach(function (kind) {
+      if (kind === "email") return;
       var mine = fields.filter(function (f) { return f.kind === kind; });
       if (mine.length !== 1) { done[kind] = false; ok = false; return; }
       if (kind === "postal-code" && filled(mine[0].el)) { done[kind] = true; return; }
@@ -229,7 +242,8 @@
     return { ok: ok, filled: done };
   }
 
-  // Empties every card field here.
+  // Empties every card field here, whatever its state: the native setter
+  // works on disabled and read-only fields too.
   function clear() {
     var n = 0;
     fieldsIn(root.document).forEach(function (f) {

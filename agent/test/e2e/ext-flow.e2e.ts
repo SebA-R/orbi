@@ -324,8 +324,8 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
 
 test("a card the site turns down comes back as its message, and the card fields are emptied", { skip }, async () => {
   const { tabId, total } = await checkoutOn(SHOP);
-  const state = await confirmedOn(tabId, "Blue mug", total);
-  const r = await pay.payWithSavedCardExt(state as any, { cardNickname: "Stripe test" }, { vault, orderTimeoutMs: 8_000 });
+  const state = await confirmedOn(tabId, "Blue mug", total, "Stripe test");
+  const r = await pay.payWithSavedCardExt(state as any, {}, { vault, orderTimeoutMs: 8_000 });
   results.push(`pay_with_saved_card ${JSON.stringify(r)}`);
   assert.deepEqual(r, { ok: false, error: "The site did not take the payment: Test pages take the published test card only." });
   assert.equal(state.cardFieldsLive, false);
@@ -375,12 +375,15 @@ async function checkoutOn(base: string) {
 
 // The pay state right after the user's yes to `total`, pinned the way
 // request_checkout pins it (pay.ts checkoutSnapshot).
-async function confirmedOn(tabId: number, item: string, total: string) {
+async function confirmedOn(tabId: number, item: string, total: string, cardNickname?: string) {
   const snap = await pay.checkoutSnapshot(tabId);
   assert.equal(snap.tabId, tabId, "the checkout tab is one Orbi may use");
+  // The card the read-back names: the default, or the one the user named.
+  const picked = vault.pick(cardNickname ?? null);
+  assert.ok(picked.ok, "a saved card for the read-back");
   return {
     lastTabId: tabId,
-    confirmation: { item, quantity: 1, total, state: "confirmed" as "confirmed" | "pending", confirmedAt: Date.now(), tabId, origin: snap.origin!, cart: snap.cart },
+    confirmation: { item, quantity: 1, total, state: "confirmed" as "confirmed" | "pending", confirmedAt: Date.now(), tabId, origin: snap.origin!, cart: snap.cart, card: picked.card },
     cardFieldsLive: false,
   };
 }

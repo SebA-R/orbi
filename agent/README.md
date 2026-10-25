@@ -8,7 +8,7 @@ The voice agent server, built with the Claude Agent SDK (TypeScript, model `clau
 cd agent && npm install && npm start      # http://localhost:5050
 ```
 
-Needs `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` in the repo-root `.env`, and Chrome running the Orbi extension (`CLEARCART_BROWSER=ext`) or the Open Claude in Chrome extension. Paying needs the Orbi extension and a card saved in its settings (Payment cards), or the Visa test card from `npm run add-test-card`.
+Needs `ANTHROPIC_API_KEY` (unless you use a local model) and, for Cartesia voice, `CARTESIA_API_KEY`. `npm run setup` saves them to `~/.config/orbi/config.env` (mode 0600, or the file named by `ORBI_CONFIG`); the process environment and the repo-root `.env` win over that file. It also needs Chrome running the Orbi extension (`CLEARCART_BROWSER=ext`) or the Open Claude in Chrome extension. Paying needs the Orbi extension and a card saved in its settings (Payment cards), or the Visa test card from `npm run add-test-card`.
 
 | Env | Default | Purpose |
 | --- | --- | --- |

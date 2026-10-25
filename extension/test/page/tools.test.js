@@ -137,10 +137,10 @@ test("cardfill scan finds the checkout's card fields by kind, never a value", as
   const s = cf("scan");
   assert.equal(s.href, BASE + "/checkout");
   assert.deepEqual(s.fields, [
-    { kind: "cc-name", filled: true },
-    { kind: "cc-number", filled: false },
-    { kind: "cc-exp", filled: false },
-    { kind: "cc-csc", filled: false },
+    { kind: "cc-name", filled: true, usable: true },
+    { kind: "cc-number", filled: false, usable: true },
+    { kind: "cc-exp", filled: false, usable: true },
+    { kind: "cc-csc", filled: false, usable: true },
   ], "the address and the search box are not card fields");
   assert.ok(!JSON.stringify(s).includes("Ada"));
 });
@@ -212,11 +212,21 @@ test("cardfill guesses a kind only for payment fields: never a shipping name or 
     <input type="hidden" name="token" autocomplete="cc-number">
   </form>`);
   const cf = cardFill(p);
-  assert.deepEqual(cf("scan").fields.map((f) => f.kind), ["cc-number", "cc-csc", "cc-exp", "postal-code"]);
+  // Hidden and disabled card fields are reported (clear and the guard count
+  // them) but never usable.
+  const scan = cf("scan").fields;
+  assert.deepEqual(scan.filter((f) => f.usable).map((f) => f.kind), ["cc-number", "cc-csc", "cc-exp", "postal-code"]);
+  assert.deepEqual(scan.filter((f) => !f.usable).map((f) => f.kind), ["cc-number", "cc-csc"]);
   const r = cf("fill", { "cc-number": VALUES["cc-number"], "cc-csc": "737", "cc-exp": VALUES["cc-exp"], "postal-code": "94704" });
   assert.equal(r.ok, true);
   const v = (n) => p.document.querySelector(`[name="${n}"]`).value;
   assert.deepEqual([v("name"), v("zip"), v("cardnumber"), v("cvc"), v("card-expiry"), v("bzip"), v("cc-old"), v("cc-off")], ["", "", "4111111111111111", "737", "12 / 29", "94704", "", ""]);
+  // A value left in a hidden or disabled card field is still emptied.
+  p.document.querySelector('[name="cc-old"]').value = "4111111111111111";
+  p.document.querySelector('[name="cc-off"]').value = "737";
+  assert.equal(cf("scan").fields.filter((f) => f.filled).length, 6);
+  assert.deepEqual(cf("clear"), { ok: true, cleared: 6 });
+  assert.equal(v("cc-old") + v("cc-off") + v("cardnumber"), "");
 });
 
 test("order_buttons lists the order button with its label, masked, and never a navigation link", async () => {

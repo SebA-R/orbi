@@ -20,11 +20,11 @@
 // waiting for a yes, and that confirmation counts here only while Danger
 // mode is still on (autoOk).
 
-import { VaultError, type CardMeta, type CardVault } from "../vault/index.ts";
+import { NO_CARD, VaultError, type CardMeta, type CardVault } from "../vault/index.ts";
 import { cardVault } from "./cards.ts";
 import { extBridge, extMode, type ExtBridge } from "./extbridge.ts";
-import { orderTotal, parseMoney, sameMoney } from "./money.ts";
-import { originOf, usableSite } from "./origins.ts";
+import { orderTotal, parseMoney, sameMoney, type Money } from "./money.ts";
+import { isStripeCheckoutUrl, originOf, usableSite } from "./origins.ts";
 import { pressProtectedExt, unlockGate, type UnlockGate } from "./unlock.ts";
 
 // What the user said yes to. confirmedAt, tabId, origin and cart pin the
@@ -44,6 +44,9 @@ export type Confirmation = {
   tabId?: number | null;
   origin?: string | null;
   cart?: string;
+  // The saved card the read-back named (request_checkout): the only card
+  // this yes pays with.
+  card?: CardMeta | null;
 };
 
 export const CONFIRM_TTL_MS = 60_000;
@@ -142,9 +145,9 @@ export async function checkoutSnapshot(preferred: number | null, bridge: Bridge 
 // What card_state answers: counts of card fields by kind, in every frame.
 export type CardFields = { fields: number; filled: number; kinds: Record<string, number>; frames: number };
 
-async function cardFieldsExt(bridge: Bridge, tabId: number): Promise<CardFields | null> {
+async function cardFieldsExt(bridge: Bridge, tabId: number, origin?: string): Promise<CardFields | null> {
   try {
-    const s = await bridge.call<CardFields>("card_state", { tabId }, 15_000);
+    const s = await bridge.call<CardFields>("card_state", origin ? { tabId, origin } : { tabId }, 15_000);
     return s && typeof s === "object" && s.kinds && typeof s.kinds === "object" ? s : null;
   } catch {
     return null;
@@ -159,6 +162,33 @@ export function hasCardFields(s: CardFields | null): boolean {
   const exp = (n("cc-exp") === 1 && !n("cc-exp-month") && !n("cc-exp-year")) || (!n("cc-exp") && n("cc-exp-month") === 1 && n("cc-exp-year") === 1);
   return n("cc-number") === 1 && n("cc-csc") === 1 && exp;
 }
+
+// The total on a Stripe Checkout page: its "Total due" line, else the one
+// amount the page shows (a single item: "$14.00" under the product and as
+// the big summary amount). Several different amounts and no "Total due":
+// unknown, so pay_with_saved_card refuses.
+// Any other currency ("CA$", "€", "£") or a whole-dollar amount: unknown.
+export function stripeTotal(text: string): string {
+  const t = String(text);
+  if (/(^|[^A-Za-z])(?!US\$)[A-Z]{1,3}\$|[€£¥₹]|\$\s*[0-9][0-9,]*(?![0-9,]|\.[0-9]{2})/.test(t)) return "";
+  // Every "Total due" on the page must agree (a product name can say it too).
+  const dues = new Set([...t.matchAll(/Total due\s*:?\s*(?:US)?\$\s*([0-9][0-9,]*\.[0-9]{2})/gi)].map((m) => m[1].replace(/,/g, "")));
+  if (dues.size > 1) return "";
+  if (dues.size === 1) return `$${[...dues][0]}`;
+  const amounts = new Set([...String(text).matchAll(/\$\s*([0-9][0-9,]*\.[0-9]{2})\b/g)].map((m) => m[1].replace(/,/g, "")));
+  return amounts.size === 1 ? `$${[...amounts][0]}` : "";
+}
+
+// Stripe Checkout's confirmation, shown in place of the form on the same
+// page ("Thanks for your payment", "Payment successful").
+const STRIPE_PAID = /thanks? (you )?for your (payment|order|purchase)|payment (successful|succeeded)/i;
+export function stripePaid(text: string): boolean {
+  return STRIPE_PAID.test(String(text));
+}
+
+// Stripe's pay button reads "Pay" (with a hidden "Processing" label, and on
+// some pages the amount). "Pay with card" and wallet buttons do not count.
+const STRIPE_PAY_BUTTON = /^\s*pay(\s+now)?(\s+\$?\s*[0-9][0-9,]*(\.[0-9]{2})?)?(\s+processing)?\s*$/i;
 
 // The text of the first role="alert" in a read_page tree. The page script
 // prints an alert without a name (alerts don't take their name from content)
@@ -199,7 +229,7 @@ export function safeAlert(text: string): string {
 }
 
 // Words a page shows once an order is placed.
-const PLACED = /\b(?:thank you for (?:your )?(?:order|purchase)|thanks for (?:your )?(?:order|purchase)|(?:your )?order (?:is |has been |was )?(?:confirmed|placed|received|complete)|order confirmation|confirmation (?:number|code|#)|we(?:'ve| have) received your order|payment (?:successful|received|complete))\b/i;
+const PLACED = /\b(?:thank you for (?:your )?(?:order|purchase|payment)|thanks for (?:your )?(?:order|purchase|payment)|(?:your )?order (?:is |has been |was )?(?:confirmed|placed|received|complete)|order confirmation|confirmation (?:number|code|#)|we(?:'ve| have) received your order|payment (?:successful|succeeded|received|complete))\b/i;
 
 type OrderButton = { ref: string; label: string; kind: string; disabled?: boolean };
 
@@ -225,7 +255,31 @@ export type PayDeps = {
   vault?: CardVault;
   orderTimeoutMs?: number;
   pollMs?: number;
+  // How long the page gets after the fill before its total is read again.
+  settleMs?: number;
+  // Aborted when the user speaks or moves on (session.ts): nothing more is
+  // filled or pressed.
+  signal?: AbortSignal;
 };
+
+// Stripe's hosted test checkout takes any ZIP and email. Used there only,
+// when the saved card has no ZIP, and only in empty fields.
+export const STRIPE_TEST_ZIP = "42424";
+export const STRIPE_TEST_EMAIL = "demo@example.com";
+
+const STOPPED = "The user spoke before the card went in, so nothing was filled or pressed. Answer what they said.";
+const STOPPED_FILLED = "The user spoke before the order was placed, so nothing was pressed and the card fields were emptied. Answer what they said.";
+
+// How a card is named to the user: "Work Visa ending 1111", or "your Visa
+// ending 1111" when it has no nickname of its own.
+export function cardPhrase(c: { nickname: string; brand: string; last4: string }): string {
+  return `${c.nickname === c.brand ? `your ${c.brand}` : c.nickname} ending ${c.last4}`;
+}
+
+// The page's total: a Stripe test checkout's own reading, else orderTotal.
+function totalOn(text: string, stripe: boolean): Money | null {
+  return stripe ? parseMoney(stripeTotal(text)) : orderTotal(text);
+}
 
 // The Open Claude in Chrome path has no extension-side lock_arm nonce and
 // no card fill, so it never pays. The yes is spent all the same.
@@ -240,18 +294,34 @@ export async function payWithSavedCardExt(state: PayState, args: { cardNickname?
   const bridge = deps.bridge ?? extBridge;
   const gate = deps.gate ?? unlockGate;
   const pollMs = deps.pollMs ?? 400;
+  const stopped = () => deps.signal?.aborted === true;
 
-  if (state.confirmation?.state !== "confirmed") return { ok: false, error: NO_CONFIRMATION };
-  // Which card first, before the yes is spent: no card or an unclear name
-  // is for the user to sort out, and nothing on the page has been touched.
+  const yes = state.confirmation;
+  if (yes?.state !== "confirmed") return { ok: false, error: NO_CONFIRMATION };
+  // The card first, before the yes is spent: only the one the read-back
+  // named, and still saved. Card trouble is for the user to sort out, and
+  // nothing on the page has been touched.
   const vault = deps.vault ?? cardVault();
   let card: CardMeta;
   try {
-    // The one Keychain card an earlier version saved moves in first.
-    await vault.migrateLegacy().catch(() => "failed");
-    const picked = vault.pick(args.cardNickname);
-    if (!picked.ok) return picked;
-    card = picked.card;
+    const saved = vault.list().cards;
+    const named = yes.card ? saved.find((x) => x.id === yes.card!.id) : null;
+    if (!named) {
+      if (!saved.length) return { ok: false, error: NO_CARD };
+      return {
+        ok: false,
+        error: yes.card
+          ? "The card the user said yes to is not saved any more. Call request_checkout again so they hear which card pays."
+          : "The read-back did not name a saved card. Call request_checkout again so the user hears which card pays.",
+      };
+    }
+    if (args.cardNickname) {
+      const asked = vault.pick(args.cardNickname);
+      if (!asked.ok || asked.card.id !== named.id) {
+        return { ok: false, error: `The user said yes to paying with ${cardPhrase(named)}. To pay with another card, call request_checkout again with that cardNickname.` };
+      }
+    }
+    card = named;
   } catch (e) {
     return { ok: false, error: e instanceof VaultError ? e.message : "The saved cards could not be read." };
   }
@@ -260,51 +330,69 @@ export async function payWithSavedCardExt(state: PayState, args: { cardNickname?
   if (!claim.ok) return claim;
   const c = claim.c;
   if (autoRevoked(state, c)) return { ok: false, error: DANGER_OFF };
+  if (stopped()) return { ok: false, error: STOPPED };
   const tabId = c.tabId!;
 
   // The same tab, still on the site the user said yes on.
   const startHref = await tabUrlExt(bridge, tabId);
   if (!startHref || originOf(startHref) !== c.origin) return { ok: false, error: TAB_CHANGED };
   if (!usableSite(startHref)) return { ok: false, error: "This page is on a site Orbi does not use, so nothing was filled or pressed." };
+  // Stripe's hosted test checkout (origins.ts): its own total, Pay button
+  // and confirmation on the same page. Its hosts serve every merchant's
+  // sessions, so the exact page is pinned, not only the origin.
+  const stripe = isStripeCheckoutUrl(startHref);
 
   // The amount on the page must still be the one the user said yes to, and
   // the cart the one they heard.
   const text = await pageTextExt(bridge, tabId);
-  const total = orderTotal(text);
-  if (!total || !sameMoney(total, parseMoney(c.total))) {
+  const confirmedTotal = parseMoney(c.total);
+  const total = totalOn(text, stripe);
+  if (!total || !sameMoney(total, confirmedTotal)) {
     return { ok: false, error: `The page total is now ${total?.text || "unclear"}, but the user said yes to ${c.total}, so nothing was filled or pressed. Call request_checkout again.` };
   }
   if (c.cart && cartLines(text) !== c.cart) return { ok: false, error: CART_CHANGED };
+  const placedBefore = PLACED.test(text);
+  // A page that already says thanks cannot be told apart from a paid one.
+  if (stripe && placedBefore) return { ok: false, error: "The checkout page already shows a payment confirmation, so nothing was filled or pressed. Check the page before trying again." };
 
-  // The card fields (any frame) and the one order button, before any card
-  // value moves.
-  if (!hasCardFields(await cardFieldsExt(bridge, tabId))) return { ok: false, error: NO_FIELDS };
+  // The card fields (any frame, on the origin of the yes) and the one order
+  // button, before any card value moves.
+  if (!hasCardFields(await cardFieldsExt(bridge, tabId, c.origin!))) return { ok: false, error: NO_FIELDS };
   let buttons: OrderButton[] = [];
   try {
     buttons = (await bridge.call<{ buttons?: OrderButton[] }>("order_buttons", { tabId }, 10_000))?.buttons || [];
   } catch {
     return { ok: false, error: "Could not read the page's order button, so nothing was filled or pressed." };
   }
-  const chosen = chooseOrderButton(buttons);
+  // On Stripe only its Pay button counts, never Pay with card or a wallet.
+  const chosen = chooseOrderButton(stripe ? buttons.filter((b) => STRIPE_PAY_BUTTON.test(b.label)) : buttons);
   if (!chosen.ok) return chosen;
   const button = chosen.button;
 
   // Button lock: the grant needs the yes, a usable site and the matching
   // total (unlock.ts), then the extension's nonce for one press.
   if (autoRevoked(state, c)) return { ok: false, error: DANGER_OFF };
+  if (stopped()) return { ok: false, error: STOPPED };
   const issued = gate.issue({ confirmation: { total: c.total, state: "confirmed" }, tabId, href: startHref, pageTotal: total.text });
   if (!issued.ok) return { ok: false, error: issued.error };
 
   const alertBefore = await alertOn(bridge, tabId);
-  const placedBefore = PLACED.test(text);
   state.cardFieldsLive = true;
   state.cardTabId = tabId;
   try {
+    if (autoRevoked(state, c)) return { ok: false, error: DANGER_OFF };
+    if (stopped()) return { ok: false, error: STOPPED };
+    if (stripe && (await tabUrlExt(bridge, tabId)) !== startHref) return { ok: false, error: TAB_CHANGED };
     // The card is decrypted for this one call and dropped when it returns.
     let filled: { ok?: boolean } | null = null;
     try {
       filled = await vault.withCard(card.id, (s) =>
-        bridge.call<{ ok?: boolean }>("fill_card", { tabId, card: { name: s.name, number: s.number, exp: s.exp, csc: s.csc, zip: s.zip } }, 30_000)
+        bridge.call<{ ok?: boolean }>("fill_card", {
+          tabId,
+          origin: c.origin,
+          card: { name: s.name, number: s.number, exp: s.exp, csc: s.csc, zip: s.zip || (stripe ? STRIPE_TEST_ZIP : "") },
+          ...(stripe ? { email: STRIPE_TEST_EMAIL } : {}),
+        }, 30_000)
       );
     } catch (e) {
       if (e instanceof VaultError) return { ok: false, error: `${e.message} Nothing was filled or pressed.` };
@@ -312,8 +400,20 @@ export async function payWithSavedCardExt(state: PayState, args: { cardNickname?
     }
     if (!filled || filled.ok !== true) return { ok: false, error: NOT_FILLED };
 
+    // The page may change its total once it has the card (a surcharge, tax
+    // by billing ZIP): read it again, and press only on the amount and cart
+    // the user said yes to.
+    await sleep(deps.settleMs ?? 500);
+    const after = await pageTextExt(bridge, tabId);
+    const totalAfter = totalOn(after, stripe);
+    if (!totalAfter || !sameMoney(totalAfter, confirmedTotal) || (c.cart && cartLines(after) !== c.cart)) {
+      return { ok: false, error: `The page total changed to ${totalAfter?.text || "something unclear"} once the card went in, so nothing was pressed and the card fields were emptied. Tell the user and call request_checkout again if they still want it.` };
+    }
+    if (autoRevoked(state, c)) return { ok: false, error: DANGER_OFF };
+    if (stopped()) return { ok: false, error: STOPPED_FILLED };
+
     try {
-      await pressProtectedExt(bridge, issued.grant, { tabId, ref: button.ref }, gate);
+      await pressProtectedExt(bridge, issued.grant, { tabId, ref: button.ref, ...(stripe ? { href: startHref } : {}) }, gate);
     } catch {
       return { ok: false, error: `Could not press '${button.label}', so nothing was ordered. Do not try again; tell the user they can press it themselves.` };
     }
@@ -328,8 +428,10 @@ export async function payWithSavedCardExt(state: PayState, args: { cardNickname?
       moved ||= !!href && href !== startHref;
       const now = await pageTextExt(bridge, tabId);
       // Placed: the page says so, and either moved on or did not say it
-      // before the press.
-      if (PLACED.test(now) && (moved || !placedBefore)) {
+      // before the press. Stripe confirms in place of the form, so there
+      // the card number field must be gone too.
+      const formGone = !stripe || (await cardFieldsExt(bridge, tabId))?.kinds?.["cc-number"] === undefined;
+      if (PLACED.test(now) && (moved || !placedBefore) && formGone) {
         const receipt = { item: c.item, total: c.total, last4: card.last4 };
         return { ok: true, last4: card.last4, nickname: card.nickname, receipt };
       }
@@ -347,9 +449,14 @@ export async function payWithSavedCardExt(state: PayState, args: { cardNickname?
     };
   } finally {
     // The guard comes down only once the page holds no card value: the
-    // fields are gone (an order page) or empty, or were just emptied.
+    // fields are gone (an order page) or empty, or were emptied and then
+    // counted empty. Hidden, disabled and read-only fields count too.
     const left = await cardFieldsExt(bridge, tabId);
     if (left && left.filled === 0) state.cardFieldsLive = false;
-    else if (await bridge.call("clear_card", { tabId }, 10_000).then(() => true, () => false)) state.cardFieldsLive = false;
+    else {
+      await bridge.call("clear_card", { tabId }, 10_000).catch(() => {});
+      const again = await cardFieldsExt(bridge, tabId);
+      if (again && again.filled === 0) state.cardFieldsLive = false;
+    }
   }
 }

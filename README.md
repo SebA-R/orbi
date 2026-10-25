@@ -6,6 +6,33 @@
 
 Orbi started with a sound screen reader users know too well: tabbing through a page and hearing "button, button, button", because nothing on it is labeled. Instead of waiting for every site to fix that, you say what you want and Orbi does the clicking.
 
+## Quick start
+
+You need Node 20 or newer, Chrome 116 or newer and git, plus an Anthropic API key or a local model. A Cartesia key is optional.
+
+1. **Run setup.**
+
+   ```bash
+   npx github:SebA-R/orbi setup
+   ```
+
+   This downloads Orbi to `~/Orbi`, installs the agent server, asks for your keys (typing is hidden) and saves them to `~/.config/orbi/config.env`, which only your user account can read. Then it shows you where the extension folder is and offers to start Orbi. On macOS, add `--autostart` to start Orbi whenever you log in. From a clone, `npm run setup` does the same.
+
+2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and choose the `extension` folder that setup printed. Finish the Orbi setup page that opens, and allow the microphone. (`npm run pack:extension` builds the extension as a zip, for sharing: unzip it somewhere it can stay and load that folder.)
+
+3. **Hold Space on any page and talk.**
+
+**Keys.**
+
+- **Anthropic API key** (from [console.anthropic.com](https://console.anthropic.com/settings/keys)): Claude runs the agent. A Claude Code or Claude.ai login can't be used instead, because Anthropic only allows API keys for apps like Orbi.
+- **Cartesia API key** (optional, from [play.cartesia.ai](https://play.cartesia.ai/keys)): Cartesia's natural voice and speech recognition, with subtitles timed word by word. Without it Orbi uses **basic voice**: Chrome's built-in voice reads replies, and Chrome's speech recognition hears you. Where Chrome's recognition doesn't work, type to Orbi in the toolbar popup or on the new tab page.
+
+**No Claude key? Use a local model.** Install [Ollama](https://ollama.com) (or LM Studio), run `ollama pull llama3.1:8b`, choose option 2 in setup, then set **Model provider** to **Local** in Orbi's settings. The agent then runs on your computer. Small models are slower and make more mistakes than Claude, and speech recognition still uses Cartesia or Chrome's speech service unless you type.
+
+**Manage Orbi.** `./orbi status` shows what is set up and running (keys show only as set or not set). `./orbi start` runs the server in the background, and `./orbi stop` stops it. `./orbi uninstall` stops Orbi, turns off start on login and offers to delete your saved keys. Logs go to `~/Library/Logs/Orbi` on macOS. On Linux and Windows, start the server with `npm start` in the Orbi folder (on Windows use `node scripts/orbi.mjs <command>` for the other commands).
+
+Why `npx` clones the repo: npx keeps its copy in a cache folder that npm can clear, and Chrome needs the extension folder to stay where you loaded it. So the npx package is only the setup script, and it puts the real Orbi in `~/Orbi` (set `ORBI_HOME` for another folder).
+
 ## Demo
 
 **Demo video:** _link coming soon_
@@ -81,9 +108,9 @@ Save a card in Orbi's settings under **Payment cards**. Orbi encrypts it on this
 - **The agent server** (`agent/`) runs Claude through the Claude Agent SDK with model `claude-sonnet-5-5` (override with `CLEARCART_MODEL`). It keeps one global session, the memory, and the checkout and pay tools.
 - **Safety sits between the model and the page in layers.** The prompt sets the rules. The agent server checks every tool call before it runs (blocked sites, checkout URLs, the card guard while a card is in the form) and sweeps tabs after. The extension checks every click, key and form change against the live page and refuses locked controls, so a model mistake or a page trying to trick it still can't press Place order. Only `pay_with_saved_card` can, through a single-use unlock that needs your spoken yes.
 
-## Setup
+## Manual setup
 
-**Prerequisites:** Node 20 or newer, Chrome 116 or newer, and macOS if you want Orbi to pay (the saved cards' key lives in the Keychain). You need an Anthropic API key and a Cartesia API key.
+Quick start's setup command does all of this for you. To do it by hand:
 
 1. **Clone and install the agent server.**
 
@@ -94,12 +121,12 @@ Save a card in Orbi's settings under **Payment cards**. Orbi encrypts it on this
    ```
 
 2. **Set your keys.** Copy `.env.example` to `.env` (gitignored) and set:
-   - `ANTHROPIC_API_KEY`
-   - `CARTESIA_API_KEY`
-   - `CLEARCART_VOICE`: `true` for voice, `false` for text and subtitles only, with no Cartesia calls
+   - `ANTHROPIC_API_KEY` (not needed with a local model)
+   - `CARTESIA_API_KEY` (optional: without it Orbi uses basic voice)
+   - `CLEARCART_VOICE`: `true` for voice, `false` for text and subtitles only, with no speech at all
    - `CLEARCART_BROWSER=ext`, so the server drives the Orbi extension
 
-   The environment variables keep the `CLEARCART_` prefix from the project's old name, Clearcart, so existing setups keep working.
+   The server reads the process environment first, then `.env`, then the config file setup writes (`~/.config/orbi/config.env`, or `ORBI_CONFIG`). The environment variables keep the `CLEARCART_` prefix from the project's old name, Clearcart, so existing setups keep working.
 
 3. **Start the agent server** on port 5050:
 
@@ -127,7 +154,7 @@ More options for the server are in [`agent/README.md`](agent/README.md), and ext
 
 ## Settings
 
-All settings live in the extension's options page. The everyday ones are also in the toolbar popup. The Model provider switch is in the extension, but the agent server does not act on it yet and always uses Claude.
+All settings live in the extension's options page. The everyday ones are also in the toolbar popup.
 
 | Setting | Default |
 | --- | --- |
@@ -154,7 +181,7 @@ All settings live in the extension's options page. The everyday ones are also in
 
 ## Testing
 
-Run the light tests without Cartesia: `CLEARCART_VOICE=false npm --prefix agent test` (and `npm --prefix tests/extension install && npm --prefix tests/extension test` for the extension unit tests).
+Run the light tests without Cartesia: `CLEARCART_VOICE=false npm --prefix agent test`, `npm run test:installer` for the setup command (and `npm --prefix tests/extension install && npm --prefix tests/extension test` for the extension unit tests).
 
 ## Tracks and credits
 
@@ -171,7 +198,7 @@ Credits:
 - **Open Claude in Chrome** by Sebastian Sosa / noemica (https://github.com/noemica-io/open-claude-in-chrome), the earlier browser path, still available when `CLEARCART_BROWSER` is unset. Its LICENSE is the PolyForm Noncommercial License 1.0.0. It is a git submodule under `vendor/` and is not part of this project's code.
 - Earlier demo material in [`docs/demo/`](docs/demo/) credits its music in [`docs/demo/CREDITS.md`](docs/demo/CREDITS.md).
 
-Never commit API keys: they belong in `.env`, which is gitignored.
+Never commit API keys: they belong in the setup config file (outside the repo) or in `.env`, which is gitignored.
 
 ## License
 

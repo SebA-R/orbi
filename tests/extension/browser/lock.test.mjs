@@ -181,7 +181,7 @@ test("every agent input path is locked on Place order; press_protected with a no
   // The pay flow's path: fill the card (every frame; here the page's own
   // fields), arm, press once.
   assert.deepEqual((await call("card_state", { tabId })).kinds, { "cc-name": 1, "cc-number": 1, "cc-exp": 1, "cc-csc": 1 });
-  const filled = await call("fill_card", { tabId, card: CARD });
+  const filled = await call("fill_card", { tabId, origin: new URL(SHOP).origin, card: CARD });
   assert.deepEqual(filled, { ok: true, last4: "1111", name: true, zip: false, frames: 1 });
   assert.equal(await page.inputValue('[name="cc-number"]'), CARD.number);
   const tree2 = JSON.stringify(await call("read_page", { tabId, filter: "all" }));

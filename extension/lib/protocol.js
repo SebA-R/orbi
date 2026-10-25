@@ -144,6 +144,14 @@ export const RT = Object.freeze({
   ERROR_PAGE_RETRY: "errorpage.retry",
   // worker -> offscreen: say your VOICE_STATE again (a restarted worker asks).
   VOICE_SYNC: "voice.sync",
+  // Basic voice (no Cartesia key): offscreen <-> worker chrome.tts relay
+  // (background/basic-tts-host.js).
+  BASIC_TTS: "basic_tts",
+  BASIC_TTS_EVENT: "basic_tts.event",
+  // popup / new tab page -> worker -> offscreen: words the user typed
+  // instead of saying ({text}); VOICE_TYPED is the worker's copy.
+  TYPED_TEXT: "typed.text",
+  VOICE_TYPED: "voice.typed",
 });
 
 export class BridgeError extends Error {

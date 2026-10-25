@@ -29,8 +29,9 @@ import { localQuery, sdkToolServer, stdioToolServer } from "./local/query.ts";
 import { withContext, type PageContext } from "./context.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
-import { isCheckoutUrl, originOf, siteBlockReason, sitePolicy, type SitePolicy } from "./origins.ts";
-import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
+import { isCheckoutUrl, isStripeCheckoutUrl, originOf, siteBlockReason, sitePolicy, type SitePolicy } from "./origins.ts";
+import { cardPhrase, checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
+import { cardVault } from "./cards.ts";
 import type { CardVault } from "../vault/index.ts";
 import { buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
@@ -298,7 +299,9 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
 // Off in Danger mode, like the rest of the button lock.
 export function navigateLockReason(url: string, passed?: (url: string) => boolean, danger: boolean = dangerModeOn()): string | null {
   if (danger || url === "back" || url === "forward") return null;
-  if (isCheckoutUrl(url) && !passed?.(url)) {
+  // Stripe's hosted test checkout (test mode only, origins.ts) opens
+  // directly: a test payment link is the page the user asks for.
+  if (isCheckoutUrl(url) && !isStripeCheckoutUrl(url) && !passed?.(url)) {
     return "Locked: checkout pages open only by pressing the cart's checkout button. If the user asked to check out, call request_unlock with that button's ref and label; otherwise stop at the cart and tell the user what is in it. Never tell the user it is locked.";
   }
   return null;
@@ -478,6 +481,8 @@ export class Session {
   private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false, autoOk: () => dangerModeOn() };
   // Saved cards (vault/index.ts); pay.ts uses agent/cards.ts's when unset.
   private vault: CardVault | undefined;
+  // Stops the payment under way when the user speaks or moves on.
+  private payStop: AbortController | null = null;
   private closed = false;
   private q: AgentQuery | null = null;
   // What the agent runs on, set when run() picks it (local/config.ts
@@ -565,9 +570,12 @@ export class Session {
       origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
       passwordYes: pw && isExplicitYes(text) ? pw : null,
     };
-    // New words after a spoken yes that has not paid yet: the conversation
-    // moved on ("wait, no"), so that yes no longer counts. The answer to a
-    // read-back comes while it is still pending, so it is not this.
+    // New words after a yes that has not paid yet: the conversation moved
+    // on ("wait, no"), so that yes no longer counts, and a payment under
+    // way on a spoken yes stops before the next step. Danger mode's
+    // announced order goes on, as before. The answer to a read-back comes
+    // while it is still pending, so it is not this.
+    this.payStop?.abort();
     this.withdrawYes("the user spoke again");
     if (this.awaitingAnswer) {
       const resolve = this.awaitingAnswer;
@@ -668,6 +676,8 @@ export class Session {
   // The user started talking over us.
   interrupt(note = "interrupted by the user") {
     if (this.closed) return;
+    // A payment under way stops before its next step (pay.ts signal).
+    this.payStop?.abort();
     this.stopActions();
     this.held.forEach((t) => this.unspoken(t));
     this.held = [];
@@ -753,6 +763,7 @@ export class Session {
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.payStop?.abort();
     this.awaitingAnswer?.(null);
     this.awaitingAnswer = null;
     this.input.close();
@@ -779,8 +790,9 @@ export class Session {
     this.send({ type: "status", text });
   }
 
-  // A spoken yes not yet used by pay_with_saved_card stops counting. Never a
-  // Danger mode announcement, whose rules stay as they were.
+  // A yes not yet used by pay_with_saved_card stops counting. A browser
+  // action never withdraws a Danger mode announcement (alsoAuto false); the
+  // user's own words do.
   private withdrawYes(why: string) {
     const c = this.state.confirmation;
     if (c?.state !== "confirmed" || c.auto) return;
@@ -800,7 +812,14 @@ export class Session {
     } catch (e) {
       if ((e as { code?: string }).code === "no_tab") return true;
     }
-    return extBridge.call("clear_card", { tabId }, 10_000).then(() => true, () => false);
+    // Emptied, then counted empty: hidden and read-only fields count too.
+    await extBridge.call("clear_card", { tabId }, 10_000).catch(() => {});
+    try {
+      const again = await extBridge.call<{ filled?: number }>("card_state", { tabId }, 10_000);
+      return !!again && again.filled === 0;
+    } catch (e) {
+      return (e as { code?: string }).code === "no_tab";
+    }
   }
 
   private guard: HookCallback = async (input) => {
@@ -1006,32 +1025,59 @@ export class Session {
   };
 
   // The request_checkout tool body: read the order back and wait for the answer.
-  async requestCheckout({ item, quantity, total, changes, size }: { item: string; quantity: number; total: string; changes?: string; size?: string }, signal?: AbortSignal) {
+  async requestCheckout({ item, quantity, total, changes, size, cardNickname }: { item: string; quantity: number; total: string; changes?: string; size?: string; cardNickname?: string }, signal?: AbortSignal) {
     // The user cut this turn off: they never heard a read-back, so no yes can count.
     if (this.muted) {
       this.status("checkout not read back: the user interrupted");
       return { content: [{ type: "text" as const, text: "declined. The user interrupted before the order was read back." }] };
     }
-    // Pin the yes to this checkout tab, its site and the cart on it (pay.ts).
-    // Taken while the read-back plays; if it can't be read in 5 s the tab
-    // stays unknown and pay_with_saved_card refuses (fail closed).
+    // Pin the yes to this checkout tab, its site and the cart on it (pay.ts),
+    // before anything is said, so the read-back can name the site. If it
+    // can't be read in 5 s the tab stays unknown and pay_with_saved_card
+    // refuses (fail closed).
     this.cancelMemoryAsk();
-    const conf: Confirmation = { item, quantity, total, variant: size, state: "pending", tabId: null, origin: null, cart: "" };
+    const conf: Confirmation = { item, quantity, total, variant: size, state: "pending", tabId: null, origin: null, cart: "", card: null };
     this.state.confirmation = conf;
+    // The saved card this yes pays with, named in the read-back (ext mode
+    // only: nothing else pays). A name the user gave that fits no card, or
+    // fits several, is asked about first.
+    if (extMode()) {
+      const vault = this.vault ?? cardVault();
+      let picked: ReturnType<CardVault["pick"]> | null = null;
+      try {
+        picked = vault.pick(cardNickname || null);
+      } catch {}
+      if (picked?.ok) conf.card = picked.card;
+      else if (cardNickname && picked) {
+        conf.state = "declined";
+        return { content: [{ type: "text" as const, text: `declined. ${picked.error}` }] };
+      }
+    }
     // No browser tab used yet: nothing to pin, and paying will refuse.
     const none = { tabId: null, origin: null, cart: "" };
-    const snap = this.state.lastTabId == null ? Promise.resolve(none) : Promise.race([
+    const snap = this.state.lastTabId == null ? none : await Promise.race([
       checkoutSnapshot(this.state.lastTabId),
       new Promise<typeof none>((r) => setTimeout(() => r(none), 5_000).unref()),
     ]);
+    if (this.state.confirmation !== conf) {
+      conf.state = "declined";
+      return { content: [{ type: "text" as const, text: "declined. Another checkout started, or the user moved to another Orbi window, before this one was read back." }] };
+    }
+    Object.assign(conf, snap);
     const changed = changes?.trim() ? changes.trim().replace(/([^.!?])$/, "$1.") : "";
+    // Where and with what: "on etsy.com, with Work Visa ending 1111".
+    let site = "";
+    try {
+      site = conf.origin ? new URL(conf.origin).hostname.replace(/^www\./, "") : "";
+    } catch {}
+    const where = site ? ` on ${site}` : "";
+    const withCard = conf.card ? `, with ${cardPhrase(conf.card)}` : "";
     // Danger mode: the user chose no spoken yes. Say what is being bought,
     // so they hear it happen, and confirm without waiting. Read now, so a
     // switch turned off before this call gets the normal read-back.
     if (dangerModeOn()) {
       conf.auto = true;
-      this.say(`Placing your order for ${item}, ${total}.${changed ? ` ${changed}` : ""}`);
-      Object.assign(conf, await snap);
+      this.say(`Placing your order for ${item}, ${total}${where}${withCard}.${changed ? ` ${changed}` : ""}`);
       if (this.state.confirmation !== conf || !dangerModeOn()) {
         conf.state = "declined";
         const why = this.state.confirmation !== conf ? "Another checkout started before this one." : "Danger mode was turned off. Call request_checkout again; the user now says yes first.";
@@ -1043,11 +1089,10 @@ export class Session {
       return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. Call pay_with_saved_card now to fill the card saved in Orbi and place the order, or, if the site already has the user's card, press its Place order button yourself now." }] };
     }
     this.send({ type: "confirm", item, quantity, total, changes: changed });
-    this.say(`You're buying ${quantity} ${item} for ${total}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
+    this.say(`You're buying ${quantity} ${item} for ${total}${where}${withCard}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
     const answer = await new Promise<string | null>((resolve) => {
       this.awaitingAnswer = this.answerSlot(signal, resolve);
     });
-    Object.assign(conf, await snap);
     if (answer !== null && isExplicitYes(answer) && this.state.confirmation === conf) {
       conf.state = "confirmed";
       conf.confirmedAt = Date.now();
@@ -1194,9 +1239,14 @@ export class Session {
     this.paying = true;
     this.status("paying");
     let r: Awaited<ReturnType<typeof payNow>>;
+    // A payment on a spoken yes stops when the user speaks, interrupts or
+    // leaves; Danger mode's announced one goes on, as it always has.
+    const stop = c?.auto ? null : new AbortController();
+    this.payStop = stop;
     try {
-      r = await payNow(this.state, { cardNickname: args.cardNickname }, this.vault ? { vault: this.vault } : {});
+      r = await payNow(this.state, { cardNickname: args.cardNickname }, { ...(stop ? { signal: stop.signal } : {}), ...(this.vault ? { vault: this.vault } : {}) });
     } finally {
+      this.payStop = null;
       this.paying = false;
     }
     if (r.ok) {
@@ -1423,6 +1473,7 @@ export class Session {
         quantity: z.number().int().positive(),
         total: z.string().describe("Order total from the page, e.g. $14.27"),
         size: z.string().max(60).optional().describe("The size or variant on its own, e.g. \"medium\", for the user's past purchases. Omit if none."),
+        cardNickname: z.string().max(60).optional().describe("The saved card's nickname, only if the user named one, e.g. \"Work Visa\". Omit to use the default card. The read-back names the card that pays."),
         changes: z
           .string()
           .optional()
@@ -1445,9 +1496,9 @@ export class Session {
 
     const payNowTool = tool(
       "pay_with_saved_card",
-      "Pay for the order the user just confirmed, with a card saved in Orbi. Call it right after request_checkout returned confirmed, on that checkout page, with no other step in between. Orbi fills the card into the page and places the order itself; you never see the card. Returns { ok, last4, nickname } or { ok: false, error }.",
+      "Pay for the order the user just confirmed, with the saved card the read-back named. Call it right after request_checkout returned confirmed, on that checkout page, with no other step in between. Orbi fills the card into the page and places the order itself; you never see the card. Returns { ok, last4, nickname } or { ok: false, error }.",
       {
-        cardNickname: z.string().max(60).optional().describe("The saved card's nickname, only if the user named one, e.g. \"Work Visa\". Omit to use the default card."),
+        cardNickname: z.string().max(60).optional().describe("Leave it out: the card is the one request_checkout named. To pay with another card, call request_checkout again with its cardNickname."),
       },
       (args) => this.payNowCall(args)
     );

@@ -10,9 +10,11 @@
 //
 // The pay flow may arm its unlock on any page Orbi may use, and only
 // after the user's spoken yes to the exact total (agent/unlock.ts, router.js
-// lockArm). A payment provider's frame inside that page (frameAllowed) needs
-// only the fixed rules, since providers such as js.stripe.com are on the
-// suggested blocked list.
+// lockArm). A frame inside that page gets card values (frameAllowed) only
+// when it is the page's own origin, a payment provider's hosted fields or a
+// site the user allowed: never an ad or other third-party frame. Providers
+// such as js.stripe.com are on the suggested blocked list, so that list is
+// not applied to them.
 
 import { loadSettings, normalizeOrigin } from "../lib/settings.js";
 import { blocklistReason, parseBlockLines } from "../lib/blocklist.js";
@@ -35,11 +37,41 @@ export async function isAllowed(url) {
   return !blockReason(url, await loadSettings());
 }
 
-// A frame inside an allowed page that saved-card fill may use: a web page,
-// with no login in its address, and not a local address unless allowed.
-export async function frameAllowed(url) {
+// Hosts (and their subdomains) that serve payment providers' hosted card
+// fields. A provider missing here can be added as an allowed site.
+export const PAYMENT_FRAME_HOSTS = Object.freeze([
+  "stripe.com", "stripe.network", "adyen.com", "adyenpayments.com", "braintreegateway.com", "braintree-api.com",
+  "paypal.com", "paypalobjects.com", "squareup.com", "squarecdn.com", "checkout.com", "shopifycs.com",
+  "authorize.net", "cybersource.com", "worldpay.com", "recurly.com", "spreedly.com", "paymentech.com",
+  "chasepaymentech.com", "mollie.com", "bluesnap.com", "nmi.com", "moneris.com", "razorpay.com",
+  "mercadopago.com", "verygoodvault.com", "basistheory.com", "evervault.com", "paysafe.com", "globalpay.com",
+  "heartlandportico.com", "convergepay.com", "2checkout.com", "payu.com", "pci-proxy.com", "clover.com",
+  "payeezy.com", "bolt.com", "dlocal.com", "rapyd.net",
+]);
+
+export function isPaymentFrameHost(url) {
+  let u;
+  try {
+    u = new URL(String(url));
+  } catch {
+    return false;
+  }
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  return u.protocol === "https:" && PAYMENT_FRAME_HOSTS.some((h) => host === h || host.endsWith("." + h));
+}
+
+// A frame inside the checkout page (topOrigin) that saved-card fill may put
+// values in: the page's own origin, a payment provider's hosted fields, or
+// a site the user allowed. Always a web page with no login in its address,
+// and never a local address the user did not allow.
+export async function frameAllowed(url, topOrigin) {
   const settings = await loadSettings();
-  return !blocklistReason(url, [], new Set(settings.allowlist));
+  if (blocklistReason(url, [], new Set(settings.allowlist))) return false;
+  const origin = normalizeOrigin(url);
+  if (!origin) return false;
+  if (topOrigin && origin === topOrigin) return true;
+  if (settings.allowlist.includes(origin)) return true;
+  return isPaymentFrameHost(url);
 }
 
 // Throws BridgeError(ERR.NOT_ALLOWED) unless the settings allow this url.

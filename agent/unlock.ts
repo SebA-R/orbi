@@ -90,17 +90,20 @@ type Bridge = Pick<ExtBridge, "call">;
 // here, then lock_arm (the extension's nonce for this tab and origin) and
 // press_protected (the extension re-checks the target is an order button
 // and not covered, then clicks it).
+// target.href, when given, pins the exact page (Stripe's hosts serve every
+// merchant's sessions on one origin).
 export async function pressProtectedExt(
   bridge: Bridge,
   grant: Grant,
-  target: { tabId: number; ref: string },
+  target: { tabId: number; ref: string; href?: string },
   gate: UnlockGate = unlockGate
 ): Promise<{ via?: string }> {
   let href: string | null = null;
   try {
     href = (await bridge.call<{ url?: string }>("tab_info", { tabId: target.tabId }, 10_000))?.url ?? null;
   } catch {}
-  if (!gate.consume(grant, { tabId: target.tabId, href })) throw new LockedError("the unlock is missing, used, expired or for another page");
+  const spent = gate.consume(grant, { tabId: target.tabId, href });
+  if (!spent || (target.href != null && href !== target.href)) throw new LockedError("the unlock is missing, used, expired or for another page");
   const armed = await bridge.call<{ nonce?: string }>("lock_arm", { tabId: target.tabId }, 10_000);
   if (!armed || typeof armed.nonce !== "string") throw new LockedError("the extension did not arm the unlock");
   return (await bridge.call<{ via?: string }>("press_protected", { tabId: target.tabId, ref: target.ref, nonce: armed.nonce }, 15_000)) || {};

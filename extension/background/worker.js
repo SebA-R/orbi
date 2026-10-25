@@ -15,6 +15,7 @@ import { createLogger } from "../lib/log.js";
 import { AGENT_SETTING_KEYS, agentSettingsMessage, endpoints, loadSettings, migrateSettings, seedBlocklist } from "../lib/settings.js";
 import { MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
+import { installBasicTtsHost } from "./basic-tts-host.js";
 import { installFrame } from "./frame.js";
 import { createCursorRelay } from "./cursor.js";
 import { onInstalledSetup, refreshBadge } from "../lib/setup.js";
@@ -106,6 +107,8 @@ const frame = installFrame();
 let showCursor = true;
 loadSettings().then((s) => { showCursor = s.showCursor; }).catch(() => {});
 const cursor = createCursorRelay({ enabled: () => showCursor });
+// Basic voice (no Cartesia key): chrome.tts for the offscreen document.
+installBasicTtsHost({ log: (m) => log.info(m) });
 const voice = installVoiceRelay({
   onVoiceState: (state, tabId) => {
     frame.onVoiceState(state, tabId);

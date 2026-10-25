@@ -151,7 +151,7 @@ test("one cross-origin card frame: each value goes into its own frame, none come
   const { tabId, page } = await checkout(one);
   assert.deepEqual(await call("card_state", { tabId }), { fields: 5, filled: 0, kinds: { "cc-name": 1, "cc-number": 1, "cc-exp": 1, "cc-csc": 1, "postal-code": 1 }, frames: 2 });
 
-  const filled = await call("fill_card", { tabId, card: CARD });
+  const filled = await call("fill_card", { tabId, origin: new URL(one.base).origin, card: CARD });
   assert.deepEqual(filled, { ok: true, last4: "1111", name: true, zip: true, frames: 2 });
   assert.deepEqual(await valuesIn(page), { number: CARD.number, exp: "12 / 30", cvc: CARD.csc, postal: CARD.zip }, "the frame's MM / YY format");
   assert.equal(await page.inputValue('[name="cc-name"]'), CARD.name);
@@ -174,7 +174,7 @@ test("one cross-origin card frame: each value goes into its own frame, none come
 test("one frame per field, the name on the shop's page: four frames filled, then cleared", async () => {
   const { tabId, page } = await checkout(split);
   assert.deepEqual((await call("card_state", { tabId })).kinds, { "cc-name": 1, "cc-number": 1, "cc-exp": 1, "cc-csc": 1 });
-  assert.deepEqual(await call("fill_card", { tabId, card: CARD }), { ok: true, last4: "1111", name: true, zip: false, frames: 4 });
+  assert.deepEqual(await call("fill_card", { tabId, origin: new URL(split.base).origin, card: CARD }), { ok: true, last4: "1111", name: true, zip: false, frames: 4 });
   assert.deepEqual(await valuesIn(page), { number: CARD.number, exp: "12 / 30", cvc: CARD.csc });
   const seen = await readable(tabId);
   for (const s of SECRETS) assert.ok(!seen.includes(s), `a page-reading tool showed ${s}`);
@@ -195,7 +195,7 @@ test("a card frame from a local address nobody allowed: the tab is closed, so no
   await waitFor(async () => (await call("tab_info", { tabId })).url.includes("/cart"), "the cart");
   await call("navigate", { tabId, url: stray.base + "/checkout" }).catch(() => {});
   await waitFor(async () => !(await call("tabs_context")).tabs.some((t) => t.tabId === tabId), "the tab to close");
-  const e = await fails("fill_card", { tabId, card: CARD });
+  const e = await fails("fill_card", { tabId, origin: new URL(stray.base).origin, card: CARD });
   assert.ok(["no_tab", "not_allowed"].includes(e.code), e.code);
   for (const s of SECRETS) assert.ok(!e.message.includes(s));
 });
@@ -203,7 +203,7 @@ test("a card frame from a local address nobody allowed: the tab is closed, so no
 test("fill_card refuses a card that is not complete, without echoing it", async () => {
   const { tabId } = await checkout(one);
   for (const card of [{ ...CARD, number: "4111111111111112" }, { ...CARD, exp: "1230x" }, { ...CARD, csc: "7" }]) {
-    const e = await fails("fill_card", { tabId, card });
+    const e = await fails("fill_card", { tabId, origin: new URL(one.base).origin, card });
     assert.equal(e.code, "bad_request");
     for (const s of [CARD.number, "4111111111111112", CARD.name]) assert.ok(!e.message.includes(s));
   }
