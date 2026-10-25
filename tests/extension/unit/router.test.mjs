@@ -8,8 +8,7 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
   let sends = 0;
   const chromeApi = {
     scripting: {
-      executeScript: async (o) =>
-        calls.push(o.files.includes("content/indicator.js") ? ["indicator", o.target.tabId] : ["inject", o.target.tabId, o.files]),
+      executeScript: async (o) => calls.push(["inject", o.target.tabId, o.files]),
     },
     tabs: {
       sendMessage: async (tabId, msg) => {
@@ -34,6 +33,7 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
       calls.push(["cdp.click", o]);
     },
     type: async (o) => calls.push(["cdp.type", o]),
+    send: async (_t, method, p) => calls.push(["cdp.send", method, p]),
     key: async (o) => calls.push(["cdp.key", o]),
   };
   return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
@@ -51,7 +51,6 @@ test("containsCardNumber finds Luhn-valid 13-19 digit runs only", () => {
 test("page methods inject mask.js, protect.js, then page.js and pass params without tabId", async () => {
   const { calls, router } = fakes();
   await router.route("find", { tabId: 3, query: "sweater" });
-  calls.splice(0, calls.length, ...calls.filter((c) => c[0] !== "indicator"));
   assert.deepEqual(calls[0], ["resolve", 3]);
   assert.deepEqual(calls[1], ["inject", 3, ["content/mask.js", "content/protect.js", "content/page.js"]]);
   assert.deepEqual(calls[2], ["page", 3, "find", { query: "sweater" }]);
@@ -78,14 +77,17 @@ test("click by ref clicks the rect centre over CDP, and falls back to click_ref"
   assert.ok(b.calls.some((c) => c[0] === "page" && c[2] === "click_ref"));
 });
 
+// Typing goes key by key through the actor (background/actor.js).
+const typed = (calls) => calls.filter((c) => c[0] === "cdp.send" && (c[1] === "Input.insertText" || c[2]?.type === "char")).map((c) => c[2].text).join("");
+
 test("type refuses card numbers and payment fields, and allows normal text", async () => {
   const ok = fakes();
   await ok.router.route("type", { text: "wool sweater" });
-  assert.ok(ok.calls.some((c) => c[0] === "cdp.type"));
+  assert.equal(typed(ok.calls), "wool sweater");
 
   const num = fakes();
   await assert.rejects(num.router.route("type", { text: "4111111111111111" }), { code: "payment_field" });
-  assert.ok(!num.calls.some((c) => c[0] === "cdp.type"));
+  assert.ok(!num.calls.some((c) => c[0] === "cdp.type" || c[0] === "cdp.send"));
 
   const field = fakes({ focus: { kind: "cc-csc", payment: true } });
   await assert.rejects(field.router.route("type", { text: "123" }), { code: "payment_field" });
@@ -125,14 +127,14 @@ function contextFakes({ blocked = false, page = { selection: "Blue mug", pointin
     tabsClose: async ({ tabId }) => (calls.push(["close", tabId]), { ok: true }),
     assertPageAllowed: async () => {},
   };
-  const cdp = { click: async () => {}, scroll: async () => {}, type: async () => {}, key: async () => {} };
+  const cdp = { click: async () => {}, scroll: async () => {}, type: async () => {}, key: async () => {}, send: async () => {} };
   return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
 }
 
-test("tab-bound calls show the indicator; clicking or typing never marks a user tab sweepable", async () => {
+test("tab-bound calls inject no tab pill; clicking or typing never marks a user tab sweepable", async () => {
   const { calls, router } = fakes();
   await router.route("click", { tabId: 4, x: 1, y: 2 });
-  assert.ok(calls.some((c) => c[0] === "indicator" && c[1] === 4));
+  assert.ok(!calls.some((c) => c[0] === "inject" && c[2].some((f) => f.includes("indicator"))));
   const b = contextFakes();
   await b.router.route("click", { tabId: 5, x: 1, y: 2 });
   await b.router.route("type", { tabId: 5, text: "mug" });
@@ -193,7 +195,6 @@ function tocFakes({ failFirstSend = false, replyHref = "https://www.etsy.com/c/m
   const chromeApi = {
     scripting: {
       executeScript: async (o) => {
-        if (o.files.includes("content/indicator.js")) return [];
         calls.push(["inject", o.target]);
         return [{ frameId: 0, documentId: `doc-${++docs}`, result: null }];
       },

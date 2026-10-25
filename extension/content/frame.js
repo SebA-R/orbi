@@ -3,7 +3,7 @@
 //
 // The worker (background/frame.js) decides which tab gets it and sends
 // RT.FRAME { on } to that tab's top frame. One ring, no per-state variants:
-// a conic gradient in the orb colours, masked to a 2px border, at opacity
+// a conic gradient in the orb colours, masked to a 4px border, at opacity
 // .45, turning once every 6s. It fades in and out over 300 ms. With reduced
 // motion it holds still.
 //
@@ -40,7 +40,7 @@
 :host { all: initial !important; pointer-events: none !important; }
 .ring {
   position: fixed; inset: 0; box-sizing: border-box;
-  padding: 2px;
+  padding: 4px;
   background: conic-gradient(from var(--clearcart-frame-a), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -87,6 +87,7 @@
     if (!root) return false;
     registerAngle();
     const host = document.createElement("clearcart-frame");
+    host.setAttribute(OVERLAY_ATTR, String(RANK));
     host.setAttribute("aria-hidden", "true");
     host.setAttribute("inert", "");
     host.setAttribute("tabindex", "-1");
@@ -109,7 +110,7 @@
     const ring = document.createElement("div");
     ring.className = "ring";
     shadow.append(ring);
-    root.append(host);
+    place(root, host);
     Object.assign(ui, { host, ring });
     keepLast(root);
     return true;
@@ -126,17 +127,65 @@
   }
 
   // Pages that append their own overlay after us, or rewrite our inline style.
+  // Every Clearcart overlay host carries OVERLAY_ATTR, whose value is its rank
+  // (higher sits later, so the subtitles stay above the frame). A host only
+  // moves when a non-Clearcart element follows it, so two Clearcart overlays
+  // never chase each other. A valve stops re-appending for a while if a page
+  // keeps itself last too, so the two can't spin forever.
+  const OVERLAY_ATTR = "data-clearcart-overlay";
+  const VALVE_MAX = 20;       // re-appends allowed per window
+  const VALVE_WINDOW_MS = 1000;
+  const VALVE_PAUSE_MS = 3000;
+  const RANK = 1;
+  const valve = { times: [], until: 0, timer: 0 };
+  function rankOf(el) {
+    const r = Number(el.getAttribute(OVERLAY_ATTR));
+    return Number.isFinite(r) ? r : 0;
+  }
+  function followedByPage(host) {
+    for (let el = host.nextElementSibling; el; el = el.nextElementSibling) {
+      if (!el.hasAttribute(OVERLAY_ATTR)) return true;
+    }
+    return false;
+  }
+  // Last, but before any trailing Clearcart overlay that ranks above us.
+  function place(root, host) {
+    let before = null;
+    for (let el = root.lastElementChild; el && el !== host; el = el.previousElementSibling) {
+      if (!el.hasAttribute(OVERLAY_ATTR) || rankOf(el) <= RANK) break;
+      before = el;
+    }
+    if (before) root.insertBefore(host, before);
+    else root.append(host);
+  }
+  function valveOpen() {
+    const now = Date.now();
+    if (now < valve.until) return false;
+    valve.times = valve.times.filter((t) => now - t < VALVE_WINDOW_MS);
+    if (valve.times.length >= VALVE_MAX) {
+      valve.until = now + VALVE_PAUSE_MS;
+      valve.times = [];
+      clearTimeout(valve.timer);
+      valve.timer = setTimeout(() => { valve.timer = 0; check(); }, VALVE_PAUSE_MS);
+      return false;
+    }
+    valve.times.push(now);
+    return true;
+  }
+
+  function check() {
+    const host = ui.host;
+    const root = document.documentElement;
+    if (!host || !root) return;
+    if ((host.parentNode !== root || followedByPage(host)) && valveOpen()) {
+      place(root, host);
+      if (ui.on) raise();
+    }
+    if (host.style.getPropertyPriority("z-index") !== "important") pinHostStyle(host);
+  }
   function keepLast(root) {
     if (ui.watcher || typeof MutationObserver !== "function") return;
-    ui.watcher = new MutationObserver(() => {
-      const host = ui.host;
-      if (!host) return;
-      if (host.parentNode !== root || root.lastElementChild !== host) {
-        root.append(host);
-        if (ui.on) raise();
-      }
-      if (host.style.getPropertyPriority("z-index") !== "important") pinHostStyle(host);
-    });
+    ui.watcher = new MutationObserver(check);
     ui.watcher.observe(root, { childList: true });
   }
 
