@@ -54,6 +54,11 @@ test("maskCardRuns finds a card glued to other digits: a CVC, an expiry, a short
   assert.equal(maskCardRuns("Card 5555-5555-5555-4444-12 ok"), `Card ${M} ok`);
   assert.equal(hasCardNumber("pay 4111 1111 1111 1111 123"), true);
   assert.equal(hasCardNumber("order 12345 qty 2, ending in 1111"), false);
+  // Cards that start with 8 or 9: RuPay, UnionPay 81, Troy 9792.
+  for (const n of ["8123456789012340", "8171 9999 2766 0000", "9792123456789018"]) {
+    assert.equal(maskCardRuns(`card ${n}`), `card ${M}`, n);
+    assert.equal(hasCardNumber(n), true, n);
+  }
   // Order and tracking numbers are not cards.
   for (const n of ["Order 112-4829105-7730216", "Tracking 9400111202555842736455", "Tracking 9400 1112 0255 5842 7364 55", "Order 123456789012345678"]) {
     assert.equal(maskCardRuns(n), n, n);
@@ -77,5 +82,5 @@ test("order and tracking numbers mostly stay readable", () => {
     const u = `9400${digits(18)}`;
     if (maskCardRuns(u) !== u) masked.plain++;
   }
-  assert.ok(masked.orders < 50 && masked.spaced < 75 && masked.plain === 0, JSON.stringify(masked));
+  assert.ok(masked.orders < 75 && masked.spaced < 175 && masked.plain === 0, JSON.stringify(masked));
 });

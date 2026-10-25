@@ -71,11 +71,11 @@
   // or dashes.
   var RUN = /\d(?:[ -]?\d){12,}/g;
 
-  // Card numbers are 13, 14, 15, 16 or 19 digits, start with 2 to 6, and
-  // pass Luhn.
+  // Card numbers are 13, 14, 15, 16 or 19 digits, never start with 0, and
+  // pass Luhn (RuPay and UnionPay start with 8, Troy with 9).
   var CARD_LENGTHS = [13, 14, 15, 16, 19];
   function cardLike(d) {
-    return CARD_LENGTHS.indexOf(d.length) !== -1 && /^[2-6]/.test(d) && luhn(d);
+    return CARD_LENGTHS.indexOf(d.length) !== -1 && /^[1-9]/.test(d) && luhn(d);
   }
 
   // True when the run holds a card number, also next to other digits. Each

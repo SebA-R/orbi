@@ -43,6 +43,8 @@ test("containsCardNumber finds Luhn-valid 13-19 digit runs only", () => {
   assert.ok(containsCardNumber("4111 1111 1111 1111"));
   assert.ok(containsCardNumber("pay 4111-1111-1111-1111 now"));
   assert.ok(containsCardNumber("x94111111111111111"));
+  assert.ok(containsCardNumber("8171 9999 2766 0000"), "RuPay");
+  assert.ok(containsCardNumber("9792123456789018"), "Troy");
   assert.ok(!containsCardNumber("4111 1111 1111 2"));
   assert.ok(!containsCardNumber("order 12345 qty 2"));
   assert.ok(!containsCardNumber("blue wool sweater"));
@@ -87,6 +89,8 @@ test("type refuses card numbers and payment fields, and allows normal text", asy
 
   const num = fakes();
   await assert.rejects(num.router.route("type", { text: "4111111111111111" }), { code: "payment_field" });
+  await assert.rejects(num.router.route("type", { text: "8123456789012340" }), { code: "payment_field" });
+  await assert.rejects(num.router.route("type", { text: "9792 1234 5678 9018" }), { code: "payment_field" });
   assert.ok(!num.calls.some((c) => c[0] === "cdp.type" || c[0] === "cdp.send"));
 
   const field = fakes({ focus: { kind: "cc-csc", payment: true } });
