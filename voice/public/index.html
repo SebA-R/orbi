@@ -86,7 +86,7 @@
     <div class="side">
       <section aria-labelledby="convo-heading" class="conversation">
         <h2 id="convo-heading" class="section-label">Conversation</h2>
-        <p class="convo-empty">Hold Space and ask for something, like "reorder my allergy pills, cheapest same dose."</p>
+        <p class="convo-empty">Hold Space and ask for something, like "read me today's top headlines" or "find a blue mug under twenty dollars."</p>
         <ol id="conversation" class="turns"></ol>
       </section>
 
@@ -175,29 +175,29 @@
     const hook = window.__clearcartDemo;
     if (demo && hook) {
       document.activeElement?.blur();
-      const ask = 'Reorder my allergy pills, cheapest same dose.';
-      const options = 'Three options. Store brand cetirizine, 30 count, $8.99. The 45 count, $11.49. Or 90 count, $17.99. Which one?';
-      const readBack = "You're buying 1 store brand cetirizine 10mg, 30 count for $9.64. I removed a pre-checked Subscribe and Save membership that would have added $4.99. Say yes to pay, or no to change it.";
-      const order = { item: 'store brand cetirizine 10mg, 30 count', quantity: 1, total: '$9.64', changes: 'I removed a pre-checked Subscribe and Save membership that would have added $4.99.' };
-      if (demo !== 'idle') { hook.turn('You', ask); hook.turn('Clearcart', options); hook.turn('You', 'The 30 count.'); }
+      const ask = 'Find a blue mug under twenty dollars.';
+      const options = 'Three options. A blue ceramic mug, 12 ounces, $12. A navy travel mug, $16.50. Or a pair of blue mugs, $19. Which one?';
+      const readBack = "You're buying 1 blue ceramic mug, 12 oz for $12.96. I removed a pre-checked Subscribe and Save membership that would have added $4.99. Say yes to pay, or no to change it.";
+      const order = { item: 'blue ceramic mug, 12 oz', quantity: 1, total: '$12.96', changes: 'I removed a pre-checked Subscribe and Save membership that would have added $4.99.' };
+      if (demo !== 'idle') { hook.turn('You', ask); hook.turn('Clearcart', options); hook.turn('You', 'The ceramic one.'); }
       if (demo === 'confirm') {
         hook.turn('Clearcart', readBack);
         hook.confirm(order);
-        hook.state('idle', { user: 'The 30 count.', agent: readBack });
+        hook.state('idle', { user: 'The ceramic one.', agent: readBack });
       } else if (demo === 'receipt') {
         hook.turn('Clearcart', readBack);
         hook.confirm(order);
         hook.turn('You', 'Yes.');
-        hook.turn('Clearcart', 'Done. Your order is placed, $9.64 on your Visa ending in 1111.');
-        hook.state('idle', { user: 'Yes', agent: 'Done. Your order is placed, $9.64 on your Visa ending in 1111.' });
-        hook.receipt({ item: 'Store brand cetirizine 10mg, 30 count', total: '$9.64', last4: '1111' });
+        hook.turn('Clearcart', 'Done. Your order is placed, $12.96 on your Visa ending in 1111.');
+        hook.state('idle', { user: 'Yes', agent: 'Done. Your order is placed, $12.96 on your Visa ending in 1111.' });
+        hook.receipt({ item: 'Blue ceramic mug, 12 oz', total: '$12.96', last4: '1111' });
       } else {
-        if (demo === 'speaking') hook.turn('Clearcart', 'I unchecked a Subscribe and Save membership. Your total is $9.64.');
+        if (demo === 'speaking') hook.turn('Clearcart', 'I unchecked a Subscribe and Save membership. Your total is $12.96.');
         hook.state(demo, {
-          user: demo === 'idle' ? '' : demo === 'listening' ? 'Reorder my allergy pills, cheapest same dose' : 'The 30 count.',
-          agent: demo === 'speaking' ? 'I unchecked a Subscribe and Save membership. Your total is $9.64.' : '',
-          status: 'Searching the store',
-          detail: demo === 'thinking' ? 'Looking for "cetirizine 10mg"' : '',
+          user: demo === 'idle' ? '' : demo === 'listening' ? 'Find a blue mug under twenty dollars' : 'The ceramic one.',
+          agent: demo === 'speaking' ? 'I unchecked a Subscribe and Save membership. Your total is $12.96.' : '',
+          status: 'Searching',
+          detail: demo === 'thinking' ? 'Looking for "blue mug"' : '',
         });
       }
     }

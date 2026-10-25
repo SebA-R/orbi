@@ -75,8 +75,8 @@ wss.on('connection', (ws) => {
     if (m.type !== 'user_text') return;
     console.log(`user_text: ${m.text}`);
     if (/receipt/i.test(m.text)) {
-      send({ type: 'agent_text', text: 'Your order is placed. Store brand cetirizine, 90 count, for $18.49 on the Visa ending in 1111.' });
-      send({ type: 'receipt', item: 'Store brand cetirizine 10mg, 90 count', total: '$18.49', last4: '1111' });
+      send({ type: 'agent_text', text: 'Your order is placed. A blue ceramic mug for $12.96 on the Visa ending in 1111.' });
+      send({ type: 'receipt', item: 'Blue ceramic mug, 12 oz', total: '$12.96', last4: '1111' });
       return;
     }
     send({ type: 'status', text: `echoing ${m.text.length} characters` });
