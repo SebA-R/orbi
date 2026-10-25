@@ -95,6 +95,8 @@ Save a card in Orbi's settings under **Payment cards**. Orbi encrypts it on this
 
 ## How it works
 
+![Orbi architecture: you, voice, the Chrome extension, Orbi Desktop and the agent server, with the safety checks each one enforces](docs/images/architecture.png)
+
 ```
  you ── hold Space ──┐
                      v
