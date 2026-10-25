@@ -121,12 +121,19 @@ let bridge = null;
 // sites too, so send them on every connect and every change.
 const sendBlocklist = () =>
   loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
+// Guided mode shapes the agent's prompt; sent on connect and on change.
+const sendAgentSettings = () =>
+  loadSettings().then(({ guidedMode }) => bridge?.send({ type: MSG.SETTINGS, guidedMode })).catch(() => {});
+const onBridgeOpen = () => {
+  sendBlocklist();
+  sendAgentSettings();
+};
 
 async function startBridge() {
   const settings = await loadSettings();
   const url = endpoints(settings.agentUrl).ext;
   if (!bridge) {
-    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onOpen: sendBlocklist, onState: (s) => log.info(`bridge ${s}`) });
+    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onOpen: onBridgeOpen, onState: (s) => log.info(`bridge ${s}`) });
     bridge.start();
   } else {
     bridge.setUrl(url);
@@ -138,6 +145,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.allowlist) loadAllowlist();
   if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
   if (changes.blocklist) sendBlocklist();
+  if (changes.guidedMode) sendAgentSettings();
 });
 
 startBridge().catch((e) => log.warn(`bridge start failed: ${e.message}`));

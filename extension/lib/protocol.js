@@ -25,6 +25,8 @@ export const MSG = Object.freeze({
   PING: "ping",
   PONG: "pong",
   BLOCKLIST: "blocklist",
+  // { type: "settings", guidedMode }: agent behavior settings, worker to agent.
+  SETTINGS: "settings",
 });
 
 // Tools the agent may expose to Claude.
