@@ -142,9 +142,10 @@ test("the session sweep over the extension bridge only looks at tabs Clearcart o
 test("sites prompt: open mode allows any store with the real-site rules", () => {
   const p = sitesPrompt("open", []);
   assert.match(p, /any online store/);
-  assert.match(p, /never log in or create an account/);
+  assert.match(p, /sign in or create an account only when the user asks, through request_unlock/);
   assert.match(p, /never enter an address, card/);
-  assert.match(p, /Never start checkout/);
+  assert.match(p, /Never start checkout on your own/);
+  assert.match(p, /never press Place order/);
   assert.match(p, /reject, decline or necessary only/);
   assert.match(p, /CAPTCHA/);
   assert.match(sitesPrompt("allowlist", []), /Only browse the demo store/);
