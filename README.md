@@ -43,17 +43,17 @@ Orbi started with a sound screen reader users know too well: tabbing through a p
 - **Locked risky buttons.** Place order, Buy now, Pay, Checkout, wallet buttons (Apple Pay, Google Pay, PayPal and others), Subscribe, Save card, Sign in and Sign up are locked for the AI, along with the submit of any card or password form. Every agent click, key and form change is checked against the page before it is sent, and refused if the check can't run.
 - **Unlocked when you ask.** Say "sign me in" or "go to checkout" and that one control unlocks once, for that tab. Anything less direct gets one spoken question, and only a clear yes unlocks it. Place order and wallet buttons never unlock this way.
 - **Checkout read-back and a spoken yes.** Before paying, Orbi reads back the item and the total. Only an explicit "yes" confirms, and the total on the page must match what you heard.
-- **The card and passwords are never visible to the agent.** Page reads mask card and password fields and card-like numbers. The agent can't type into them. The card is filled by Orbi's own code, and the model only ever gets back the last four digits.
+- **The card and passwords are never visible to the agent.** Page reads mask card and password fields and card-like numbers. The agent can't type into them. Cards you save in Orbi's settings are encrypted on this computer and filled by Orbi's own code, and the model only ever gets back a card's nickname and last four digits.
 - **Blocked sites.** A suggested list of sensitive sites (email, password managers, banks, government, health, account pages) is blocked from the start, and you can edit it. Browser pages, local network addresses and addresses with a login in them are always blocked.
 - **Page text is data, not instructions.** Page content, your selection and earlier conversation reach the model labeled as data, and the prompt tells it never to follow instructions found in them.
 - **CAPTCHA hand-off.** Orbi never tries to solve a CAPTCHA or bot check. It tells you, and you take over.
 - **Limits.** The lock and masking are enforced in code. Some rules are only instructions to the model, such as not typing other personal details like your address. Details are in [`extension/README.md`](extension/README.md#button-lock).
 - **One global session.** Every Orbi window shares one agent. The window you last talked into owns it, so one yes can never confirm two checkouts.
-- **Danger mode (opt-in, off by default).** Danger mode turns Orbi into a free agent: no button lock at all, no checkout page block, and it places orders without waiting for a yes (it announces the item and total, then presses the button). It still can't see or type card numbers or passwords, so on most sites an order only goes through where the site already has your payment and sign-in saved. On a pay site you set up, Orbi's own code fills the Keychain card without asking. Card and password masking, blocked sites and the CAPTCHA hand-off stay on. The risk is real: a misheard request or a misleading page can lead to a real purchase you didn't intend. Turning it on takes a second confirming press.
+- **Danger mode (opt-in, off by default).** Danger mode turns Orbi into a free agent: no button lock at all, no checkout page block, and it places orders without waiting for a yes (it announces the item and total, then presses the button). It still can't see or type card numbers or passwords, so on most sites an order only goes through where the site already has your payment and sign-in saved. With a card saved in Orbi's settings, Orbi's own code fills it without asking. Card and password masking, blocked sites and the CAPTCHA hand-off stay on. The risk is real: a misheard request or a misleading page can lead to a real purchase you didn't intend. Turning it on takes a second confirming press.
 
 ### Pay
 
-Paying runs through the read-back and your spoken yes. After the yes, Orbi's own code (not the AI) fills the card from the macOS Keychain and presses Place order once, on a pay site you set up with `CLEARCART_PAY_ORIGINS`. There are no pay sites by default. On every other site Orbi stops at checkout, reads you the order and lets you finish it yourself.
+Save a card in Orbi's settings under **Payment cards**. Orbi encrypts it on this computer (AES-256-GCM, with the key in your macOS Keychain), and the AI never sees it. Paying runs through the read-back and your spoken yes. Right after the yes, Orbi's own code (not the AI) checks the total on the page again, fills the saved card in, including card fields inside a payment provider's frame, and presses Place order once. This works on any checkout page Orbi may use; blocked sites stay blocked. With no card saved, Orbi stops at checkout, reads you the order and lets you finish it yourself.
 
 ## How it works
 
@@ -72,17 +72,18 @@ Paying runs through the read-back and your spoken yes. After the yes, Orbi's own
  ┌──────────────── agent server (Node, :5050) ─┴────────────────────────┐
  │ Claude Agent SDK, model claude-sonnet-5-5                            │
  │ SAFETY: navigation guard and tab sweep, checkout page block,         │
- │         unlock gate (spoken yes + matching total), pay_now, memory   │
+ │         unlock gate (spoken yes + matching total), memory,           │
+ │         card vault (saved cards, encrypted, filled by Orbi's code)   │
  └──────────────────────────────────────────────────────────────────────┘
 ```
 
 - **The extension** (Manifest V3, `extension/`) does everything in the browser. Content scripts catch the talk key and draw the subtitles, orb, ring and cursor. An offscreen document owns the mic, streams your speech to Cartesia Ink 2 speech-to-text, and plays replies from Cartesia Sonic text-to-speech with word timestamps for the karaoke subtitles. The service worker connects to the agent server and runs its browser tools: tabs, navigation, page reading, form input, and clicks and keys over the Chrome debugger.
 - **The agent server** (`agent/`) runs Claude through the Claude Agent SDK with model `claude-sonnet-5-5` (override with `CLEARCART_MODEL`). It keeps one global session, the memory, and the checkout and pay tools.
-- **Safety sits between the model and the page in layers.** The prompt sets the rules. The agent server checks every tool call before it runs (blocked sites, checkout URLs, the card guard while a card is in the form) and sweeps tabs after. The extension checks every click, key and form change against the live page and refuses locked controls, so a model mistake or a page trying to trick it still can't press Place order. Only `pay_now` can, through a single-use unlock that needs your spoken yes.
+- **Safety sits between the model and the page in layers.** The prompt sets the rules. The agent server checks every tool call before it runs (blocked sites, checkout URLs, the card guard while a card is in the form) and sweeps tabs after. The extension checks every click, key and form change against the live page and refuses locked controls, so a model mistake or a page trying to trick it still can't press Place order. Only `pay_with_saved_card` can, through a single-use unlock that needs your spoken yes.
 
 ## Setup
 
-**Prerequisites:** Node 20 or newer, Chrome 116 or newer, and macOS if you want Orbi to pay (the card lives in the Keychain). You need an Anthropic API key and a Cartesia API key.
+**Prerequisites:** Node 20 or newer, Chrome 116 or newer, and macOS if you want Orbi to pay (the saved cards' key lives in the Keychain). You need an Anthropic API key and a Cartesia API key.
 
 1. **Clone and install the agent server.**
 
@@ -112,11 +113,7 @@ Paying runs through the read-back and your spoken yes. After the yes, Orbi's own
 
 6. **Hold Space on any page and talk.**
 
-**Optional: paying.** Run `./vault/setup-test-card.sh` once to store the published Visa test card in your login Keychain, and start the server with your pay sites on the command line:
-
-```bash
-CLEARCART_PAY_ORIGINS=https://shop.example npm --prefix agent start
-```
+**Optional: paying.** Add a card in Orbi's settings under **Payment cards**, or run `npm --prefix agent run add-test-card` once to save the published Visa test card (4111 1111 1111 1111).
 
 **Tip: hide the debugging bar.** Chrome shows "Orbi started debugging this browser" while the agent clicks or types. Quit Chrome and relaunch it with `--silent-debugger-extension-api` to hide the bar:
 

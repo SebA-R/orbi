@@ -7,8 +7,8 @@ Our own Chrome extension (Manifest V3) for Orbi. It replaces the third-party bro
 - Connects to the Orbi agent server over a WebSocket (`ws://localhost:5050/ext`) and runs browser tools for it: tabs, navigation, page reading, form input, clicks, keys, scrolling and screenshots.
 - Works with your open tabs and the tabs it opens itself; there is no tab group. By default (open web) it may use tabs on any site except your blocked sites (seeded with a suggested list of sensitive sites); in "Only allowed sites" mode, only the allowed sites (none until you add them). Tabs on other sites are left out of its tab list and refused. See [Tabs](#tabs) and [Which sites](#which-sites).
 - Knows what you are looking at: with each thing you say, the agent gets the active tab, your text selection and what you are pointing at (see [What you are pointing at](#what-you-are-pointing-at)), so "add this one to my cart" works.
-- Never returns card numbers: page-reading tools mask payment fields and card-like digit runs, `form_input` and typing refuse payment fields and card numbers, and the card is filled by `pay_now` in one `fill_payment` call that answers only `last4`.
-- Button lock: the agent can never press a protected control (place order, buy now, pay, checkout, wallet buttons, subscribe, save card, sign in, sign up, the submit of a card or password form, anything marked `data-clearcart-protected`). Only `pay_now`, after the user's spoken yes, presses the order button once, with a single-use unlock. People are never locked out: the lock checks the agent's tool calls only.
+- Never returns card numbers: page-reading tools mask payment fields and card-like digit runs, `form_input` and typing refuse payment fields and card numbers, and a saved card is filled by `pay_with_saved_card` in one `fill_card` call that answers only the last 4 digits and which kinds went in.
+- Button lock: the agent can never press a protected control (place order, buy now, pay, checkout, wallet buttons, subscribe, save card, sign in, sign up, the submit of a card or password form, anything marked `data-clearcart-protected`). Only `pay_with_saved_card`, after the user's spoken yes, presses the order button once, with a single-use unlock. People are never locked out: the lock checks the agent's tool calls only.
 - Hold **Space** on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab. Recording starts the moment the key goes down, so the first word is kept; the listening sound and state come on once it has been held for 200 ms. A quick tap is thrown away and does what Space normally does. In text fields Space types a space; hold Option+Space (Alt+Space) there instead. With Space as the talk key, Option+Space works on any page, confirms at once and needs no hold delay.
 
 ## Install
@@ -56,7 +56,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 - On install the list is seeded with a suggested list (`SUGGESTED_BLOCKLIST` in `lib/blocklist.js`), grouped with `#` lines: email, password managers, banks and money (plus `*bank*`, `*creditunion*`), government and tax (`*.gov`, `*.gouv`, `*.mil`), health, and account and sign in pages, Amazon's included. Add or remove anything; **Restore suggested list** puts back the suggested entries and keeps yours under `# Your sites`. It is best effort, not a guarantee.
 - Always blocked, fixed in code: `chrome:`, `chrome-extension:`, `about:`, `file:`, `data:`, `javascript:` and other non-web pages, addresses with a login in them, and localhost and private network addresses other than the allowed sites (so the agent console is off limits), in any spelling (`[::ffff:127.0.0.1]`, `[::7f00:1]`, `[fec0::]`, `2130706433`) and under loopback DNS names such as `localtest.me` and `127.0.0.1.nip.io`. Because any name can resolve to this computer, `background/netguard.js` also checks the IP each Orbi tab's page and frames actually came from (`chrome.webRequest`): a tab served from a loopback or private address on an origin that is not an allowed site is refused for every call, and closed if Orbi opened it.
 - **Only allowed sites**: the allowed sites only. With none listed, nothing opens.
-- Either way: blocked tabs stay hidden and refused, and the button lock and the agent server's checkout page block (on every site but the pay sites) stay on, and `lock_arm` only arms on an allowed site, so open browsing never widens the unlock.
+- Either way: blocked tabs stay hidden and refused, and the button lock and the agent server's checkout page block stay on, and `lock_arm` only arms on a site you allow, never on a blocked one, so browsing never widens the unlock.
 - The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever site you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it. Guided mode and Memory go the same way (`{ type: "settings", guidedMode, memory }`). The options page lists and deletes saved facts at the agent's `/memory` endpoint (`lib/memory.js`), which answers only this extension's origin; facts are added only by asking Orbi out loud.
 
 `chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. It latches like Option+Space: Space sends, and a minute without speech stops it. Don't pick the same keys as the hold key.
@@ -70,7 +70,8 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `background/router.js` | Maps each bridge method to tabs/CDP or the page script, with the card guard on `type`/`key` |
 | `background/tabs.js`, `cdp.js`, `allowlist.js`, `netguard.js` | Which tabs the agent may use, navigation, `chrome.debugger` input and screenshots, the browse mode check, the connected-address check |
 | `lib/blocklist.js` | Blocked sites: the entry parser, the fixed rules (local addresses included) and the suggested list (the agent server imports it too) |
-| `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field`, the button lock classifier, its checks and badges |
+| `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `order_buttons`, `focused_field`, the button lock classifier, its checks and badges |
+| `content/cardfill.js` | Saved-card fill, injected after `mask.js` into every frame of the checkout tab (payment providers' cross-origin frames too) in the extension's isolated world: finds card fields by autocomplete kind or, for fields `mask.js` reads as payment fields, by name and label; fills and clears them; answers kinds and counts, never values |
 | `content/context.js` | Declared content script (top frame): remembers the element under the mouse and the last one clicked or focused, for `page_context` |
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP`, Option+Space latch, double-tap Space hush |
 | `content/orb-face.js` | The mini orb face (eyes and a mouth) that shows the voice state and lip-syncs while Orbi speaks; loaded before `subtitles.js` and by the popup and new tab page |
@@ -81,7 +82,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `background/follow.js` | Brings the user to the tab Orbi acts on |
 | `background/errpage.js`, `newtab/` | Orbi's new tab page and "Can't reach this site" page, see [New tab page](#new-tab-page) and [Error pages](#error-pages) |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, earcons, its own `/session` socket |
-| `options/` | Options page |
+| `options/` | Options page, Payment cards included (`lib/cards.js`: the agent server's `/cards`) |
 | `setup/`, `popup/` | Setup page (install and update), drawn by `setup/checklist.js`, and the toolbar popup, which follows `VOICE_STATE` and counts the same checks |
 | `lib/setup.js`, `lib/mic-grant.js` | Setup checks, the badge and the onInstalled rule; the microphone grant shared by options and setup |
 | `lib/` | Protocol, bridge client, settings, redacting logger, voice modules |
@@ -93,7 +94,8 @@ The agent server sends `{ type: "request", id, method, params }` and the worker 
 - `tabs_context`, `tabs_create`, `tabs_close`, `tabs_activate`, `navigate` (`"back"`/`"forward"` too), `tab_info`, `agent_tabs` → `tabs.js`. `page_context` → the active tab's `content/page.js`.
 - `click`, `type`, `key`, `scroll`, `screenshot` → `cdp.js`. `click` with a `ref` clicks the centre of the page's `rect` and falls back to `click_ref` if CDP can't attach. `type` and single-character `key` are refused (`payment_field`) when the text holds a Luhn-valid 13-19 digit run or the focused element is a card field.
 - Page methods inject `content/mask.js`, `content/protect.js` and `content/page.js` with `chrome.scripting` (idempotent; refs stay stable for the document's life), send `PAGE_CALL` to the top frame and retry once on "Receiving end does not exist".
-- Only the `TOOLS` are exposed to Claude. `INTERNAL` methods (`tab_info`, `agent_tabs`, `page_context`, `read_fields`, `fill_payment`, `clear_payment`, `rect`, `click_ref`, `lock_arm`, `press_protected`) are called only by the server's own code.
+- Only the `TOOLS` are exposed to Claude. `INTERNAL` methods (`tab_info`, `agent_tabs`, `page_context`, `fill_card`, `clear_card`, `card_state`, `order_buttons`, `rect`, `click_ref`, `lock_arm`, `press_protected`) are called only by the server's own code.
+- `fill_card { tabId, card: { name, number, exp, csc, zip } }` scans every frame (`content/cardfill.js`), needs exactly one card number, security code and expiry (a field, or a month and a year) across them, and gives each frame only the values for its own fields (`chrome.scripting` with that frame's `documentId`), a name or ZIP only where there is exactly one. The page must pass the full site check; another frame only the fixed rules (a web page, not a local address you did not allow), since payment providers such as js.stripe.com are on the suggested blocked list. Anything unclear fills nothing (`no_element`, "couldn't find the card fields on this page"), and a frame that does not take its values empties every card field again. It answers `{ ok, last4, name, zip, frames }`. `clear_card` empties every card field in every frame; `card_state` answers counts by kind.
 
 ### Tabs
 
@@ -118,7 +120,7 @@ Payment and password fields are named only as masked, no field value is ever rea
 
 | Kind | Examples | Who may press |
 | --- | --- | --- |
-| `order` | Place order, Buy now, Pay, Complete purchase, Submit order, Confirm order, Checkout, Proceed to checkout, Continue to payment | `pay_now` once after a yes, never the agent |
+| `order` | Place order, Buy now, Pay, Complete purchase, Submit order, Confirm order, Checkout, Proceed to checkout, Continue to payment | `pay_with_saved_card` once after a yes, never the agent |
 | `marked` | anything inside `data-clearcart-protected`, for a page that marks its own order button | same as `order` |
 | `payment-form` | the submit control of a form that holds card fields, whatever it says | same as `order` |
 | `express` | Apple Pay, Google Pay, PayPal, Shop Pay, Amazon Pay, Klarna, 1-Click, Express checkout | only the user |
@@ -162,11 +164,11 @@ npm --prefix tests/extension test              # protocol, bridge, settings, log
 node --test --test-concurrency=1 extension/test/tabs-cdp/ extension/test/voice/
 (cd extension/test/page && npm install && npm test)        # jsdom against the test shop's pages + Chromium layout
 (cd extension/test/subtitles && npm install && npm test && npm run screenshots)
-npm --prefix agent test                        # bridge, tools and pay_now with a fake extension
-npm --prefix agent run test:e2e:ext            # full flow: test shop on 4300, agent on 5300, the real extension
+npm --prefix agent test                        # bridge, tools and pay_with_saved_card with a fake extension
+npm --prefix agent run test:e2e:ext            # full flow: test shops on 4300 and 4303, card frames on 4302, agent on 5300, the real extension
 ```
 
-Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, the e2e), so they never connect to a live agent on :5050. `tests/extension/browser/load.test.mjs` and `extension/test/voice/pages.browser.test.mjs` still load `extension/` as is, so their worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
+Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, `cardfill.test.mjs`, the e2e), so they never connect to a live agent on :5050. `tests/extension/browser/load.test.mjs` and `extension/test/voice/pages.browser.test.mjs` still load `extension/` as is, so their worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
 
 ### New tab page
 
@@ -179,8 +181,9 @@ Chrome's network error page (`chrome-error://chromewebdata/`) runs no content sc
 ## Known gaps
 
 - The suggested blocked sites are best effort: a sensitive site that is not on it, under its own domain, is browsable until you add it.
-- Typing guard: a card field inside a cross-origin iframe (hosted payment forms) reports as "none" from the top frame, so only the Luhn check protects it there.
-- Button lock: the classifier reads names, ids and forms, so a commit button with no words at all (an icon with no label, outside a card or password form, not marked) is not caught. Keys other than Enter and Space, and a `select` whose change handler places an order, are not checked. Navigating straight to a checkout URL is refused by the agent server (on sites other than the pay sites), not by the extension; the agent's tab sweep sends a tab that lands on one back.
+- Typing guard: a card field inside a cross-origin iframe (hosted payment forms) cannot be checked from the top frame, so typing with the focus in one is refused like a card field.
+- Saved-card fill: a card field with no autocomplete kind is found only when `mask.js` reads it as a payment field and its name or label says which part it is; a page that hides its card fields any other way gets nothing filled, and the user finishes checkout.
+- Button lock: the classifier reads names, ids and forms, so a commit button with no words at all (an icon with no label, outside a card or password form, not marked) is not caught. Keys other than Enter and Space, and a `select` whose change handler places an order, are not checked. Navigating straight to a checkout URL is refused by the agent server, not by the extension; the agent's tab sweep sends a tab that lands on one back.
 - Subtitles show in the top frame only, and not over fullscreen (top-layer) elements.
 - Chrome may close the `AUDIO_PLAYBACK` offscreen document after about 30 s of silence; the next press recreates it, but an `agent_text` that arrives while it is closed is lost.
 - `navigate("back")` after only programmatic navigations may report `bad_request` (Chrome's history intervention skips entries without a user gesture).
