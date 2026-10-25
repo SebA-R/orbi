@@ -103,24 +103,54 @@ Save a card in Orbi's settings under **Payment cards**. Orbi encrypts it on this
 
 ![Orbi architecture: you, voice, the Chrome extension, Orbi Desktop and the agent server, with the safety checks each one enforces](docs/images/architecture.png)
 
-```
- you ── hold Space ──┐
-                     v
- ┌──────────────── Chrome: Orbi extension (MV3) ───────────────────┐
- │ content scripts   hotkey, subtitles, orb, ring, cursor, page context │
- │ offscreen doc     mic ── Cartesia Ink 2 (STT) / Sonic (TTS) ── audio │
- │ service worker    bridge, tabs, CDP input, follow, ducking           │
- │                   SAFETY: button lock, card/password masking,        │
- │                   blocklist and network-address checks (fail closed) │
- └───────────┬─────────────────────────────────▲────────────────────────┘
-   your words│ (/session)        browser tools │ (/ext, ws://localhost:5050)
-             v                                 │
- ┌──────────────── agent server (Node, :5050) ─┴────────────────────────┐
- │ Claude Agent SDK, model claude-sonnet-5-5                            │
- │ SAFETY: navigation guard and tab sweep, checkout page block,         │
- │         unlock gate (spoken yes + matching total), memory,           │
- │         card vault (saved cards, encrypted, filled by Orbi's code)   │
- └──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  you(["You<br/>hold Space in Chrome<br/>or Right Option on the Mac"])
+
+  subgraph voice["Cartesia voice"]
+    ink["Ink 2<br/>speech to text"]
+    sonic["Sonic<br/>text to speech<br/>word + phoneme timing"]
+  end
+
+  subgraph chrome["Chrome extension (MV3)"]
+    cs["Content scripts<br/>hotkey, orb, ring, cursor, subtitles"]
+    off["Offscreen doc<br/>mic and audio"]
+    sw["Service worker<br/>tabs, CDP clicks and typing"]
+    extsafe{{"Button lock · masking<br/>blocklist · network guard"}}
+  end
+
+  subgraph mac["Orbi Desktop (macOS)"]
+    ax["Accessibility tree<br/>CGEvent input, overlay"]
+    macsafe{{"Blocked apps · screenshot redaction<br/>no typing in secure fields"}}
+  end
+
+  subgraph server["Agent server (Node, localhost:5050)"]
+    sdk["Claude Agent SDK session<br/>browser + desktop tools"]
+    gates{{"Unlock from your own words<br/>spoken yes + matching total<br/>single-use grants"}}
+    pay["Pay tool<br/>fills the card itself"]
+  end
+
+  subgraph local["Stays on your Mac"]
+    vault[("Card vault<br/>AES-256-GCM, Keychain key")]
+    mem[("Memory and<br/>purchase history")]
+  end
+
+  model["Claude Sonnet / Opus / Haiku 5.5<br/>or a local model (Ollama, LM Studio)"]
+
+  you --> cs
+  you --> ax
+  off <--> ink
+  off <--> sonic
+  cs --> off
+  sw <-->|"ws://localhost:5050"| sdk
+  ax <-->|"private Unix socket + HMAC"| sdk
+  sdk <--> model
+  sdk --- gates
+  gates --> pay
+  pay --> vault
+  sdk --- mem
+  sw --- extsafe
+  ax --- macsafe
 ```
 
 - **The extension** (Manifest V3, `extension/`) does everything in the browser. Content scripts catch the talk key and draw the subtitles, orb, ring and cursor. An offscreen document owns the mic, streams your speech to Cartesia Ink 2 speech-to-text, and plays replies from Cartesia Sonic text-to-speech with word timestamps for the karaoke subtitles. Without a Cartesia key it switches to basic voice: Chrome's speech recognition and Chrome's built-in voice. The service worker connects to the agent server and runs its browser tools: tabs, navigation, page reading, form input, and clicks and keys over the Chrome debugger.
