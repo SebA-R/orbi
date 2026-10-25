@@ -114,7 +114,7 @@ const norm = (s: unknown) => squash(s).toLowerCase().replace(/[^a-z0-9 ]+/g, "")
 // Five or more digits in a row (spaces or dashes between them count too):
 // never in a nickname, which is stored in the clear.
 const LONG_NUMBER = /\d(?:[\s-]?\d){4,}/;
-const CONTROL = /[\u0000-\u001f\u007f-\u009f  ]/;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 export type ValidCard = { nickname: string; brand: string; last4: string; secret: CardSecret };
 
@@ -321,7 +321,13 @@ export class CardVault {
           nickname = c.brand;
           for (let n = 2; taken.has(norm(nickname)); n++) nickname = `${c.brand} ${n}`;
         }
-        const key = await this.key(v, true);
+        let key: Buffer;
+        try {
+          key = await this.key(v, true);
+        } catch (e) {
+          if (e instanceof VaultError) return { ok: false as const, error: e.message };
+          throw e;
+        }
         let id: string;
         do id = `c${crypto.randomBytes(4).toString("hex")}`;
         while (v.cards.some((e) => e.id === id));
