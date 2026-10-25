@@ -175,6 +175,12 @@ test("every agent input path is locked on Place order; press_protected with a no
     return h && { aria: h.getAttribute("aria-hidden"), pe: getComputedStyle(h).pointerEvents, inBody: document.body.contains(h) };
   });
   assert.deepEqual(badge, { aria: "true", pe: "none", inBody: false });
+  // Place order looks grayed out but stays enabled for a person.
+  const look = await page.evaluate(() => {
+    const b = document.getElementById("place-order");
+    return { marked: b.hasAttribute("data-clearcart-locked"), opacity: getComputedStyle(b).opacity, disabled: b.disabled || b.hasAttribute("aria-disabled") || b.inert };
+  });
+  assert.deepEqual(look, { marked: true, opacity: "0.45", disabled: false });
 
   // The pay flow's path: fill, arm, press once.
   const filled = await call("fill_payment", { tabId, card: CARD });

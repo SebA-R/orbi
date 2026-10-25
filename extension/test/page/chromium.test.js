@@ -107,6 +107,14 @@ test("button lock: real hit-testing, label clicks, the badge never blocks a pers
   await page.focus('[name="cc-name"]');
   assert.equal((await call("guard_key", { key: "Enter" })).error.code, "locked");
 
+  // Place order and the card fields look grayed out, but stay enabled for a person.
+  const look = await page.evaluate(() => ["#place-order", '[name="cc-number"]'].map((s) => {
+    const el = document.querySelector(s);
+    const cs = getComputedStyle(el);
+    return { marked: el.hasAttribute("data-clearcart-locked"), opacity: cs.opacity, filter: cs.filter, disabled: el.disabled || el.hasAttribute("aria-disabled") || el.inert, pe: cs.pointerEvents };
+  }));
+  for (const l of look) assert.deepEqual(l, { marked: true, opacity: "0.45", filter: "grayscale(1)", disabled: false, pe: "auto" });
+
   // The lock is for the agent only: a person's own click places the order.
   await call("fill_payment", { card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/29", csc: "737" }, address: "1 Main St" });
   await page.mouse.click(cx, cy);
