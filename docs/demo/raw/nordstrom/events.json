@@ -1,0 +1,284 @@
+[
+ {
+  "t": 0.01,
+  "kind": "open"
+ },
+ {
+  "t": 0.01,
+  "kind": "status",
+  "text": "connected"
+ },
+ {
+  "t": 1.31,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Hi, I'm looking for women's white Nike Air Force 1 '07 sneakers in size 8 on Nordstrom. Can you find those and tell me the price and how they're rated?"
+ },
+ {
+  "t": 1.34,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 2.9,
+  "kind": "status",
+  "text": "tabs_context_mcp"
+ },
+ {
+  "t": 4.57,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Those tabs are existing ones, so I'll open a new one."
+ },
+ {
+  "t": 4.57,
+  "kind": "status",
+  "text": "tabs_create_mcp"
+ },
+ {
+  "t": 6.36,
+  "kind": "status",
+  "text": "navigate https://www.nordstrom.com/sr?keyword=nike+air+force+1+07+women+white"
+ },
+ {
+  "t": 8.17,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 8.46,
+  "kind": "recorder",
+  "text": "recording tab 582729772"
+ },
+ {
+  "t": 9.84,
+  "kind": "status",
+  "text": "computer screenshot"
+ },
+ {
+  "t": 13.49,
+  "kind": "status",
+  "text": "find \"Nike Air Force 1 '07 women's product links in results\""
+ },
+ {
+  "t": 15.61,
+  "kind": "status",
+  "text": "computer scroll"
+ },
+ {
+  "t": 18.33,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "I'm checking the search results on Nordstrom now. Two listings look like the classic white pair, so I'll open one to confirm the women's size 8 and the rating."
+ },
+ {
+  "t": 18.53,
+  "kind": "status",
+  "text": "computer left_click"
+ },
+ {
+  "t": 20.4,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 23.25,
+  "kind": "status",
+  "text": "navigate https://www.nordstrom.com/sr?keyword=nike+air+force+1+07+women%27s+sneaker"
+ },
+ {
+  "t": 23.45,
+  "kind": "status",
+  "text": "computer scroll"
+ },
+ {
+  "t": 30.88,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Open the first one and the fourth to check which is women's."
+ },
+ {
+  "t": 31.41,
+  "kind": "status",
+  "text": "computer left_click"
+ },
+ {
+  "t": 31.63,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 33.65,
+  "kind": "status",
+  "text": "navigate back"
+ },
+ {
+  "t": 35.89,
+  "kind": "status",
+  "text": "javascript_tool"
+ },
+ {
+  "t": 37.75,
+  "kind": "status",
+  "text": "navigate https://www.nordstrom.com/s/nike-air-force-1-07-basketball-sneaker-women/9147830"
+ },
+ {
+  "t": 37.93,
+  "kind": "status",
+  "text": "computer screenshot"
+ },
+ {
+  "t": 44.24,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Now I'll check that size 8 is available."
+ },
+ {
+  "t": 44.74,
+  "kind": "status",
+  "text": "computer left_click"
+ },
+ {
+  "t": 44.93,
+  "kind": "status",
+  "text": "computer screenshot"
+ },
+ {
+  "t": 46.95,
+  "kind": "status",
+  "text": "find \"size 8 option in size list\""
+ },
+ {
+  "t": 49.23,
+  "kind": "status",
+  "text": "computer scroll"
+ },
+ {
+  "t": 51.62,
+  "kind": "status",
+  "text": "computer scroll"
+ },
+ {
+  "t": 54.73,
+  "kind": "status",
+  "text": "javascript_tool"
+ },
+ {
+  "t": 57.05,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "I found them. The women's Nike Air Force 1 '07 Basketball Sneaker in white is $115 on Nordstrom. It's rated about 4.5 out of 5 stars from 799 reviews, and size 8 is listed with no sold-out note. I haven't added anything to your cart."
+ },
+ {
+  "t": 65.42,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Great, thanks. Can you add the white size 8 to my bag, please?"
+ },
+ {
+  "t": 65.44,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 67.15,
+  "kind": "status",
+  "text": "find \"size 8 option\""
+ },
+ {
+  "t": 69.68,
+  "kind": "status",
+  "text": "javascript_tool"
+ },
+ {
+  "t": 71.57,
+  "kind": "status",
+  "text": "computer screenshot"
+ },
+ {
+  "t": 73.57,
+  "kind": "status",
+  "text": "computer left_click"
+ },
+ {
+  "t": 73.73,
+  "kind": "status",
+  "text": "computer screenshot"
+ },
+ {
+  "t": 75.5,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Size 8 is selected. Adding to bag."
+ },
+ {
+  "t": 75.93,
+  "kind": "status",
+  "text": "computer left_click"
+ },
+ {
+  "t": 76.2,
+  "kind": "status",
+  "text": "computer screenshot"
+ },
+ {
+  "t": 78.42,
+  "kind": "status",
+  "text": "navigate https://www.nordstrom.com/shopping-bag"
+ },
+ {
+  "t": 78.57,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 83.3,
+  "kind": "status",
+  "text": "computer screenshot"
+ },
+ {
+  "t": 85.27,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "I added the white women's Nike Air Force 1 '07 in size 8 to your bag, and the bag page is open. The shoes are $115, shipping is free, and the estimated total with tax is $124.92. I haven't started checkout, because I can't do that on Nordstrom."
+ },
+ {
+  "t": 93.72,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Perfect, that's exactly what I needed. Thanks so much for your help!"
+ },
+ {
+  "t": 93.74,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 95.78,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "You're welcome! Your shoes are in the Nordstrom bag whenever you're ready to check out. Enjoy them!"
+ },
+ {
+  "t": 104.17,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Thanks, take care!"
+ },
+ {
+  "t": 104.2,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 105.6,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Take care!"
+ },
+ {
+  "t": 105.72,
+  "kind": "end",
+  "text": "shopper finished"
+ }
+]

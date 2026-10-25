@@ -1,0 +1,293 @@
+{
+ "site": "aritzia",
+ "clock": "t_start = seconds since the /session WebSocket opened (same clock as frames.json and footage_realtime.mp4)",
+ "seq_start": "start of the line in conversation_sequential.wav (lines back to back, 0.45 s gaps)",
+ "voices": {
+  "shopper": {
+   "id": "3a01612e-07da-4a85-bba8-ce10481df477",
+   "name": "Gareth"
+  },
+  "clearcart": {
+   "id": "6ccbfb76-1fc6-48f7-b71d-91ac6298247b",
+   "name": "Tessa"
+  }
+ },
+ "tts_model": "sonic-3.6",
+ "lines": [
+  {
+   "i": 0,
+   "speaker": "shopper",
+   "text": "Hi, I'm looking for a black Babaton contour bodysuit on Aritzia, in a size small. Can you help me find it and tell me the price and fabric?",
+   "t_start": 1.41,
+   "audio": "audio/00_shopper.wav",
+   "audio_duration_s": 9.28,
+   "seq_start": 0.0,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 1,
+   "speaker": "clearcart",
+   "text": "Results may still be loading.",
+   "t_start": 8.96,
+   "audio": "audio/01_clearcart.wav",
+   "audio_duration_s": 2.08,
+   "seq_start": 9.73,
+   "aside": true,
+   "tail": false
+  },
+  {
+   "i": 2,
+   "speaker": "clearcart",
+   "text": "Closing the cookie banner without accepting.",
+   "t_start": 10.58,
+   "audio": "audio/02_clearcart.wav",
+   "audio_duration_s": 3.04,
+   "seq_start": 12.26,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 3,
+   "speaker": "clearcart",
+   "text": "I found many Babaton Original Contour bodysuits on Aritzia. Three are the Original Contour Squareneck Bodysuit styles: Pursue at forty-eight dollars, Manner at fifty-eight, and Float Cami at forty-eight. Which style would you like? I'll check black in small and read you the fabric.",
+   "t_start": 14.04,
+   "audio": "audio/03_clearcart.wav",
+   "audio_duration_s": 17.44,
+   "seq_start": 15.75,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 4,
+   "speaker": "shopper",
+   "text": "Hmm, I'm not sure what the differences are. Let's go with the Pursue one at forty-eight. Is it available in black, size small?",
+   "t_start": 23.2,
+   "audio": "audio/04_shopper.wav",
+   "audio_duration_s": 8.8,
+   "seq_start": 33.64,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 5,
+   "speaker": "clearcart",
+   "text": "Need color name, size availability, and fabric.",
+   "t_start": 33.34,
+   "audio": "audio/05_clearcart.wav",
+   "audio_duration_s": 4.88,
+   "seq_start": 42.89,
+   "aside": true,
+   "tail": false
+  },
+  {
+   "i": 6,
+   "speaker": "clearcart",
+   "text": "Black is selected. Opening the size menu.",
+   "t_start": 36.3,
+   "audio": "audio/06_clearcart.wav",
+   "audio_duration_s": 2.96,
+   "seq_start": 48.22,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 7,
+   "speaker": "clearcart",
+   "text": "Let me open the Details tab.",
+   "t_start": 46.19,
+   "audio": "audio/07_clearcart.wav",
+   "audio_duration_s": 2.0,
+   "seq_start": 51.63,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 8,
+   "speaker": "clearcart",
+   "text": "The Pursue comes in black at forty-eight dollars, but size small is sold out online. The fabric is ninety-four percent nylon and six percent elastane, machine washable. Medium is still available online, and I can also check the Manner or Float Cami in small if you'd like.",
+   "t_start": 51.72,
+   "audio": "audio/08_clearcart.wav",
+   "audio_duration_s": 17.12,
+   "seq_start": 54.08,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 9,
+   "speaker": "shopper",
+   "text": "Oh, that's a bummer. Could you check the Float Cami in black, size small? It's the same price, so I'd try that one first.",
+   "t_start": 61.44,
+   "audio": "audio/09_shopper.wav",
+   "audio_duration_s": 8.48,
+   "seq_start": 71.65,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 10,
+   "speaker": "clearcart",
+   "text": "Color 1274 was black before.",
+   "t_start": 70.54,
+   "audio": "audio/10_clearcart.wav",
+   "audio_duration_s": 3.12,
+   "seq_start": 80.58,
+   "aside": true,
+   "tail": false
+  },
+  {
+   "i": 11,
+   "speaker": "clearcart",
+   "text": "Page was still loading. Retrying.",
+   "t_start": 75,
+   "audio": "audio/11_clearcart.wav",
+   "audio_duration_s": 2.96,
+   "seq_start": 84.15,
+   "aside": true,
+   "tail": false
+  },
+  {
+   "i": 12,
+   "speaker": "clearcart",
+   "text": "Closing the sign-up banner to see the list.",
+   "t_start": 82.35,
+   "audio": "audio/12_clearcart.wav",
+   "audio_duration_s": 2.56,
+   "seq_start": 87.56,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 13,
+   "speaker": "clearcart",
+   "text": "Dropdown closed. Opening it again.",
+   "t_start": 85.61,
+   "audio": "audio/13_clearcart.wav",
+   "audio_duration_s": 2.56,
+   "seq_start": 90.57,
+   "aside": true,
+   "tail": false
+  },
+  {
+   "i": 14,
+   "speaker": "clearcart",
+   "text": "Small is available. Now the fabric.",
+   "t_start": 87.57,
+   "audio": "audio/14_clearcart.wav",
+   "audio_duration_s": 2.72,
+   "seq_start": 93.58,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 15,
+   "speaker": "clearcart",
+   "text": "The Original Contour Float Cami Bodysuit is in stock in black, size small, at forty-eight dollars. It has adjustable spaghetti straps and is made of ninety-four percent polyamide and six percent elastane. It's machine washable. I can add it to your bag and open the cart page. I won't start checkout on Aritzia. Would you like me to do that?",
+   "t_start": 90.24,
+   "audio": "audio/15_clearcart.wav",
+   "audio_duration_s": 20.64,
+   "seq_start": 96.75,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 16,
+   "speaker": "shopper",
+   "text": "Yes, please add the Float Cami in black, size small, to my cart.",
+   "t_start": 98.98,
+   "audio": "audio/16_shopper.wav",
+   "audio_duration_s": 5.6,
+   "seq_start": 117.84,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 17,
+   "speaker": "clearcart",
+   "text": "Size S selected, black. Adding to bag.",
+   "t_start": 105.4,
+   "audio": "audio/17_clearcart.wav",
+   "audio_duration_s": 3.6,
+   "seq_start": 123.89,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 18,
+   "speaker": "clearcart",
+   "text": "The Original Contour Float Cami Bodysuit, black, size small, is in your Aritzia bag. The quantity is one, at forty-eight dollars. The estimated total is fifty-eight twenty-eight, which includes seven fifty for shipping and about two seventy-eight for tax. I haven't started checkout, and the cart page is open for you.",
+   "t_start": 112.69,
+   "audio": "audio/18_clearcart.wav",
+   "audio_duration_s": 20.0,
+   "seq_start": 127.94,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 19,
+   "speaker": "shopper",
+   "text": "Great, thanks so much for your help. That's all I needed.",
+   "t_start": 121.08,
+   "audio": "audio/19_shopper.wav",
+   "audio_duration_s": 4.0,
+   "seq_start": 148.39,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 20,
+   "speaker": "clearcart",
+   "text": "You're welcome! Enjoy your new bodysuit.",
+   "t_start": 122.18,
+   "audio": "audio/20_clearcart.wav",
+   "audio_duration_s": 2.56,
+   "seq_start": 152.84,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 21,
+   "speaker": "shopper",
+   "text": "Thanks, take care!",
+   "t_start": 130.37,
+   "audio": "audio/21_shopper.wav",
+   "audio_duration_s": 1.76,
+   "seq_start": 155.85,
+   "aside": false,
+   "tail": true
+  },
+  {
+   "i": 22,
+   "speaker": "clearcart",
+   "text": "Take care!",
+   "t_start": 131.43,
+   "audio": "audio/22_clearcart.wav",
+   "audio_duration_s": 1.12,
+   "seq_start": 158.06,
+   "aside": false,
+   "tail": true
+  },
+  {
+   "i": 23,
+   "speaker": "shopper",
+   "text": "Take care, bye!",
+   "t_start": 140.09,
+   "audio": "audio/23_shopper.wav",
+   "audio_duration_s": 1.6,
+   "seq_start": 159.63,
+   "aside": false,
+   "tail": true
+  },
+  {
+   "i": 24,
+   "speaker": "clearcart",
+   "text": "Bye for now!",
+   "t_start": 141.15,
+   "audio": "audio/24_clearcart.wav",
+   "audio_duration_s": 0.96,
+   "seq_start": 161.68,
+   "aside": false,
+   "tail": true
+  }
+ ]
+}

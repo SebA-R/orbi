@@ -18,6 +18,7 @@ Needs `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` in the repo-root `.env`, the st
 | `CLEARCART_SHIP_ADDRESS` | a demo Berkeley address | used by `pay_now` when the address field is empty |
 | `CLEARCART_DEBUG=1` | off | print the Claude Code subprocess stderr |
 | `CLEARCART_ALLOW_ANY_SITE=1` | off | allow `navigate` outside localhost:4000 |
+| `CLEARCART_ALLOWED_ORIGINS` | store only | comma-separated extra origins `navigate` and the tab sweep accept (parsed-origin match; set on the command line, it is read before `.env` loads). The agent is told to stop at the cart on those sites; `pay_now` stays store-only |
 
 ## Files
 

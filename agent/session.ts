@@ -10,13 +10,43 @@ import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SD
 import { z } from "zod";
 
 import { callBrowserTool, resultText } from "./bridge.ts";
-import { onStore, payNow, STORE_ORIGIN, type PayState } from "./pay.ts";
+import { payNow, STORE_ORIGIN, type PayState } from "./pay.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MODEL = process.env.CLEARCART_MODEL || "claude-sonnet-5-5";
 const BROWSER_SERVER =
   process.env.OCIC_SERVER || "/Users/sebastianarellano-rubach/code/open-claude-in-chrome/host/mcp-server.js";
+
+// CLEARCART_ALLOWED_ORIGINS: comma-separated origins navigate and the tab
+// sweep accept (default: the store only). pay_now stays store-only.
+const ALLOWED_ORIGINS = new Set(
+  [STORE_ORIGIN, ...(process.env.CLEARCART_ALLOWED_ORIGINS || "").split(",")]
+    .map((o) => o.trim())
+    .filter(Boolean)
+    .map((o) => {
+      try {
+        return new URL(o).origin;
+      } catch {
+        return null;
+      }
+    })
+    .filter((o): o is string => !!o && o !== "null")
+);
+const EXTRA_SITES = [...ALLOWED_ORIGINS].filter((o) => o !== STORE_ORIGIN);
+
+function allowedSite(href: string | null | undefined): boolean {
+  if (!href) return false;
+  try {
+    return ALLOWED_ORIGINS.has(new URL(href).origin);
+  } catch {
+    return false;
+  }
+}
+
+const SITES_PROMPT = EXTRA_SITES.length
+  ? `\n\nOther sites\n- You may also browse ${EXTRA_SITES.join(", ")}. On those sites stop once the item is in the cart and the cart page is open: never start checkout, never log in or create an account, never enter an address, card or other personal details, and decline marketing sign-ups and non-essential cookies. If a CAPTCHA, bot check or access-denied page appears, do not try to get around it; tell the user.`
+  : "";
 
 const B = "mcp__browser__";
 const C = "mcp__clearcart__";
@@ -158,8 +188,8 @@ export class Session {
       }
       if (name === B + "navigate" && !process.env.CLEARCART_ALLOW_ANY_SITE) {
         const url = String(args.url || "");
-        if (url !== "back" && url !== "forward" && !onStore(url)) {
-          return deny(`Blocked: Clearcart only browses ${STORE_ORIGIN}.`);
+        if (url !== "back" && url !== "forward" && !allowedSite(url)) {
+          return deny(`Blocked: Clearcart only browses ${[...ALLOWED_ORIGINS].join(", ")}.`);
         }
       }
       if (typeof args.tabId === "number") this.state.lastTabId = args.tabId;
@@ -179,7 +209,7 @@ export class Session {
     } catch {
       return {};
     }
-    const strays = tabs.filter((t) => t.url && !onStore(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
+    const strays = tabs.filter((t) => t.url && !allowedSite(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
     for (const t of strays) {
       await callBrowserTool("navigate", { url: STORE_ORIGIN + "/", tabId: t.tabId }).catch(() => {});
     }
@@ -188,7 +218,7 @@ export class Session {
     return {
       hookSpecificOutput: {
         hookEventName: "PostToolUse" as const,
-        additionalContext: `A tab left ${STORE_ORIGIN} and was sent back to the store home page. Only browse ${STORE_ORIGIN}.`,
+        additionalContext: `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
       },
     };
   };
@@ -256,7 +286,7 @@ export class Session {
       prompt: this.input,
       options: {
         model: MODEL,
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: SYSTEM_PROMPT + SITES_PROMPT,
         cwd: HERE,
         tools: [],
         settingSources: [],
