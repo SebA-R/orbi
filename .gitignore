@@ -16,3 +16,4 @@ coverage/
 # Raw demo media stays local; the edited video and stills are committed
 docs/demo/raw/*/frames/
 docs/demo/raw/*/*.mp4
+.claude/
