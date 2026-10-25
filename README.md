@@ -17,6 +17,15 @@
 5. **The card is filled outside the model.** After your spoken yes, our code reads the card from your macOS Keychain and fills the card fields directly. While card values are in the form, the agent can't screenshot or read the page.
 6. **Spoken receipt.** Cartesia Sonic reads the order back, and the console shows a receipt card.
 
+## Button lock
+
+Clearcart's AI can never press the button that spends your money. Place order, Buy now, Pay, Checkout, Apple Pay, Google Pay, PayPal and similar wallet buttons, Subscribe, Save card, Sign in and Sign up are locked for the agent, along with the submit of any form that holds card or password fields. Pre-checked add-on and subscription boxes may be unchecked, never checked. Add to cart, quantity and remove stay open, so shopping works as before.
+
+- **Enforced in code, not just asked for.** Every agent click (by element or by screen position), Enter or Space key, typed newline and form change is checked against the page before it is sent, and refused if it would press a locked control. If the check cannot run, the action is refused. Checkout and payment pages on sites other than the demo store will not open.
+- **One way through.** Only Clearcart's own pay code presses the order button, once, after your spoken yes, on an allowlisted site, with the total you heard. The AI cannot unlock anything.
+- **Only the AI is locked out.** You can always press any button yourself. A small "Locked for AI" padlock appears over locked controls for sighted helpers and the demo video. It is hidden from screen readers and lets clicks through, so what you hear does not change.
+- **What is still prompt-only:** stopping at the cart on real stores is now enforced for the checkout, wallet and sign-in buttons, but avoiding other personal details (typing an address on a real site, for example) is still an instruction to the model. Details and limits are in [`extension/README.md`](extension/README.md#button-lock) and [`agent/README.md`](agent/README.md#button-lock).
+
 ## Demo examples
 
 These runs used real retail sites, but they are **AI-to-AI simulations**: a separate Claude call played a blind shopper, both sides were voiced afterwards with Cartesia Sonic, every run stopped at the cart and nothing was bought. Full transcripts and notes are in [`docs/demo/raw/`](docs/demo/raw/).
