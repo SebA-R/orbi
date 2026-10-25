@@ -8,7 +8,9 @@
 //        VOICE_START {settings?, silent?, latch?}, VOICE_CONFIRM, VOICE_CANCEL, VOICE_HUSH, VOICE_STOP, PTT_TOGGLE, TTS_STOP,
 //        TTS_SPEAK {text}, SETTINGS_CHANGED {settings}
 //      Anything else (including PTT_* that content scripts broadcast to every
-//      extension page) is ignored; the worker is the only router.
+//      extension page) is ignored; the worker is the only router. The one
+//      exception: a page's PTT_START broadcast ducks our speech at once
+//      (controller.preDuck), ahead of the worker's VOICE_START.
 // Out: runtime messages with from "offscreen": VOICE_STATE, VOICE_PARTIAL,
 //      VOICE_FINAL, VOICE_ERROR, SUBTITLE, STATUS.
 import { RT } from "../lib/protocol.js";
@@ -94,7 +96,11 @@ function applySettings(next) {
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (!msg || msg.target !== "offscreen") return;
+  if (!msg) return;
+  // A page's own PTT_START broadcast (not the worker's copy): duck our speech
+  // now, without waiting for VOICE_START to come round through the worker.
+  if (msg.type === RT.PTT_START && msg.target == null && msg.from == null) return void controller.preDuck();
+  if (msg.target !== "offscreen") return;
   switch (msg.type) {
     case RT.VOICE_START:
       applySettings(msg.settings);

@@ -9,6 +9,11 @@
 //            confirm() once the key is held makes it a normal start, keeping
 //            the audio from the first moment; cancel() on a quick tap throws
 //            it all away and brings the speech back up.
+//   preDuck() the content script's own PTT_START broadcast, heard before the
+//            worker's VOICE_START (which waits on the worker waking, the
+//            document check and a settings read): duck our speech at once.
+//            start() takes it over; with no start within PREDUCK_MS the
+//            speech comes back.
 //   confirm() barge-in: hard-stop the speaker, send {type:"interrupt"} so the
 //            agent stops the turn, and drop any agent_text that still arrives
 //            from it until the next user_text goes out.
@@ -36,6 +41,7 @@ import { cueLength } from "./chime.js";
 export const STATES = Object.freeze({ IDLE: "idle", LISTENING: "listening", THINKING: "thinking", SPEAKING: "speaking" });
 export const TAIL_MS = 300;
 export const LATCH_IDLE_MS = 60_000;
+export const PREDUCK_MS = 1500;
 const join = (parts) => parts.join(" ").replace(/\s+/g, " ").trim();
 
 export class VoiceController {
@@ -58,6 +64,26 @@ export class VoiceController {
     this.latchTimer = null;
     this.errorPending = false; // the mic failed before a silent start was confirmed
     this.listenUntil = 0; // now() when the last listen cue ends; the error buzz waits for it
+    this.preDuckTimer = null;
+  }
+
+  // The key was just touched; VOICE_START is on its way through the worker.
+  preDuck() {
+    if (this.listening || !this.speaking) return;
+    this.speaker.duck?.();
+    this.#clearPreDuck();
+    const timer = this.setTimer(() => {
+      if (this.preDuckTimer !== timer) return;
+      this.preDuckTimer = null;
+      // No start came (the worker never passed it on): bring the speech back.
+      if (!this.listening) this.speaker.unduck?.();
+    }, PREDUCK_MS);
+    this.preDuckTimer = timer;
+  }
+
+  #clearPreDuck() {
+    if (this.preDuckTimer != null) this.clearTimer(this.preDuckTimer);
+    this.preDuckTimer = null;
   }
 
   #setState(state, force = false) {
@@ -111,6 +137,7 @@ export class VoiceController {
 
   async start({ silent = false, latch = false } = {}) {
     this.errorPending = false;
+    this.#clearPreDuck();
     if (this.listening) {
       // Talking again from another frame or tab during a latch ends it.
       if (this.latched) return this.stop();
