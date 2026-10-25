@@ -208,7 +208,9 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       if (msg.text && settings.speakReplies) speaker.speak(String(msg.text));
       break;
     case RT.VOICE_TYPED:
-      if (fromWorker(sender) && typeof msg.text === "string") controller.typed(msg.text);
+      if (!fromWorker(sender) || typeof msg.text !== "string") break;
+      applySettings(msg.settings);
+      controller.typed(msg.text);
       break;
     case RT.BASIC_TTS_EVENT:
       if (fromWorker(sender)) basic.onEvent(msg);

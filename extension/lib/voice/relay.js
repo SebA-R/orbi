@@ -184,8 +184,12 @@ export function createVoiceRelay({
         if (!typingPage(sender)) return true;
         const text = typeof msg.text === "string" ? msg.text.replace(/\s+/g, " ").trim().slice(0, TYPED_MAX) : "";
         if (!text) return true;
+        // Captions go to the new tab page that sent it, or (the popup) the
+        // tab in front now. Settings ride along, as on VOICE_START: a
+        // document this creates knows nothing else of them.
         if (sender.tab && sender.tab.id != null) lastTabId = sender.tab.id;
-        toOffscreen({ type: RT.VOICE_TYPED, text });
+        const typedTab = sender.tab && sender.tab.id != null ? null : activeTabId().then((id) => { if (id != null) lastTabId = id; }, () => {});
+        toOffscreen(async () => { await typedTab; return { type: RT.VOICE_TYPED, text, settings: await getSettings() }; });
         return true;
       }
       case RT.VOICE_STATE_QUERY:

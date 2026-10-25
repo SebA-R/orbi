@@ -192,8 +192,8 @@ test("typed words are taken only from Orbi's popup and new tab page", async () =
   relay.onMessage({ type: RT.TYPED_TEXT, text: "and hats" }, { id: "orbi", url: "chrome-extension://orbi/newtab/newtab.html", tab: { id: 9 } });
   await relay.idle();
   assert.deepEqual(sent, [
-    { type: RT.VOICE_TYPED, text: "find socks", target: "offscreen" },
-    { type: RT.VOICE_TYPED, text: "and hats", target: "offscreen" },
+    { type: RT.VOICE_TYPED, text: "find socks", settings: {}, target: "offscreen" },
+    { type: RT.VOICE_TYPED, text: "and hats", settings: {}, target: "offscreen" },
   ]);
 });
 

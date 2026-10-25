@@ -454,9 +454,15 @@ export class VoiceController {
   typed(text) {
     const t = join([String(text || "")]);
     if (!t) return false;
-    if (this.listening && this.confirmed) return false;
+    if (this.listening && this.confirmed) {
+      this.emit({ type: RT.STATUS, kind: "status", text: "Orbi is listening, so the typed words were not sent. Let go of the talk key and send them again." });
+      return false;
+    }
+    let carried = "";
     if (this.listening) {
-      // A tap's silent start: drop it, quietly.
+      // A tap's silent start: drop it, quietly, keeping the words it
+      // carried over from a turn released before it.
+      carried = (this.turn && this.turn.carried) || "";
       this.listening = false;
       if (this.turn) this.turn.dropped = true;
       this.#endLatch();
@@ -467,15 +473,14 @@ export class VoiceController {
       if (s) s.abort();
     }
     const prev = this.turn;
-    let carried = "";
     if (prev && !prev.open && !prev.sent && !prev.dropped) {
       carried = join([...prev.parts, prev.partial]);
       prev.dropped = true;
       if (prev.waitTimer != null) this.clearTimer(prev.waitTimer);
       prev.waitTimer = null;
     }
-    this.#bargeIn();
-    this.chime("sent");
+    const cut = this.#bargeIn();
+    this.chime("sent", cut ? { when: cueLength("cut") } : undefined);
     this.#sendUserText(join([carried, t]));
     return true;
   }

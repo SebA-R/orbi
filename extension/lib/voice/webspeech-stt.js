@@ -64,6 +64,7 @@ export class WebSpeechSttSession {
     const finals = new Set(); // result indexes already sent as finals, for this recognizer
     rec.onresult = (e) => {
       if (this.closed || this.rec !== rec) return;
+      this.restarts = 0; // heard something: the pause-ends budget starts over
       if (!this.started) {
         this.started = true;
         this.h.onTurnStart();
@@ -122,13 +123,14 @@ export class WebSpeechSttSession {
     this.timer = this.setTimer(() => this.#done(), FINISH_WAIT_MS);
   }
 
+  // Like SttSession, onClosed comes later, never inside the caller's abort().
   abort() {
     this.openText = "";
     this.finishing = true;
     const rec = this.rec;
     this.rec = null;
     try { rec && rec.abort(); } catch {}
-    this.#done();
+    queueMicrotask(() => this.#done());
   }
 
   #fail(code) {
