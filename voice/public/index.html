@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="css/console.css">
   <link rel="stylesheet" href="css/looks.css">
   <script>
-    // Design variants: ?look=halo|liquid|bars|ambient (default: aurora), ?theme=light|dark.
+    // Design variants: ?look=aurora|halo|liquid|bars|ambient (default: canvas), ?theme=light|dark.
     (function () {
       var q = new URLSearchParams(location.search), d = document.documentElement;
       var look = q.get('look'), theme = q.get('theme');
@@ -18,7 +18,7 @@
     })();
   </script>
 </head>
-<body data-ui="idle">
+<body data-ui="idle" data-phase="">
   <a class="skip" href="#talk">Skip to talk button</a>
 
   <!-- Soft light around the screen edge while the mic is open (decorative). -->
@@ -31,77 +31,121 @@
       <button id="settings-toggle" class="icon-button" type="button" popovertarget="settings"
               aria-label="Settings" aria-haspopup="dialog">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
-          <path d="M4 7h10M18 7h2M4 17h2M10 17h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
-          <circle cx="16" cy="7" r="2.2" stroke="currentColor" stroke-width="1.8" fill="none"/>
-          <circle cx="8" cy="17" r="2.2" stroke="currentColor" stroke-width="1.8" fill="none"/>
+          <path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+          <circle cx="16" cy="7" r="2" stroke="currentColor" stroke-width="1.8" fill="none"/>
+          <circle cx="10" cy="17" r="2" stroke="currentColor" stroke-width="1.8" fill="none"/>
         </svg>
       </button>
     </div>
   </header>
 
-  <main>
+  <main class="console">
+    <!-- Left on desktop, top on phones: the orb is the talk button and the state indicator. -->
     <section aria-labelledby="talk-heading" class="stage">
       <h2 id="talk-heading" class="visually-hidden">Talk</h2>
 
-      <button id="talk" type="button" class="talk" aria-pressed="false" aria-describedby="talk-help" autofocus>
-        <span class="orb" id="orb" aria-hidden="true">
-          <span class="orb-aura"></span>
-          <span class="orb-ring"></span>
-          <span class="orb-core"><span class="orb-sheen"></span></span>
-          <span class="orb-bars"><i></i><i></i><i></i><i></i><i></i></span>
-        </span>
-        <span class="talk-label visually-hidden">Hold Space to talk</span>
-      </button>
+      <div class="stage-center">
+        <button id="talk" type="button" class="talk" aria-pressed="false" aria-describedby="talk-help" autofocus>
+          <span class="orb" id="orb" aria-hidden="true">
+            <span class="orb-aura"></span>
+            <span class="orb-ripple"></span>
+            <span class="orb-ripple orb-ripple-2"></span>
+            <span class="orb-ring"></span>
+            <span class="orb-core"><span class="orb-sheen"></span></span>
+            <span class="orb-bars"><i></i><i></i><i></i><i></i><i></i></span>
+          </span>
+          <span class="talk-label visually-hidden">Hold Space to talk</span>
+        </button>
 
-      <p id="status-line" class="status-line">Ready when you are</p>
+        <div class="status">
+          <p id="status-line" class="status-line">Ready when you are</p>
+          <p id="status-detail" class="status-detail"></p>
+        </div>
 
-      <div class="captions">
-        <h3 class="visually-hidden">You are saying</h3>
-        <p id="partial" class="caption-user" aria-live="off"></p>
-        <p id="agent-caption" class="caption-agent" aria-hidden="true"></p>
+        <div class="captions">
+          <h3 class="visually-hidden">You are saying</h3>
+          <p id="partial" class="caption-user" aria-live="off"></p>
+          <p id="agent-caption" class="caption-agent" aria-hidden="true"></p>
+        </div>
       </div>
 
-      <p class="hint" aria-hidden="true">
-        <span id="hint-text"><span class="hint-word">Hold</span> <kbd class="keycap">space</kbd> <span class="hint-word">to talk</span></span>
-      </p>
-      <p id="talk-help" class="visually-hidden">
-        Hold the Space bar while you speak and let go when you are done. Or press Enter to start
-        listening and press it again to send. Escape stops Clearcart talking.
-      </p>
-
-      <div class="quick-actions">
-        <button id="replay" class="ghost" type="button" disabled>Repeat last reply</button>
-        <button id="stop-speaking" class="ghost" type="button">Stop talking <kbd class="keycap small">esc</kbd></button>
+      <div class="stage-foot">
+        <p class="hint" aria-hidden="true"><span id="hint-text"></span></p>
+        <p id="talk-help" class="visually-hidden">
+          Hold the Space bar while you speak and let go when you are done. Or press Enter to start
+          listening and press it again to send. Escape stops Clearcart talking.
+        </p>
+        <div class="quick-actions">
+          <button id="replay" class="ghost" type="button" disabled>Repeat last reply</button>
+          <button id="stop-speaking" class="ghost" type="button">Stop talking <kbd class="keycap small">esc</kbd></button>
+        </div>
       </div>
     </section>
 
-    <section aria-labelledby="receipt-heading" id="receipt" class="receipt" hidden tabindex="-1">
-      <div class="receipt-top">
-        <span class="receipt-check" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" focusable="false"><path d="M6 12.5l4 4 8-9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </span>
-        <h2 id="receipt-heading">Order placed</h2>
-      </div>
-      <dl>
-        <div class="row row-item"><dt>Item</dt><dd id="receipt-item"></dd></div>
-        <div class="row row-total"><dt>Total</dt><dd id="receipt-total"></dd></div>
-        <div class="row"><dt>Card</dt><dd id="receipt-card"></dd></div>
-      </dl>
-      <p class="receipt-secure">
-        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><rect x="5" y="10.5" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
-        Paid securely. The AI never saw your card.
-      </p>
-    </section>
+    <!-- Right on desktop, below on phones: what was said, what is being bought, and what Clearcart may do. -->
+    <div class="side">
+      <section aria-labelledby="convo-heading" class="conversation">
+        <h2 id="convo-heading" class="section-label">Conversation</h2>
+        <p class="convo-empty">Hold Space and ask for something, like "reorder my allergy pills, cheapest same dose."</p>
+        <ol id="conversation" class="turns"></ol>
+      </section>
 
-    <section aria-labelledby="convo-heading" class="conversation">
-      <h2 id="convo-heading" class="section-label">Conversation</h2>
-      <ol id="conversation" class="turns"></ol>
-    </section>
+      <section aria-labelledby="confirm-heading" id="confirm" class="confirm card" hidden tabindex="-1">
+        <h2 id="confirm-heading">Ready to pay</h2>
+        <dl class="lines">
+          <div class="row"><dt>Item</dt><dd id="confirm-item"></dd></div>
+          <div class="row row-change" id="confirm-change-row" hidden><dt><s id="confirm-change"></s></dt><dd>Removed</dd></div>
+          <div class="row row-total"><dt>Total</dt><dd id="confirm-total"></dd></div>
+        </dl>
+        <p id="confirm-note" class="confirm-note" hidden></p>
+        <p class="card-secure">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+          Place order stays locked until you say yes.
+        </p>
+        <button id="confirm-talk" class="say-yes" type="button" aria-describedby="confirm-help">
+          <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          <span id="confirm-talk-label">Say yes to pay</span>
+        </button>
+        <p id="confirm-help" class="confirm-help">Hold Space, then say yes. Say no to change it.</p>
+        <p class="confirm-done">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          You said yes. Paying securely.
+        </p>
+      </section>
 
-    <details class="events">
-      <summary>Details</summary>
-      <ol id="events"></ol>
-    </details>
+      <section aria-labelledby="receipt-heading" id="receipt" class="receipt card" hidden tabindex="-1">
+        <div class="receipt-top">
+          <span class="receipt-check" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" focusable="false"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <h2 id="receipt-heading">Order placed</h2>
+        </div>
+        <dl class="lines">
+          <div class="row row-item"><dt>Item</dt><dd id="receipt-item"></dd></div>
+          <div class="row" id="receipt-saved-row" hidden><dt>Add-on removed</dt><dd id="receipt-saved"></dd></div>
+          <div class="row"><dt>Card</dt><dd id="receipt-card"></dd></div>
+          <div class="row row-total"><dt>Total</dt><dd id="receipt-total"></dd></div>
+        </dl>
+        <p class="receipt-secure">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+          <span>Paid securely. The AI never saw your card. Clearcart's own code filled it in after you said yes.</span>
+        </p>
+      </section>
+
+      <section aria-labelledby="trust-heading" class="trust card">
+        <h2 id="trust-heading" class="section-label">What Clearcart is doing</h2>
+        <ul>
+          <li><span class="dot" aria-hidden="true"></span>Only browsing allowed sites</li>
+          <li><span class="dot" aria-hidden="true"></span>The AI never has access to your card</li>
+          <li class="wait"><span class="dot" aria-hidden="true"></span>Place order locked until you say yes</li>
+        </ul>
+      </section>
+
+      <details class="events">
+        <summary>Details</summary>
+        <ol id="events"></ol>
+      </details>
+    </div>
   </main>
 
   <div id="settings" class="settings" popover role="dialog" aria-labelledby="settings-heading">
@@ -127,20 +171,34 @@
 
   <script type="module" src="js/app.js"></script>
   <script type="module">
-    // Gallery previews (looks.html): ?demo=<state> shows a state with sample captions, no mic needed.
+    // Previews and screenshots (looks.html): ?demo=idle|listening|thinking|speaking|confirm|receipt
+    // shows that state with sample text, no mic or agent needed.
     const demo = document.documentElement.dataset.demo;
-    if (demo && window.__clearcartDemoState) {
+    const hook = window.__clearcartDemo;
+    if (demo && hook) {
       document.activeElement?.blur();
-      const user = 'Find me the cheapest allergy medicine, same dose as Zyrtec';
-      const agent = 'I found three. The cheapest is Elm Health cetirizine, 10 milligram, 90 count, for $18.49. Want me to add it to your cart?';
-      if (demo === 'receipt') {
-        window.__clearcartDemoState('idle', { user: 'Yes', agent: 'Done. Your order is placed.' });
-        window.__clearcartDemoReceipt();
+      const ask = 'Reorder my allergy pills, cheapest same dose.';
+      const options = 'Three options. Store brand cetirizine, 30 count, $8.99. The 45 count, $11.49. Or 90 count, $17.99. Which one?';
+      const readBack = "You're buying 1 store brand cetirizine 10mg, 30 count for $9.64. I removed a pre-checked Subscribe and Save membership that would have added $4.99. Say yes to pay, or no to change it.";
+      if (demo !== 'idle') { hook.turn('You', ask); hook.turn('Clearcart', options); hook.turn('You', 'The 30 count.'); }
+      if (demo === 'confirm') {
+        hook.turn('Clearcart', readBack);
+        hook.confirm(readBack);
+        hook.state('idle', { user: 'The 30 count.', agent: readBack });
+      } else if (demo === 'receipt') {
+        hook.turn('Clearcart', readBack);
+        hook.confirm(readBack);
+        hook.turn('You', 'Yes.');
+        hook.turn('Clearcart', 'Done. Your order is placed, $9.64 on your Visa ending in 1111.');
+        hook.state('idle', { user: 'Yes', agent: 'Done. Your order is placed, $9.64 on your Visa ending in 1111.' });
+        hook.receipt({ item: 'Store brand cetirizine 10mg, 30 count', total: '$9.64', last4: '1111' });
       } else {
-        window.__clearcartDemoState(demo, {
-          user: demo === 'idle' ? '' : user,
-          agent: demo === 'speaking' ? agent : '',
+        if (demo === 'speaking') hook.turn('Clearcart', 'I unchecked a Subscribe and Save membership. Your total is $9.64.');
+        hook.state(demo, {
+          user: demo === 'idle' ? '' : demo === 'listening' ? 'Reorder my allergy pills, cheapest same dose' : 'The 30 count.',
+          agent: demo === 'speaking' ? 'I unchecked a Subscribe and Save membership. Your total is $9.64.' : '',
           status: 'Searching the store',
+          detail: demo === 'thinking' ? 'Looking for "cetirizine 10mg"' : '',
         });
       }
     }
