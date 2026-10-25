@@ -1,12 +1,13 @@
 // The button lock's unlock gate (unlock.ts): grants only after a confirmed
-// yes, on an allowlisted origin, with a matching total; single use, bound
+// yes, on a pay site, with a matching total; single use, bound
 // to tab and origin, short-lived.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { ExtError } from "../extbridge.ts";
 import { extToolDefinitions } from "../exttools.ts";
-import { LockedError, money, pressProtectedExt, UnlockGate } from "../unlock.ts";
+import { allowedSite, BROWSE_MODE, PAY_ORIGINS, STORE_ORIGIN } from "../origins.ts";
+import { LockedError, money, pressProtectedExt, UnlockGate, unlockGate } from "../unlock.ts";
 
 const ALLOW = new Set(["http://localhost:4000", "https://www.aritzia.com"]);
 const gateAt = (clock = { t: 0 }) =>
@@ -26,7 +27,7 @@ test("no grant without a confirmed yes", () => {
   assert.equal(g.issue(req({ confirmation: null })).ok, false);
 });
 
-test("no grant off the allowlist; any allowlisted origin can get one", () => {
+test("no grant off the pay sites; any pay site can get one", () => {
   const g = gateAt();
   assert.equal(g.issue(req({ href: "https://evil.example/checkout" })).ok, false);
   assert.equal(g.issue(req({ href: "http://localhost:4000@evil.example/checkout" })).ok, false);
@@ -105,4 +106,19 @@ test("Claude's tools cannot reach the unlock: no tool arms or presses, and click
   assert.equal(r.content[0].text, "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
   assert.ok(!calls.some(([m]) => m === "lock_arm" || m === "press_protected"));
   assert.ok(calls.every(([, p]) => !("nonce" in p) && !("unlock" in p)));
+});
+
+test("open web browsing does not widen the unlock: a browsable store gets no grant", () => {
+  // Defaults: CLEARCART_BROWSE_MODE open, pay sites = the store only.
+  assert.equal(BROWSE_MODE, "open");
+  assert.deepEqual([...PAY_ORIGINS], [STORE_ORIGIN]);
+  for (const href of ["https://www.etsy.com/cart/checkout", "https://www.aritzia.com/us/en/checkout", "https://www.nordstrom.com/checkout"]) {
+    assert.equal(allowedSite(href), true, `${href} is browsable`);
+    for (const gate of [unlockGate, new UnlockGate()]) {
+      const r = gate.issue(req({ href }));
+      assert.equal(r.ok, false, href);
+      assert.match((r as any).error, /not a Clearcart pay site/);
+    }
+  }
+  assert.equal(new UnlockGate().issue(req({ href: `${STORE_ORIGIN}/checkout` })).ok, true, "the store still can");
 });

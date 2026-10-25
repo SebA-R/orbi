@@ -215,13 +215,13 @@ test("the extension refusing the press stops payment and clears the form", async
   assert.equal(state.cardFieldsLive, false);
 });
 
-test("the gate refuses an origin off the allowlist before any card is read", async () => {
+test("the gate refuses an origin that is not a pay site before any card is read", async () => {
   const s = fakeStore();
   let read = false;
   const gate = new UnlockGate({ isAllowed: () => false });
   const r = await payNowExt(confirmed(), { ...fast, gate, getCard: async () => ((read = true), { ...CARD }), bridge: s.bridge as any });
   assert.equal(r.ok, false);
-  assert.match((r as any).error, /allowlist/);
+  assert.match((r as any).error, /not a Clearcart pay site/);
   assert.equal(read, false);
   assert.ok(!s.calls.some((c) => c.method === "fill_payment" || c.method === "lock_arm"));
 });
