@@ -159,11 +159,15 @@
     return String(el.getAttribute("role") || "").trim().split(/\s+/)[0].toLowerCase();
   }
 
+  // Checkboxes, radios and other selection controls (listbox options, tabs):
+  // choosing one picks an option rather than committing anything, so order
+  // words are ignored ("One-time purchase") and opt-ins are uncheck-only.
   function isCheckable(el) {
     var t = inputType(el);
     if (t === "checkbox" || t === "radio") return true;
     var r = roleAttr(el);
-    return r === "checkbox" || r === "radio" || r === "switch" || r === "menuitemcheckbox" || r === "menuitemradio";
+    return r === "checkbox" || r === "radio" || r === "switch" || r === "menuitemcheckbox" || r === "menuitemradio" ||
+      r === "option" || r === "tab";
   }
 
   function isSubmit(el) {
@@ -243,7 +247,7 @@
 
   function checkedOf(el) {
     if (el.tagName === "INPUT") return !!el.checked;
-    return el.getAttribute("aria-checked") === "true";
+    return el.getAttribute("aria-checked") === "true" || el.getAttribute("aria-selected") === "true";
   }
 
   function clip(s) {

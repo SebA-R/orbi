@@ -145,3 +145,14 @@ test("badges: aria-hidden overlay outside <body>, pointer-events none, idempoten
   assert.equal(host.shadowRoot, null, "closed shadow root");
   assert.equal(window.document.body.textContent.includes("Locked for AI"), false);
 });
+
+test("listbox options and tabs are selection controls: one-time purchase stays selectable", () => {
+  const { P, $ } = load(`<div role="listbox">
+    <div role="option" id="once" aria-selected="false">One-time purchase</div>
+    <div role="option" id="sub" aria-selected="true">Subscribe &amp; save 10%</div>
+    <div role="option" id="sub2" aria-selected="false">Subscribe &amp; save 15%</div>
+  </div>`);
+  assert.equal(P.lockOf($("#once")), null);
+  assert.equal(P.lockInChain($("#sub")), null, "selected subscription: choosing another option is allowed");
+  assert.equal(P.lockInChain($("#sub2")).kind, "subscription", "picking a subscription is not");
+});

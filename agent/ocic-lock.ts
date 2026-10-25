@@ -81,7 +81,7 @@ export function parseRefLine(text: string): { role: string; name: string; type: 
   return { role: m[1], name: m[2] || "", type };
 }
 
-const CHECKABLE_ROLES = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"]);
+const CHECKABLE_ROLES = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio", "option", "tab"]);
 
 type PageLock = { name: string; kind: string; optin: boolean; checked: boolean };
 
