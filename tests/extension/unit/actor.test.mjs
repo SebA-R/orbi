@@ -104,14 +104,19 @@ test("the next move starts where the last one ended, per tab", async () => {
   assert.deepEqual(actor.pointer(6), { x: 10, y: 10 });
 });
 
-test("typing sends rawKeyDown, the character once, keyUp, at a typist's pace", async () => {
+// What a page receives as typed text: insertText and char events.
+const typedText = (sent) => sent.filter((s) => s.method === "Input.insertText" || s.type === "char").map((s) => s.text).join("");
+
+test("typing in a text field: rawKeyDown, check, char, keyUp per key, at a typist's pace", async () => {
   const { clock, cdp, actor } = setup(3);
   const checks = [];
-  await clock.run(actor.type(5, "Hi milk!", { check: async (ch) => (checks.push(ch), { keys: true }) }));
-  assert.deepEqual(checks, [..."Hi milk!"], "checked before every character");
-  const seq = cdp.sent.map((s) => (s.method === "Input.insertText" ? "T" : s.type === "rawKeyDown" ? "D" : "U")).join("");
-  assert.match(seq, /^(DTU)+$/);
-  assert.equal(cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text).join(""), "Hi milk!");
+  await clock.run(actor.type(5, "Hi milk!", { focus: { keys: true }, check: async (ch) => (checks.push([ch, cdp.sent.length]), { keys: true }) }));
+  assert.deepEqual(checks.map((c) => c[0]), [..."Hi milk!"], "checked for every character");
+  const seq = cdp.sent.map((s) => (s.method === "Input.insertText" ? "T" : s.type === "rawKeyDown" ? "D" : s.type === "char" ? "C" : "U")).join("");
+  assert.match(seq, /^(DCU)+$/);
+  // Each check runs after its keydown and before its char.
+  checks.forEach(([, at], i) => assert.equal(at, i * 3 + 1));
+  assert.equal(typedText(cdp.sent), "Hi milk!");
   const downs = cdp.sent.filter((s) => s.type === "rawKeyDown");
   assert.ok(downs.every((d) => !("text" in d)), "key downs insert nothing themselves");
   assert.equal(downs[0].modifiers, 8, "shift for H");
@@ -120,18 +125,30 @@ test("typing sends rawKeyDown, the character once, keyUp, at a typist's pace", a
   assert.ok(cps >= 6 && cps <= 16, `${cps.toFixed(1)} chars/s`);
 });
 
-test("outside a text field, characters go in as text only; long text in one insertText", async () => {
+test("insertText only for characters with no key, or outside a text field", async () => {
   const { clock, cdp, actor } = setup(4);
-  await clock.run(actor.type(5, "ok é", { check: async () => ({ keys: false }) }));
-  assert.ok(cdp.sent.every((s) => s.method === "Input.insertText"));
-  assert.deepEqual(cdp.sent.map((s) => s.text), ["o", "k", " ", "é"]);
+  await clock.run(actor.type(5, "ok é😀\nz", { focus: { keys: true }, check: async () => ({ keys: true }) }));
+  assert.deepEqual(cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text), ["é", "😀", "\n"]);
+  assert.deepEqual(cdp.sent.filter((s) => s.type === "char").map((s) => s.text), ["o", "k", " ", "z"]);
   cdp.sent.length = 0;
-  let checks = 0;
-  const long = "a".repeat(500);
-  const r = await clock.run(actor.type(5, long, { check: async () => (checks++, { keys: true }) }));
-  assert.equal(r.via, "insertText");
-  assert.equal(checks, 1);
-  assert.deepEqual(cdp.sent.map((s) => [s.method, s.text]), [["Input.insertText", long]]);
+  await clock.run(actor.type(5, "ok", { check: async () => ({ keys: false }) }));
+  assert.ok(cdp.sent.every((s) => s.method === "Input.insertText"), "no key events off a text field");
+});
+
+test("long text is still typed key by key, faster but varied", async () => {
+  const { clock, cdp, actor } = setup(4);
+  const long = "two percent milk and a dozen eggs please ".repeat(12);
+  const t0 = clock.now();
+  await clock.run(actor.type(5, long, { focus: { keys: true }, check: async () => ({ keys: true }) }));
+  assert.equal(typedText(cdp.sent), long);
+  assert.equal(cdp.sent.filter((s) => s.method === "Input.insertText").length, 0, "no insertText shortcut");
+  const downs = cdp.sent.filter((s) => s.type === "rawKeyDown");
+  assert.equal(downs.length, long.length);
+  const gaps = downs.slice(1).map((d, i) => d.t - downs[i].t);
+  const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+  assert.ok(mean >= 18 && mean <= 40, `${mean.toFixed(1)} ms a key`);
+  assert.ok(new Set(gaps).size > 10, "the cadence still varies");
+  assert.ok(clock.now() - t0 < 15_000);
 });
 
 test("a scroll glides to the point, then sends wheel steps that add up", async () => {
@@ -168,20 +185,37 @@ test("switching to another tab in that window, or the page loading, stops the pl
   await assert.rejects(clock.run(actor.scroll(5, { x: 1, y: 1, dy: 900 }), () => actor.onTabUpdated(5, { status: "loading", url: "https://x.test/" })), /page changed/);
   // A same-page address change (no load) does not.
   await clock.run(actor.scroll(5, { x: 1, y: 1, dy: 300 }), () => actor.onTabUpdated(5, { url: "https://x.test/?q=m" }));
+  // A reload (loading, no url) stops a scroll too, but not typing: typing
+  // has its own per-character document check in the router.
+  await assert.rejects(clock.run(actor.scroll(5, { x: 1, y: 1, dy: 900 }), () => actor.onTabUpdated(5, { status: "loading" })), /page changed/);
+  await clock.run(actor.type(5, "milk", { check: async () => ({ keys: true }) }), () => actor.onTabUpdated(5, { status: "loading" }));
+});
+
+test("a tab switch while the window is still being looked up is not missed", async () => {
+  const clock = fakeClock();
+  const cdp = fakeCdp(clock);
+  let release;
+  const actor = createActor({ cdp, rng: createRng(1), now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer, tabWindow: () => new Promise((r) => (release = () => r(1))) });
+  const p = actor.click(5, { x: 50, y: 50 });
+  await flush();
+  actor.onTabActivated({ tabId: 9, windowId: 1 });
+  release();
+  await assert.rejects(clock.run(p), /switched tabs/);
+  assert.equal(cdp.sent.length, 0);
 });
 
 test("an interrupt mid-typing stops the rest, and a key that went down comes up", async () => {
   const { clock, cdp, actor } = setup(8);
   let n = 0;
   const p = actor.type(5, "organic bananas", {
+    focus: { keys: true },
     check: async () => {
       if (++n === 4) actor.abortAll("the user started talking");
       return { keys: true };
     },
   });
   await assert.rejects(clock.run(p), (e) => e.code === "interrupted");
-  const text = cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text).join("");
-  assert.equal(text, "org");
+  assert.equal(typedText(cdp.sent), "org");
   const downs = cdp.sent.filter((s) => s.type === "rawKeyDown").length;
   const ups = cdp.sent.filter((s) => s.type === "keyUp").length;
   assert.equal(downs, ups);
@@ -191,29 +225,50 @@ test("a failing check stops typing before that character", async () => {
   const { clock, cdp, actor } = setup(9);
   let n = 0;
   const p = actor.type(5, "hello", {
+    focus: { keys: true },
     check: async () => {
       if (++n === 3) throw Object.assign(new Error("password field"), { code: "payment_field" });
       return { keys: true };
     },
   });
   await assert.rejects(clock.run(p), (e) => e.code === "payment_field");
-  assert.equal(cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text).join(""), "he");
+  assert.equal(typedText(cdp.sent), "he");
+  // The third key went down before its check failed, and came back up.
+  assert.equal(cdp.sent.filter((s) => s.type === "rawKeyDown").length, cdp.sent.filter((s) => s.type === "keyUp").length);
 });
 
 // ------------------------------------------------------------- router
 
-function routerFakes({ watchable = true, guard = () => ({ ok: true, result: { x: 10, y: 20, width: 100, height: 40 } }), focus = () => ({ kind: "text", payment: false, text: true }) } = {}) {
+const RECT = { x: 10, y: 20, width: 100, height: 40 };
+
+function routerFakes({
+  watchable = true,
+  guard = () => ({ ok: true, result: RECT }),
+  focus = () => ({ kind: "text", payment: false, text: true }),
+  // documentId answered for the nth injection.
+  doc = () => "d",
+  // Throws for a CDP call when it answers true.
+  cdpFails = () => false,
+} = {}) {
   const clock = fakeClock();
   const cdp = fakeCdp(clock);
+  const send = cdp.send;
+  cdp.send = async (tabId, method, params) => {
+    if (cdpFails(method, params)) throw Object.assign(new Error("debugger detached"), { code: "internal" });
+    return send(tabId, method, params);
+  };
   const pages = [];
+  let injections = 0;
+  const count = (m) => pages.filter((p) => p.method === m).length;
   const chromeApi = {
-    scripting: { executeScript: async () => [{ frameId: 0, documentId: "d" }] },
+    scripting: { executeScript: async () => [{ frameId: 0, documentId: doc(++injections) }] },
     tabs: {
       get: async (id) => ({ id, windowId: 1 }),
       sendMessage: async (tabId, msg) => {
         pages.push({ t: clock.now(), method: msg.method, params: msg.params, at: cdp.sent.length });
-        if (msg.method === "focused_field") return { ok: true, result: focus(pages.filter((p) => p.method === "focused_field").length) };
-        if (msg.method === "guard_ref" || msg.method === "guard_point") return guard(pages.filter((p) => p.method === msg.method).length, msg);
+        if (msg.method === "focused_field") return { ok: true, result: focus(count("focused_field")) };
+        if (msg.method === "guard_ref" || msg.method === "guard_point") return guard(count(msg.method), msg);
+        if (msg.method === "rect" || msg.method === "press_check") return { ok: true, result: RECT };
         return { ok: true, result: { ok: true } };
       },
     },
@@ -221,6 +276,8 @@ function routerFakes({ watchable = true, guard = () => ({ ok: true, result: { x:
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 7,
     assertPageAllowed: async () => {},
+    tabInfo: async ({ tabId }) => ({ tabId, url: "http://localhost:4000/checkout" }),
+    isPaySite: async () => true,
     tabsCreate: async ({ url, onCreated }) => (onCreated?.(11), { tabId: 11, url }),
     navigate: async ({ tabId, url }) => ({ tabId, url }),
     tabsClose: async ({ tabId }) => ({ tabId }),
@@ -229,12 +286,15 @@ function routerFakes({ watchable = true, guard = () => ({ ok: true, result: { x:
   };
   const follow = { to: async () => {}, own: (fn) => fn(), forget() {}, claim() {}, newTurn() {} };
   const actor = createActor({ cdp, rng: createRng(1), now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer, tabWindow: async () => 1 });
-  const router = createRouter({ chromeApi, tabs, cdp, follow, actor, watchable: async () => watchable, now: () => 0 });
+  let n = 0;
+  const router = createRouter({ chromeApi, tabs, cdp, follow, actor, watchable: async () => watchable, now: () => 0, newNonce: () => `n${++n}` });
   return { clock, cdp, pages, router, actor };
 }
 
 test("router: the hit-test and lock check run again at press time", async () => {
   const f = routerFakes();
+  const events = [];
+  f.actor.onPointer((e) => events.push(e));
   const r = await f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" }));
   assert.deepEqual(r, { ok: true, via: "cdp" });
   const guards = f.pages.filter((p) => p.method === "guard_ref");
@@ -244,17 +304,21 @@ test("router: the hit-test and lock check run again at press time", async () => 
   assert.ok(guards[1].at >= f.cdp.sent.indexOf(moves.at(-1)) + 1, "second check after the pointer arrived");
   assert.equal(guards[1].at, pressAt, "and right before the press");
   assert.deepEqual([f.cdp.sent[pressAt].x, f.cdp.sent[pressAt].y], [60, 40]);
+  // The cursor hook: the press carries the target's box.
+  const press = events.find((e) => e.phase === "press");
+  assert.deepEqual(press.rect, RECT);
+  assert.equal(press.action, "click");
 });
 
 test("router: a control that turns locked during the approach is not pressed, and no DOM click", async () => {
-  const f = routerFakes({ guard: (n) => (n === 1 ? { ok: true, result: { x: 10, y: 20, width: 100, height: 40 } } : { ok: false, error: { code: "locked", message: "Locked: place order" } }) });
+  const f = routerFakes({ guard: (n) => (n === 1 ? { ok: true, result: RECT } : { ok: false, error: { code: "locked", message: "Locked: place order" } }) });
   await assert.rejects(f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" })), (e) => e.code === "locked");
   assert.equal(mouse(f.cdp.sent, "mousePressed").length, 0);
   assert.equal(f.pages.filter((p) => p.method === "click_ref").length, 0);
 });
 
 test("router: a target that moved is pressed where it is now, after its new check", async () => {
-  const f = routerFakes({ guard: (n) => ({ ok: true, result: n === 1 ? { x: 10, y: 20, width: 100, height: 40 } : { x: 210, y: 20, width: 100, height: 40 } }) });
+  const f = routerFakes({ guard: (n) => ({ ok: true, result: n === 1 ? RECT : { x: 210, y: 20, width: 100, height: 40 } }) });
   await f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" }));
   const [press] = mouse(f.cdp.sent, "mousePressed");
   assert.deepEqual([press.x, press.y], [260, 40]);
@@ -267,11 +331,53 @@ test("router: a point click re-runs guard_point before the press", async () => {
   assert.equal(mouse(f.cdp.sent, "mousePressed").length, 0);
 });
 
+test("router: a click whose page changed during the approach is not pressed", async () => {
+  const f = routerFakes({ doc: (n) => (n === 1 ? "d1" : "d2") });
+  await assert.rejects(f.clock.run(f.router.route("click", { tabId: 3, x: 50, y: 60 })), (e) => e.code === "interrupted");
+  assert.equal(mouse(f.cdp.sent, "mousePressed").length, 0);
+});
+
+test("router: a failed press never falls back to a DOM click", async () => {
+  const f = routerFakes({ cdpFails: (m, p) => p?.type === "mousePressed" });
+  await assert.rejects(f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" })));
+  assert.equal(f.pages.filter((p) => p.method === "click_ref").length, 0);
+});
+
+test("router: a CDP failure during the approach falls back to the DOM click", async () => {
+  const f = routerFakes({ cdpFails: (m, p) => p?.type === "mouseMoved" });
+  const r = await f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" }));
+  assert.deepEqual(r, { ok: true, via: "dom" });
+});
+
+test("router: a paced press_protected that falls back runs press_check first", async () => {
+  const f = routerFakes({ cdpFails: (m, p) => p?.type === "mouseMoved" });
+  const { nonce } = await f.router.route("lock_arm", { tabId: 3 });
+  const r = await f.clock.run(f.router.route("press_protected", { tabId: 3, ref: "e9", nonce }));
+  assert.deepEqual(r, { ok: true, via: "dom" });
+  const order = f.pages.map((p) => p.method).filter((m) => m === "press_check" || m === "press_ref");
+  assert.deepEqual(order, ["press_check", "press_ref"]);
+});
+
+test("router: a paced press_protected checks on arrival, right before the press", async () => {
+  const f = routerFakes();
+  const { nonce } = await f.router.route("lock_arm", { tabId: 3 });
+  await f.clock.run(f.router.route("press_protected", { tabId: 3, ref: "e9", nonce }));
+  const check = f.pages.find((p) => p.method === "press_check");
+  assert.equal(check.at, f.cdp.sent.findIndex((s) => s.type === "mousePressed"));
+});
+
 test("router: typing stops when the focus moves to a password field", async () => {
   const f = routerFakes({ focus: (n) => (n <= 4 ? { kind: "text", payment: false, text: true } : { kind: "text", payment: false, password: true, text: false }) });
   await assert.rejects(f.clock.run(f.router.route("type", { tabId: 3, text: "hunter2" })), (e) => e.code === "payment_field");
   // One check up front, then one per character: three characters went in.
-  assert.equal(f.cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text).join(""), "hun");
+  assert.equal(typedText(f.cdp.sent), "hun");
+  assert.equal(f.cdp.sent.filter((s) => s.type === "rawKeyDown").length, f.cdp.sent.filter((s) => s.type === "keyUp").length);
+});
+
+test("router: typing stops when the page is a new document", async () => {
+  const f = routerFakes({ doc: (n) => (n <= 3 ? "d1" : "d2") });
+  await assert.rejects(f.clock.run(f.router.route("type", { tabId: 3, text: "bananas" })), (e) => e.code === "interrupted");
+  assert.equal(typedText(f.cdp.sent), "ba");
 });
 
 test("router: card numbers and card fields are still refused before anything is typed", async () => {
@@ -288,14 +394,18 @@ test("router: a typed newline is checked against the lock again when it is typed
   assert.equal(f.pages.filter((p) => p.method === "guard_key").length, 2, "once up front, once at the newline");
 });
 
-test("router: setting off means instant, as before", async () => {
+test("router: setting off makes clicks and scrolls instant; typing stays key by key", async () => {
   const f = routerFakes({ watchable: false });
   await f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" }));
-  await f.clock.run(f.router.route("type", { tabId: 3, text: "milk" }));
   await f.clock.run(f.router.route("scroll", { tabId: 3, x: 5, y: 5, dy: 400 }));
-  assert.deepEqual(f.cdp.sent.map((s) => s.method), ["cdp.click", "cdp.type", "cdp.scroll"]);
-  assert.equal(f.clock.timers, 0, "no timers at all");
+  assert.deepEqual(f.cdp.sent.map((s) => s.method), ["cdp.click", "cdp.scroll"]);
+  assert.equal(f.clock.timers, 0, "no timers for clicks and scrolls");
   assert.equal(f.pages.filter((p) => p.method === "guard_ref").length, 1);
+  f.cdp.sent.length = 0;
+  await f.clock.run(f.router.route("type", { tabId: 3, text: "milk" }));
+  assert.equal(typedText(f.cdp.sent), "milk");
+  assert.equal(f.cdp.sent.filter((s) => s.type === "rawKeyDown").length, 4);
+  assert.ok(f.clock.now() > 150, "at a typist's cadence");
 });
 
 test("router: tab work, reads and screenshots stay instant with the setting on", async () => {

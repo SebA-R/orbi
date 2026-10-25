@@ -13,10 +13,14 @@
 // type() calls check before every character. Whatever they throw stops the
 // plan with nothing pressed or typed.
 //
-// Cursor hook for a future on-page cursor: onPointer(fn) gets
+// Cursor hook for an on-page cursor: onPointer(fn) gets
 // { tabId, x, y, t, action, phase } for every pointer sample, where action
 // is "click", "hover" or "scroll" and phase is "move", "press", "release"
-// or "wheel". t is Date.now() when the sample was sent.
+// or "wheel". t is Date.now() when the sample was sent. The "press" event
+// also carries rect { x, y, width, height }, the target's box, when known.
+//
+// Typing always goes through here, key by key, whatever the setting; the
+// setting only decides whether clicks and scrolls are paced.
 
 import { BridgeError, ERR } from "../lib/protocol.js";
 import { createRng, entryPoint, planClick, planHover, planScroll, planTyping, keyFor } from "./humanize.js";
@@ -40,20 +44,28 @@ export function createActor({
   const runs = new Set();
   const listeners = new Set();
 
-  function emit(tabId, x, y, action, phase) {
+  function emit(tabId, x, y, action, phase, extra) {
     pointers.set(tabId, { x, y });
-    const ev = { tabId, x, y, t: now(), action, phase };
+    const ev = { tabId, x, y, t: now(), action, phase, ...extra };
     for (const fn of listeners) {
       try { fn(ev); } catch {}
     }
   }
 
+  // The last tab activated in each window, with a counter, so a switch
+  // while begin() is still looking up the window is not missed.
+  let activations = 0;
+  const activeIn = new Map();
+
   async function begin(tabId) {
-    const run = { tabId, windowId: null, aborted: null, wake: new Set() };
+    const run = { tabId, kind: null, windowId: null, aborted: null, wake: new Set() };
     runs.add(run);
+    const seen = activations;
     try {
       run.windowId = await tabWindow(tabId);
     } catch {}
+    const a = run.windowId != null && activeIn.get(run.windowId);
+    if (a && a.n > seen && a.tabId !== tabId) stop(run, "the user switched tabs");
     return run;
   }
 
@@ -105,15 +117,19 @@ export function createActor({
   // Moves to `to`, rests, re-checks, presses and releases. recheck() runs
   // after the rest and right before the press; it may answer a new point
   // (the target moved), which gets one last small move.
-  function click(tabId, to, { size, recheck = async () => undefined } = {}) {
+  // `rect` is the target's box, for the press event; recheck may answer
+  // { x, y, rect }.
+  function click(tabId, to, { size, rect = null, recheck = async () => undefined } = {}) {
     return within(tabId, async (run) => {
       const plan = planClick(startFor(tabId, to), to, rng, { size });
       await travel(run, plan.path, "click");
       await sleep(run, plan.dwellMs);
       let at = to;
+      let box = rect;
       try {
         const moved = await recheck();
         if (moved && Number.isFinite(moved.x) && Number.isFinite(moved.y)) at = { x: moved.x, y: moved.y };
+        if (moved && moved.rect) box = moved.rect;
       } catch (e) {
         throw Object.assign(e, { noFallback: true });
       }
@@ -124,9 +140,11 @@ export function createActor({
         live(run);
       }
       const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
-      await mouse(tabId, { ...base, type: "mousePressed", buttons: 1 });
-      emit(tabId, at.x, at.y, "click", "press");
+      // From here on nothing falls back to a DOM click: the press may have
+      // reached the page even if the call failed.
       try {
+        await mouse(tabId, { ...base, type: "mousePressed", buttons: 1 });
+        emit(tabId, at.x, at.y, "click", "press", box ? { rect: { x: box.x, y: box.y, width: box.width, height: box.height } } : {});
         // Released even when stopped mid-hold; the press already happened.
         await new Promise((r) => setTimer(r, plan.holdMs));
         await mouse(tabId, { ...base, type: "mouseReleased", buttons: 0 });
@@ -160,44 +178,49 @@ export function createActor({
     });
   }
 
-  // Types text a character at a time. check(ch) runs right before every
-  // character and answers { keys } (true: the focus is a plain text field,
-  // so key events go with the character) or throws to stop. Each character
-  // is inserted with insertText, exactly once; the key events around it are
-  // rawKeyDown/keyUp, which insert nothing themselves. Text too long to type
-  // by hand goes in with one insertText after one check.
-  function type(tabId, text, { check = async () => ({ keys: false }) } = {}) {
+  // Types text a key at a time, always at a typist's cadence (long text
+  // just goes faster). check(ch) runs for every character and answers
+  // { keys } (true: the focus is a plain text field) or throws to stop.
+  // In a text field a character is rawKeyDown, the check, a char event
+  // that types it, keyUp. Characters with no key (emoji, IME text,
+  // newlines), or a focus that is not a text field, go in with insertText.
+  // `focus` is the caller's check from just before (answers like check).
+  function type(tabId, text, { check = async () => ({ keys: false }), focus: first = { keys: false } } = {}) {
     return within(tabId, async (run) => {
-      const plan = planTyping(text, rng);
-      if (plan === null) {
-        await check(text);
-        live(run);
-        await cdp.send(tabId, "Input.insertText", { text });
-        return { via: "insertText" };
-      }
-      let checkMs = 0;
-      for (const k of plan) {
-        // The check's own time counts toward the gap.
-        await sleep(run, k.gapMs - checkMs);
+      run.kind = "type";
+      let last = first;
+      let spent = 0;
+      for (const k of planTyping(text, rng)) {
+        // Time spent checking and holding counts toward the next gap.
+        await sleep(run, k.gapMs - spent);
         const t0 = now();
-        const focus = await check(k.ch);
-        checkMs = now() - t0;
-        live(run);
-        const key = focus && focus.keys ? keyFor(k.ch) : null;
+        // Key events only when the last check found a plain text field, so
+        // no key goes to a button, a select or the page.
+        const key = last && last.keys ? keyFor(k.ch) : null;
         if (!key) {
+          last = await check(k.ch);
+          live(run);
+          // No key for it (emoji, IME text, newline) or not a text field.
           await cdp.send(tabId, "Input.insertText", { text: k.ch });
+          spent = now() - t0;
           continue;
         }
         const ev = { key: key.key, code: key.code, windowsVirtualKeyCode: key.vk, modifiers: key.shift ? MOD_SHIFT : 0 };
         await cdp.send(tabId, "Input.dispatchKeyEvent", { ...ev, type: "rawKeyDown" });
         try {
-          await cdp.send(tabId, "Input.insertText", { text: k.ch });
+          // Checked after the keydown: a page handler may have moved the
+          // focus (into a card field, say) and the character must not follow.
+          last = await check(k.ch);
+          live(run);
+          const char = { ...ev, type: "char", text: k.ch, unmodifiedText: k.ch };
+          if (last && last.keys) await cdp.send(tabId, "Input.dispatchKeyEvent", char);
+          else await cdp.send(tabId, "Input.insertText", { text: k.ch });
         } finally {
           // A key that went down comes up, stopped or not.
           await new Promise((r) => setTimer(r, k.holdMs));
           await cdp.send(tabId, "Input.dispatchKeyEvent", { ...ev, type: "keyUp" });
         }
-        checkMs += k.holdMs;
+        spent = now() - t0;
       }
       return { via: "keys" };
     });
@@ -220,6 +243,7 @@ export function createActor({
     abortTab,
     // Listener bodies for the worker.
     onTabActivated({ tabId, windowId } = {}) {
+      activeIn.set(windowId, { tabId, n: ++activations });
       for (const run of runs) {
         if (run.tabId !== tabId && run.windowId != null && run.windowId === windowId) stop(run, "the user switched tabs");
       }
@@ -228,13 +252,14 @@ export function createActor({
       abortTab(tabId, "the tab closed");
       pointers.delete(tabId);
     },
-    // A new document loading in the tab. A same-page address change (a
-    // search box that rewrites ?q= as you type) is not one.
+    // The tab started loading (a navigation, reload or form post): stops a
+    // click or scroll. Typing is left to its per-character check, which
+    // the router fails when the document changed, because some pages load
+    // as you type (a search box rewriting the address).
     onTabUpdated(tabId, change = {}) {
-      if (change.status === "loading" && change.url) {
-        abortTab(tabId, "the page changed");
-        pointers.delete(tabId);
-      }
+      if (change.status !== "loading") return;
+      for (const run of runs) if (run.tabId === tabId && run.kind !== "type") stop(run, "the page changed");
+      pointers.delete(tabId);
     },
     // An instant click or scroll still moves the pointer.
     notePointer(tabId, x, y) {

@@ -41,8 +41,9 @@ export const DEFAULTS = Object.freeze({
   // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
   // masking, the blocklist and the CAPTCHA hand-off never change with it.
   dangerMode: false,
-  // Clicks, typing and scrolls go at a pace the user can follow
-  // (background/actor.js). Off, they happen at once.
+  // Clicks and scrolls go at a pace the user can follow
+  // (background/actor.js). Off, they happen at once. Typing is always
+  // key by key at a typist's cadence, either way.
   watchablePace: true,
 });
 

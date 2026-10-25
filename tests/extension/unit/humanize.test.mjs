@@ -92,10 +92,15 @@ test("typing has a word rhythm: longer gaps after spaces and punctuation", () =>
   assert.ok(afterSpace / ns > (inWord / nw) * 1.1);
 });
 
-test("long text is squeezed into the budget, and past maxChars falls back", () => {
-  const plan = planTyping("a".repeat(TYPE.maxChars), createRng(3));
+test("long text is typed faster, never in one go, and keeps its variation", () => {
+  const plan = planTyping("a".repeat(120), createRng(3));
+  assert.equal(plan.length, 120);
   assert.ok(sum(plan, (k) => k.gapMs) <= TYPE.budgetMs);
-  assert.equal(planTyping("a".repeat(TYPE.maxChars + 1), createRng(3)), null);
+  const long = planTyping("milk and eggs ".repeat(60), createRng(4));
+  assert.equal(long.length, 840);
+  const total = sum(long, (k) => k.gapMs);
+  assert.ok(total <= 839 * TYPE.fastGapMs && total >= 839 * TYPE.fastGapMs * 0.9, `${total} ms`);
+  assert.ok(new Set(long.map((k) => k.gapMs)).size > 10, "gaps still vary");
   assert.deepEqual(planTyping("", createRng(3)), []);
   // Emoji are one character of text, not two halves.
   assert.deepEqual(planTyping("a😀", createRng(3)).map((k) => k.ch), ["a", "😀"]);

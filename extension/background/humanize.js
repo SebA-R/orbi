@@ -54,14 +54,15 @@ export const CLICK = Object.freeze({
   frameMs: 16, // one pointer sample per frame
 });
 
-// About 8 to 14 characters a second, never more than TYPE.budgetMs for one
-// call; longer text than maxChars goes in with one insertText.
+// About 8 to 14 characters a second. Text that would take longer than
+// TYPE.budgetMs is typed faster, keeping its rhythm, but never faster than
+// TYPE.fastGapMs a key on average. Every character is still a key press.
 export const TYPE = Object.freeze({
   gapMs: 82, // median gap between characters
   gapRange: [45, 230],
   holdMs: [28, 70], // key down to key up, inside the gap
   budgetMs: 5_000,
-  maxChars: 120,
+  fastGapMs: 22,
 });
 
 export const SCROLL = Object.freeze({
@@ -191,14 +192,12 @@ export function keyFor(ch) {
 // Typing rhythm for text: [{ch, gapMs, holdMs}], gapMs is the wait before
 // that character (0 for the first). Short bursts inside words, a longer
 // gap after a space, more after punctuation, the odd pause to think. The
-// whole thing is squeezed to fit TYPE.budgetMs. Returns null when the text
-// is too long to type by hand (the caller inserts it in one go).
+// whole thing is squeezed toward TYPE.budgetMs for long text, down to an
+// average of TYPE.fastGapMs a key; the variation stays, scaled.
 export function planTyping(text, rng, opts = {}) {
   const chars = [...String(text)];
-  const maxChars = opts.maxChars ?? TYPE.maxChars;
   const budget = opts.budgetMs ?? TYPE.budgetMs;
   if (!chars.length) return [];
-  if (chars.length > maxChars) return null;
   const out = [];
   let burst = 0;
   for (let i = 0; i < chars.length; i++) {
@@ -217,7 +216,8 @@ export function planTyping(text, rng, opts = {}) {
     out.push({ ch, gapMs: gap, holdMs: Math.round(rng.skewed(45, ...TYPE.holdMs, 0.22)) });
   }
   const total = out.reduce((s, k) => s + k.gapMs, 0);
-  const squeeze = total > budget ? budget / total : 1;
+  const target = Math.max(budget, (chars.length - 1) * TYPE.fastGapMs);
+  const squeeze = total > target ? target / total : 1;
   // Floor when squeezing, so rounding cannot push the total past the budget.
   for (const k of out) k.gapMs = squeeze < 1 ? Math.floor(k.gapMs * squeeze) : Math.round(k.gapMs);
   // The key comes up before the next one goes down; the hold is spent out
