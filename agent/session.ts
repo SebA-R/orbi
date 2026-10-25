@@ -27,11 +27,12 @@ import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
 import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
 import { localQuery, sdkToolServer, stdioToolServer } from "./local/query.ts";
 import { withContext, type PageContext } from "./context.ts";
+import * as timing from "./timing.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, paySite, SITE_POLICY, siteBlockReason, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
-import { buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
+import { ACK_PROMPT, buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
 import { factFromUserWords, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
@@ -176,6 +177,18 @@ function localContext(): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+// The spoken acknowledgement at the start of tool work (ACK_PROMPT): on
+// unless ORBI_ACK=0.
+export function ackOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !/^(0|false|off|no)$/i.test(env.ORBI_ACK?.trim() || "");
+}
+
+// ORBI_EFFORT, or undefined when unset or not a level.
+export function agentEffort(env: NodeJS.ProcessEnv = process.env): "low" | "medium" | "high" | undefined {
+  const v = env.ORBI_EFFORT?.trim().toLowerCase();
+  return v === "low" || v === "medium" || v === "high" ? v : undefined;
 }
 
 // What Session.run() reads from either backend: the SDK's Query, or the
@@ -501,6 +514,8 @@ export class Session {
   private muted = false;
   // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
   private held: string[] = [];
+  // ORBI_TIMING: the current model step has shown its first output.
+  private stepOutput = false;
   // Guided mode as the model last heard it: the system prompt's at the
   // start, then the last note sent with a user turn (see withGuidedNote).
   guided = currentGuided();
@@ -567,13 +582,17 @@ export class Session {
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
     const fetch = this.pageContext;
-    if (!fetch) return this.input.push(this.withMemoryNote(this.withSettingNotes(text)));
+    if (!fetch) {
+      timing.mark("to_model");
+      return this.input.push(this.withMemoryNote(this.withSettingNotes(text)));
+    }
     const ctx = Promise.race([
       fetch().catch(() => null),
       new Promise<null>((r) => setTimeout(() => r(null), CONTEXT_TIMEOUT_MS + 200).unref?.()),
     ]);
     this.turns = this.turns.then(async () => {
       const c = await ctx;
+      timing.mark("to_model", { detail: c ? "with context" : "no context" });
       if (!this.closed) this.input.push(withContext(this.withMemoryNote(this.withSettingNotes(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
     });
     return this.turns;
@@ -635,7 +654,7 @@ export class Session {
   // search: whether the model has WebSearch (Claude does, a local model
   // does not).
   systemPrompt(ext = extMode(), search = currentProvider().provider !== "local"): string {
-    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined }) + (search ? SEARCH_PROMPT : "");
+    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined }) + (search ? SEARCH_PROMPT : "") + (ackOn() ? ACK_PROMPT : "");
     this.memSeen = this.memKey();
     if (!this.mem) return base;
     if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
@@ -749,8 +768,9 @@ export class Session {
     extBridge.call("actions_stop", {}, 5_000).catch(() => {});
   }
 
-  private say(text: string) {
+  private say(text: string, kind = "line") {
     if (this.muted) return this.unspoken(text);
+    timing.mark("first_speech", { once: true, detail: kind });
     if (memoryOn()) this.log?.add("assistant", text);
     this.send({ type: "agent_text", text });
   }
@@ -1390,7 +1410,7 @@ export class Session {
       "Speak a few words to the user right now, while you work. Never for reasoning, ids or URLs.",
       { text: z.string().max(160) },
       async ({ text }) => {
-        this.say(text.trim());
+        this.say(text.trim(), "say");
         return { content: [{ type: "text", text: "spoken" }] };
       }
     );
@@ -1485,10 +1505,28 @@ export class Session {
         if (block.type === "text" && block.text?.trim()) {
           if (working || this.muted) this.unspoken(block.text.trim());
           else this.held.push(block.text.trim());
-        } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
+        } else if (block.type === "tool_use") {
+          this.status(toolLabel(block.name, block.input));
+          timing.toolStart(block.id, toolLabel(block.name, block.input));
+        }
+      }
+    } else if (m.type === "user" && timing.timingOn() && Array.isArray((m as any).message?.content)) {
+      for (const b of (m as any).message.content) if (b?.type === "tool_result") timing.toolEnd(b.tool_use_id);
+    } else if (m.type === "stream_event" && timing.timingOn()) {
+      const e = (m as any).event;
+      if (e?.type === "message_start") {
+        this.stepOutput = false;
+        timing.mark("model_step");
+      } else if (e?.type === "content_block_start" && !this.stepOutput) {
+        this.stepOutput = true;
+        timing.mark("first_output", { detail: e.content_block?.type ?? "" });
       }
     } else if (m.type === "result") {
-      if (this.held.length) this.say(this.held.join(" "));
+      if (timing.timingOn()) {
+        const u = (m as any).usage || {};
+        timing.mark("turn_end", { detail: `${(m as any).num_turns ?? "?"} steps, in ${u.input_tokens ?? 0} + cache read ${u.cache_read_input_tokens ?? 0} + cache write ${u.cache_creation_input_tokens ?? 0}, out ${u.output_tokens ?? 0}` });
+      }
+      if (this.held.length) this.say(this.held.join(" "), "reply");
       this.held = [];
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
       // Nothing paced (a click on its way, typing) outlives its turn.
@@ -1552,6 +1590,11 @@ export class Session {
               settingSources: [],
               strictMcpConfig: true,
               persistSession: false,
+              // ORBI_TIMING: stream events, for the time to first output of each step.
+              includePartialMessages: timing.timingOn(),
+              // ORBI_EFFORT=low|medium|high: how hard the model thinks each
+              // step (faster turns at low). Unset: the SDK's default.
+              ...(agentEffort() ? { effort: agentEffort() } : {}),
               abortController: this.abort,
               mcpServers: {
                 browser: ext

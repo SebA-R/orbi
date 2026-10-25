@@ -10,6 +10,7 @@ import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { extBridge, extMode } from "./extbridge.ts";
+import * as timing from "./timing.ts";
 import { extensionOrigins, hostAllowed, memoryRequestAllowed, upgradeOriginAllowed } from "./hostcheck.ts";
 import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
 import { backendKey, describeBackend, envLocalContext, envProviderSettings, parseLocalBaseUrl } from "./local/config.ts";
@@ -244,9 +245,12 @@ wss.on("connection", (ws: WebSocket) => {
     }
     // The talk key went down: barge-in, and this window takes the session.
     if (msg?.type === "interrupt") return void peer.interrupt();
+    // ORBI_TIMING (timing.ts): a mark the client measured. Never answered.
+    if (msg?.type === "timing") return void timing.clientMark(msg.event, msg.at);
     if (msg?.type !== "user_text" || typeof msg.text !== "string") {
       return send({ type: "status", text: `ignored message type ${String(msg?.type)}` });
     }
+    timing.beginTurn(msg.timing);
     peer.userText(msg.text);
   });
 

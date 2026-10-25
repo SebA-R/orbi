@@ -58,6 +58,7 @@ const speaker = new Speaker({
   log: say,
   onSpeakingChange: (on) => controller && controller.onSpeakingChange(on),
   onCaption: (c) => controller && controller.onCaption(c),
+  onFirstAudio: (at) => controller && controller.onFirstAudio(at),
 });
 const mic = new Mic(ctx);
 
@@ -87,6 +88,8 @@ controller = new VoiceController({
   log: say,
   // Speak replies off: no speech is ever requested (no Cartesia credits).
   speakReplies: () => settings.speakReplies !== false,
+  // Turn timing for the agent's ORBI_TIMING log (agent/timing.ts).
+  wallClock: () => Date.now(),
 });
 
 function applySettings(next) {
