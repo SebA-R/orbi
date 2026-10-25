@@ -79,7 +79,7 @@ server.on("upgrade", (req, sock) => {
   }));
   sock.on("error", () => {});
 });
-await new Promise((r) => server.listen(0, "127.0.0.1", r));
+await new Promise((r) => server.listen(0, "::", r)); // dual stack, like agent/server.ts
 const port = server.address().port;
 
 const send = (obj) => sockets.at(-1).write(frame(1, Buffer.from(JSON.stringify(obj))));
@@ -177,6 +177,23 @@ try {
   sockets.at(-1).destroy();
   const again = await next((m) => m.type === "hello", 6000);
   check("reconnects after a drop", again.type === "hello");
+
+  // A second process shadow-binds 127.0.0.1 on the same port (it would get
+  // the helper's connection and could relay the handshake): the helper must
+  // not dial it, and must come back once it is gone.
+  const shadow = spawn(process.execPath, ["-e", `
+    const s = require("net").createServer((c) => { console.log("conn"); c.destroy(); });
+    s.listen(${port}, "127.0.0.1", () => console.log("ready"));`], { stdio: ["ignore", "pipe", "inherit"] });
+  let shadowOut = "";
+  shadow.stdout.on("data", (d) => { shadowOut += d; });
+  await new Promise((r, j) => { shadow.stdout.once("data", r); setTimeout(() => j(new Error("shadow did not start")), 3000); });
+  check("shadow bind works on this Mac", shadowOut.includes("ready"));
+  sockets.at(-1).destroy();
+  await new Promise((r) => setTimeout(r, 4000));
+  check("helper never dials the shadowed port", !shadowOut.includes("conn"), shadowOut);
+  shadow.kill();
+  const back = await next((m) => m.type === "hello", 20000);
+  check("reconnects once the shadow is gone", back.type === "hello");
 } catch (e) {
   check("smoke", false, e.message);
 } finally {

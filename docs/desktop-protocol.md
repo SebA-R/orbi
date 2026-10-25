@@ -54,6 +54,8 @@ Here `proof = hex(HMAC-SHA256(key = token, "orbi-desktop helper " + serverNonce 
 
 The key is the token's 64 hex characters as UTF-8.
 
+The proofs show that each side holds the token, but they don't bind the connection. A process that shadow-binds 127.0.0.1 on the server's dual-stack port could take the helper's connection and relay the handshake to the real server. So before dialing, and again after welcome, the helper requires that every TCP socket of this user bound to the port (listening or accepted) belongs to a single process, and that this process listens on loopback or on every address. A relay needs a socket of its own on the port in a second process, so the helper sees it and refuses.
+
 - A missing nonce, a wrong proof, or any other message before auth closes with `4004 unauthorized`, and no welcome is sent. Until an authenticated helper is connected, every desktop tool fails with `not_connected`.
 - A wrong `name` or `version` closes with `4003`. No completed handshake within 5 s closes with `4001`.
 - The helper answers no request, and sends no event or audio, before welcome.

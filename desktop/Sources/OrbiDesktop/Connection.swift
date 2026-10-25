@@ -157,6 +157,13 @@ final class Connection {
           failed(task, nil)
           return
         }
+        // The port again, now that the connection is up: a relay in the
+        // middle holds a socket on it in a second process.
+        if let port = url.port, url.host == "127.0.0.1", PortOwner.ourListener(port: port) == nil {
+          log("a second process holds port \(port); not trusting this connection")
+          failed(task, nil)
+          return
+        }
         guard v == Proto.version else {
           log("server speaks version \(v), want \(Proto.version); retrying later")
           failed(task, nil)

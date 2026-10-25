@@ -57,7 +57,9 @@ again after rebuilding (or remove the old entry first).
   sides then prove they hold the token from
   `~/Library/Application Support/Orbi/desktop.token` (made by the server)
   with an HMAC challenge-response, and the token never crosses the socket.
-  A server that can't prove it gets nothing but a nonce.
+  A server that can't prove it gets nothing but a nonce. Before dialing and
+  after welcome, every socket of this user on the port must belong to one
+  process, so a relay that shadow-binds 127.0.0.1 is refused.
 
 ## Protocol notes (v1)
 
