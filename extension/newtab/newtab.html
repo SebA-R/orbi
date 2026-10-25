@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-ready="false">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>New Tab</title>
+  <link rel="stylesheet" href="newtab.css">
+</head>
+<body>
+  <header class="top">
+    <a class="icon" id="settings" href="../options/options.html" aria-label="Clearcart settings">
+      <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"></path></svg>
+    </a>
+  </header>
+
+  <main id="main">
+    <h1 class="brand">Clearcart</h1>
+
+    <section class="hero" aria-labelledby="voice-title">
+      <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
+      <h2 class="voice-title" id="voice-title">Hold Space to talk</h2>
+      <p class="voice-sub" id="voice-sub">Option + Space keeps listening until you press Space.</p>
+      <p class="hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
+    </section>
+
+    <section class="search" aria-labelledby="search-title">
+      <h2 class="visually-hidden" id="search-title">Search</h2>
+      <form id="search-form" role="search">
+        <label for="q">Search the web</label>
+        <div class="field">
+          <input id="q" name="q" type="search" autocomplete="off" spellcheck="false" enterkeyhint="search">
+          <button type="submit">Search</button>
+        </div>
+      </form>
+    </section>
+
+    <p class="shortcut" id="shortcut" hidden></p>
+    <p class="error" id="error" role="alert" hidden></p>
+  </main>
+
+  <script src="guard.js"></script>
+  <script src="../content/hotkey.js"></script>
+  <script src="../content/subtitles.js"></script>
+  <script type="module" src="newtab.js"></script>
+</body>
+</html>
