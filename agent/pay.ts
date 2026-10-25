@@ -245,6 +245,8 @@ export async function payWithSavedCardExt(state: PayState, args: { cardNickname?
   const vault = deps.vault ?? cardVault();
   let card: CardMeta;
   try {
+    // The one Keychain card an earlier version saved moves in first.
+    await vault.migrateLegacy().catch(() => "failed");
     const picked = vault.pick(args.cardNickname);
     if (!picked.ok) return picked;
     card = picked.card;
