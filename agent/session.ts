@@ -13,11 +13,12 @@ import { z } from "zod";
 import { callBrowserTool, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
+import { withContext, type PageContext } from "./context.ts";
 import { ocicLockNote, ocicLockReason } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
-import { SITES_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
+import { EXT_TABS_PROMPT, SITES_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MODEL = process.env.CLEARCART_MODEL || "claude-sonnet-5-5";
@@ -85,8 +86,14 @@ const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
 );
 
 function extPrompt(prompt: string): string {
-  return prompt.replace("calling tabs_context_mcp with createIfEmpty true", "calling tabs_context, and tabs_create if the group has no tabs");
+  return prompt.replace(
+    "calling tabs_context_mcp with createIfEmpty true, then use a tab in the MCP group.",
+    "calling tabs_context. Use a tab already on the store, or open one with tabs_create."
+  ) + EXT_TABS_PROMPT;
 }
+
+// How long a user turn waits for page_context before going without it.
+const CONTEXT_TIMEOUT_MS = 1_500;
 
 // In ext mode the extension's blocked sites list replaces the suggested one
 // once it has sent it.
@@ -279,6 +286,13 @@ export class Session {
   private sweepBroken = false;
   // DNS for localDnsReason; tests replace it.
   lookup: Lookup = systemLookup;
+  // What the user is looking at, attached to each user turn (ext mode).
+  // Null: no context. Tests replace it.
+  pageContext: (() => Promise<PageContext>) | null = extMode()
+    ? () => extBridge.call<PageContext>("page_context", {}, CONTEXT_TIMEOUT_MS)
+    : null;
+  // Keeps user turns in order while their context is fetched.
+  private turns: Promise<void> = Promise.resolve();
 
   constructor(private send: (m: ServerMessage) => void) {}
 
@@ -290,7 +304,17 @@ export class Session {
       resolve(text);
       return;
     }
-    this.input.push(text);
+    const fetch = this.pageContext;
+    if (!fetch) return this.input.push(text);
+    const ctx = Promise.race([
+      fetch().catch(() => null),
+      new Promise<null>((r) => setTimeout(() => r(null), CONTEXT_TIMEOUT_MS + 200).unref?.()),
+    ]);
+    this.turns = this.turns.then(async () => {
+      const c = await ctx;
+      if (!this.closed) this.input.push(withContext(text, c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
+    });
+    return this.turns;
   }
 
   close() {
@@ -369,10 +393,11 @@ export class Session {
     return { hookSpecificOutput: { hookEventName: "PostToolUse" as const, additionalContext: note } };
   };
 
-  // The browser's agent tabs (the MCP group, or the Clearcart group on our
-  // extension). Throws when the list cannot be read.
+  // The browser's agent tabs: the MCP group, or on our extension the tabs
+  // Clearcart opened or drove (agent_tabs; the user's other tabs are never
+  // swept). Throws when the list cannot be read.
   async listTabs(): Promise<Tab[]> {
-    if (extMode()) return (await extBridge.call<{ tabs?: Tab[] }>("tabs_context", {}, 10_000))?.tabs || [];
+    if (extMode()) return (await extBridge.call<{ tabs?: Tab[] }>("agent_tabs", {}, 10_000))?.tabs || [];
     return JSON.parse(resultText(await callBrowserTool("tabs_context_mcp", {})).split("\n")[0]).availableTabs || [];
   }
 
