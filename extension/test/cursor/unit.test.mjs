@@ -117,11 +117,10 @@ test("follows the hook's samples with transform-only moves, batched per frame", 
   assert.equal(cur.style.transform, "translate3d(60px, 50px, 0)");
   // Only transform changes on the cursor while it moves.
   assert.deepEqual(Array.from({ length: cur.style.length }, (_, i) => cur.style[i]), ["transform"]);
-  // The orb face rides on the tail, tiny, in the voice state's face.
-  const face = t.$(".otag .ccf");
-  assert.ok(face);
-  assert.equal(face.dataset.state, "thinking");
-  assert.match(SRC, /--ccf-size: 14px/);
+  // Only the pointer: no orb face on the tail.
+  assert.equal(t.$(".otag"), null);
+  assert.equal(t.$(".ccf"), null);
+  assert.doesNotMatch(SRC, /OrbFace|otag|ccf/);
 });
 
 test("the cursor's shape follows the action: arrow, I-beam, wheel", () => {
