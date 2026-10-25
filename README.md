@@ -18,7 +18,7 @@ You need Node 20 or newer, Chrome 116 or newer and git, plus an Anthropic API ke
 
    This downloads Orbi to `~/Orbi`, installs the agent server, asks for your keys (typing is hidden) and saves them to `~/.config/orbi/config.env`, which only your user account can read. Then it shows you where the extension folder is and offers to start Orbi. On macOS, add `--autostart` to start Orbi whenever you log in. From a clone, `npm run setup` does the same.
 
-2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and choose the `extension` folder that setup printed. Finish the Orbi setup page that opens, and allow the microphone.
+2. **Load the extension.** Open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and choose the `extension` folder that setup printed. Finish the Orbi setup page that opens, and allow the microphone. (`npm run pack:extension` builds the extension as a zip, for sharing: unzip it somewhere it can stay and load that folder.)
 
 3. **Hold Space on any page and talk.**
 
