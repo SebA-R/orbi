@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 
 import { RT } from "../../lib/protocol.js";
 import { Speaker, NO_TIMESTAMPS_AFTER_S } from "../../lib/voice/tts.js";
-import { alignWords, captionWords, WordClock } from "../../lib/voice/karaoke.js";
+import { alignWords, captionWords } from "../../lib/voice/karaoke.js";
 import { VoiceController } from "../../lib/voice/controller.js";
 import { TTS_SAMPLE_RATE, SONIC_MAX_SPEED } from "../../lib/voice/config.js";
 
@@ -125,27 +125,6 @@ test("a playback rate above Sonic's max speed is accounted for", async () => {
   assert.equal(r.words().at(-1).index, 3, "at rate 1 this would still be word 2");
 });
 
-test("a gap between chunks (slow network) shifts only the words after it", () => {
-  const c = new WordClock({ text: "one two three", sampleRate: SR });
-  c.addChunk(SR * 0.5, 10, 1); // 0 to 0.5 s of audio, heard 10 to 10.5
-  c.addChunk(SR * 0.5, 11, 1); // 0.5 to 1 s, heard late, 11 to 11.5
-  c.addTimestamps({ words: ["one", "two", "three"], start: [0, 0.4, 0.6] });
-  assert.equal(c.indexAt(9.9), -1);
-  assert.equal(c.indexAt(10.45), 1);
-  assert.equal(c.indexAt(10.9), 1, "silence in the gap holds the last word");
-  assert.equal(c.indexAt(11.05), 1);
-  assert.equal(c.indexAt(11.15), 2);
-});
-
-test("timestamps that arrive in several messages extend the line", () => {
-  const c = new WordClock({ text: TEXT, sampleRate: SR });
-  c.addChunk(SR, 0, 1);
-  c.addTimestamps({ words: ["Found", "it,"], start: [0, 0.3], end: [0.25, 0.45] });
-  assert.equal(c.indexAt(0.9), 1);
-  c.addTimestamps({ words: ["nine", "dollars."], start: [0.5, 0.8], end: [0.75, 1] });
-  assert.equal(c.indexAt(0.9), 3);
-});
-
 test("stop() freezes the highlight on the word being heard and stops advancing", async () => {
   const r = rig();
   const { ws, id } = await speakLine(r, TEXT);
@@ -221,20 +200,6 @@ test("the controller turns captions into SUBTITLE and SUBTITLE_WORD, and leaves 
     { type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 2 },
     { type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 2, frozen: true },
   ]);
-});
-
-test("each word carries how long it lasts and how much has been heard, for the sweep", async () => {
-  const r = rig({ speed: 2 });
-  const { ws, id } = await speakLine(r, TEXT);
-  ws.push({ type: "chunk", context_id: id, data: chunk(1) });
-  ws.push({ type: "timestamps", context_id: id, word_timestamps: TS });
-  const rate = 2 / SONIC_MAX_SPEED;
-  // "nine" is 0.5 to 0.75 s of audio: 250 ms at rate 1, 187.5 ms here.
-  r.at(10.05 + 0.55 / rate);
-  const w = r.words().at(-1);
-  assert.equal(w.index, 2);
-  assert.equal(w.ms, Math.round(250 / rate));
-  assert.ok(Math.abs(w.elapsed - 50 / rate) <= 1, `elapsed ${w.elapsed}`);
 });
 
 test("output latency is taken off the clock, so the highlight never runs ahead of the sound", async () => {

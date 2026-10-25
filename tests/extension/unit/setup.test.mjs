@@ -46,7 +46,7 @@ test("agent health reads ok and voice from /healthz", async () => {
   let asked = null;
   const ok = await agentHealth("ws://localhost:5050", async (url) => { asked = url; return { ok: true, json: async () => ({ ok: true, voice: false }) }; });
   assert.equal(asked, "http://localhost:5050/healthz");
-  assert.deepEqual(ok, { connected: true, voice: false, url: asked });
+  assert.deepEqual(ok, { connected: true, voice: false, cartesia: null, url: asked });
   const down = await agentHealth("ws://localhost:5050", async () => { throw new TypeError("refused"); });
   assert.equal(down.connected, false);
   assert.equal(allReady({ site: true, mic: "granted", agent: ok }), true);

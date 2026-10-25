@@ -163,15 +163,15 @@ Tests stay outside the shipped code paths, and every browser test uses Playwrigh
 
 ```
 npm --prefix tests/extension install           # Playwright + ws, needed by the browser tests below
-npm --prefix tests/extension test              # protocol, bridge, settings, log, router + load test
+npm --prefix tests/extension test              # protocol, bridge, settings, log, router + lock, card fill, netguard in Chromium
 node --test --test-concurrency=1 extension/test/tabs-cdp/ extension/test/voice/
 (cd extension/test/page && npm install && npm test)        # jsdom against the test shop's pages + Chromium layout
-(cd extension/test/subtitles && npm install && npm test && npm run screenshots)
+(cd extension/test/subtitles && npm install && npm test)
 npm --prefix agent test                        # bridge, tools and pay_with_saved_card with a fake extension
 npm --prefix agent run test:e2e:ext            # full flow: test shops on 4300 and 4303, card frames on 4302, agent on 5300, the real extension
 ```
 
-Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, `cardfill.test.mjs`, the e2e), so they never connect to a live agent on :5050. `tests/extension/browser/load.test.mjs` and `extension/test/voice/pages.browser.test.mjs` still load `extension/` as is, so their worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
+Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, `cardfill.test.mjs`, the e2e), so they never connect to a live agent on :5050. `extension/test/voice/pages.browser.test.mjs` still loads `extension/` as is, so its worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
 
 ### New tab page
 

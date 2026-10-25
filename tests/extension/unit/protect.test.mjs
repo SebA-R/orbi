@@ -1,10 +1,10 @@
 // Word-list rules of the button lock classifier (extension/content/protect.js).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 
-const require = createRequire(import.meta.url);
-const P = require("../../../extension/content/protect.js");
+// protect.js is a classic content script; it puts its API on globalThis.
+await import("../../../extension/content/protect.js");
+const P = globalThis.ClearcartProtect;
 
 const kind = (label, opts) => P.classifyLabel(label, opts);
 
