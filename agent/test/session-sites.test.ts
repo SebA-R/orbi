@@ -115,5 +115,5 @@ test("sites prompt: open mode allows any store with the real-site rules", () => 
   assert.match(p, /CAPTCHA/);
   assert.match(sitesPrompt("allowlist", []), /Only browse the demo store/);
   assert.match(sitesPrompt("allowlist", ["https://www.aritzia.com"]), /also browse https:\/\/www\.aritzia\.com/);
-  for (const t of [p, sitesPrompt("allowlist", ["https://x.example"])]) assert.ok(!/—/.test(t), "no em dashes");
+  for (const t of [p, sitesPrompt("allowlist", ["https://x.example"])]) assert.ok(!/\u2014/.test(t), "no em dashes");
 });
