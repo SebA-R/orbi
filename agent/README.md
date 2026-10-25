@@ -18,7 +18,7 @@ Needs `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` in the repo-root `.env`, the st
 | `CLEARCART_SHIP_ADDRESS` | a demo Berkeley address | used by `pay_now` when the address field is empty |
 | `CLEARCART_DEBUG=1` | off | print the Claude Code subprocess stderr |
 | `CLEARCART_ALLOW_ANY_SITE=1` | off | turn off the browse check and the tab sweep entirely (the checkout page block and button lock stay) |
-| `CLEARCART_BROWSE_MODE` | `open` | `open`: `navigate` and the tab sweep accept any http(s) site except the blocklist (`blocklist.ts`, best effort: email, password managers, banks and crypto, government and tax, health portals, account pages, non-web schemes, localhost ports other than the store, so the agent console too) and `CLEARCART_BLOCKED_ORIGINS`. `allowlist`: only the store and `CLEARCART_ALLOWED_ORIGINS`. The tab sweep sends a tab on a blocked site back a page (open) or to the store home page (allowlist, or when back fails) |
+| `CLEARCART_BROWSE_MODE` | `open` | `open`: `navigate` and the tab sweep accept any http(s) site except the blocked sites (`blocklist.ts`: fixed rules for non-web schemes, logins in the address and localhost ports other than the store, so the agent console too, plus the extension's list in ext mode or the suggested list otherwise) and `CLEARCART_BLOCKED_ORIGINS`. `allowlist`: only the store and `CLEARCART_ALLOWED_ORIGINS`. The tab sweep sends a tab on a blocked site back a page (open) or to the store home page (allowlist, or when back fails) |
 | `CLEARCART_ALLOWED_ORIGINS` | store only | comma-separated origins always accepted, in both modes (parsed-origin match; set on the command line, it is read before `.env` loads). The agent is told to stop at the cart on every site but the store; `pay_now` stays store-only |
 | `CLEARCART_BLOCKED_ORIGINS` | none | comma-separated origins never opened, in both modes (exact origins) |
 | `CLEARCART_PAY_ORIGINS` | store only | the only origins where the unlock gate issues grants. Independent of the browse mode, so open browsing never makes a site payable |
@@ -32,7 +32,7 @@ Tests: `npm test` (fake extension over a real socket; the server test uses ports
 - `server.ts`: static `voice/public` at `/`, `GET /cartesia-token` (POST `https://api.cartesia.ai/access-token`, `Cartesia-Version: 2026-08-14`, TTS and STT grants, returns `{ token, expires_in: 300 }`), `GET /healthz`, WebSocket `/session`.
 - `session.ts`: one `query()` per WebSocket with streamed user turns, the `request_checkout` and `pay_now` tools, and the PreToolUse guard.
 - `pay.ts`: the `pay_now` logic. `bridge.ts`: our own client for the extension's bridge socket.
-- `unlock.ts`: the button lock's unlock gate. `ocic-lock.ts`: the button lock checks for the Open Claude in Chrome path. `origins.ts`: the browse mode, allowed, blocked and pay origins. `blocklist.ts`: the built-in open web blocklist.
+- `unlock.ts`: the button lock's unlock gate. `ocic-lock.ts`: the button lock checks for the Open Claude in Chrome path. `origins.ts`: the browse mode, allowed, blocked and pay origins. `blocklist.ts`: the blocked sites check, imported from `extension/lib/blocklist.js`.
 - `prompt.ts`: the system prompt.
 
 ## How the browser is wired

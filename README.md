@@ -28,9 +28,9 @@ Clearcart's AI can never press the button that spends your money. Place order, B
 
 ## Which sites it browses
 
-By default Clearcart browses the open web: any store you name, such as Etsy, Aritzia or Nordstrom. It never opens a blocklist of sensitive sites (email, password managers, banks, brokerages and crypto exchanges, government and tax, health portals, Google, Apple, Microsoft and Amazon account pages), browser and extension pages, or other ports on this computer. The list is best effort, so you can add your own blocked sites. It only ever drives tabs in its own "Clearcart" tab group, never your other tabs, and on real stores it stops at the cart: the button lock and the checkout page block stay on, and open browsing does not make any site a pay site.
+By default Clearcart browses the open web: any store you name, such as Etsy, Aritzia or Nordstrom. It never opens the blocked sites you keep in the extension's options. On install that list is filled with suggested sensitive sites (email, password managers, banks, brokerages and crypto exchanges, government and tax, health portals, Google, Apple, Microsoft and Amazon account pages), which you can edit or restore. Browser and extension pages, addresses with a login in them and other ports on this computer are always blocked. It only ever drives tabs in its own "Clearcart" tab group, never your other tabs, and on real stores it stops at the cart: the button lock and the checkout page block stay on, and open browsing does not make any site a pay site.
 
-To limit it to a fixed list instead, set `CLEARCART_BROWSE_MODE=allowlist` for the agent (with `CLEARCART_ALLOWED_ORIGINS`) and pick "Only these sites" in the extension's options. `CLEARCART_BLOCKED_ORIGINS` and the options page add blocked sites. Details are in [`agent/README.md`](agent/README.md) and [`extension/README.md`](extension/README.md#which-sites).
+To limit it to a fixed list instead, set `CLEARCART_BROWSE_MODE=allowlist` for the agent (with `CLEARCART_ALLOWED_ORIGINS`) and pick "Only these sites" in the extension's options. `CLEARCART_BLOCKED_ORIGINS` adds blocked origins on the agent side. Details are in [`agent/README.md`](agent/README.md) and [`extension/README.md`](extension/README.md#which-sites).
 
 ## Demo examples
 
