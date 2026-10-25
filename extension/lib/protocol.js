@@ -115,6 +115,7 @@ export const RT = Object.freeze({
   TTS_SPEAK: "tts.speak",
   TTS_STOP: "tts.stop",
   SUBTITLE: "subtitle",
+  FRAME: "frame",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
 });

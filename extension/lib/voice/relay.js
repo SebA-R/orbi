@@ -16,6 +16,8 @@
 //   offscreen VOICE_ERROR code "mic_blocked" -> open the options page once
 //   PTT_CONFIRM and every VOICE_STATE also go to the ducker (duck.js), which
 //   quiets other tabs while listening, thinking and speaking
+//   every VOICE_STATE also goes to onVoiceState(state, tabId), with the tab it
+//   went to (the worker's active-tab frame, background/frame.js)
 import { RT } from "../protocol.js";
 import { loadSettings } from "../settings.js";
 import { createDucker } from "./duck.js";
@@ -29,6 +31,7 @@ export function createVoiceRelay({
   getSettings = () => loadSettings(chromeApi.storage.local),
   log = () => {},
   ducker = createDucker({ chromeApi, getSettings, log }),
+  onVoiceState = () => {},
 } = {}) {
   let creating = null;
   let lastTabId = null;
@@ -91,6 +94,16 @@ export function createVoiceRelay({
     return tab && tab.id != null ? tab.id : lastTabId;
   }
 
+  // Same tab toTab picks. One chain, so states reach onVoiceState in the
+  // order they came even when the tab has to be looked up.
+  let stateChain = Promise.resolve();
+  function noteState(state) {
+    const call = (id) => { try { onVoiceState(state, id ?? null); } catch {} };
+    stateChain = stateChain
+      .then(() => (lastTabId != null ? lastTabId : activeTabId()))
+      .then(call, () => call(null));
+  }
+
   async function toTab(msg) {
     const tabId = lastTabId != null ? lastTabId : await activeTabId();
     if (tabId == null) return;
@@ -109,7 +122,10 @@ export function createVoiceRelay({
       if (!TO_TAB.has(msg.type)) return false;
       remember(msg);
       toTab(msg);
-      if (msg.type === RT.VOICE_STATE) ducker.onState(msg.state);
+      if (msg.type === RT.VOICE_STATE) {
+        ducker.onState(msg.state);
+        noteState(msg.state);
+      }
       if (msg.type === RT.VOICE_ERROR) ducker.onError?.();
       if (msg.type === RT.VOICE_ERROR && msg.code === "mic_blocked" && !openedOptions) {
         openedOptions = true;
@@ -229,7 +245,7 @@ export function createVoiceRelay({
     if (tab && tab.id != null) await onTabActivated({ tabId: tab.id });
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, ducker, idle: () => chain };
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, ducker, idle: () => chain, statesIdle: () => stateChain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.
