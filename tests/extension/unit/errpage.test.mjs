@@ -79,7 +79,7 @@ test("a reload while the redirect is decided, and an address with a fragment", a
   assert.deepEqual(updates.splice(0), []);
 });
 
-test("a network error in a normal tab goes to Clearcart's page, with the address kept out of the URL", async () => {
+test("a network error in a normal tab goes to Orbi's page, with the address kept out of the URL", async () => {
   const tab = { id: 1, windowId: 1, url: "https://a.example/" };
   tabList = [tab];
   assert.equal(await failAndShow(tab, "https://nowhere.test/path?q=1"), true);
@@ -108,7 +108,7 @@ test("Back from the page to the failed address keeps Chrome's page; Retry gets t
   await landed(tab);
 });
 
-test("Retry is refused for a page that is not Clearcart's error page", async () => {
+test("Retry is refused for a page that is not Orbi's error page", async () => {
   assert.deepEqual(await pages.onRetry({ tab: { id: 1 }, url: `chrome-extension://${ID}/options/options.html` }), { url: null });
   assert.deepEqual(await pages.onRetry({ tab: { id: 1 }, url: `${BASE}#k=00000000-0000-4000-8000-000000000000` }), { url: null });
   assert.deepEqual(await pages.onRetry({ url: tabList[0].url }), { url: null });

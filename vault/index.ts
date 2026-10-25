@@ -1,4 +1,4 @@
-// Clearcart's card vault: the cards the user saved in Clearcart settings,
+// Orbi's card vault: the cards the user saved in Orbi settings,
 // encrypted on this computer, so the pay flow can fill one at checkout and
 // the AI never sees it.
 //
@@ -63,10 +63,10 @@ const LEGACY_ACCOUNT = "demo";
 export const LEGACY_NICKNAME = "Demo card";
 export const CARD_ID = /^c[0-9a-f]{8}$/;
 
-export const NO_CARD = "No card is saved in Clearcart. Tell the user to add one in Clearcart settings, under Payment cards.";
+export const NO_CARD = "No card is saved in Orbi. Tell the user to add one in Orbi settings, under Payment cards.";
 const DAMAGED = "The saved cards could not be read.";
-const NO_KEY = "The key for the saved cards is missing from the Keychain. Remove the saved cards in Clearcart settings and add them again.";
-const OTHER_KEY = "The saved cards were locked with a different key. Remove them in Clearcart settings and add them again.";
+const NO_KEY = "The key for the saved cards is missing from the Keychain. Remove the saved cards in Orbi settings and add them again.";
+const OTHER_KEY = "The saved cards were locked with a different key. Remove them in Orbi settings and add them again.";
 
 // ------------------------------------------------------------- checks
 
@@ -458,7 +458,7 @@ export function keychainKeys(service = KEY_SERVICE, account = KEY_ACCOUNT): KeyS
       return /^[0-9a-f]{64}$/.test(hex) ? Buffer.from(hex, "hex") : Buffer.alloc(0);
     },
     create(key) {
-      return addSecret(service, account, "Clearcart card vault key", key.toString("hex"));
+      return addSecret(service, account, "Orbi card vault key", key.toString("hex"));
     },
   };
 }

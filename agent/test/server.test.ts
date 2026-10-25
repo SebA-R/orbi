@@ -25,7 +25,7 @@ async function startServer(port: number, env: Record<string, string>): Promise<C
   await new Promise<void>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("server did not start")), 15_000);
     child.stdout!.on("data", (d) => {
-      if (String(d).includes("Clearcart agent on")) {
+      if (String(d).includes("Orbi agent on")) {
         clearTimeout(t);
         resolve();
       }
@@ -191,7 +191,7 @@ test("one session across /session sockets: the one that talks takes over, the ot
 });
 
 // /memory: the settings page's view of saved facts. Loopback, this
-// computer's Host and the Clearcart extension's Origin only.
+// computer's Host and the Orbi extension's Origin only.
 const EXT_ORIGIN = "chrome-extension://dhgknfenfoidnchmjfaicafhieepefoc";
 
 function request(port: number, method: string, pathname: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {

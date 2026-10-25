@@ -1,5 +1,5 @@
-// Clearcart active-tab frame: a faint rotating spectrum ring around the page
-// of the tab Clearcart is working in, like Claude in Chrome's frame.
+// Orbi active-tab frame: a faint rotating spectrum ring around the page
+// of the tab Orbi is working in, like Claude in Chrome's frame.
 //
 // The worker (background/frame.js) decides which tab gets it and sends
 // RT.FRAME { on } to that tab's top frame. One ring, no per-state variants:
@@ -131,9 +131,9 @@
   }
 
   // Pages that append their own overlay after us, or rewrite our inline style.
-  // Every Clearcart overlay host carries OVERLAY_ATTR, whose value is its rank
+  // Every Orbi overlay host carries OVERLAY_ATTR, whose value is its rank
   // (higher sits later, so the subtitles stay above the frame). A host only
-  // moves when a non-Clearcart element follows it, so two Clearcart overlays
+  // moves when a non-Orbi element follows it, so two Orbi overlays
   // never chase each other. A valve stops re-appending for a while if a page
   // keeps itself last too, so the two can't spin forever.
   const OVERLAY_ATTR = "data-clearcart-overlay";
@@ -152,7 +152,7 @@
     }
     return false;
   }
-  // Last, but before any trailing Clearcart overlay that ranks above us.
+  // Last, but before any trailing Orbi overlay that ranks above us.
   function place(root, host) {
     let before = null;
     for (let el = root.lastElementChild; el && el !== host; el = el.previousElementSibling) {

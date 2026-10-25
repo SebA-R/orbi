@@ -1,4 +1,4 @@
-// Clearcart mini orb face: the small status orb. It always has a face, as
+// Orbi mini orb face: the small status orb. It always has a face, as
 // picked from the "Mini orb, happier" board (Mini-Orb-Happy): F1 "Dot eyes,
 // soft smile" at idle, thinking and speaking, and F2 "Happy arcs, wide smile"
 // while listening.

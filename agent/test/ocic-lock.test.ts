@@ -130,7 +130,7 @@ test("form_input: an opt-in may be unchecked, not checked; locked controls are r
 
 test("fails closed when the check cannot run", async () => {
   const broken = fake({ evalThrows: true });
-  const msg = /^Locked: Clearcart could not check/;
+  const msg = /^Locked: Orbi could not check/;
   assert.match((await ocicLockReason("computer", { action: "left_click", coordinate: [1, 1], tabId: 1 }, broken))!, msg);
   assert.match((await ocicLockReason("computer", { action: "key", text: "Enter", tabId: 1 }, broken))!, msg);
   assert.equal(await ocicLockReason("computer", { action: "left_click", ref: "ref_1", tabId: 1 }, fake({ refLine: "Error: ref_id \"ref_1\" not found" })), REF_CLICK);

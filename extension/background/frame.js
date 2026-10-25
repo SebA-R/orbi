@@ -2,7 +2,7 @@
 // it: RT.FRAME { on: true } to that tab's top frame, { on: false } to the tab
 // that had it before.
 //
-// The frame is on the tab Clearcart is acting on while a voice turn is in
+// The frame is on the tab Orbi is acting on while a voice turn is in
 // progress (any voice state but idle), or while that tab is under agent
 // control (a bridge call touched it within HOLD_MS, for turns that do not
 // come through voice). Before the agent touches a tab in a turn, the frame

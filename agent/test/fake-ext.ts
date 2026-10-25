@@ -1,4 +1,4 @@
-// A fake Clearcart extension for tests: a ws client that does the hello
+// A fake Orbi extension for tests: a ws client that does the hello
 // handshake and answers requests with a handler.
 
 import http from "node:http";

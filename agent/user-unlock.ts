@@ -1,4 +1,4 @@
-// User-directed unlock: a locked control the user asked Clearcart to press.
+// User-directed unlock: a locked control the user asked Orbi to press.
 //
 // The button lock (extension/content/protect.js) keeps Claude's tools off
 // checkout, sign in, subscribe, saved card and marked controls. When the
@@ -412,7 +412,7 @@ export function decideUnlock(
         return { kind: "refuse", message: `'${label}' is a one-tap wallet or pay later button. Only the user can press it. Tell them where it is if they want to use it.` };
       case "frame":
       case "shadow":
-        return { kind: "refuse", message: "Clearcart cannot see inside that part of the page, so only the user can press it there." };
+        return { kind: "refuse", message: "Orbi cannot see inside that part of the page, so only the user can press it there." };
       default:
         return {
           kind: "refuse",
@@ -423,7 +423,7 @@ export function decideUnlock(
   if (cls === "account" && info.password && !info.passwordFilled) {
     return {
       kind: "needs_password",
-      message: "The password field is empty. Clearcart never types or reads passwords. Ask the user to type their password into the page themselves and to say yes when they are done, then call request_unlock again for this control.",
+      message: "The password field is empty. Orbi never types or reads passwords. Ask the user to type their password into the page themselves and to say yes when they are done, then call request_unlock again for this control.",
     };
   }
   const spent = opts.spent?.has(cls);

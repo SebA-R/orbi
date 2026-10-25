@@ -2,7 +2,7 @@
   "name": "clearcart-voice",
   "private": true,
   "type": "module",
-  "description": "Clearcart voice console (static files in public/) and a standalone dev server.",
+  "description": "Orbi voice console (static files in public/) and a standalone dev server.",
   "scripts": {
     "start": "node dev-server.mjs",
     "dev": "node dev-server.mjs"

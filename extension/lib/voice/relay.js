@@ -230,7 +230,7 @@ export function createVoiceRelay({
     replay.at = now;
   }
 
-  // Switching tabs carries the caption along while Clearcart is listening,
+  // Switching tabs carries the caption along while Orbi is listening,
   // thinking or speaking, or its last words are still on screen. Lines older
   // than REPLAY_MS are never replayed. Live messages keep flowing to the new
   // tab meanwhile, so a saved message that a newer one has replaced is skipped

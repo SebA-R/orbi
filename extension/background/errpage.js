@@ -1,17 +1,17 @@
-// Clearcart's "Can't reach this site" page (newtab/error.html). Chrome's own
+// Orbi's "Can't reach this site" page (newtab/error.html). Chrome's own
 // network error page (chrome-error://chromewebdata/) runs no content
 // scripts and refuses scripting.executeScript, so Space to talk and the
 // subtitles can't work there. The browser-wide toggle shortcut does.
 //
 // When a normal tab's main frame fails with a network error, this sends the
-// tab on to Clearcart's page, which loads the same scripts as the new tab
+// tab on to Orbi's page, which loads the same scripts as the new tab
 // page and offers Retry. Only network errors (no connection, unknown
 // address, refused, timed out): never a stop, a download, a blocked request,
 // a certificate warning or a form resubmission.
 //
-// History: Chrome keeps the failed entry, so Back from Clearcart's page
+// History: Chrome keeps the failed entry, so Back from Orbi's page
 // loads the failed address again. That failure is left on Chrome's page
-// (the tab was just on Clearcart's page for the same address), so Back
+// (the tab was just on Orbi's page for the same address), so Back
 // keeps working. Retry tells the worker first, then goes Back to the failed
 // entry, which loads again: replaced again if it fails, and no duplicate
 // entry if it works. The failed address is kept in chrome.storage.session under a random
@@ -43,7 +43,7 @@ export const NET_ERRORS = new Set([
 
 // A failure is redirected only if the tab shows it soon after.
 const PENDING_MS = 30_000;
-// Retry pressed on Clearcart's page counts for the next failure this long.
+// Retry pressed on Orbi's page counts for the next failure this long.
 const RETRY_MS = 30_000;
 // Never twice for the same tab and address within this: a loop guard.
 const REPEAT_MS = 1500;
@@ -55,7 +55,7 @@ export function errorPageBase() {
   return api()?.runtime?.getURL?.(ERROR_PATH) || null;
 }
 
-// Clearcart's error page (any key), nothing else.
+// Orbi's error page (any key), nothing else.
 export function isErrorPage(url) {
   const base = errorPageBase();
   return !!base && String(url || "").split(/[?#]/)[0] === base;
@@ -92,7 +92,7 @@ function update(fn) {
 // A read after every queued write.
 const read = () => chain.then(loadState, loadState);
 
-// The failure Clearcart's page at `url` is about: { url, error }, or null.
+// The failure Orbi's page at `url` is about: { url, error }, or null.
 // Full address: for the page itself and tabs.js, which decides what the
 // agent may hear of it.
 export async function recordFor(url) {
@@ -117,7 +117,7 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
     pending.set(d.tabId, { url: d.url, error: d.error, at: now() });
   }
 
-  // tabs.onUpdated: which Clearcart error page the tab is on, and, once the
+  // tabs.onUpdated: which Orbi error page the tab is on, and, once the
   // failed address finishes loading as Chrome's error page, the redirect.
   async function onTabUpdated(tabId, change, tab) {
     if (change && change.status === "loading") loads.set(tabId, (loads.get(tabId) || 0) + 1);
@@ -134,7 +134,7 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
     if (!change || change.status !== "complete") return false;
     const p = pending.get(tabId);
     if (!p) {
-      // A page that loaded fine: the tab has left Clearcart's page behind,
+      // A page that loaded fine: the tab has left Orbi's page behind,
       // and a Retry that worked is used up.
       if (tab && !isErrorPage(tab.url)) {
         const s = await read();
@@ -159,7 +159,7 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
     const prev = last.get(tabId);
     if (!retried && prev && noHash(prev.url) === noHash(p.url) && now() - prev.at < REPEAT_MS) return false;
     const from = s.shown[tabId] && s.pages[s.shown[tabId]];
-    // Back (or the same address typed again) from Clearcart's page for it:
+    // Back (or the same address typed again) from Orbi's page for it:
     // leave Chrome's page, so Back goes on past it.
     if (!retried && from && noHash(from.url) === noHash(p.url)) return false;
     const key = crypto.randomUUID();
@@ -180,7 +180,7 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
     return true;
   }
 
-  // RT.ERROR_PAGE_RETRY from Clearcart's error page: the next failure of
+  // RT.ERROR_PAGE_RETRY from Orbi's error page: the next failure of
   // its address in this tab gets the page again. Replies { url } (the page
   // then loads it with location.replace) or { url: null }.
   async function onRetry(sender) {

@@ -154,7 +154,7 @@ test("the real server refuses /cards from web pages before opening any vault", a
   try {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("server did not start")), 15_000);
-      child.stdout!.on("data", (d) => String(d).includes("Clearcart agent on") && (clearTimeout(timer), resolve()));
+      child.stdout!.on("data", (d) => String(d).includes("Orbi agent on") && (clearTimeout(timer), resolve()));
       child.once("exit", (code) => reject(new Error(`server exited ${code}`)));
     });
     for (const h of [{}, { Origin: "https://evil.example" }, { Origin: EXT, Host: `evil.example:${port}` }]) {

@@ -8,7 +8,7 @@
 // localhost rule (that is how a local test page opens), not past the
 // user's blocked sites.
 //
-// The pay flow may arm its unlock on any page Clearcart may use, and only
+// The pay flow may arm its unlock on any page Orbi may use, and only
 // after the user's spoken yes to the exact total (agent/unlock.ts, router.js
 // lockArm). A payment provider's frame inside that page (frameAllowed) needs
 // only the fixed rules, since providers such as js.stripe.com are on the

@@ -200,7 +200,7 @@ function rig({ workerMs = 0 } = {}) {
   const down = (mods) => detector.onKeyDown(key("Space", mods));
   const up = (mods) => detector.onKeyUp(key("Space", mods));
 
-  // Clearcart starts saying a line, 8 s of audio, and it is playing.
+  // Orbi starts saying a line, 8 s of audio, and it is playing.
   async function speaking(text = "Here are three options for allergy pills") {
     c.onAgentMessage({ type: "agent_text", text });
     await flush();
@@ -278,7 +278,7 @@ test("holding Space while speaking: silent within 20 ms, hard stop at 200 ms, li
   assert.ok(r.a.level() > 0.99, "the next reply is at full level");
 });
 
-test("the fade does not wait for the page to know Clearcart is speaking", async () => {
+test("the fade does not wait for the page to know Orbi is speaking", async () => {
   const r = rig();
   await r.speaking();
   // setVoiceState was never called: the page still thinks it is idle.

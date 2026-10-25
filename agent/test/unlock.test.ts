@@ -1,5 +1,5 @@
 // The button lock's unlock gate (unlock.ts): grants only after a confirmed
-// yes, on a page Clearcart may use, with a matching total; single use,
+// yes, on a page Orbi may use, with a matching total; single use,
 // bound to tab and origin, short-lived.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -100,7 +100,7 @@ test("Claude's tools cannot reach the unlock: no tool arms or presses, and click
     call: async (m: string, p: any) => {
       calls.push([m, p]);
       if (m === "rect") return { x: 0, y: 0, width: 10, height: 10 };
-      if (m === "click") throw new ExtError("locked", "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
+      if (m === "click") throw new ExtError("locked", "Locked: 'Place order' can only be pressed by Orbi after the user says yes.");
       return null;
     },
   };
@@ -108,12 +108,12 @@ test("Claude's tools cannot reach the unlock: no tool arms or presses, and click
   for (const m of ["lock_arm", "press_protected", "click_ref", "rect", "fill_card", "clear_card", "card_state", "order_buttons"]) assert.equal(defs[m], undefined, m);
   const r: any = await defs.click.handler({ ref: "ref_9", nonce: "x", unlock: true } as any, {});
   assert.equal(r.isError, true);
-  assert.equal(r.content[0].text, "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
+  assert.equal(r.content[0].text, "Locked: 'Place order' can only be pressed by Orbi after the user says yes.");
   assert.ok(!calls.some(([m]) => m === "lock_arm" || m === "press_protected"));
   assert.ok(calls.every(([, p]) => !("nonce" in p) && !("unlock" in p)));
 });
 
-test("the default gate arms on any page Clearcart may use, never on a blocked site or a local address", () => {
+test("the default gate arms on any page Orbi may use, never on a blocked site or a local address", () => {
   assert.equal(BROWSE_MODE, "open");
   for (const href of ["https://www.etsy.com/cart/checkout", "https://www.aritzia.com/us/en/checkout", "https://www.nordstrom.com/checkout"]) {
     for (const gate of [unlockGate, new UnlockGate()]) assert.equal(gate.issue(req({ href })).ok, true, href);

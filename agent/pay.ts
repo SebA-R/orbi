@@ -1,8 +1,8 @@
-// pay_with_saved_card: Clearcart's own code, never Claude, fills a card the
-// user saved in Clearcart settings (vault/index.ts) into the checkout page
+// pay_with_saved_card: Orbi's own code, never Claude, fills a card the
+// user saved in Orbi settings (vault/index.ts) into the checkout page
 // and places the order, once, right after the user's spoken yes. Any page
-// Clearcart may use (origins.ts usableSite: the blocked sites stay
-// blocked), over the Clearcart extension (CLEARCART_BROWSER=ext) only.
+// Orbi may use (origins.ts usableSite: the blocked sites stay
+// blocked), over the Orbi extension (CLEARCART_BROWSER=ext) only.
 //
 // The yes (request_checkout, session.ts) is pinned to a moment, a tab, that
 // tab's origin, the total read back and the page's priced lines. Paying
@@ -47,7 +47,7 @@ export type Confirmation = {
 export const CONFIRM_TTL_MS = 60_000;
 
 const NO_CONFIRMATION = "No confirmed checkout. Call request_checkout and get an explicit yes first.";
-export const NEEDS_EXTENSION = "Paying needs the Clearcart extension. Tell the user they can finish checkout on the page themselves.";
+export const NEEDS_EXTENSION = "Paying needs the Orbi extension. Tell the user they can finish checkout on the page themselves.";
 export const NO_FIELDS = "Couldn't find the card fields on this page, so nothing was filled or pressed. Ask the user what to do.";
 const NOT_FILLED = "Couldn't fill the card fields on this page, so nothing was pressed. Ask the user what to do.";
 const TAB_CHANGED = "The checkout tab is not on the page the user said yes on. Call request_checkout again.";
@@ -126,7 +126,7 @@ export async function pageTextExt(bridge: Bridge, tabId: number): Promise<string
 }
 
 // The checkout tab and its site and priced lines, for request_checkout to
-// pin the yes to: the tab Claude last used, when it is on a page Clearcart
+// pin the yes to: the tab Claude last used, when it is on a page Orbi
 // may use. All empty when there is none (always on the Open Claude in
 // Chrome path, which never pays).
 export async function checkoutSnapshot(preferred: number | null, bridge: Bridge = extBridge): Promise<{ tabId: number | null; origin: string | null; cart: string }> {
@@ -261,7 +261,7 @@ export async function payWithSavedCardExt(state: PayState, args: { cardNickname?
   // The same tab, still on the site the user said yes on.
   const startHref = await tabUrlExt(bridge, tabId);
   if (!startHref || originOf(startHref) !== c.origin) return { ok: false, error: TAB_CHANGED };
-  if (!usableSite(startHref)) return { ok: false, error: "This page is on a site Clearcart does not use, so nothing was filled or pressed." };
+  if (!usableSite(startHref)) return { ok: false, error: "This page is on a site Orbi does not use, so nothing was filled or pressed." };
 
   // The amount on the page must still be the one the user said yes to, and
   // the cart the one they heard.
@@ -338,8 +338,8 @@ export async function payWithSavedCardExt(state: PayState, args: { cardNickname?
     return {
       ok: false,
       error: moved
-        ? `Clearcart pressed '${button.label}' once. The page moved on but does not say the order is placed; it may need another step. Do not press it again. Read the page to the user; to place the order, call request_checkout again so they can say yes.`
-        : `Clearcart pressed '${button.label}' once, but the page does not show the order as placed. Do not press it again; read the page to the user.`,
+        ? `Orbi pressed '${button.label}' once. The page moved on but does not say the order is placed; it may need another step. Do not press it again. Read the page to the user; to place the order, call request_checkout again so they can say yes.`
+        : `Orbi pressed '${button.label}' once, but the page does not show the order as placed. Do not press it again; read the page to the user.`,
     };
   } finally {
     // The guard comes down only once the page holds no card value: the

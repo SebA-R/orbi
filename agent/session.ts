@@ -10,7 +10,7 @@
 // The next turn speaks again. An interrupt during a checkout read-back only
 // stops the speech: the read-back keeps waiting for a spoken answer.
 //
-// Every Clearcart window shares this one session (hub.ts). When the user
+// Every Orbi window shares this one session (hub.ts). When the user
 // moves to another window, handOff() declines a read-back or unlock question
 // still waiting (it was asked in the old window, so no yes from the new one
 // may answer it) and mutes the turn in progress like a barge-in.
@@ -106,7 +106,7 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
   ["computer", "read_page", "get_page_text", "find", "form_input", "javascript_tool", "read_console_messages"].map((t) => B + t)
 );
 
-// CLEARCART_BROWSER=ext: Claude's browser tools are the Clearcart extension's
+// CLEARCART_BROWSER=ext: Claude's browser tools are the Orbi extension's
 // TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
 // key and scroll stand in for "computer" in the card-live block list.
 const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_with_saved_card", C + "request_unlock"], MEMORY_TOOLS);
@@ -158,8 +158,8 @@ export function browseDenyReason(url: string, policy: SitePolicy = sitePolicy())
   if (url === "back" || url === "forward") return null;
   const why = siteBlockReason(url, policy);
   if (!why) return null;
-  if (policy.mode === "allowlist") return `Blocked: Clearcart only browses ${[...policy.allowed].join(", ")}.`;
-  return `Blocked: Clearcart does not open ${originOf(url) || "that page"} (${why}). Tell the user if they asked for it.`;
+  if (policy.mode === "allowlist") return `Blocked: Orbi only browses ${[...policy.allowed].join(", ")}.`;
+  return `Blocked: Orbi does not open ${originOf(url) || "that page"} (${why}). Tell the user if they asked for it.`;
 }
 
 const BLANK = /^(about:blank|chrome:\/\/newtab)/;
@@ -201,7 +201,7 @@ export async function localDnsReason(url: string, policy: SitePolicy = sitePolic
     local = addrs.some((a) => isLocalIp(a.address));
     dnsCache.set(host, { local, at: Date.now() });
   }
-  return local ? `Blocked: Clearcart does not open ${o} (it points to this computer or the local network). Tell the user if they asked for it.` : null;
+  return local ? `Blocked: Orbi does not open ${o} (it points to this computer or the local network). Tell the user if they asked for it.` : null;
 }
 
 function tabIdOf(args: Record<string, unknown>): number | null {
@@ -213,7 +213,7 @@ function tabIdOf(args: Record<string, unknown>): number | null {
 // Where the sweep sends a stray tab when going back does not help.
 export const STRAY_PAGE = "about:blank";
 
-// Tab sweep: any Clearcart-group tab whose page is not allowed (a clicked
+// Tab sweep: any Orbi-group tab whose page is not allowed (a clicked
 // link, a redirect, history) is sent away from it. Allowlist mode: to a
 // blank page. Open mode: back to the page before, or to a blank page when
 // going back does not land somewhere allowed. `nav` loads a URL (or "back")
@@ -367,7 +367,7 @@ export function passCovers(pass: CheckoutPass | null, tabId: number | null, url:
 // How long the user's last words count for request_unlock's direct match.
 export const USER_WORDS_TTL_MS = 60_000;
 
-// The user's most recent words, bound to the tab Clearcart was on when they
+// The user's most recent words, bound to the tab Orbi was on when they
 // spoke and that tab's origin then. spent: unlock classes already pressed
 // for these words. passwordYes: these words are an explicit yes to an
 // earlier "type your password, then tell me" for that sign in.
@@ -387,7 +387,7 @@ const said = (text: string): ToolText => ({ content: [{ type: "text", text }] })
 
 // What Claude is told when a question got no answer at all: the window that
 // asked it went away or the user moved to another one (handOff, close).
-const NO_ANSWER = "No answer came: the user moved to another Clearcart window, or it closed, before answering.";
+const NO_ANSWER = "No answer came: the user moved to another Orbi window, or it closed, before answering.";
 
 export class Session {
   private input = new InputQueue();
@@ -543,9 +543,9 @@ export class Session {
     if (key === "off") {
       // Off means nothing is kept: the recent conversation goes now.
       this.log?.clear();
-      note = `[Setting changed, from the user's Clearcart settings] ${MEMORY_OFF_PROMPT.trim().split("\n").slice(1).join(" ").replace(/^- /, "")}`;
+      note = `[Setting changed, from the user's Orbi settings] ${MEMORY_OFF_PROMPT.trim().split("\n").slice(1).join(" ").replace(/^- /, "")}`;
     } else {
-      note = `[${wasOff ? "Setting changed" : "Memory changed"}, from the user's Clearcart settings]${wasOff ? MEMORY_PROMPT : ""}${memoryBlock(this.mem!.list())}`;
+      note = `[${wasOff ? "Setting changed" : "Memory changed"}, from the user's Orbi settings]${wasOff ? MEMORY_PROMPT : ""}${memoryBlock(this.mem!.list())}`;
     }
     return `${note}\n\n${turn}`;
   }
@@ -574,7 +574,7 @@ export class Session {
     this.q?.interrupt().catch((e) => this.status(`interrupt failed: ${(e as Error).message}`));
   }
 
-  // The user moved to another Clearcart window, or the one they used went
+  // The user moved to another Orbi window, or the one they used went
   // away (hub.ts). A read-back or unlock question still waiting was asked
   // there, so it is declined, never confirmed. A yes given there that is
   // not used yet is withdrawn too: paying needs a read-back the
@@ -597,10 +597,10 @@ export class Session {
       this.state.confirmation = null;
       if (yes.state === "confirmed") {
         yes.state = "declined";
-        this.status("checkout yes withdrawn: the user moved to another Clearcart window");
+        this.status("checkout yes withdrawn: the user moved to another Orbi window");
       }
     }
-    this.interrupt("interrupted: the user moved to another Clearcart window");
+    this.interrupt("interrupted: the user moved to another Orbi window");
   }
 
   close() {
@@ -668,7 +668,7 @@ export class Session {
       const checkSites = !process.env.CLEARCART_ALLOW_ANY_SITE;
       if (checkSites && this.sweepBroken) {
         const ok = await this.runSweep().then(() => true, () => false);
-        if (!ok) return deny("Blocked: Clearcart could not check which sites its tabs are on, so browser tools are paused. Try again in a moment, and tell the user if it keeps failing.");
+        if (!ok) return deny("Blocked: Orbi could not check which sites its tabs are on, so browser tools are paused. Try again in a moment, and tell the user if it keeps failing.");
       }
       if (this.state.cardFieldsLive && (extMode() ? EXT_BLOCKED_WHILE_CARD_LIVE : BLOCKED_WHILE_CARD_LIVE).has(name)) {
         if (!(await this.cardGone())) return deny("Blocked: card details are in the checkout form. Wait for pay_with_saved_card to finish.");
@@ -720,7 +720,7 @@ export class Session {
   };
 
   // The browser's agent tabs: the MCP group, or on our extension the tabs
-  // Clearcart opened (agent_tabs; the user's own tabs are never
+  // Orbi opened (agent_tabs; the user's own tabs are never
   // swept). Throws when the list cannot be read.
   async listTabs(): Promise<Tab[]> {
     if (extMode()) return (await extBridge.call<{ tabs?: Tab[] }>("agent_tabs", {}, 10_000))?.tabs || [];
@@ -795,14 +795,14 @@ export class Session {
     try {
       tabs = await this.listTabs();
     } catch {
-      return "Blocked: Clearcart could not check which page that tab is on. Try again in a moment.";
+      return "Blocked: Orbi could not check which page that tab is on. Try again in a moment.";
     }
     const targets = tabId == null ? tabs : tabs.filter((t) => t.tabId === tabId);
-    if (tabId != null && !targets.length) return `Blocked: tab ${tabId} is not one of Clearcart's tabs. Call tabs_context_mcp for the current tabs.`;
+    if (tabId != null && !targets.length) return `Blocked: tab ${tabId} is not one of Orbi's tabs. Call tabs_context_mcp for the current tabs.`;
     const policy = sitePolicy();
     const bad: Tab[] = [];
     for (const t of targets) {
-      if (!t.url) return "Blocked: Clearcart could not check which page that tab is on. Try again in a moment.";
+      if (!t.url) return "Blocked: Orbi could not check which page that tab is on. Try again in a moment.";
       if (BLANK.test(t.url)) continue;
       if (siteBlockReason(t.url, policy) || (await localDnsReason(t.url, policy, this.lookup))) bad.push(t);
     }
@@ -812,7 +812,7 @@ export class Session {
       return -1;
     });
     if (n > 0) this.status(`returned ${n} tab(s) from blocked sites`);
-    return `Blocked: that tab is on a site Clearcart does not use (${originOf(bad[0].url) || "unknown"}). ${n >= 0 ? sweepNote(Math.max(n, 1)) : "Browser tools are paused until Clearcart can send it back."}`;
+    return `Blocked: that tab is on a site Orbi does not use (${originOf(bad[0].url) || "unknown"}). ${n >= 0 ? sweepNote(Math.max(n, 1)) : "Browser tools are paused until Orbi can send it back."}`;
   }
 
   // After every browser call, send back any agent tab that landed on a site
@@ -830,7 +830,7 @@ export class Session {
       return {
         hookSpecificOutput: {
           hookEventName: "PostToolUse" as const,
-          additionalContext: "Clearcart could not check which sites its tabs are on after that call. Browser tools are paused until the check works again; do not rely on what that page showed.",
+          additionalContext: "Orbi could not check which sites its tabs are on after that call. Browser tools are paused until the check works again; do not rely on what that page showed.",
         },
       };
     }
@@ -874,7 +874,7 @@ export class Session {
       conf.state = "confirmed";
       conf.confirmedAt = Date.now();
       this.status("checkout announced: Danger mode, no yes needed");
-      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. Call pay_with_saved_card now to fill the card saved in Clearcart and place the order, or, if the site already has the user's card, press its Place order button yourself now." }] };
+      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. Call pay_with_saved_card now to fill the card saved in Orbi and place the order, or, if the site already has the user's card, press its Place order button yourself now." }] };
     }
     this.send({ type: "confirm", item, quantity, total, changes: changed });
     this.say(`You're buying ${quantity} ${item} for ${total}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
@@ -894,7 +894,7 @@ export class Session {
     const why = answer === null
       ? NO_ANSWER
       : this.state.confirmation === null && isExplicitYes(answer)
-        ? "The user moved to another Clearcart window before their yes could count."
+        ? "The user moved to another Orbi window before their yes could count."
         : `The user said: ${JSON.stringify(answer)}`;
     return { content: [{ type: "text" as const, text: `declined. ${why}` }] };
   }
@@ -938,7 +938,7 @@ export class Session {
     const href = await this.tabUrl(tabId);
     if (!href) return said("Could not check which page that tab is on. Try again in a moment.");
     if (!process.env.CLEARCART_ALLOW_ANY_SITE && siteBlockReason(href, sitePolicy())) {
-      return said("Blocked: that tab is on a site Clearcart does not use, so nothing there unlocks.");
+      return said("Blocked: that tab is on a site Orbi does not use, so nothing there unlocks.");
     }
     let info: LockInfo;
     try {
@@ -1085,12 +1085,12 @@ export class Session {
   // explicit yes. The filter (memory.ts) refuses secrets either way.
   async remember({ fact }: { fact: string }): Promise<ToolText> {
     if (!this.mem) return said("Memory is not available here.");
-    if (!memoryOn()) return said("Memory is off in the user's Clearcart settings, so nothing was saved. They can turn it on there.");
+    if (!memoryOn()) return said("Memory is off in the user's Orbi settings, so nothing was saved. They can turn it on there.");
     const text = String(fact ?? "").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
     const why = sensitiveReason(text);
     if (why) {
       this.status("memory: refused a fact");
-      return said(`Not saved: ${why}. Clearcart never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
+      return said(`Not saved: ${why}. Orbi never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
     }
     // One save per utterance without a question, of a fact made only of
     // the words in it.
@@ -1149,7 +1149,7 @@ export class Session {
   // The recall tool: what is saved, freshly read.
   recall(): ToolText {
     if (!this.mem) return said("Memory is not available here.");
-    if (!memoryOn()) return said("Memory is off in the user's Clearcart settings, so nothing saved is used. They can turn it on there.");
+    if (!memoryOn()) return said("Memory is off in the user's Orbi settings, so nothing saved is used. They can turn it on there.");
     const facts = this.mem.list();
     this.memSeen = this.memKey();
     if (!facts.length) return said("Nothing is saved yet.");
@@ -1186,7 +1186,7 @@ export class Session {
 
     const payNowTool = tool(
       "pay_with_saved_card",
-      "Pay for the order the user just confirmed, with a card saved in Clearcart. Call it right after request_checkout returned confirmed, on that checkout page, with no other step in between. Clearcart fills the card into the page and places the order itself; you never see the card. Returns { ok, last4, nickname } or { ok: false, error }.",
+      "Pay for the order the user just confirmed, with a card saved in Orbi. Call it right after request_checkout returned confirmed, on that checkout page, with no other step in between. Orbi fills the card into the page and places the order itself; you never see the card. Returns { ok, last4, nickname } or { ok: false, error }.",
       {
         cardNickname: z.string().max(60).optional().describe("The saved card's nickname, only if the user named one, e.g. \"Work Visa\". Omit to use the default card."),
       },

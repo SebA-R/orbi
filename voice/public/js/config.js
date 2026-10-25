@@ -7,7 +7,7 @@ export const STT_MODEL = 'ink-2';
 // ink-whisper only), so English accuracy comes from keyterms: words the model
 // is biased toward. Max 100 terms / 1200 chars.
 export const STT_KEYTERMS = [
-  'Clearcart', 'yes', 'no', 'cancel', 'repeat that', 'go back',
+  'Orbi', 'Clearcart', 'yes', 'no', 'cancel', 'repeat that', 'go back',
 ];
 // Browser mic samples are 32-bit float; we send them at the AudioContext rate.
 export const STT_ENCODING = 'pcm_f32le';

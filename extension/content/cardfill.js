@@ -1,4 +1,4 @@
-// Clearcart saved-card fill, for one frame.
+// Orbi saved-card fill, for one frame.
 //
 // The worker injects this, after content/mask.js, into every frame of the
 // checkout tab, the cross-origin payment frames (Stripe, Adyen, Braintree

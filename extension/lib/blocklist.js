@@ -1,4 +1,4 @@
-// Open web browsing: sites Clearcart never opens, even when browseMode is
+// Open web browsing: sites Orbi never opens, even when browseMode is
 // "open". Two parts:
 //
 //   Fixed rules, in code: anything that is not an http(s) page, an address

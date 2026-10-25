@@ -70,7 +70,7 @@ export async function updateBadge(chromeApi, missing) {
     await action.setBadgeText({ text: need ? "!" : "" });
     if (need) await action.setBadgeBackgroundColor({ color: "#b3261e" });
     // The title is what screen readers announce for the toolbar button.
-    await action.setTitle({ title: need ? `Clearcart: setup needed (${missing.map((m) => MISSING_NAMES[m]).join(", ")})` : "Clearcart" });
+    await action.setTitle({ title: need ? `Orbi: setup needed (${missing.map((m) => MISSING_NAMES[m]).join(", ")})` : "Orbi" });
   } catch {}
 }
 
@@ -106,9 +106,9 @@ export function talkKeyHelp(hotkey) {
   const name = keyName(hotkey);
   if (name === "Space") {
     return "Hold Space to talk. Option+Space keeps listening until you press Space, and works in text fields too. "
-      + "Double-tap Space to stop Clearcart talking.";
+      + "Double-tap Space to stop Orbi talking.";
   }
-  return `Hold ${name} until Clearcart is listening (a short rising tone), speak, then let go. It works in text fields too.`;
+  return `Hold ${name} until Orbi is listening (a short rising tone), speak, then let go. It works in text fields too.`;
 }
 
 export const allReady = ({ site, mic, agent }) => site === true && mic === "granted" && agent?.connected === true;

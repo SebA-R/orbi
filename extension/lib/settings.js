@@ -28,14 +28,14 @@ export const DEFAULTS = Object.freeze({
   hotkey: "Space",
   speed: 1,
   subtitles: true,
-  // Speak Clearcart's replies with Sonic. Off: no speech is requested at
+  // Speak Orbi's replies with Sonic. Off: no speech is requested at
   // all (no Cartesia speech credits), and the replies show in the subtitles
   // only. Listening and earcons are unchanged.
   speakReplies: true,
   // Fade out and mute other tabs' audio while the user talks and while
-  // Clearcart answers (lib/voice/duck.js).
+  // Orbi answers (lib/voice/duck.js).
   quietTabs: true,
-  // Bring the user to the tab Clearcart acts on (background/follow.js).
+  // Bring the user to the tab Orbi acts on (background/follow.js).
   followTab: true,
   // Earcons: listening, sent, cut off, order result, errors (lib/voice/chime.js).
   sounds: true,
@@ -43,11 +43,11 @@ export const DEFAULTS = Object.freeze({
   // describes each page, reads out the choices and lets the user pick
   // (agent/prompt.ts GUIDED_PROMPT). Off unless the user turns it on.
   guidedMode: false,
-  // Clearcart's new tab page (newtab/newtab.html), so Space to talk and
+  // Orbi's new tab page (newtab/newtab.html), so Space to talk and
   // subtitles work on new tabs. Off: it forwards to Chrome's own.
   newTabPage: true,
   // A main-frame network error (no connection, unknown address, refused)
-  // in a normal tab goes to Clearcart's "Can't reach this site" page
+  // in a normal tab goes to Orbi's "Can't reach this site" page
   // (background/errpage.js), where Space to talk works. Off: Chrome's own
   // error page stays.
   errorPages: true,
@@ -65,7 +65,7 @@ export const DEFAULTS = Object.freeze({
   // last two hours of the conversation, on this computer only
   // (agent/memory.ts). Off, it neither uses nor saves them.
   memory: true,
-  // Clearcart's own pointer on the page while it clicks, types and scrolls
+  // Orbi's own pointer on the page while it clicks, types and scrolls
   // (content/cursor.js). Purely visual.
   showCursor: true,
   // Which model drives the agent: "claude", or "local" for an
@@ -79,18 +79,18 @@ export const DEFAULTS = Object.freeze({
 
 export const PROVIDERS = Object.freeze(["claude", "local"]);
 
-export const DANGER_MODE_COPY = "Danger mode. Clearcart acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
+export const DANGER_MODE_COPY = "Danger mode. Orbi acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
 
-export const SPEAK_REPLIES_COPY = "Speak replies. Turn off to read Clearcart's answers in the subtitles without hearing them.";
+export const SPEAK_REPLIES_COPY = "Speak replies. Turn off to read Orbi's answers in the subtitles without hearing them.";
 export const VOICE_OFF_ON_SERVER = "Voice is off on the server";
 
 // With Speak replies and subtitles both off, the user would never learn
-// what Clearcart said: the popup and options page show this. Voice off on
+// what Orbi said: the popup and options page show this. Voice off on
 // the server (serverVoice false) counts as not speaking.
 export function replyWarning(s, serverVoice = null) {
   if (!s || s.subtitles !== false) return null;
   if (s.speakReplies !== false && serverVoice !== false) return null;
-  return "Clearcart's replies won't be shown or spoken at all. Turn on Speak replies or subtitles.";
+  return "Orbi's replies won't be shown or spoken at all. Turn on Speak replies or subtitles.";
 }
 
 // The note under the Speak replies switch, or "" for none.

@@ -1,11 +1,11 @@
 // The button lock's unlock: the only way a protected control (place order,
-// pay, checkout...) gets pressed by Clearcart instead of the user.
+// pay, checkout...) gets pressed by Orbi instead of the user.
 //
 // Claude has no tool that reaches this module. A pay flow asks the gate for
 // a grant; the gate issues one only when all of these hold:
 //   - the user said an explicit yes to request_checkout's read-back
 //     (confirmation.state === "confirmed"),
-//   - the tab's page is on a site Clearcart may use (origins.ts usableSite:
+//   - the tab's page is on a site Orbi may use (origins.ts usableSite:
 //     the browse policy in force, the user's blocked sites included),
 //   - the total on the page matches, to the cent and currency, the total
 //     the user said yes to.
@@ -56,7 +56,7 @@ export class UnlockGate {
     }
     const origin = originOf(req.href);
     if (!origin || !this.isAllowed(req.href)) {
-      return { ok: false, error: "This page is on a site Clearcart does not use, so its order button stays locked." };
+      return { ok: false, error: "This page is on a site Orbi does not use, so its order button stays locked." };
     }
     const page = parseMoney(req.pageTotal);
     if (!page || !sameMoney(page, parseMoney(req.confirmation.total))) {

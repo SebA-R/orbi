@@ -249,7 +249,7 @@ export function createRouter({
     if (typeof tabs.onNewTab === "function" && tabs.onNewTab(tab)) {
       return { active: { tabId: tab.id, title: "New Tab", url: "chrome://newtab/", newTab: true } };
     }
-    // Clearcart's "Can't reach this site" page: nothing to read either. The
+    // Orbi's "Can't reach this site" page: nothing to read either. The
     // address that failed only when it is allowed (tabs.failedAddress).
     // newTab too, so an agent server that predates errorPage still says
     // the tab may be navigated.
@@ -523,7 +523,7 @@ export function createRouter({
   }
 
   // The pay flow's half of the unlock: a nonce bound to this tab and its
-  // current origin, on a site the user's settings let Clearcart use (the
+  // current origin, on a site the user's settings let Orbi use (the
   // tab was resolved that way already; checked again here, failing
   // closed). The agent server asks for one only after the user's spoken
   // yes to the exact total (agent/unlock.ts), and its nonce only works with
@@ -538,7 +538,7 @@ export function createRouter({
     const origin = originOf(info && info.url);
     if (!origin) throw new BridgeError(ERR.NOT_ALLOWED, "tab has no origin to unlock");
     if (scope === "order" && (typeof tabs.isAllowed !== "function" || !(await tabs.isAllowed(info.url)))) {
-      throw new BridgeError(ERR.LOCKED, "Locked: this page is on a site Clearcart does not use");
+      throw new BridgeError(ERR.LOCKED, "Locked: this page is on a site Orbi does not use");
     }
     for (const [n, a] of armed) if (a.expires <= now()) armed.delete(n);
     const nonce = newNonce();
@@ -672,7 +672,7 @@ export function createRouter({
   }
 
   // Brings the tab a navigate call will use to the front, when it is one
-  // Clearcart may use now. A tab on a blocked page (the agent server's sweep
+  // Orbi may use now. A tab on a blocked page (the agent server's sweep
   // sending a stray tab back) is not shown; navigate itself decides the rest.
   async function followBeforeNavigate(tabId) {
     if (typeof tabs.resolveTab !== "function") return;

@@ -1,4 +1,4 @@
-// Clearcart agent server: static voice console at /, GET /cartesia-token,
+// Orbi agent server: static voice console at /, GET /cartesia-token,
 // the settings page's /memory and /cards, and the /session WebSocket.
 // Every /session socket shares one Claude conversation; the one the user
 // last talked into owns it (hub.ts).
@@ -22,7 +22,7 @@ const ROOT = path.resolve(HERE, "..");
 dotenv.config({ path: path.join(ROOT, ".env"), quiet: true });
 
 const PORT = Number(process.env.AGENT_PORT || 5050);
-// CLEARCART_BROWSER=ext: the Clearcart extension connects to /ext and drives
+// CLEARCART_BROWSER=ext: the Orbi extension connects to /ext and drives
 // the browser. Unset: today's open-claude-in-chrome path, no /ext endpoint.
 const EXT = extMode();
 const PUBLIC_DIR = path.join(ROOT, "voice", "public");
@@ -120,7 +120,7 @@ const localUpgrade = (req: http.IncomingMessage) => localHost(req) && upgradeOri
 //   GET    /memory       { enabled, facts: [{ id, text, at }] }
 //   DELETE /memory/<id>  forget one fact
 //   DELETE /memory       forget everything, the recent conversation too
-// Loopback peers with the Clearcart extension's Origin only (hostcheck.ts).
+// Loopback peers with the Orbi extension's Origin only (hostcheck.ts).
 // Nothing here adds a fact: only the remember tool does.
 const EXT_ORIGINS = extensionOrigins();
 function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathname: string) {
@@ -215,6 +215,6 @@ wss.on("connection", (ws: WebSocket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Clearcart agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext" : ""}${ECHO ? ", echo mode" : ""})`);
+  console.log(`Orbi agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext" : ""}${ECHO ? ", echo mode" : ""})`);
   if (!fs.existsSync(PUBLIC_DIR)) console.log(`note: ${PUBLIC_DIR} does not exist yet`);
 });

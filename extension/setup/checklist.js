@@ -9,7 +9,7 @@ import {
   EXTENSIONS_PAGE, agentHealth, allReady, hasSiteAccess, keyName, micState, requestSiteAccess, talkKeyHelp, updateBadge,
 } from "../lib/setup.js";
 
-const SITE_HELP = "Chrome did not turn it on. Open chrome://extensions, find Clearcart and choose Details. Under Site access, choose On all sites.";
+const SITE_HELP = "Chrome did not turn it on. Open chrome://extensions, find Orbi and choose Details. Under Site access, choose On all sites.";
 
 function el(tag, attrs = {}, text) {
   const node = document.createElement(tag);
@@ -52,7 +52,7 @@ export function createChecklist({ root, live, level = 2, onMic, chromeApi = glob
     item("key", "Talk key"),
   );
   const extRow = el("div", { class: "row", hidden: "" });
-  const extButton = el("button", { type: "button", class: "secondary" }, "Open Clearcart's details in Chrome");
+  const extButton = el("button", { type: "button", class: "secondary" }, "Open Orbi's details in Chrome");
   extRow.append(extButton);
   items.site.li.insertBefore(extRow, items.site.detail.nextSibling);
 
@@ -66,7 +66,7 @@ export function createChecklist({ root, live, level = 2, onMic, chromeApi = glob
   items.key.li.append(keyRow);
 
   const summary = el("p", { class: "summary", id: "summary", tabindex: "-1" });
-  const tryIt = el("p", { class: "hint" }, "Try it: reload any tab that was open before you installed or updated Clearcart, then hold the talk key there.");
+  const tryIt = el("p", { class: "hint" }, "Try it: reload any tab that was open before you installed or updated Orbi, then hold the talk key there.");
   root.append(summary, list, tryIt);
 
   function announce(text) {
@@ -101,7 +101,7 @@ export function createChecklist({ root, live, level = 2, onMic, chromeApi = glob
     const [site, mic, agent] = await Promise.all([hasSiteAccess(chromeApi), micState(), agentHealth(settings.agentUrl)]);
     state = { site, mic, agent };
     const notes = [];
-    notes.push(set("site", site, site ? "Clearcart works on every site." : "Clearcart is limited to some sites, so the talk key may not work.",
+    notes.push(set("site", site, site ? "Orbi works on every site." : "Orbi is limited to some sites, so the talk key may not work.",
       { detail: !site && siteRefused ? SITE_HELP : "", button: !site }));
     extRow.hidden = site || !siteRefused;
     notes.push(set("mic", mic === "granted", micStateMessage(mic), { button: mic !== "granted" }));
@@ -113,7 +113,7 @@ export function createChecklist({ root, live, level = 2, onMic, chromeApi = glob
 
     const ready = allReady(state);
     const left = [!site, mic !== "granted", !agent.connected].filter(Boolean).length;
-    summary.textContent = ready ? "You're set. Hold the talk key on any page to talk to Clearcart." : `${left} ${left === 1 ? "step" : "steps"} left.`;
+    summary.textContent = ready ? "You're set. Hold the talk key on any page to talk to Orbi." : `${left} ${left === 1 ? "step" : "steps"} left.`;
     summary.className = ready ? "summary ready" : "summary";
     updateBadge(chromeApi, [!site && "site", mic !== "granted" && mic !== "unknown" && "mic"].filter(Boolean));
 

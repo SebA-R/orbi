@@ -1,6 +1,6 @@
-// One voice session for every Clearcart window.
+// One voice session for every Orbi window.
 //
-// Each window that talks to Clearcart (the extension's offscreen document,
+// Each window that talks to Orbi (the extension's offscreen document,
 // the voice console page) opens its own /session socket, but they share one
 // Session: one Claude conversation driving one browser. (Before, every
 // socket got its own Session, so two windows meant two agents in the same
@@ -41,9 +41,9 @@ export interface HubSession {
 // its agent loop has stopped for good.
 export type CreateSession = (send: (m: ServerMessage) => void, ended: () => void) => HubSession;
 
-export const ELSEWHERE_TEXT = "Clearcart is in use in another window. Talk here to use it here.";
-export const MOVED_TEXT = "Clearcart moved to another window. Talk here to bring it back.";
-export const STALE_TEXT = "Not sent: Clearcart is in use in another window. Talk here again to use it here.";
+export const ELSEWHERE_TEXT = "Orbi is in use in another window. Talk here to use it here.";
+export const MOVED_TEXT = "Orbi moved to another window. Talk here to bring it back.";
+export const STALE_TEXT = "Not sent: Orbi is in use in another window. Talk here again to use it here.";
 
 type Peer = { send: (m: HubMessage) => void; lost: boolean };
 

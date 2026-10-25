@@ -5,7 +5,7 @@
 //   DELETE /cards/<id>           remove one
 //   POST   /cards/<id>/default   the card pay_with_saved_card uses by default
 //
-// Loopback peers with the Clearcart extension's Origin only, the /memory
+// Loopback peers with the Orbi extension's Origin only, the /memory
 // rule (hostcheck.ts), so no web page can reach it. JSON bodies of at most
 // 4 KB, and rate limited. No answer ever holds a number, expiry or security
 // code, nothing here logs a body, and errors are generic.

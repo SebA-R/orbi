@@ -68,7 +68,7 @@ const wss = new WebSocketServer({ server, path: '/session' });
 wss.on('connection', (ws) => {
   const send = (obj) => ws.send(JSON.stringify(obj));
   send({ type: 'status', text: 'echo agent connected' });
-  send({ type: 'agent_text', text: 'Hi, this is the Clearcart test echo. Hold Space and say something.' });
+  send({ type: 'agent_text', text: 'Hi, this is the Orbi test echo. Hold Space and say something.' });
   ws.on('message', (raw) => {
     let m;
     try { m = JSON.parse(raw); } catch { return; }

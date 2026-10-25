@@ -27,10 +27,10 @@ export async function assertAllowed(url: string): Promise<void> // throws Bridge
 export function blockReason(url, settings): string | null      // browseMode "open": lib/blocklist.js fixed rules + settings.blocklist entries; "allowlist": origin in settings.allowlist
 export async function isPaySite(url: string): Promise<boolean>  // origin in the allowlist, in both modes; lock_arm needs it
 
-// tabs.js  (no tab group: the user's open tabs plus tabs Clearcart opens; which ones it opened is kept in chrome.storage.session)
+// tabs.js  (no tab group: the user's open tabs plus tabs Orbi opens; which ones it opened is kept in chrome.storage.session)
 export async function tabsContext(): Promise<{ tabs: {tabId,title,url,active,openedByClearcart}[] }> // url = origin+path; tabs on blocked pages left out
 export async function tabsCreate({ url? }): Promise<{ tabId }>                     // background tab (active: false) next to the user's tab
-export async function tabsClose({ tabId }), tabsActivate({ tabId })                // close: only tabs Clearcart opened; activate: when the user asks
+export async function tabsClose({ tabId }), tabsActivate({ tabId })                // close: only tabs Orbi opened; activate: when the user asks
 export async function navigate({ tabId, url }): Promise<{ tabId, url, title }>      // "back"/"forward" allowed; waits for status "complete" (timeout 20 s); assertAllowed first
 export async function tabInfo({ tabId }), agentTabs()                               // INTERNAL: full URLs for the pay flow and the tab sweep
 export async function resolveAllowedTab(tabId?): Promise<number>                   // re-checks the tab's page on every call; default = tab used last, else the active tab

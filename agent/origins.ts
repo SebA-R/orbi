@@ -1,6 +1,6 @@
-// Which sites Clearcart may drive. Shared by the session guard, the tab
+// Which sites Orbi may drive. Shared by the session guard, the tab
 // sweep, pay_with_saved_card and the button lock's unlock gate, which arms
-// only on a page Clearcart may use, and only after the user's spoken yes to
+// only on a page Orbi may use, and only after the user's spoken yes to
 // the exact total (unlock.ts).
 //
 // CLEARCART_BROWSE_MODE:
@@ -92,7 +92,7 @@ export function allowedSite(href: string | null | undefined): boolean {
 }
 
 // Where the unlock gate may arm and pay_with_saved_card may pay: a web page
-// on a site the policy in force lets Clearcart use, the blocked sites
+// on a site the policy in force lets Orbi use, the blocked sites
 // included (CLEARCART_ALLOW_ANY_SITE does not widen it).
 export function usableSite(href: string | null | undefined): boolean {
   return !!originOf(href) && !siteBlockReason(href, sitePolicy());

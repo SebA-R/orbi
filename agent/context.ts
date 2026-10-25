@@ -76,7 +76,7 @@ const VIA: Record<string, string> = { hover: "under the mouse", click: "last cli
 export function contextBlock(ctx: PageContext, policy?: SitePolicy): string | null {
   const a = ctx?.active;
   if (!a) return null;
-  // Clearcart's "Can't reach this site" page (a network error) has nothing
+  // Orbi's "Can't reach this site" page (a network error) has nothing
   // on it either. The address that failed only when the site policy allows it.
   if (a.errorPage === true && !a.blocked) {
     const tab = Number.isInteger(a.tabId) ? a.tabId : "?";
