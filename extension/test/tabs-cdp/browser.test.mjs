@@ -3,7 +3,8 @@
 // manifest does not have this module's permissions yet, so the test copies
 // extension/ to a temp dir, adds them, and swaps in a tiny worker that
 // exposes tabs.js and cdp.js on globalThis. Pages come from a throwaway
-// local HTTP server that the test allowlists.
+// local HTTP server that the test allowlists (loopback sites other than
+// the allowlisted ones are blocked in open mode).
 //
 // Needs playwright installed in tests/extension (npm install there);
 // skipped otherwise.
@@ -100,11 +101,18 @@ test("tabs_create groups the tab under Clearcart and loads it", { skip }, async 
   assert.equal(group.title, "Clearcart");
 });
 
-test("navigate waits for load and refuses other origins", { skip }, async () => {
+test("navigate waits for load and refuses blocked sites (open mode) and other origins (allowlist mode)", { skip }, async () => {
   const r = await run((o) => T.navigate({ url: `${o}/two` }), origin);
   assert.equal(r.title, "Fixture /two");
+  for (const url of ["http://127.0.0.1:1/", "chrome://settings", "https://mail.google.com/"]) {
+    const err = await run((u) => T.navigate({ url: u }).then(() => null, (e) => e.code), url);
+    assert.equal(err, "not_allowed", url);
+  }
+  await run(() => chrome.storage.local.set({ browseMode: "allowlist" }));
   const err = await run(() => T.navigate({ url: "https://example.com/" }).then(() => null, (e) => e.code));
   assert.equal(err, "not_allowed");
+  await run(() => chrome.storage.local.set({ browseMode: "open" }));
+  assert.equal((await run(() => T.tabInfo({}))).url, `${origin}/two`);
 });
 
 test("CDP click, type, key and screenshot reach the page as trusted input", { skip }, async () => {
