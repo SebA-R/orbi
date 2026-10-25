@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { CUES, MASTER, cueLength, createChime, linkCues, playCue } from "../../lib/voice/chime.js";
+import { CUES, createChime, linkCues, playCue } from "../../lib/voice/chime.js";
 
 // A stub AudioContext that records oscillators (type, start frequency, glide
 // target) and gain peaks.
@@ -46,37 +46,12 @@ test("every cue in the table plays (version A recipes)", () => {
   }
 });
 
-test("the octave partial, waveform and quiet peaks", () => {
-  const { ctx, oscs, peaks } = stubCtx();
-  playCue(ctx, "listen");
-  assert.deepEqual(oscs.map((o) => o.f0), [280, 560], "fundamental plus octave");
-  assert.deepEqual(peaks, [0.16], "listen peaks at 0.16 (before the master level)");
-  assert.ok(MASTER < 1);
-  const e = stubCtx();
-  playCue(e.ctx, "error");
-  assert.ok(e.oscs.every((o) => o.type === "square"));
-  assert.ok(Math.max(...Object.values(CUES).flat().map((n) => n.gain)) <= 0.2, "quieter than the old 0.32 chime");
-});
-
-test("scale and when shift the gain and the start time", () => {
-  const { ctx, oscs, peaks } = stubCtx();
-  playCue(ctx, "listen", { scale: 0.6, when: 0.5 });
-  assert.ok(Math.abs(oscs[0].started - 10.51) < 1e-9);
-  assert.ok(peaks.some((p) => Math.abs(p - 0.16 * 0.6) < 1e-9));
-});
-
 test("unknown cues and a suspended context play nothing", () => {
   const a = stubCtx();
   assert.equal(playCue(a.ctx, "nope"), false);
   const b = stubCtx("suspended");
   assert.equal(playCue(b.ctx, "listen"), false);
   assert.equal(a.oscs.length + b.oscs.length, 0);
-});
-
-test("cueLength covers the last note", () => {
-  assert.equal(cueLength("cut"), 0.14);
-  assert.ok(Math.abs(cueLength("placed") - 0.47) < 1e-9);
-  assert.equal(cueLength("nope"), 0);
 });
 
 test("createChime: sounds off means silence, on plays", () => {

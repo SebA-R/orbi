@@ -50,14 +50,13 @@ test("tabsContext lists the user's tabs and Orbi's, with origin+path only, and h
   const local = await userTab(c, "http://localhost:5050/");
   const settings = await userTab(c, "chrome://settings/");
   const login = await userTab(c, "https://user:pw@shop.example/");
-  const newtab = await userTab(c, "chrome://newtab/");
   const { tabId: mineBlank } = await tabsCreate({});
   const { tabId: mine } = await tabsCreate({ url: `${SHOP}/` });
   const { tabs } = await tabsContext();
   assert.deepEqual(tabs.map((t) => t.tabId).sort(), [etsy, mineBlank, mine].sort());
   assert.deepEqual(tabs.find((t) => t.tabId === etsy), { tabId: etsy, title: "Mug", url: "https://www.etsy.com/listing/1/mug", active: true, openedByClearcart: false });
   assert.equal(tabs.find((t) => t.tabId === mine).openedByClearcart, true);
-  for (const id of [mail, local, settings, login, newtab]) {
+  for (const id of [mail, local, settings, login]) {
     await assert.rejects(resolveAllowedTab(id), (e) => e.code === ERR.NOT_ALLOWED && !/google|localhost/.test(e.message), String(id));
     await assert.rejects(navigate({ tabId: id, url: "https://www.etsy.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
   }

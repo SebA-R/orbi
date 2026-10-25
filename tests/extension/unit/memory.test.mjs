@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { DEFAULTS, loadSettings, normalize, saveSettings } from "../../../extension/lib/settings.js";
+import { AGENT_SETTING_KEYS, DEFAULTS, agentSettingsMessage, loadSettings, normalize, saveSettings } from "../../../extension/lib/settings.js";
 import { forgetAll, forgetFact, listMemory } from "../../../extension/lib/memory.js";
 
 const read = (p) => readFileSync(new URL(`../../../extension/${p}`, import.meta.url), "utf8");
@@ -68,7 +68,6 @@ test("options page: the Memory switch is a data-setting row, facts are text with
   assert.match(js, /text\.textContent = f\.text/);
   assert.ok(!/innerHTML/.test(js), "no HTML from the server");
   assert.match(js, /setAttribute\("aria-label", `Delete: \$\{f\.text\}`\)/);
-  const worker = read("background/worker.js");
-  assert.match(worker, /MSG\.SETTINGS, guidedMode, memory/);
-  assert.match(worker, /changes\.guidedMode \|\| changes\.memory/);
+  assert.ok(AGENT_SETTING_KEYS.includes("memory"), "a Memory change is sent to the agent");
+  assert.equal(agentSettingsMessage({ memory: false }).memory, false);
 });
