@@ -111,11 +111,11 @@ test("a checkout read-back can't be confirmed from another window", async () => 
   b.peer.userText("yes"); // a yes from the other window
   const r = await done;
   assert.match(r.content[0].text, /^declined\. No answer came/);
-  assert.equal((s as any).state.confirmation.state, "declined");
+  assert.equal(claimConfirmation((s as any).state).ok, false, "nothing pay_now could use");
   assert.ok(!b.got.some((m) => m.type === "status" && m.text === "checkout confirmed"));
   // a's own late yes can't revive it either: a lost the session.
   a.peer.userText("yes");
-  assert.equal((s as any).state.confirmation.state, "declined");
+  assert.equal(claimConfirmation((s as any).state).ok, false);
   assert.deepEqual(a.standby().at(-1)?.reason, "stale");
 });
 
@@ -155,6 +155,34 @@ test("a yes pay_now has not used yet is withdrawn when the user moves to another
   (s as any).state.confirmation.state = "used"; // what claimConfirmation does as pay_now starts
   a.peer.interrupt();
   assert.equal((s as any).state.confirmation.state, "used");
+});
+
+test("a yes still being pinned to its tab when the user moves windows never turns confirmed", async () => {
+  const { hub, session } = realHub();
+  const a = windowOf(hub);
+  const b = windowOf(hub);
+  a.peer.userText("buy the advil");
+  const s = session();
+  const done = s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  await tick();
+  a.peer.userText("yes"); // request_checkout now waits for the checkout snapshot
+  b.peer.interrupt(); // the user moves to b before that returns
+  assert.match((await done).content[0].text, /^declined\. The user moved to another Clearcart window/);
+  assert.equal(claimConfirmation((s as any).state).ok, false);
+});
+
+test("once the window that took over closes, a client that only sends user_text is heard again", () => {
+  const { hub, made } = fakeHub();
+  const script = windowOf(hub);
+  script.peer.userText("hello");
+  const ext = windowOf(hub);
+  ext.peer.interrupt();
+  script.peer.userText("still there?");
+  assert.equal(script.standby().at(-1)?.reason, "stale");
+  ext.peer.leave();
+  script.peer.userText("anyone?");
+  assert.ok(made[0].calls.includes("text:anyone?"));
+  assert.ok(!made[0].calls.includes("text:still there?"));
 });
 
 test("a read-back still waiting when its window closes is declined; the session lives on until the last window closes", async () => {
