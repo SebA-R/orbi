@@ -67,11 +67,55 @@
     return sum % 10 === 0;
   }
 
-  // Digit runs of 13-19 digits, optionally separated by single spaces/dashes.
-  var RUN = /\d(?:[ -]?\d){12,18}/g;
+  // Digit runs of 13 or more digits, optionally separated by single spaces
+  // or dashes.
+  var RUN = /\d(?:[ -]?\d){12,}/g;
 
-  function maskCardRuns(text) {
-    return String(text).replace(RUN, function (m) { return luhn(m) ? CARD_MASK : m; });
+  // Card numbers are 13, 14, 15, 16 or 19 digits, start with 2 to 6, and
+  // pass Luhn.
+  var CARD_LENGTHS = [13, 14, 15, 16, 19];
+  function cardLike(d) {
+    return CARD_LENGTHS.indexOf(d.length) !== -1 && /^[2-6]/.test(d) && luhn(d);
+  }
+
+  // True when the run holds a card number, also next to other digits. Each
+  // window starts at the run's start or a separator and ends at the run's
+  // end or a separator: a span of whole groups (the digits between spaces
+  // or dashes), as in "4111 1111 1111 1111 123", "Order 12
+  // 4111111111111111" or "4111 1111 1111 1111 05/27". A group of 17 to 19
+  // digits is also checked for a 16-digit card at its start or end, with a
+  // few digits glued on ("4111111111111111123"). Order ids and tracking
+  // numbers stay readable.
+  function hasCardWindow(run) {
+    var groups = String(run).split(/[\s-]+/);
+    // Too long to be anything a person reads as a number: mask it.
+    if (groups.join("").length > 400) return true;
+    for (var i = 0; i < groups.length; i++) {
+      var span = "";
+      for (var j = i; j < groups.length; j++) {
+        span += groups[j];
+        if (span.length > 19) break;
+        if (cardLike(span)) return true;
+      }
+      var g = groups[i];
+      if (g.length > 16 && g.length <= 19 && (cardLike(g.slice(0, 16)) || cardLike(g.slice(-16)))) return true;
+    }
+    return false;
+  }
+
+  // True when text holds a card number anywhere.
+  function hasCardNumber(text) {
+    var runs = String(text == null ? "" : text).match(RUN) || [];
+    for (var i = 0; i < runs.length; i++) if (hasCardWindow(runs[i])) return true;
+    return false;
+  }
+
+  // Replaces every digit run holding a card number with label (default
+  // CARD_MASK). The one card check for the page scripts, the worker
+  // (lib/log.js, background/gdocs.js) and the agent server.
+  function maskCardRuns(text, label) {
+    var mask = label == null ? CARD_MASK : String(label);
+    return String(text).replace(RUN, function (m) { return hasCardWindow(m) ? mask : m; });
   }
 
   // Masks a value for output. With a payment element the whole value is
@@ -83,7 +127,7 @@
     return maskCardRuns(s);
   }
 
-  var api = { isPaymentField: isPaymentField, luhn: luhn, maskValue: maskValue, maskCardRuns: maskCardRuns, MASK: MASK, CARD_MASK: CARD_MASK };
+  var api = { isPaymentField: isPaymentField, luhn: luhn, maskValue: maskValue, maskCardRuns: maskCardRuns, hasCardNumber: hasCardNumber, MASK: MASK, CARD_MASK: CARD_MASK };
   root.ClearcartMask = api;
   if (typeof module === "object" && module && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
