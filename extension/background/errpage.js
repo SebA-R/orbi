@@ -142,11 +142,12 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
     if (!settings.errorPages) return false;
     const win = await api().windows?.get?.(tab.windowId).catch(() => null);
     if (win && win.type !== "normal") return false;
-    const prev = last.get(tabId);
-    if (prev && prev.url === p.url && now() - prev.at < REPEAT_MS) return false;
     const s = await read();
     const retry = s.retry[tabId];
     const retried = !!retry && retry.url === p.url && now() - retry.at < RETRY_MS;
+    // Retry is the user's and used up below, so only the rest is guarded.
+    const prev = last.get(tabId);
+    if (!retried && prev && prev.url === p.url && now() - prev.at < REPEAT_MS) return false;
     const from = s.shown[tabId] && s.pages[s.shown[tabId]];
     // Back (or the same address typed again) from Clearcart's page for it:
     // leave Chrome's page, so Back goes on past it.
