@@ -284,8 +284,22 @@ test("auto: a fact from a page, a search result or about someone else is never s
   assert.equal(spoken().length, 3);
   await s.userText("no");
   assert.match(text(await g), /^Not saved/);
-  assert.deepEqual(memory.list(), []);
+  // A "not" in their words never grounds the flipped fact.
+  await s.userText("I wear a medium, not a small");
+  const n = s.remember({ fact: "you wear a small" });
+  await tick();
+  assert.equal(spoken().length, 4);
+  await s.userText("no");
+  assert.match(text(await n), /^Not saved/);
+  // Taken back: "don't remember that" stops the words before it counting.
+  await s.userText("I'm vegan");
+  await s.userText("actually don't remember that");
+  const v = s.remember({ fact: "you are vegan" });
+  await tick();
+  assert.equal(spoken().length, 5);
   s.close();
+  assert.match(text(await v), /^Not saved/);
+  assert.deepEqual(memory.list(), []);
 });
 
 test("auto: a large replaces a medium, and near duplicates merge", async () => {
@@ -311,6 +325,11 @@ test("auto: a large replaces a medium, and near duplicates merge", async () => {
   assert.match(text(await s.remember({ fact: "you are allergic to peanuts" })), /^Already saved: you are allergic to peanuts and shellfish/);
   assert.equal(memory.list().length, 4);
   assert.deepEqual(spoken(), []);
+  // Facts that only share a word with a saved one never replace it.
+  for (const f of ["you love shopping at small businesses", "you prefer large print", "your dog's name is Rex", "you wear a large in dresses"]) assert.ok(memory.add(f).ok, f);
+  assert.ok(memory.list().some((f) => f.text === "you wear a large now"));
+  assert.ok(memory.list().some((f) => f.text === "call you Sebastian"));
+  for (const f of ["you love shopping at small businesses", "you prefer large print", "your dog's name is Rex", "you wear a large in dresses"]) memory.remove(memory.find(f)[0].id);
   // forget still works.
   await s.userText("forget my shoe size");
   assert.match(text(await s.forget({ fact: "shoes" })), /^Forgot/);

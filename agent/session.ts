@@ -1281,7 +1281,11 @@ export class Session {
       return said(`Not saved: ${why}. Orbi never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
     }
     const fresh = (w: UserWords) => !!w.text && Date.now() - w.at <= USER_WORDS_TTL_MS;
-    const from = [this.lastUser, this.prevUser].find(
+    // The utterance before counts only while the latest one takes nothing
+    // back: not a forget, a no, or a "don't remember".
+    const last = this.lastUser.text;
+    const prevOk = !!last && !isForgetAsk(last) && !/\b(no|nope|nah|don'?t|do not|never|stop|cancel|wrong|not|undo)\b/i.test(fold(last));
+    const from = (prevOk ? [this.lastUser, this.prevUser] : [this.lastUser]).find(
       (w) => fresh(w) && w.saves < SILENT_SAVES_PER_UTTERANCE && factGroundedIn(text, w.text) && (isRememberAsk(w.text) || statesFact(text, w.text))
     );
     let how: "asked" | "told" | "confirmed";
@@ -1289,7 +1293,9 @@ export class Session {
       from.saves++;
       how = isRememberAsk(from.text) ? "asked" : "told";
     } else {
-      const a = await this.askYes(`Want me to remember that ${text}?`, signal);
+      // A fact it would replace is named in the question.
+      const old = this.mem.replacing(text);
+      const a = await this.askYes(`Want me to remember that ${text}${old ? `, instead of ${old.text}` : ""}?`, signal);
       if (!a.yes) {
         this.status("memory: not saved (no yes)");
         return said(`Not saved. ${a.why}`.trim());

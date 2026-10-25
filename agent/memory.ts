@@ -156,6 +156,31 @@ export type AddResult = { ok: true; fact: Fact; existed: boolean; replaced?: Fac
 
 export const norm = (t: string) => clean(t).toLowerCase().replace(/[^a-z0-9' ]/g, "").replace(/\s+/g, " ").trim();
 
+// The saved fact a new one replaces: the same single-answer topic
+// (factTopic) on a fact that says nothing else, or a fact the new one
+// repeats and adds to without narrowing it ("you wear a medium" is not
+// replaced by "you wear a medium in dresses"). Never across a "not".
+const COMPOUND = /\b(and|but|also|plus|or)\b|[,;]/;
+const NARROW = new Set(["in", "for", "only", "when", "at", "except", "on", "with"]);
+function replaces(facts: Fact[], t: string): Fact | undefined {
+  const words = new Set(contentWords(t));
+  const neg = (x: Set<string>) => [...x].some((w) => NEGATION.has(w));
+  const topic = factTopic(t);
+  return facts.find((f) => {
+    const have = new Set(contentWords(f.text));
+    if (neg(have) !== neg(words)) return false;
+    if (topic && factTopic(f.text) === topic && !COMPOUND.test(fold(f.text))) return true;
+    if (have.size < 2 || ![...have].every((w) => words.has(w))) return false;
+    return !narrows(t, f.text);
+  });
+}
+// Whether fact a's words beyond fact b's narrow it to a scope ("in
+// dresses", "for work").
+function narrows(a: string, b: string): boolean {
+  const have = new Set(norm(spelled(b)).split(" "));
+  return norm(spelled(a)).split(" ").some((w) => !have.has(w) && (NARROW.has(w) || SIZE_FOR.some(([re]) => re.test(w))));
+}
+
 export class MemoryStore {
   constructor(readonly file = path.join(dataDir(), "memory.json")) {}
 
@@ -188,18 +213,31 @@ export class MemoryStore {
     // like pink" but is not the same fact.
     const neg = (x: Set<string>) => [...x].some((w) => NEGATION.has(w));
     const subset = (a: Set<string>, b: Set<string>) => a.size >= 2 && neg(a) === neg(b) && [...a].every((w) => b.has(w));
-    const covered = facts.find((f) => subset(words, new Set(contentWords(f.text))));
+    const covered = facts.find((f) => {
+      const have = new Set(contentWords(f.text));
+      return subset(words, have) && !narrows(f.text, t);
+    });
     if (covered) return { ok: true, fact: covered, existed: true };
-    const topic = factTopic(t);
-    const old = facts.find((f) => (topic && factTopic(f.text) === topic) || subset(new Set(contentWords(f.text)), words));
+    const old = replaces(facts, t);
     if (!old && facts.length >= MEMORY_MAX_FACTS) return { ok: false, reason: `Not saved: memory is full (${MEMORY_MAX_FACTS} facts). Nothing was dropped. Tell the user briefly and ask which saved fact to forget.` };
-    const fact: Fact = { id: "m" + crypto.randomBytes(4).toString("hex"), text: t, at: Date.now() };
+    // A replaced fact keeps its id, so a settings page still showing it
+    // deletes the new text.
+    const fact: Fact = { id: old?.id ?? "m" + crypto.randomBytes(4).toString("hex"), text: t, at: Date.now() };
     const next = old ? facts.map((f) => (f === old ? fact : f)) : [...facts, fact];
     if (Buffer.byteLength(JSON.stringify({ version: 1, facts: next })) > MEMORY_MAX_BYTES) {
       return { ok: false, reason: "Not saved: memory is full. Nothing was dropped. Tell the user briefly and ask which saved fact to forget." };
     }
     this.save(next);
     return { ok: true, fact, existed: false, replaced: old ?? undefined };
+  }
+
+  // The saved fact the new one would take the place of, if any (asked
+  // about in the question when there is no silent save).
+  replacing(text: string): Fact | null {
+    const t = clean(text).replace(/[.!]+$/, "");
+    const facts = this.list();
+    if (facts.some((f) => norm(f.text) === norm(t))) return null;
+    return replaces(facts, t) ?? null;
   }
 
   // The facts an id or a few words point to: the id, the same text, or the
@@ -334,7 +372,7 @@ export type FactKind = "size" | "name" | "diet" | "access" | "store" | "language
 const LANGS = "english|french|spanish|portuguese|italian|german|dutch|polish|russian|ukrainian|arabic|hindi|urdu|punjabi|bengali|tamil|chinese|mandarin|cantonese|japanese|korean|vietnamese|tagalog|filipino|turkish|persian|farsi|hebrew|greek|swahili|sign language|asl";
 const LETTER_SIZE = "xx?s|xx?l|xxx?l|[2-5]xl|x-?small|x-?large|extra[- ](small|large)|small|medium|large|petite";
 const TOLD: Record<FactKind, RegExp> = {
-  size: new RegExp(`\\b(i wear|i usually wear|i take|i'?m (a |an )?size|i am (a |an )?size|my (\\w+ )?size is|my (\\w+ )?size'?s|i'?m an? (${LETTER_SIZE})\\b|i am an? (${LETTER_SIZE})\\b|i fit (in )?(a |an )?(size|${LETTER_SIZE}))`),
+  size: new RegExp(`\\b(i wear|i usually wear|i'?m (a |an )?size|i am (a |an )?size|my (\\w+ )?size is|my (\\w+ )?size'?s|i'?m an? (${LETTER_SIZE})\\b|i am an? (${LETTER_SIZE})\\b|i fit (in )?(a |an )?(size|${LETTER_SIZE}))`),
   name: /\b(call me|my name is|my name'?s|i go by|i'?m called)\b/,
   diet: /\b((i'?m|i am) (a |an )?(vegan|vegetarian|pescatarian|gluten[- ]free|dairy[- ]free|lactose intolerant|kosher|halal|celiac|coeliac|diabetic|allergic)|i (can'?t|cannot|don'?t|do not) eat|i (have|got) (a |an )?(\w+ )?allerg|i keep (kosher|halal))/,
   access: /\b((i'?m|i am) (blind|legally blind|partially sighted|low vision|visually impaired|deaf|hard of hearing|colou?r ?blind|dyslexic)|i have low vision|i use a screen reader|i can'?t see (well|the screen|images|pictures)|describe (the |all )?(images|pictures|photos))\b/,
@@ -342,7 +380,7 @@ const TOLD: Record<FactKind, RegExp> = {
   language: new RegExp(`\\b(i speak|my (first |main |native )?language is|i'?m a native \\w+ speaker|i prefer (${LANGS})|(speak|talk|answer|reply) to me in (${LANGS}))\\b`),
 };
 const KIND: Record<FactKind, RegExp> = {
-  size: new RegExp(`\\b(size|wear|fit|${LETTER_SIZE})\\b`),
+  size: new RegExp(`\\b(size \\w+|${LETTER_SIZE}|\\d+ ?(waist|inseam|cup)|(wear|fit)( a| an| size)? \\d+)\\b`),
   name: /\b(call|called|name|go by)\b/,
   diet: /\b(vegan|vegetarian|pescatarian|gluten|dairy|lactose|kosher|halal|celiac|coeliac|diabetic|allerg\w*|eat)\b/,
   access: /\b(blind|sighted|vision|visually|deaf|hearing|colou?r ?blind|dyslexic|screen reader|see|describe)\b/,
@@ -351,7 +389,7 @@ const KIND: Record<FactKind, RegExp> = {
 };
 // Said about someone else, as a question, or as an "if": not a fact about
 // the user.
-const NOT_ABOUT_THEM = /\b(for my|my (wife|husband|partner|son|daughter|kid|kids|child|mom|mum|dad|mother|father|brother|sister|friend|boyfriend|girlfriend|boss)|gift|present for|(she|he|they) (wears?|is|are|likes?)|if i|what if|would i|should i)\b/;
+const NOT_ABOUT_THEM = /\b(for my|for (her|him|them)|my (wife|husband|partner|son|daughter|kid|kids|child|mom|mum|dad|mother|father|brother|sister|friend|boyfriend|girlfriend|boss|dog|cat|pet)|gift|present for|(she|he|they) (wears?|is|are|likes?)|she'?s|he'?s|they'?re|if i|what if|would i|should i)\b/;
 
 // The kinds of lasting fact the user's own words state about themselves.
 export function toldKinds(userWords: string): Set<FactKind> {
@@ -379,7 +417,8 @@ export function statesFact(fact: string, userWords: string): boolean {
   const kinds = toldKinds(userWords);
   if (!kinds.size) return false;
   const t = spelled(fact);
-  return [...kinds].some((k) => KIND[k].test(t));
+  const inFact = (Object.keys(KIND) as FactKind[]).filter((k) => KIND[k].test(t));
+  return inFact.length > 0 && inFact.every((k) => kinds.has(k));
 }
 
 // Whether the fact is made of the user's own words: every content word is
@@ -391,7 +430,26 @@ export function factGroundedIn(fact: string, userWords: string): boolean {
   const said = new Set(contentWords(spelled(userWords)));
   const words = contentWords(spelled(fact));
   const real = words.filter((w) => !FRAME.has(w));
-  return real.length > 0 && real.every((w) => said.has(w));
+  if (!(real.length > 0 && real.every((w) => said.has(w)))) return false;
+  // A "not" in what they said must be the fact's "not", on the same word:
+  // "I wear a medium, not a small" never grounds "you wear a small", and
+  // "I'm allergic to peanuts, not tree nuts" never grounds "you are not
+  // allergic to peanuts".
+  const fNeg = negatedWords(spelled(fact));
+  const uNeg = negatedWords(spelled(userWords));
+  if (uNeg.size && !fNeg.size) return false;
+  return [...fNeg].every((w) => uNeg.has(w));
+}
+const NEG_WORD = /^(not|no|never|don't|dont|doesn't|doesnt|can't|cant|cannot|won't|wont|isn't|isnt|aren't|arent|without|except|instead|rather|nor)$/;
+// The words right after each "not" (up to three).
+function negatedWords(t: string): Set<string> {
+  const ws = norm(t).split(" ");
+  const out = new Set<string>();
+  ws.forEach((w, i) => {
+    if (!NEG_WORD.test(w)) return;
+    for (const n of ws.slice(i + 1, i + 4)) if (!STOP.has(n) && !NEG_WORD.test(n)) out.add(stem(n));
+  });
+  return out;
 }
 
 // What a fact is about when only one answer can be true at a time, so a
@@ -412,12 +470,16 @@ export function factTopic(fact: string): string | null {
   const t = spelled(fact);
   const kind = factKind(fact);
   if (kind === "size") {
+    // Only "you wear ...", "your size is ..." or "you are a ...": a size
+    // the user wears, not "large print" or "small businesses".
+    if (!new RegExp(`\\b(you wear|you usually wear|you fit|your (\\w+ )?size|you are (a |an )?(size|${LETTER_SIZE}))\\b`).test(t)) return null;
     for (const [re, what] of SIZE_FOR) if (re.test(t)) return `size:${what}`;
-    // No kind of clothing named: a letter size is the usual clothes size.
-    return new RegExp(`\\b(${LETTER_SIZE})\\b`).test(t) ? "size:clothes" : null;
+    // No kind of clothing named: the usual clothes size.
+    return new RegExp(`\\b(${LETTER_SIZE})\\b`).test(t) ? "size:clothes" : /\d/.test(t) ? "size:number" : null;
   }
-  if (kind === "name") return /\b(call|called|name|go by)\b/.test(t) ? "name" : null;
-  if (kind === "language") return /\b(speak|language)\b/.test(t) && !/\b(also|too|a little|some)\b/.test(t) ? "language" : null;
+  if (kind === "name") return /\b(call you|you go by|you are called|^your name is)\b/.test(t) && !/\b\w+'s name\b/.test(t) ? "name" : null;
+  // Only a main language replaces another; "you speak French" adds to it.
+  if (kind === "language") return /\b(first|main|native|prefer\w*)\b/.test(t) ? "language" : null;
   if (kind === "store") {
     const m = t.match(/\bfavorite (?:(\w+) )?(store|shop|site|brand)\b/);
     if (m) return `favorite:${m[2] === "brand" ? "brand" : "store"}:${m[1] ?? ""}`;
