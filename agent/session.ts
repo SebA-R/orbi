@@ -24,10 +24,12 @@ import { z } from "zod";
 import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
+import { desktopBridge } from "./desktop/bridge.ts";
 import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
 import { DESKTOP_TOOL_NAMES, desktopToolDefinitions, type DesktopHost } from "./desktop/tools.ts";
 import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
-import { localQuery, sdkToolServer, stdioToolServer } from "./local/query.ts";
+import { localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
+import { isInjectionLine, looksLikeReasoning, pageData, REMOVED_LINE } from "./local/harden.ts";
 import { withContext, type PageContext } from "./context.ts";
 import * as timing from "./timing.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
@@ -36,7 +38,7 @@ import { isCheckoutUrl, isStripeCheckoutUrl, originOf, siteBlockReason, sitePoli
 import { cardPhrase, checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
 import { cardVault } from "./cards.ts";
 import type { CardVault } from "../vault/index.ts";
-import { ACK_PROMPT, buildSystemPrompt, dangerNote, searchNote, type SearchEngine, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
+import { ACK_PROMPT, buildLocalPrompt, buildSystemPrompt, dangerNote, searchNote, type SearchEngine, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
 import { factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
@@ -391,9 +393,18 @@ export function isExplicitYes(text: string): boolean {
 // block (navigateLockReason) and the spoken yes (requestCheckout announces
 // the order instead of waiting). It never touches masking, the card-live
 // tool block or the blocklist.
+// Never on a local model: small models are easier to steer with page text,
+// so the locks and the spoken yes stay (the extension's worker ignores the
+// setting then too, and the settings page says so).
 export const DANGER_LINE = "Danger mode is on.";
+export const DANGER_LOCAL_LINE = "Danger mode is off while using a local model.";
 export function dangerModeOn(): boolean {
+  if (currentProvider().provider === "local") return false;
   return extMode() ? extBridge.dangerMode() : ocicDangerMode();
+}
+// The user turned Danger mode on, whatever the provider makes of it.
+function dangerSettingOn(): boolean {
+  return extMode() ? extBridge.dangerMode() : /^(1|true|on|yes)$/i.test(process.env.CLEARCART_DANGER_MODE?.trim() || "");
 }
 
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -558,6 +569,18 @@ export class Session {
   // The search engine as the model last heard it, like guided.
   search = currentSearchEngine();
 
+  // The session runs on a local model (set by run()): the small-model
+  // scaffolding is on and Danger mode lifts nothing.
+  localMode = false;
+  // The small-model scaffolding on the local provider (localScaffold). On
+  // unless a test turns it off to check the plain loop.
+  scaffoldLocal = true;
+  // Orbi Desktop was connected when the local session started, so its tools
+  // are offered (they stay as they were for the rest of the session).
+  private localDesktop = false;
+  // The user's own words this turn, as the local scaffold last saw them.
+  private localWords = "";
+
   // "Danger mode is on." was spoken in this session.
   private dangerSaid = false;
   // Danger mode as last told to Claude in a user turn (see withSettingNotes).
@@ -633,6 +656,10 @@ export class Session {
       this.dangerSaid = true;
       this.status("Danger mode is on: no button lock, and orders are placed without waiting for a yes");
       this.say(DANGER_LINE);
+    } else if (!this.dangerSaid && this.localMode && dangerSettingOn()) {
+      this.dangerSaid = true;
+      this.status("Danger mode is off while using a local model: the button lock and the spoken yes stay on");
+      this.say(DANGER_LOCAL_LINE);
     }
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
@@ -713,8 +740,12 @@ export class Session {
   // and the conversation from before a restart) when it is on.
   // search: whether the model has WebSearch (Claude does, a local model
   // does not).
-  systemPrompt(ext = extMode(), search = currentProvider().provider !== "local"): string {
-    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined, search: this.search }) + (ext ? DESKTOP_PROMPT : "") + (search ? SEARCH_PROMPT : "") + (ackOn() ? ACK_PROMPT : "");
+  systemPrompt(ext = extMode(), search = currentProvider().provider !== "local", local = false): string {
+    // A small local model hears about the desktop tools only when Orbi
+    // Desktop is connected (localScaffold drops the tools otherwise).
+    const desktop = ext && (!local || this.localDesktop) ? DESKTOP_PROMPT : "";
+    const rules = local ? buildLocalPrompt({ guided: this.guided, search: this.search }) : buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined, search: this.search });
+    const base = rules + desktop + (search ? SEARCH_PROMPT : "") + (ackOn() ? ACK_PROMPT : "");
     this.memSeen = this.memKey();
     if (!this.mem) return base;
     if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
@@ -1281,7 +1312,18 @@ export class Session {
     // The pass starts only after the press worked, for this tab alone.
     if (d.cls === "checkout" && origin) {
       const now = Date.now();
-      this.checkoutPass = { tabId, origin, landBy: now + PASS_LAND_MS, until: now + PASS_MAX_MS, landed: false };
+      const pass: CheckoutPass = { tabId, origin, landBy: now + PASS_LAND_MS, until: now + PASS_MAX_MS, landed: false };
+      this.checkoutPass = pass;
+      // Seen on the checkout page now, so the pass counts as landed even
+      // when the next browser call (the next sweep) comes more than
+      // PASS_LAND_MS later, after the user has spoken.
+      void (async () => {
+        for (let i = 0; i < 20 && !pass.landed && this.checkoutPass === pass && !this.closed; i++) {
+          await new Promise((r) => setTimeout(r, 500).unref?.());
+          const at = await this.tabUrl(tabId);
+          if (at && passCovers(pass, tabId, at) && !siteBlockReason(at, sitePolicy())) pass.landed = true;
+        }
+      })().catch(() => {});
     }
     this.status(`unlocked once: ${d.cls} "${label}" (${how})`);
     const next =
@@ -1446,6 +1488,11 @@ export class Session {
     if (from) {
       from.saves++;
       how = isRememberAsk(from.text) ? "asked" : "told";
+    } else if (this.localMode) {
+      // A local model saves only what the user said in their own words:
+      // never its own idea or a page's, not even after a question.
+      this.status("memory: not saved (local model, not the user's own words)");
+      return said("Not saved: on this model Orbi saves only facts the user just said in their own words. Do not ask about it.");
     } else {
       // A fact it would replace is named in the question.
       const old = this.mem.replacing(text);
@@ -1637,6 +1684,165 @@ export class Session {
     return [sayTool, requestCheckout, payNowTool, requestUnlockTool, rememberTool, forgetTool, recallTool, recordPurchaseTool];
   }
 
+  // The small-model scaffolding for the local provider on the extension
+  // path (local/query.ts Scaffold): fewer tools with shorter descriptions,
+  // defaults filled in, a hint after an error that names the next call, and
+  // a Locked click followed by request_unlock at once (which still presses
+  // only on the user's own words or their spoken yes).
+  localScaffold(): Scaffold {
+    const b = (t: string) => B + t;
+    const vision = currentProvider().localVision;
+    // Desktop tools only while Orbi Desktop is connected: fewer tools for a
+    // small model to choose from when they could not work anyway.
+    const drop = new Set([b("tabs_close"), b("tabs_activate"), C + "record_purchase", ...(vision ? [] : [b("screenshot")]), ...(this.localDesktop ? [] : DESKTOP_ALLOWED)]);
+    const describe: Record<string, string> = {
+      [b("tabs_context")]: "List the open tabs you may use.",
+      [b("tabs_create")]: "Open a new tab at a url. Use this to open a site.",
+      [b("navigate")]: 'Load a url in the current tab. url may be "back".',
+      [b("read_page")]: 'List the page\'s buttons, links and form fields, each with its ref, like: button "Add to bag" [ref_12].',
+      [b("find")]: 'Find buttons, links or fields by a few words of their name, e.g. query "create account". Returns their refs.',
+      [b("get_page_text")]: "Read the text of the page.",
+      [b("form_input")]: "Set a form field or menu by ref. value is the text to put in, or the option to pick.",
+      [b("click")]: "Click a button or link by its ref.",
+      [b("type")]: "Type text into the field that has focus.",
+      [b("key")]: 'Press one key, e.g. "Enter" or "Escape".',
+      [b("scroll")]: "Scroll the page. dy 600 scrolls down, -600 up.",
+      [b("dismiss_overlay")]: "Close a pop-up (sign-up offer, newsletter) that covers the page.",
+      [C + "say"]: "Say a few words to the user right away, while you work.",
+      [C + "request_unlock"]: "Press a locked button the user asked for (checkout, sign in, create account, subscribe). Give its ref and label. Never for Place order or Pay.",
+      [C + "request_checkout"]: "On the checkout page: read the order back to the user and wait for their yes. Give item, quantity and the total shown.",
+      [C + "pay_with_saved_card"]: "Pay with the saved card, only right after request_checkout returned confirmed.",
+    };
+    const hide: Record<string, string[]> = {
+      [b("read_page")]: ["maxNodes", "tabId", "filter"],
+      [b("find")]: ["limit", "tabId"],
+      [b("get_page_text")]: ["maxChars", "tabId"],
+      [b("navigate")]: ["tabId"],
+      [b("form_input")]: ["tabId"],
+      [b("click")]: vision ? ["tabId"] : ["tabId", "x", "y"],
+      [b("type")]: ["tabId"],
+      [b("key")]: ["tabId"],
+      [b("scroll")]: ["tabId", "x", "y", "dx"],
+      [b("dismiss_overlay")]: ["tabId"],
+      [C + "request_unlock"]: ["tabId", "action", "reason"],
+      [C + "request_checkout"]: ["size", "cardNickname"],
+    };
+    const browser = extToolDefinitions().map((d) => b(d.name));
+    const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"]));
+    return {
+      drop,
+      describe,
+      hide,
+      pageTools: new Set(browser.filter((t) => t !== b("screenshot"))),
+      actionTools: acting,
+      prepare: async (tool, args) => {
+        const a = { ...args };
+        if (tool === C + "say" && looksLikeReasoning(String(a.text ?? ""))) {
+          this.status(`(not spoken) local say read like reasoning: ${String(a.text ?? "").slice(0, 120)}`);
+          throw new Error('Not spoken: say is only for a few words to the user, like "Opening the shop." Never notes about the user or tools.');
+        }
+        if (tool === b("read_page")) {
+          a.filter = "interactive";
+          a.maxNodes ??= 150;
+        } else if (tool === b("get_page_text")) a.maxChars ??= 4_000;
+        else if (tool === b("find")) a.limit ??= 10;
+        else if (tool === C + "request_unlock") {
+          // Without a ref, the locked control whose name the label gives.
+          if (typeof a.ref !== "string" && typeof a.label === "string" && a.label.trim()) {
+            const hit = await this.lockedRefFor(typeof a.tabId === "number" ? a.tabId : null, a.label).catch(() => null);
+            if (hit) Object.assign(a, hit);
+          }
+          a.label ??= "this control";
+          a.action ??= `press ${String(a.label)}`;
+        }
+        return a;
+      },
+      hint: async (tool, args, text, isError) => {
+        const short = tool.replace(B, "").replace(C, "");
+        const tabId = typeof args.tabId === "number" ? args.tabId : this.state.lastTabId;
+        // Where an action landed and what is on that page, so the model
+        // knows which page it is on and has the refs to go on with.
+        if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && tabId != null && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
+          await new Promise((r) => setTimeout(r, 700));
+          const t = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId }, 5_000).catch(() => null);
+          if (!t?.url) return null;
+          const title = String(t.title ?? "").slice(0, 80);
+          let where = originOf(t.url) ?? "";
+          try {
+            where += new URL(t.url).pathname;
+          } catch {}
+          const controls = await this.controlsOn(tabId);
+          return `Now on: ${title && !isInjectionLine(title) ? `${JSON.stringify(title)}, ` : ""}${where}${controls.length ? `\nOn this page:\n${pageData(controls.join("\n"), 1_500)}` : ""}`;
+        }
+        if (short === "find" && /"matches":\[\]/.test(text)) {
+          const items = await this.controlsOn(tabId, /^(link|button)$/);
+          if (items.length) return `Nothing on this page matches. It may be on another page. Links and buttons here:\n${pageData(items.join("\n"), 1_500)}\nClick the one that leads there, then find again.`;
+        }
+        if (short === "form_input" && /not a form field/i.test(text)) {
+          const fields = await this.controlsOn(tabId, /^(textbox|combobox|searchbox|checkbox|radio|spinbutton|listbox)$/);
+          return fields.length
+            ? `That ref is not a field. The fields on this page are:\n${pageData(fields.join("\n"), 1_500)}\nCall form_input with one of these refs.`
+            : "That ref is not a field, and this page has no form fields. The form is on another page: click the link or button that leads to it.";
+        }
+        if (short === "request_unlock" && /Could not check that control|pass the control's ref/.test(text)) return 'Next: call find with a few words of the button\'s name, then request_unlock with the ref and label it returns.';
+        if (short === "find" && /"matches":\[\]/.test(text)) return "Nothing on this page matches. It may be on another page: call read_page to see this page's links, click the one that leads there, then find again.";
+        if (short === "request_unlock" && /^That control is not locked/.test(text)) return "Next: if that ref is the control you meant, click it with that ref.";
+        if (!isError) return null;
+        if (/no option matching value/i.test(text)) return "Next: call form_input on the same ref with one of the options listed above, written exactly as shown.";
+        if (/not a form field/i.test(text)) return "Next: call read_page to list the form's fields (textbox, combobox) with their refs, then call form_input on each field you have a value for.";
+        if (/no_element|not visible|is gone|not found|covered by/i.test(text)) return "Next: call find with a few words of its name to get a fresh ref.";
+        if (/not_allowed|blocked/i.test(text) && (short === "navigate" || short === "tabs_create")) return "Next: if the user asked for this site, open it with tabs_create and its full url; if it is blocked, tell the user in one short sentence.";
+        if (/payment_field|password/i.test(text)) return "Next: leave that field for the user and tell them they can fill it in themselves.";
+        if (/^Locked:/.test(text)) return null;
+        return "Next: do not repeat the same call. Try find or read_page, or tell the user in one short sentence what went wrong.";
+      },
+      follow: (tool, _args, text) => {
+        if (!/^mcp__browser__click$/.test(tool) || !/^Locked:/.test(text) || /Never call request_unlock/.test(text)) return null;
+        const m = /call request_unlock with ref (ref_\d+) and label '([^']+)'/.exec(text);
+        // Only a control the user's words name: request_unlock would ask
+        // them about a press they never asked for otherwise.
+        const said = new Set(this.localWords.toLowerCase().replace(/check ?out/g, "checkout").split(/[^a-z0-9]+/).filter((w) => w.length >= 3));
+        const named = !!m && m[2].toLowerCase().replace(/check ?out/g, "checkout").split(/[^a-z0-9]+/).some((w) => w.length >= 3 && said.has(w));
+        return m && named ? { tool: C + "request_unlock", args: { ref: m[1], label: m[2], action: `press ${m[2]}` } } : null;
+      },
+      userTurn: (text) => {
+        this.localWords = text.split(/\n\s*\n/).at(-1)?.trim() ?? "";
+        return text
+          .split("\n")
+          .map((l) => (l.startsWith("[User context") && isInjectionLine(l) ? l.replace(/"(?:[^"\\]|\\.)*"/g, `"${REMOVED_LINE}"`) : l))
+          .join("\n");
+      },
+    };
+  }
+
+  // The page's controls as 'link "Jackets" [ref_4]' (local scaffold
+  // hints), at most 15, from read_page's interactive tree. roles narrows it.
+  // Those named in the user's words come first, then fields and buttons,
+  // then links: a store's header links would fill the list otherwise.
+  private async controlsOn(tabId: number | null, roles?: RegExp): Promise<string[]> {
+    if (!extMode()) return [];
+    const page = await extBridge.call<{ tree?: string }>("read_page", { ...(tabId != null ? { tabId } : {}), filter: "interactive", maxNodes: 150 }, 10_000).catch(() => null);
+    const want = new Set(this.localWords.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !/^(the|and|for|with|click|press|please|now|then|this|that|here|into|from|your|you)$/.test(w)));
+    const all: Array<{ line: string; rank: number; i: number }> = [];
+    for (const l of String(page?.tree ?? "").split("\n")) {
+      const m = /-\s*([a-z]+)\s+"([^"]{1,60})"[^\[]*\[(ref_\d+)\]/.exec(l);
+      if (!m || (roles && !roles.test(m[1]))) continue;
+      const named = m[2].toLowerCase().split(/[^a-z0-9]+/).some((w) => w.length >= 3 && [...want].some((x) => w.startsWith(x) || x.startsWith(w)));
+      all.push({ line: `${m[1]} "${m[2]}" [${m[3]}]${/\[locked\]/.test(l) ? " [locked]" : ""}`, rank: named ? 0 : m[1] === "link" ? 2 : 1, i: all.length });
+    }
+    return all.sort((a, b) => a.rank - b.rank || a.i - b.i).slice(0, 15).map((x) => x.line);
+  }
+
+  // The ref of the locked control on the tab whose name is label, from the
+  // extension's find (local scaffold: request_unlock without a ref).
+  private async lockedRefFor(tabId: number | null, label: string): Promise<{ ref: string; label: string } | null> {
+    if (!extMode()) return null;
+    const r = await extBridge.call<{ matches?: Array<{ ref: string; name: string; locked?: boolean }> }>("find", { ...(tabId != null ? { tabId } : {}), query: label, limit: 10 }, 10_000);
+    const locked = (r?.matches ?? []).filter((m) => m.locked && typeof m.ref === "string");
+    const same = locked.find((m) => Protect.sameLabel(m.name, label)) ?? (locked.length === 1 ? locked[0] : null);
+    return same ? { ref: same.ref, label: same.name } : null;
+  }
+
   // What the desktop tools may use of this session: the user's own last
   // words for the direct-ask match, the spoken question, and the settings.
   desktopHost(): DesktopHost {
@@ -1747,6 +1953,8 @@ export class Session {
     const p = currentProvider();
     this.backend = backendKey(p);
     const allowedTools = ext ? [...EXT_ALLOWED, ...DESKTOP_ALLOWED] : ALLOWED;
+    this.localMode = p.provider === "local";
+    this.localDesktop = desktopBridge.connected();
     const q = (this.q =
       p.provider === "local"
         ? localQuery({
@@ -1760,7 +1968,7 @@ export class Session {
               // when the conversation gets long, and with them the one-time
               // notes about Guided mode or Memory changing, so the system
               // prompt must say the current settings itself.
-              systemPrompt: () => this.systemPrompt(ext, false),
+              systemPrompt: () => this.systemPrompt(ext, false, ext && this.scaffoldLocal),
               cwd: HERE,
               servers: {
                 browser: ext
@@ -1774,6 +1982,7 @@ export class Session {
               hooks: this.hooks(),
               abortController: this.abort,
               onStatus: (t) => this.status(t),
+              ...(ext && this.scaffoldLocal ? { scaffold: this.localScaffold() } : {}),
             },
           })
         : query({

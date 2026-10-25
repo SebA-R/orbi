@@ -135,6 +135,13 @@ export function secretReason(text: string, minDigits = 6): string | null {
   return null;
 }
 
+// The transcript's own list: SENSITIVE, except that sign in talk without a
+// value ("press Sign in", "type your password into the page, then say
+// yes") stays. Only a password or user name that is given goes.
+const TRANSCRIPT_SENSITIVE: Array<[RegExp, string]> = SENSITIVE.map(([re, what]) =>
+  what === "a password" ? [/\b(pass ?(word|code|phrase)|pwd|user ?name|log ?in|credentials)s?\b\s*(is|was|are|=|:|of|should be)\s*\S/, what] : [re, what]
+);
+
 // For the transcript: a turn with a long number or a secret goes whole, and
 // Orbi's own replies (which may repeat page text) are kept short and
 // dropped when they read like an instruction.
@@ -146,7 +153,7 @@ export function redactRule(text: string, role: "user" | "assistant" = "user"): s
   const f = fold(clean(text));
   if (longNumber(f, 6)) return "long number";
   if (/@[a-z0-9-]+\.[a-z]/.test(f)) return "email";
-  const hit = SENSITIVE.find(([re]) => re.test(f));
+  const hit = TRANSCRIPT_SENSITIVE.find(([re]) => re.test(f));
   if (hit) return hit[1];
   if (role === "assistant" && /\b(ignore|disregard|override|instructions?|system prompt|you must|always)\b|https?:|www\./.test(f)) return DROP_RULE;
   return null;
