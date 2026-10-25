@@ -86,6 +86,15 @@
   // Kinds the internal pay flow may press once unlocked. Wallets,
   // subscriptions, saved cards, accounts and frames never unlock.
   var PRESSABLE = { order: 1, marked: 1, "payment-form": 1 };
+  // User-directed unlock (agent request_unlock): the classes of locked
+  // control the user may ask Clearcart to press once. "checkout" is only a
+  // control that goes to the checkout page ("Proceed to checkout"), never
+  // one that pays. Placing an order, wallets, card or password form submits,
+  // frames and hidden components never unlock this way: paying goes only
+  // through request_checkout and pay_now.
+  var CHECKOUT_NAV = ["checkout", "check out", "secure checkout", "proceed to checkout", "continue to checkout",
+    "go to checkout"];
+
   // Kinds that make a checkbox or radio uncheck-only.
   var OPTIN_KINDS = { subscription: 1, "payment-method": 1, account: 1, express: 1 };
 
@@ -125,6 +134,45 @@
       }
     }
     return null;
+  }
+
+  // True when an "order" label only goes to checkout: it has a checkout
+  // phrase and no other order or money word ("Checkout", "Proceed to
+  // checkout", not "Pay and checkout" or "Checkout and place order").
+  function isCheckoutNav(label) {
+    var norm = normalize(label);
+    var nav = false;
+    for (var i = 0; i < CHECKOUT_NAV.length; i++) if (has(norm, CHECKOUT_NAV[i])) nav = true;
+    if (!nav) return false;
+    var rest = norm;
+    var sorted = CHECKOUT_NAV.slice().sort(function (a, b) { return b.length - a.length; });
+    for (var j = 0; j < sorted.length; j++) rest = rest.split(" " + sorted[j] + " ").join(" ");
+    var order = PHRASES.order;
+    for (var k = 0; k < order.length; k++) if (has(rest, order[k])) return false;
+    return true;
+  }
+
+  // Unlock class of a lock for request_unlock: "checkout", "account",
+  // "subscription", "payment-method" or "marked", or null when it never
+  // unlocks on request.
+  function unlockClass(lock) {
+    if (!lock) return null;
+    switch (lock.kind) {
+      case "order": return !lock.optin && isCheckoutNav(lock.label) ? "checkout" : null;
+      case "account": return "account";
+      case "subscription": return "subscription";
+      case "payment-method": return "payment-method";
+      case "marked": return "marked";
+      default: return null; // express, payment-form, frame, shadow
+    }
+  }
+
+  // Same control name, loosely: equal after normalize, or one a long prefix
+  // of the other (labels are clipped to 60 characters).
+  function sameLabel(a, b) {
+    var x = normalize(a).trim().replace(/…$/, "").trim();
+    var y = normalize(b).trim().replace(/…$/, "").trim();
+    return !!x && !!y && (x === y || (x.length >= 12 && y.indexOf(x) === 0) || (y.length >= 12 && x.indexOf(y) === 0));
   }
 
   // ------------------------------------------------------------- the DOM
@@ -271,6 +319,21 @@
       if (inputType(f) === "password") pw = true;
     }
     return pw ? "account" : null;
+  }
+
+  // Password fields of the form el submits: { password, filled }. Never the
+  // value itself.
+  function passwordState(el) {
+    var form = el && (el.form || (el.closest && el.closest("form")));
+    var out = { password: false, filled: false };
+    if (!form || !form.elements) return out;
+    for (var i = 0; i < form.elements.length; i++) {
+      var f = form.elements[i];
+      if (inputType(f) !== "password") continue;
+      out.password = true;
+      if (String(f.value || "").length) out.filled = true;
+    }
+    return out;
   }
 
   function checkedOf(el) {
@@ -731,6 +794,10 @@
     lockForSubmit: lockForSubmit,
     isActivationKey: isActivationKey,
     pressable: function (lock) { return !!lock && !lock.optin && !!PRESSABLE[lock.kind]; },
+    isCheckoutNav: isCheckoutNav,
+    unlockClass: unlockClass,
+    sameLabel: sameLabel,
+    passwordState: passwordState,
     message: message,
     listLocks: listLocks,
     showBadges: showBadges,
