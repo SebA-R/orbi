@@ -5,7 +5,7 @@
 import { SUGGESTED_BLOCKLIST, parseBlockLines } from "./blocklist.js";
 
 export const HOTKEYS = Object.freeze({
-  Space: "Space (hold it; a quick tap still scrolls or presses)",
+  Space: "Space (hold it; a quick tap still scrolls or presses. Option + Space also works, even in text fields)",
   "Alt+Space": "Option + Space (Alt + Space)",
   "Ctrl+Shift+Space": "Control + Shift + Space",
   F9: "F9",
