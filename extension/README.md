@@ -48,7 +48,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 - Either way: blocked tabs stay hidden and refused, and the button lock and the agent server's checkout page block (on every site but the store) stay on, and `lock_arm` only arms on an allowed site, so open browsing never widens the unlock.
 - The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever store you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it.
 
-`chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. Don't pick the same keys as the hold key.
+`chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. It latches like Option+Space: Space sends, and a minute without speech stops it. Don't pick the same keys as the hold key.
 
 ## How it fits together
 
@@ -62,7 +62,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field`, the button lock classifier, its checks and badges |
 | `content/context.js` | Declared content script (top frame): remembers the element under the mouse and the last one clicked or focused, for `page_context` |
 | `content/indicator.js` | Injected on each call that touches a tab: the "Clearcart is using this tab" pill |
-| `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP` |
+| `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP`, Option+Space latch, double-tap Space hush |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
 | `options/` | Options page |

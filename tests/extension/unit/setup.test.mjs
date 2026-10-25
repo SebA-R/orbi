@@ -89,7 +89,8 @@ test("talk key help has no em dashes and mentions text fields", () => {
     assert.doesNotMatch(talkKeyHelp(k), /—/);
     assert.match(talkKeyHelp(k), /text field/);
   }
-  assert.match(talkKeyHelp("Space"), /^Hold Space, wait for the chime/);
+  assert.equal(talkKeyHelp("Space"), "Hold Space to talk. Option+Space keeps listening until you press Space, and works in text fields too. Double-tap Space to stop Clearcart talking.");
+  assert.match(talkKeyHelp("F9"), /^Hold F9, wait for the chime/);
 });
 
 test("update opens setup in the background, once per version", async () => {
