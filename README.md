@@ -116,6 +116,10 @@ Clearcart is not affiliated with Aritzia, Nordstrom or SSENSE.
 
 This project was started at Cal Hacks 13.0 (October 24-25, 2026). All of the code in this repository was written during the event.
 
+## Testing without voice
+
+Set `CLEARCART_VOICE=false` (in `.env` or the environment) to run the agent server without Cartesia: no voice tokens are minted, replies show as text and subtitles only, and no credits are spent. The e2e and server tests set it automatically. Unset or `true` keeps voice on.
+
 ## Secrets
 
 Never commit API keys. Copy `.env.example` to `.env` and put your keys there. `.env` is gitignored.
