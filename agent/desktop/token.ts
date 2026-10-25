@@ -1,7 +1,11 @@
-// The shared secret Orbi Desktop proves itself with. The server creates it
-// once; the helper reads it and sends it in hello.token. Only a process
-// that can read this user's file (mode 0600, in a 0700 directory) can be
-// the helper: other users, sandboxed apps and web pages can't pose as it.
+// The shared secret Orbi Desktop and the server prove themselves to each
+// other with. The server creates it once; the helper reads it. It never
+// crosses the socket: hello carries the helper's nonce, the server answers
+// a challenge with its own nonce and HMAC proof (so a program squatting on
+// the port can't pose as the server), and the helper answers with its
+// proof (so nothing else can pose as the helper). Only a process that can
+// read this user's file (mode 0600, in a 0700 directory) can do either:
+// other users, sandboxed apps and web pages can't.
 // A program running unsandboxed as this same user can read the file, so
 // it does not stop that (such a program can already reach /session too).
 //
@@ -10,7 +14,7 @@
 //
 // Never logged: only its path.
 
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -46,4 +50,29 @@ export function ensureDesktopToken(file: string = desktopTokenPath()): string {
 export function tokenMatches(expected: string | null | undefined, sent: unknown): boolean {
   if (!expected || !TOKEN.test(expected) || typeof sent !== "string" || !TOKEN.test(sent.trim())) return false;
   return timingSafeEqual(Buffer.from(expected, "utf8"), Buffer.from(sent.trim(), "utf8"));
+}
+
+// Nonces and proofs are 32 bytes as 64 lowercase hex characters.
+export const NONCE = /^[0-9a-f]{64}$/;
+
+export function newNonce(): string {
+  return randomBytes(32).toString("hex");
+}
+
+const hmac = (token: string, msg: string) => createHmac("sha256", Buffer.from(token, "utf8")).update(msg, "utf8").digest("hex");
+
+// What the server sends in challenge.proof: it knows the token.
+export function serverProof(token: string, helperNonce: string, serverNonce: string): string {
+  return hmac(token, `orbi-desktop server ${helperNonce} ${serverNonce}`);
+}
+
+// What the helper sends in auth.proof: it knows the token too.
+export function helperProof(token: string, serverNonce: string, helperNonce: string): string {
+  return hmac(token, `orbi-desktop helper ${serverNonce} ${helperNonce}`);
+}
+
+// Constant time, and false for anything that is not 64 hex characters.
+export function proofMatches(expected: string, sent: unknown): boolean {
+  if (!NONCE.test(expected) || typeof sent !== "string" || !NONCE.test(sent)) return false;
+  return timingSafeEqual(Buffer.from(expected, "utf8"), Buffer.from(sent, "utf8"));
 }

@@ -13,11 +13,15 @@ import { DesktopBridge, DesktopError, desktopOriginAllowed } from "../desktop/br
 import { appBlockReason, classifyElement, decidePress, DesktopUnlockGate, keyEffect, keyLock, maskElement, parseCombo, type AXElement, type Target } from "../desktop/safety.ts";
 import { desktopToolDefinitions, type DesktopHost } from "../desktop/tools.ts";
 import { DesktopVoice, s16ToF32, VOICE_OFF_TEXT } from "../desktop/voice.ts";
-import { ensureDesktopToken, tokenMatches } from "../desktop/token.ts";
+import { ensureDesktopToken, helperProof, newNonce, proofMatches, serverProof, tokenMatches } from "../desktop/token.ts";
 
 const TOKEN = "ab".repeat(32);
 
 process.env.ORBI_DESKTOP_BLOCKED_APPS = path.join(os.tmpdir(), `orbi-desktop-blocked-${process.pid}.txt`);
+
+// HMAC vectors for token "ab"x32, helper nonce "01"x32, server nonce "02"x32.
+const SERVER_VECTOR = "7d46559683f397d70ec8e45465080ec9b7557ad68430e55a5829e63d39c5e0ab";
+const HELPER_VECTOR = "83ebbb5f69b3e568dbdef5bded7af8a37e2e967972decb3ed1b10e9525bee479";
 
 // ------------------------------------------------------------ fake helper
 
@@ -29,7 +33,10 @@ class FakeHelper {
   binary: Buffer[] = [];
   texts: any[] = [];
   constructor(public url: string, public handler: (method: string, params: any) => any = () => null, public headers: Record<string, string> = {}) {}
-  open(hello: Record<string, unknown> = { type: "hello", name: "orbi-desktop", version: 1, token: TOKEN, features: ["element", "focused", "expectRef", "exclude"], permissions: { accessibility: true, screen: true, mic: false } }): Promise<void> {
+  serverProved: boolean | null = null;
+  // The handshake as the real helper does it: hello with a nonce, check the
+  // server's proof, answer with ours (made with authToken).
+  open(hello: Record<string, unknown> = { type: "hello", name: "orbi-desktop", version: 1, nonce: newNonce(), features: ["element", "focused", "expectRef", "exclude"], permissions: { accessibility: true, screen: true, mic: false } }, authToken: string = TOKEN): Promise<void> {
     this.ws = new WebSocket(this.url, { headers: this.headers });
     this.ws.on("close", (code) => (this.closed = { code }));
     return new Promise((resolve, reject) => {
@@ -39,7 +46,10 @@ class FakeHelper {
         if (isBinary) return void this.binary.push(raw as Buffer);
         const m = JSON.parse(String(raw));
         this.texts.push(m);
-        if (m.type === "welcome") {
+        if (m.type === "challenge") {
+          this.serverProved = proofMatches(serverProof(TOKEN, String(hello.nonce), m.nonce), m.proof);
+          this.ws.send(JSON.stringify({ type: "auth", proof: helperProof(authToken, m.nonce, String(hello.nonce)) }));
+        } else if (m.type === "welcome") {
           this.welcome = m;
           resolve();
         } else if (m.type === "req") {
@@ -108,14 +118,32 @@ test("bridge: wrong name or version is refused, newest helper wins, an Origin is
     const bad = new FakeHelper(d.url);
     void bad.open({ type: "hello", name: "something-else", version: 1 }).catch(() => {});
     assert.equal((await bad.waitClosed()).code, 4003);
-    for (const token of [undefined, "cd".repeat(32), "short"]) {
+    // A wrong token's proof, no nonce, a bad nonce, and the old raw token
+    // in hello are all refused before any welcome.
+    const wrong = new FakeHelper(d.url);
+    void wrong.open(undefined, "cd".repeat(32)).catch(() => {});
+    assert.equal((await wrong.waitClosed()).code, 4004, "wrong token");
+    assert.equal(wrong.welcome, null);
+    for (const hello of [
+      { type: "hello", name: "orbi-desktop", version: 1 },
+      { type: "hello", name: "orbi-desktop", version: 1, nonce: "short" },
+      { type: "hello", name: "orbi-desktop", version: 1, token: TOKEN },
+    ]) {
       const h = new FakeHelper(d.url);
-      void h.open({ type: "hello", name: "orbi-desktop", version: 1, token }).catch(() => {});
-      assert.equal((await h.waitClosed()).code, 4004, `token ${token}`);
+      void h.open(hello).catch(() => {});
+      assert.equal((await h.waitClosed()).code, 4004, JSON.stringify(hello));
     }
+    // A message other than auth after the challenge is refused too.
+    const raw = new WebSocket(d.url);
+    await new Promise((r) => raw.once("open", r));
+    raw.send(JSON.stringify({ type: "hello", name: "orbi-desktop", version: 1, nonce: newNonce() }));
+    await new Promise((r) => raw.once("message", r));
+    raw.send(JSON.stringify({ type: "res", id: 1, result: null }));
+    assert.equal(await new Promise((r) => raw.once("close", (code) => r(code))), 4004);
     assert.equal(d.bridge.connected(), false);
     const old = new FakeHelper(d.url, () => ({ which: "old" }));
     await old.open();
+    assert.equal(old.serverProved, true, "the server proved the token");
     const neu = new FakeHelper(d.url, () => ({ which: "new" }));
     await neu.open();
     assert.equal((await old.waitClosed()).code, 4002);
@@ -208,6 +236,15 @@ test("masking of AX values: secure, card fields, card numbers and keys", () => {
   assert.equal(maskElement(el({ role: "AXTextArea", value: "key: sk-ant-api03-abcdefghijklmnopqrstuvwx" })).value, "key: [masked secret]");
   assert.equal(maskElement(el({ title: "Order 4242424242424242" })).title, "Order [masked card number]");
   assert.equal(maskElement(el({ role: "AXTextField", label: "Subject", value: "Lunch" })).value, "Lunch");
+});
+
+test("handshake proofs: fixed vectors (shared with desktop/ Swift tests), constant-time match", () => {
+  const token = "ab".repeat(32), hn = "01".repeat(32), sn = "02".repeat(32);
+  assert.equal(serverProof(token, hn, sn), SERVER_VECTOR);
+  assert.equal(helperProof(token, sn, hn), HELPER_VECTOR);
+  assert.equal(proofMatches(SERVER_VECTOR, SERVER_VECTOR), true);
+  assert.equal(proofMatches(SERVER_VECTOR, HELPER_VECTOR), false);
+  assert.equal(proofMatches(SERVER_VECTOR, "nope"), false);
 });
 
 test("token file: created 0600 in a 0700 directory, kept, compared in constant time", () => {

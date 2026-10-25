@@ -173,16 +173,14 @@ final class Dispatcher {
   private func pointerAllowed(_ p: CGPoint, refPid: pid_t?) throws {
     try needUnlocked()
     if let refPid { try refuseBlocked(bundleId(refPid), what: "the element's app") }
-    guard let id = targetBundleId(at: p) else { throw ProtoError(.blockedApp, "Orbi cannot tell which app is under the pointer") }
+    let unsure = ProtoError(.blockedApp, "Orbi cannot tell which app is under the pointer")
+    guard let pid = targetPid(at: p), let id = bundleId(pid) else { throw unsure }
     try refuseBlocked(id, what: "the app under the pointer")
-    // A second opinion from Accessibility, which looks through other apps'
-    // click-through windows. Our own overlay is ignored.
-    // No answer at all fails closed.
-    guard let sys = AX.hitTest(x: p.x, y: p.y) else { throw ProtoError(.blockedApp, "Orbi cannot tell which app is under the pointer") }
-    if sys.pid != getpid() {
-      guard let other = bundleId(sys.pid) else { throw ProtoError(.blockedApp, "Orbi cannot tell which app is under the pointer") }
-      try refuseBlocked(other, what: "the app under the pointer")
-    }
+    // A second opinion from Accessibility's system-wide hit test, which
+    // looks through click-through windows. It must agree with the window
+    // list: no answer, or another app (another app's click-through overlay
+    // over a blocked one, say), fails closed.
+    guard let sys = AX.hitTest(x: p.x, y: p.y), sys.pid == pid else { throw unsure }
   }
 
   private func acting<T>(_ body: () async throws -> T) async rethrows -> T {

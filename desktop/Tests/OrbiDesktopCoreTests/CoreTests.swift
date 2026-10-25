@@ -103,8 +103,9 @@ final class KeyComboTests: XCTestCase {
 
 final class ProtocolTests: XCTestCase {
   func testHelloAndEvents() throws {
-    let hello = try JSON.decode(Outbound.hello(Permissions(accessibility: true, screen: false, mic: true), token: "abc"))
-    XCTAssertEqual(hello["token"], "abc")
+    let hello = try JSON.decode(Outbound.hello(Permissions(accessibility: true, screen: false, mic: true), nonce: "n1"))
+    XCTAssertEqual(hello["nonce"], "n1")
+    XCTAssertNil(hello["token"])
     XCTAssertEqual(hello["features"], ["element", "focused", "expectRef", "exclude"])
     XCTAssertEqual(hello["type"], "hello")
     XCTAssertEqual(hello["name"], "orbi-desktop")
@@ -112,6 +113,23 @@ final class ProtocolTests: XCTestCase {
     XCTAssertEqual(hello["permissions"]?["screen"], false)
     XCTAssertEqual(hello["permissions"]?["accessibility"], true)
     XCTAssertEqual(try JSON.decode(Outbound.event(.latchToggle)), ["type": "event", "name": "latch_toggle"])
+  }
+
+  func testHandshakeVectorsMatchTheServer() throws {
+    // Same vectors as agent/test/desktop.test.ts.
+    let token = String(repeating: "ab", count: 32), hn = String(repeating: "01", count: 32), sn = String(repeating: "02", count: 32)
+    let server = Handshake.serverProof(token: token, helperNonce: hn, serverNonce: sn)
+    XCTAssertEqual(server, "7d46559683f397d70ec8e45465080ec9b7557ad68430e55a5829e63d39c5e0ab")
+    XCTAssertEqual(Handshake.helperProof(token: token, serverNonce: sn, helperNonce: hn),
+                   "83ebbb5f69b3e568dbdef5bded7af8a37e2e967972decb3ed1b10e9525bee479")
+    XCTAssertTrue(Handshake.matches(server, server))
+    XCTAssertFalse(Handshake.matches(server, String(repeating: "0", count: 64)))
+    XCTAssertFalse(Handshake.matches(server, "short"))
+    let n = Handshake.nonce()
+    XCTAssertTrue(Handshake.isHex64(n))
+    XCTAssertNotEqual(n, Handshake.nonce())
+    XCTAssertEqual(try decodeInbound(#"{"type":"challenge","nonce":"a","proof":"b"}"#), .challenge(nonce: "a", proof: "b"))
+    XCTAssertEqual(try JSON.decode(Outbound.auth(proof: "p")), ["type": "auth", "proof": "p"])
   }
 
   func testResultAndErrorEchoId() throws {

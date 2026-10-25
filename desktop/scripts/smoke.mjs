@@ -6,7 +6,7 @@
 //
 //   swift build && node scripts/smoke.mjs [path/to/OrbiDesktop]
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -94,6 +94,7 @@ async function call(method, params) {
 const tokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "orbi-smoke-"));
 const tokenFile = path.join(tokenDir, "desktop.token");
 const token = "ab".repeat(32);
+const hmac = (msg) => createHmac("sha256", Buffer.from(token)).update(msg).digest("hex");
 
 const child = spawn(bin, [], {
   env: { ...process.env, ORBI_DESKTOP_DRY_RUN: "1", ORBI_DESKTOP_URL: `ws://127.0.0.1:${port}/desktop`, ORBI_DESKTOP_TOKEN_FILE: tokenFile },
@@ -113,8 +114,20 @@ try {
   await new Promise((r) => setTimeout(r, 1200));
   check("no dial without a token", sockets.length === 0);
   fs.writeFileSync(tokenFile, token + "\n", { mode: 0o600 });
+  // First a server that cannot prove the token: the helper must drop it
+  // without sending auth (or anything else), then dial again.
+  const h0 = await next((m) => m.type === "hello", 15000);
+  send({ type: "challenge", nonce: randomBytes(32).toString("hex"), proof: "00".repeat(32) });
+  await new Promise((r) => setTimeout(r, 400));
+  check("a server without the token gets no auth", !inbox.some((m) => m.type === "auth"));
+  send({ type: "welcome", version: 1 });
+  send({ type: "req", id: "x", method: "frontmost" });
+  await new Promise((r) => setTimeout(r, 300));
+  check("and no answers", !inbox.some((m) => m.type === "res"));
+  void h0;
+
   const hello = await next((m) => m.type === "hello", 15000);
-  check("hello carries the token", hello.token === token);
+  check("hello carries a nonce, never the token", /^[0-9a-f]{64}$/.test(hello.nonce) && !("token" in hello) && !JSON.stringify(hello).includes(token));
   check("hello features", JSON.stringify(hello.features) === JSON.stringify(["element", "focused", "expectRef", "exclude"]));
   check("hello", hello.name === "orbi-desktop" && hello.version === 1, JSON.stringify(hello));
   check("dry run reports no permissions", !hello.permissions.accessibility && !hello.permissions.screen && !hello.permissions.mic);
@@ -123,6 +136,10 @@ try {
   await new Promise((r) => setTimeout(r, 300));
   check("no answer before welcome", !inbox.some((m) => m.type === "res"));
 
+  const serverNonce = randomBytes(32).toString("hex");
+  send({ type: "challenge", nonce: serverNonce, proof: hmac(`orbi-desktop server ${hello.nonce} ${serverNonce}`) });
+  const auth = await next((m) => m.type === "auth");
+  check("auth proof", auth.proof === hmac(`orbi-desktop helper ${serverNonce} ${hello.nonce}`));
   send({ type: "welcome", version: 1, blockedApps: ["com.example.blocked"] });
   const fm = await call("frontmost", {});
   check("frontmost", fm.result && "bundleId" in fm.result && "appName" in fm.result, JSON.stringify(fm));

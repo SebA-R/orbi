@@ -390,6 +390,8 @@ final class Overlay {
     w.hasShadow = false
     w.isReleasedWhenClosed = false
     w.animationBehavior = .none
+    // Not an accessibility element, so hit tests look through it.
+    w.setAccessibilityElement(false)
     let content = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
     let ring = RingView(frame: content.bounds)
     let cursor = CursorView(frame: content.bounds)

@@ -61,6 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       dispatcher.handle(id: id, method: method, params: params)
     case .badRequest(let id, let message):
       connection.send(text: Outbound.error(id: id, ProtoError(.badRequest, message)))
+    case .challenge:
+      break // handled by the connection before welcome
     case .audioStop:
       player.stop(local: false)
     case .unknown(let t):

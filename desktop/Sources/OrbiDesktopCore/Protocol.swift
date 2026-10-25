@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // Protocol v1 between the helper (client) and the Orbi server, over
@@ -63,6 +64,7 @@ public enum PTTEvent: String, Sendable {
 
 // What the server can send.
 public enum Inbound: Equatable, Sendable {
+  case challenge(nonce: String, proof: String)
   case welcome(version: Int, blockedApps: [String]?)
   case config(blockedApps: [String]?)
   case request(id: JSON, method: String, params: [String: JSON])
@@ -73,9 +75,11 @@ public enum Inbound: Equatable, Sendable {
 }
 
 public enum Outbound {
-  public static func hello(_ p: Permissions, token: String) -> String {
+  // The token itself is never sent: hello carries our nonce, and auth our
+  // proof (see Handshake).
+  public static func hello(_ p: Permissions, nonce: String) -> String {
     JSON.object([
-      "type": "hello", "name": .string(Proto.name), "version": JSON(Proto.version), "token": .string(token),
+      "type": "hello", "name": .string(Proto.name), "version": JSON(Proto.version), "nonce": .string(nonce),
       "features": .array(Proto.features.map { .string($0) }),
       "permissions": ["accessibility": .bool(p.accessibility), "screen": .bool(p.screen), "mic": .bool(p.mic)],
     ]).encoded()
@@ -87,6 +91,10 @@ public enum Outbound {
 
   public static func error(id: JSON, _ e: ProtoError) -> String {
     JSON.object(["type": "res", "id": id, "error": ["code": .string(e.code.rawValue), "message": .string(e.message)]]).encoded()
+  }
+
+  public static func auth(proof: String) -> String {
+    JSON.object(["type": "auth", "proof": .string(proof)]).encoded()
   }
 
   public static func event(_ e: PTTEvent) -> String {
@@ -113,6 +121,8 @@ public func decodeInbound(_ text: String) throws -> Inbound {
   guard msg.object != nil else { throw ProtoDecodeError.notObject }
   guard let type = msg["type"]?.string else { throw ProtoDecodeError.missingType }
   switch type {
+  case "challenge":
+    return .challenge(nonce: msg["nonce"]?.string ?? "", proof: msg["proof"]?.string ?? "")
   case "welcome":
     return .welcome(version: msg["version"]?.int ?? 0, blockedApps: blockedList(msg["blockedApps"]))
   case "config":
@@ -191,5 +201,43 @@ public struct Params {
       src = self
     }
     return (try src.number("x"), try src.number("y"))
+  }
+}
+
+// Mutual proof of the shared token, without sending it:
+//   hello {nonce: helperNonce}
+//   challenge {nonce: serverNonce, proof: HMAC(token, "orbi-desktop server <helperNonce> <serverNonce>")}
+//   auth {proof: HMAC(token, "orbi-desktop helper <serverNonce> <helperNonce>")}
+// HMAC-SHA256 keyed with the token's characters, as lowercase hex. A
+// server that cannot prove the token gets nothing but our nonce.
+public enum Handshake {
+  public static func nonce() -> String {
+    var g = SystemRandomNumberGenerator() // arc4random: cryptographic
+    return (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255, using: &g)) }.joined()
+  }
+
+  static func hmac(_ token: String, _ msg: String) -> String {
+    let mac = HMAC<SHA256>.authenticationCode(for: Data(msg.utf8), using: SymmetricKey(data: Data(token.utf8)))
+    return mac.map { String(format: "%02x", $0) }.joined()
+  }
+
+  public static func serverProof(token: String, helperNonce: String, serverNonce: String) -> String {
+    hmac(token, "orbi-desktop server \(helperNonce) \(serverNonce)")
+  }
+
+  public static func helperProof(token: String, serverNonce: String, helperNonce: String) -> String {
+    hmac(token, "orbi-desktop helper \(serverNonce) \(helperNonce)")
+  }
+
+  static func isHex64(_ s: String) -> Bool {
+    s.utf8.count == 64 && s.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+  }
+
+  // Constant time over the 64 characters.
+  public static func matches(_ expected: String, _ sent: String) -> Bool {
+    guard isHex64(expected), isHex64(sent) else { return false }
+    var diff: UInt8 = 0
+    for (a, b) in zip(expected.utf8, sent.utf8) { diff |= a ^ b }
+    return diff == 0
   }
 }

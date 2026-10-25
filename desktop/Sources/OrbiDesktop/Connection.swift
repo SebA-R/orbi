@@ -1,8 +1,10 @@
 import Foundation
 import OrbiDesktopCore
 
-// The WebSocket to the Orbi server. The helper is the client: it says hello,
-// waits for welcome, then answers requests. If the server is down or the
+// The WebSocket to the Orbi server. The helper is the client: it says hello
+// with a nonce, checks the server's challenge proof (Handshake), answers
+// with its own proof, waits for welcome, then answers requests. A server
+// that cannot prove the token is dropped before it can ask for anything. If the server is down or the
 // socket drops it reconnects with jittered exponential backoff (0.5 s
 // doubling to 10 s). A ping every 15 s notices a dead socket.
 @MainActor
@@ -23,6 +25,10 @@ final class Connection {
   private var pingTimer: Timer?
   private var retryTimer: Timer?
   private var pongTimer: Timer?
+  // This attempt's token and nonce, and whether the server proved the token.
+  private var token = ""
+  private var nonce = ""
+  private var serverProved = false
 
   init(url: URL) { self.url = url }
 
@@ -58,20 +64,33 @@ final class Connection {
     onStatus(.connecting)
     // No token yet (the server has not started) or a port held by another
     // user's process: do not dial, try again later.
+    serverProved = false
     guard let token = Env.token() else {
       log("no token at \(Env.tokenFile.path); is the Orbi server running?")
       return retry()
     }
-    if let port = url.port, !PortOwner.listenerIsOurs(port: port) {
-      log("nothing of this user listens on port \(port)")
-      return retry()
+    var dial = url
+    if let port = url.port, url.host == "127.0.0.1" {
+      // Ours on 127.0.0.1 (or every address), else ours on ::1 only.
+      switch PortOwner.ourListener(port: port) {
+      case .v4: break
+      case .v6Loopback:
+        var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        c?.host = "[::1]"
+        dial = c?.url ?? url
+      case nil:
+        log("nothing of this user listens on port \(port)")
+        return retry()
+      }
     }
-    let t = session.webSocketTask(with: url)
+    self.token = token
+    nonce = Handshake.nonce()
+    let t = session.webSocketTask(with: dial)
     t.maximumMessageSize = 16 << 20
     task = t
     t.resume()
-    log("connecting to \(url.absoluteString)")
-    send(text: Outbound.hello(Perms.current, token: token))
+    log("connecting to \(dial.absoluteString)")
+    send(text: Outbound.hello(Perms.current, nonce: nonce))
     receive(t, generation)
     pingTimer?.invalidate()
     pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
@@ -121,7 +140,23 @@ final class Connection {
         log("dropped a malformed frame (\(error))")
         return
       }
+      if case .challenge(let serverNonce, let proof) = inbound {
+        let expected = Handshake.serverProof(token: token, helperNonce: nonce, serverNonce: serverNonce)
+        guard !serverProved, !welcomed, Handshake.matches(expected, proof), serverNonce != nonce else {
+          log("the server could not prove the token; not talking to it")
+          failed(task, nil)
+          return
+        }
+        serverProved = true
+        send(text: Outbound.auth(proof: Handshake.helperProof(token: token, serverNonce: serverNonce, helperNonce: nonce)))
+        return
+      }
       if case .welcome(let v, _) = inbound {
+        guard serverProved, !welcomed else {
+          log("welcome without a proven token; dropping")
+          failed(task, nil)
+          return
+        }
         guard v == Proto.version else {
           log("server speaks version \(v), want \(Proto.version); retrying later")
           failed(task, nil)

@@ -18,7 +18,7 @@ import type http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { userBlockedApps } from "./safety.ts";
-import { tokenMatches } from "./token.ts";
+import { NONCE, helperProof, newNonce, proofMatches, serverProof, tokenMatches } from "./token.ts";
 
 export const DESKTOP_PROTOCOL_VERSION = 1;
 export const DESKTOP_HELPER_NAME = "orbi-desktop";
@@ -99,7 +99,7 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
 
   // blockedApps: the user's extra blocked apps (safety.ts), sent in welcome
   // so the helper refuses them too. The server enforces them either way.
-  // token: the shared secret the helper must send in hello (token.ts). Null
+  // token: the shared secret both sides prove with (token.ts). Null
   // (no token could be made) refuses every helper.
   constructor(private log: (line: string) => void = (l) => console.log(l), private blockedApps: () => string[] = () => [], private token: () => string | null = () => null) {
     super();
@@ -167,6 +167,8 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
 
   private accept(ws: WebSocket) {
     let greeted = false;
+    // Between hello and auth: the hello, both nonces and the token used.
+    let pending: { hello: any; helperNonce: string; serverNonce: string; token: string } | null = null;
     const helloTimer = setTimeout(() => {
       if (!greeted) ws.close(4001, "no hello");
     }, HELLO_TIMEOUT_MS);
@@ -190,25 +192,37 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
         return;
       }
       if (!greeted) {
-        if (m.type !== "hello") return;
+        const refuse = () => {
+          this.log("desktop: refused a helper that could not prove the token");
+          ws.close(4004, "unauthorized");
+        };
+        // hello {nonce} -> challenge {nonce, proof} -> auth {proof} -> welcome.
+        // The token itself never crosses the socket.
+        if (m.type === "auth" && pending) {
+          const { hello, helperNonce, serverNonce, token } = pending;
+          pending = null;
+          if (!proofMatches(helperProof(token, serverNonce, helperNonce), m.proof)) return refuse();
+          greeted = true;
+          clearTimeout(helloTimer);
+          const p = hello.permissions && typeof hello.permissions === "object" ? hello.permissions : {};
+          const features = Array.isArray(hello.features) ? hello.features.filter((f: unknown) => typeof f === "string").slice(0, 50) : [];
+          this.promote(ws, { accessibility: bool(p.accessibility), screen: bool(p.screen), mic: bool(p.mic) }, features);
+          return;
+        }
+        if (m.type !== "hello" || pending) return refuse();
         if (m.name !== DESKTOP_HELPER_NAME || m.version !== DESKTOP_PROTOCOL_VERSION) {
           ws.close(4003, "unsupported client");
           return;
         }
-        let expected: string | null = null;
+        let token: string | null = null;
         try {
-          expected = this.token();
+          token = this.token();
         } catch {}
-        if (!tokenMatches(expected, m.token)) {
-          this.log("desktop: refused a helper without the right token");
-          ws.close(4004, "unauthorized");
-          return;
-        }
-        greeted = true;
-        clearTimeout(helloTimer);
-        const p = m.permissions && typeof m.permissions === "object" ? m.permissions : {};
-        const features = Array.isArray(m.features) ? m.features.filter((f: unknown) => typeof f === "string").slice(0, 50) : [];
-        this.promote(ws, { accessibility: bool(p.accessibility), screen: bool(p.screen), mic: bool(p.mic) }, features);
+        // tokenMatches(token, token): the server has a well formed token.
+        if (!token || !tokenMatches(token, token) || typeof m.nonce !== "string" || !NONCE.test(m.nonce)) return refuse();
+        const serverNonce = newNonce();
+        pending = { hello: m, helperNonce: m.nonce, serverNonce, token };
+        ws.send(JSON.stringify({ type: "challenge", nonce: serverNonce, proof: serverProof(token, m.nonce, serverNonce) }));
         return;
       }
       if (ws !== this.current) return;
