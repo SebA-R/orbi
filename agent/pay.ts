@@ -100,7 +100,17 @@ export type PayState = {
   lastTabId: number | null;
   confirmation: Confirmation | null;
   cardFieldsLive: boolean;
+  // Whether a Danger mode confirmation (auto) still counts: Danger mode is
+  // still on. Read right before the order button is unlocked. Missing: no.
+  autoOk?: () => boolean;
 };
+
+const DANGER_OFF = "Danger mode was turned off. Call request_checkout again; the user now says yes first.";
+
+// A Danger mode confirmation counts only while Danger mode is still on.
+function autoRevoked(state: PayState, c: Confirmation): boolean {
+  return c.auto === true && !(state.autoOk?.() === true);
+}
 
 export type Receipt = { item: string; total: string; last4: string };
 
@@ -198,6 +208,7 @@ export async function payNow(state: PayState): Promise<PayResult> {
 
   // Button lock: the grant is the only thing that lets our code press the
   // protected #place-order (see unlock.ts). Issued while the yes is fresh.
+  if (autoRevoked(state, c)) return { ok: false, error: DANGER_OFF };
   const issued = unlockGate.issue({ confirmation: claimedYes(c), tabId, href: await tabHref(tabId), pageTotal });
   if (!issued.ok) return { ok: false, error: issued.error };
 
@@ -414,6 +425,7 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
   const addressFilled = fields.some((f) => f.kind === "address" && f.filled);
 
   // Button lock: issue the grant while the yes is fresh (see unlock.ts).
+  if (autoRevoked(state, c)) return { ok: false, error: DANGER_OFF };
   const issued = gate.issue({ confirmation: claimedYes(c), tabId, href: await extTabUrl(bridge, tabId), pageTotal });
   if (!issued.ok) return { ok: false, error: issued.error };
 

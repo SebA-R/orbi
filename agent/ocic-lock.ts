@@ -40,6 +40,14 @@ type ProtectApi = {
   isCheckoutNav(label: string): boolean;
 };
 export const Protect: ProtectApi = require(path.join(EXT, "protect.js"));
+const Mask: { maskCardRuns(s: string): string; CARD_MASK: string } = require(path.join(EXT, "mask.js"));
+
+// True when text holds a Luhn-valid 13 to 19 digit run (mask.js finds them).
+export function hasCardNumber(text: string): boolean {
+  return Mask.maskCardRuns(String(text)) !== String(text);
+}
+
+export const CARD = "Not sent: that looks like a card number, or the focus is in a card field. Clearcart never types card details; pay_now fills them on the store, and elsewhere the user types them.";
 
 const MASK_SRC = fs.readFileSync(path.join(EXT, "mask.js"), "utf8");
 const PROTECT_SRC = fs.readFileSync(path.join(EXT, "protect.js"), "utf8");
@@ -90,6 +98,21 @@ export const PASSWORD = "Not sent: that is a password field. Clearcart never typ
 // True when the focused element (through open shadow roots) is a password input.
 const FOCUS_PASSWORD = `(function () { var el = document.activeElement; while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
 return !!el && el.tagName === "INPUT" && String(el.type || "").toLowerCase() === "password"; })()`;
+
+// What the focused element is, through open shadow roots and same-origin
+// frames: "card" (a card field, by mask.js), "frame" (a cross-origin frame,
+// often hosted card fields, which cannot be checked) or null.
+const FOCUS_CARD = `var el = document.activeElement, M = globalThis.ClearcartMask;
+for (var g = 0; el && g < 20; g++) {
+  if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+  if (!/^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME)$/.test(el.tagName)) break;
+  var d = null; try { d = el.contentDocument || null; } catch (e) { d = null; }
+  if (!d) return "frame";
+  el = d.activeElement;
+}
+if (!el || el.nodeType !== 1) return null;
+var ac = String(el.getAttribute("autocomplete") || "").toLowerCase();
+return (M && M.isPaymentField(el)) || /(^|\\s)cc-/.test(ac) ? "card" : null;`;
 
 const UNCHECKED = "Locked: Clearcart could not check what this action would press, so it was not sent.";
 
@@ -213,6 +236,10 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
         // Passwords are typed by the user, never by Clearcart.
         if (!Number.isFinite(tabId)) return UNCHECKED;
         if ((await deps.evalInTab<boolean>(tabId, FOCUS_PASSWORD)) === true) return PASSWORD;
+        // Card details are never typed, in either mode.
+        if (hasCardNumber(String(args.text))) return CARD;
+        const focus = await deps.evalInTab<unknown>(tabId, pageScript(FOCUS_CARD, false));
+        if (focus === "card" || focus === "frame") return CARD;
       }
       if (action === "key" || action === "type") {
         const keys = action === "key" ? String(args.text || "").split(" ").filter(Boolean) : /[\r\n]/.test(String(args.text || "")) ? ["Enter"] : [];
@@ -230,6 +257,7 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
     }
     if (tool === "form_input") {
       if (typeof args.ref !== "string" || !Number.isFinite(tabId)) return UNCHECKED;
+      if (typeof args.value === "string" && hasCardNumber(args.value)) return CARD;
       const seen: { role?: string; type?: string } = {};
       const l = await refLock(deps, tabId, args.ref, seen);
       if (/^password$/i.test(seen.type || "")) return PASSWORD;

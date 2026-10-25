@@ -368,7 +368,7 @@ export class Session {
   private input = new InputQueue();
   private abort = new AbortController();
   private awaitingAnswer: ((text: string | null) => void) | null = null;
-  private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false };
+  private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false, autoOk: () => dangerModeOn() };
   private closed = false;
   private q: Query | null = null;
   // The user's most recent words, for request_unlock's direct-ask match.
@@ -744,9 +744,10 @@ export class Session {
       conf.auto = true;
       this.say(`Placing your order for ${item}, ${total}.${changed ? ` ${changed}` : ""}`);
       Object.assign(conf, await snap);
-      if (this.state.confirmation !== conf) {
+      if (this.state.confirmation !== conf || !dangerModeOn()) {
         conf.state = "declined";
-        return { content: [{ type: "text" as const, text: "declined. Another checkout started before this one." }] };
+        const why = this.state.confirmation !== conf ? "Another checkout started before this one." : "Danger mode was turned off. Call request_checkout again; the user now says yes first.";
+        return { content: [{ type: "text" as const, text: `declined. ${why}` }] };
       }
       conf.state = "confirmed";
       conf.confirmedAt = Date.now();

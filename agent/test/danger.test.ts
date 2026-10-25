@@ -7,9 +7,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as proto from "../../extension/lib/protocol.js";
-import { extBridge, extOriginOk } from "../extbridge.ts";
-import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, type Deps } from "../ocic-lock.ts";
-import { claimConfirmation, payNowExt } from "../pay.ts";
+import { extBridge } from "../extbridge.ts";
+import { EXTENSION_IDS, extOriginAllowed, sessionOriginAllowed } from "../hostcheck.ts";
+import { CARD, hasCardNumber, ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, type Deps } from "../ocic-lock.ts";
+import { claimConfirmation, payNowExt, type PayState } from "../pay.ts";
 import { dangerNote, SITES_PROMPT } from "../prompt.ts";
 import { browseDenyReason, DANGER_LINE, dangerModeOn, isExplicitYes, navigateLockReason, Session, strayReason, type ServerMessage } from "../session.ts";
 import { UnlockGate } from "../unlock.ts";
@@ -67,17 +68,33 @@ test("bridge: danger_mode from the current extension; anything but true is off",
 });
 
 test("bridge: a web page's socket can never be the extension", async () => {
-  assert.equal(extOriginOk(undefined), true);
-  assert.equal(extOriginOk("chrome-extension://abcdefghijklmnopabcdefghijklmnop"), true);
-  for (const o of ["https://evil.example", "http://localhost:4000", "null", "chrome-extension://evil", "", ["chrome-extension://abcdefghijklmnopabcdefghijklmnop"]]) {
-    assert.equal(extOriginOk(o as any), false, String(o));
+  // The id the manifest key gives (extension/README.md).
+  assert.deepEqual([...EXTENSION_IDS], ["dhgknfenfoidnchmjfaicafhieepefoc"]);
+  const ours = "chrome-extension://dhgknfenfoidnchmjfaicafhieepefoc";
+  assert.equal(extOriginAllowed(undefined), true);
+  assert.equal(extOriginAllowed(ours), true);
+  for (const o of ["https://evil.example", "http://localhost:5050", "null", "chrome-extension://abcdefghijklmnopabcdefghijklmnop", "", [ours]]) {
+    assert.equal(extOriginAllowed(o as any), false, String(o));
+  }
+  // /session: also this server's own page, on its own port.
+  for (const o of [undefined, ours, "http://localhost:5050", "http://127.0.0.1:5050", "http://[::1]:5050"]) {
+    assert.equal(sessionOriginAllowed(o, 5050), true, String(o));
+  }
+  for (const o of ["https://evil.example", "http://localhost:4000", "http://localhost:5050.evil.example", "https://localhost:5050", "chrome-extension://abcdefghijklmnopabcdefghijklmnop", "null"]) {
+    assert.equal(sessionOriginAllowed(o, 5050), false, String(o));
   }
   const b = await startBridge();
   try {
     const { WebSocket } = await import("ws");
-    const ws = new WebSocket(b.url, { headers: { Origin: "https://evil.example" } });
-    const code = await new Promise((r) => { ws.on("unexpected-response", (_q, res) => r(res.statusCode)); ws.on("open", () => r("open")); ws.on("error", () => r("error")); });
-    assert.equal(code, 403);
+    const tryOrigin = (origin: string) => new Promise((r) => {
+      const ws = new WebSocket(b.url, { headers: { Origin: origin } });
+      ws.on("unexpected-response", (_q, res) => r(res.statusCode));
+      ws.on("open", () => (r("open"), ws.close()));
+      ws.on("error", () => r("error"));
+    });
+    assert.equal(await tryOrigin("https://evil.example"), 403);
+    assert.equal(await tryOrigin("chrome-extension://abcdefghijklmnopabcdefghijklmnop"), 403, "another extension");
+    assert.equal(await tryOrigin("chrome-extension://dhgknfenfoidnchmjfaicafhieepefoc"), "open");
     assert.equal(b.bridge.dangerMode(), false);
   } finally {
     await b.stop();
@@ -218,6 +235,33 @@ test("a Danger mode confirmation does not survive Danger mode being turned off",
   });
 });
 
+test("pay flow: a Danger mode confirmation is refused before the unlock once the mode is off", async () => {
+  const calls: string[] = [];
+  const handler = async (m: string): Promise<any> => {
+    calls.push(m);
+    if (m === "tab_info") return { url: "http://localhost:4000/checkout" };
+    if (m === "get_page_text") return { text: "Order total $9.00" };
+    if (m === "read_fields") return { fields: ["address", "cc-name", "cc-number", "cc-exp", "cc-csc"].map((kind) => ({ kind, filled: kind === "address" })) };
+    return {};
+  };
+  let on = true;
+  const state: PayState = {
+    lastTabId: 7,
+    confirmation: { item: "Advil", quantity: 1, total: "$9.00", state: "confirmed", confirmedAt: Date.now(), tabId: 7, auto: true },
+    cardFieldsLive: false,
+    autoOk: () => on,
+  };
+  // Turned off while pay_now is already under way.
+  const bridge = { call: async (m: string) => { const r = await handler(m); if (m === "read_fields") on = false; return r; } } as any;
+  const r = await payNowExt(state, { bridge, getCard: async () => ({ name: "T", number: "4242424242424242", exp: "12/30", csc: "123" }) } as any);
+  assert.equal(r.ok, false);
+  assert.match((r as any).error, /Danger mode was turned off/);
+  for (const m of ["lock_arm", "press_protected", "fill_payment"]) assert.ok(!calls.includes(m), m);
+  // No autoOk at all: an auto confirmation never counts.
+  const bare: PayState = { ...state, confirmation: { ...state.confirmation!, state: "confirmed", confirmedAt: Date.now() }, autoOk: undefined };
+  assert.equal((await payNowExt(bare, { bridge: { call: handler } as any } as any)).ok, false);
+});
+
 test("Claude is told when Danger mode turns on and off, once per change", async () => {
   await withDanger(true, async () => {
     const f = session();
@@ -343,6 +387,22 @@ test("OCIC: Danger mode on lifts every lock; off keeps every lock", async () => 
   assert.match(String(await ocicLockReason("computer", { tabId: 1, action: "key", text: "Enter" }, off)), /^Locked:/);
   assert.equal(await ocicLockNote("read_page", { tabId: 1 }, Object.values(refs).join("\n"), on), null);
   assert.match(String(await ocicLockNote("read_page", { tabId: 1 }, Object.values(refs).join("\n"), off)), /ref_2 "Place order/);
+});
+
+test("OCIC, both modes: card numbers and card or cross-origin frame focus are never typed into", async () => {
+  assert.equal(hasCardNumber("my card is 4242 4242 4242 4242"), true);
+  assert.equal(hasCardNumber("1 Main St 94704"), false);
+  for (const danger of [true, false]) {
+    const d = ocicDeps(danger, { ref_1: 'textbox "Notes" [ref_1]' });
+    d.evalInTab = async <T>(_t: number, code: string) => (code.includes("FENCEDFRAME") ? null : false) as T;
+    assert.equal(await ocicLockReason("computer", { tabId: 1, action: "type", text: "4242-4242-4242-4242" }, d), CARD);
+    assert.equal(await ocicLockReason("form_input", { tabId: 1, ref: "ref_1", value: "4242424242424242" }, d), CARD);
+    assert.equal(await ocicLockReason("computer", { tabId: 1, action: "type", text: "hello" }, d), null, String(danger));
+    for (const where of ["card", "frame"]) {
+      d.evalInTab = async <T>(_t: number, code: string) => (code.includes("FENCEDFRAME") ? where : false) as T;
+      assert.equal(await ocicLockReason("computer", { tabId: 1, action: "type", text: "123" }, d), CARD, where);
+    }
+  }
 });
 
 test("OCIC with Danger mode on: typing into a focused password field is still refused", async () => {

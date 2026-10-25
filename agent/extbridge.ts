@@ -13,6 +13,7 @@ import type http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { parseBlockLines, type BlockEntry } from "./blocklist.ts";
+import { extOriginAllowed } from "./hostcheck.ts";
 
 // Mirrors extension/lib/protocol.js (the test checks they agree). Kept as a
 // copy because that file is plain JS outside this tsconfig.
@@ -69,13 +70,6 @@ export interface ExtBridgeEvents {
   blocklist: [readonly BlockEntry[]];
   settings: [{ guidedMode: boolean }];
   danger_mode: [boolean];
-}
-
-// The Origin header of an /ext upgrade: absent (not a browser) or an
-// extension's. A page's socket always carries its page origin.
-export function extOriginOk(origin: string | string[] | undefined): boolean {
-  if (origin === undefined) return true;
-  return typeof origin === "string" && /^chrome-extension:\/\/[a-p]{32}$/.test(origin.trim());
 }
 
 export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
@@ -181,7 +175,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       // its own origin, which is never chrome-extension://. Otherwise any
       // open tab could connect here, take over the bridge and send settings
       // such as Danger mode. Clients outside a browser send no Origin.
-      if (target === this.wss && !extOriginOk(req.headers.origin)) {
+      if (target === this.wss && !extOriginAllowed(req.headers.origin)) {
         socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
       }

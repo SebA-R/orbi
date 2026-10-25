@@ -10,7 +10,7 @@ import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { extBridge, extMode } from "./extbridge.ts";
-import { hostAllowed } from "./hostcheck.ts";
+import { hostAllowed, sessionOriginAllowed } from "./hostcheck.ts";
 import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
 import { Session } from "./session.ts";
 
@@ -109,6 +109,10 @@ async function cartesiaToken(res: http.ServerResponse) {
 // The port actually listened on (AGENT_PORT=0 picks a free one).
 const port = () => (server.address() as { port?: number } | null)?.port ?? PORT;
 const localHost = (req: http.IncomingMessage) => hostAllowed(req.headers.host, port());
+// WebSocket upgrades: this computer's Host, and an Origin that is
+// Clearcart's extension, this server's own page or none (hostcheck.ts). /ext
+// then takes only the extension (extbridge.ts).
+const localSocket = (req: http.IncomingMessage) => localHost(req) && sessionOriginAllowed(req.headers.origin, port());
 
 const server = http.createServer((req, res) => {
   if (!localHost(req)) return void res.writeHead(403, { "Content-Type": "text/plain" }).end("Forbidden host");
@@ -124,11 +128,12 @@ const server = http.createServer((req, res) => {
 
 // Two WebSocket paths on one server need noServer mode plus a router: a
 // server-attached WebSocketServer answers 400 to every path but its own.
-// Both refuse an upgrade whose Host header is not this computer (hostcheck.ts).
+// Both refuse an upgrade whose Host header is not this computer, or whose
+// Origin is some other web page (hostcheck.ts).
 const wss = EXT
   ? new WebSocketServer({ noServer: true })
-  : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localHost(req), 403) });
-if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localHost);
+  : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localSocket(req), 403) });
+if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localSocket);
 
 // One voice session for all /session sockets (hub.ts). Echo mode goes
 // through the same hub, so it follows the same one-owner rules.
