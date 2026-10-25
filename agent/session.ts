@@ -29,7 +29,7 @@ import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } fro
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
-import { buildSystemPrompt, EXT_TABS_PROMPT, guidedNote, MEMORY_OFF_PROMPT, MEMORY_PROMPT } from "./prompt.ts";
+import { buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, MEMORY_OFF_PROMPT, MEMORY_PROMPT } from "./prompt.ts";
 import { factFromUserWords, factNamedBy, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
   decideUnlock,
@@ -235,8 +235,9 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
 // navigate and for tabs_create / tabs_create_mcp with a url. passed: true
 // when the user asked to go to checkout on this tab and origin
 // (request_unlock's checkout pass), which lifts the block for that visit.
-export function navigateLockReason(url: string, passed?: (url: string) => boolean): string | null {
-  if (url === "back" || url === "forward") return null;
+// Off in Danger mode, like the rest of the button lock.
+export function navigateLockReason(url: string, passed?: (url: string) => boolean, danger: boolean = dangerModeOn()): string | null {
+  if (danger || url === "back" || url === "forward") return null;
   if (isCheckoutUrl(url) && originOf(url) !== STORE_ORIGIN && !passed?.(url)) {
     return "Locked: Clearcart does not open checkout or payment pages on this site. Stop at the cart and tell the user.";
   }
@@ -297,9 +298,11 @@ export function isExplicitYes(text: string): boolean {
 
 // Danger mode, the user's setting: from the extension over the bridge
 // (extBridge.dangerMode), or CLEARCART_DANGER_MODE on the Open Claude in
-// Chrome path. Only for the spoken notice: the lock itself is enforced where
-// the clicks are checked (the extension, ocic-lock.ts). It never touches
-// request_checkout, pay_now, the unlock gates, masking or the blocklist.
+// Chrome path. The click lock itself is enforced where the clicks are
+// checked (the extension, ocic-lock.ts). Here it lifts the checkout page
+// block (navigateLockReason) and the spoken yes (requestCheckout announces
+// the order instead of waiting). It never touches masking, the card-live
+// tool block or the blocklist.
 export const DANGER_LINE = "Danger mode is on.";
 export function dangerModeOn(): boolean {
   return extMode() ? extBridge.dangerMode() : ocicDangerMode();
@@ -379,7 +382,7 @@ export class Session {
   private input = new InputQueue();
   private abort = new AbortController();
   private awaitingAnswer: ((text: string | null) => void) | null = null;
-  private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false };
+  private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false, autoOk: () => dangerModeOn() };
   private closed = false;
   private q: Query | null = null;
   // The user's most recent words, for request_unlock's direct-ask match.
@@ -413,6 +416,8 @@ export class Session {
 
   // "Danger mode is on." was spoken in this session.
   private dangerSaid = false;
+  // Danger mode as last told to Claude in a user turn (see withSettingNotes).
+  private dangerTold = false;
 
   // Saved facts and the recent conversation (memory.ts). Null in tests that
   // do not give them: nothing is read or written.
@@ -456,20 +461,20 @@ export class Session {
     }
     if (!this.dangerSaid && dangerModeOn()) {
       this.dangerSaid = true;
-      this.status("Danger mode is on: sign in and sign up are not locked; paying still needs the user's yes");
+      this.status("Danger mode is on: no button lock, and orders are placed without waiting for a yes");
       this.say(DANGER_LINE);
     }
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
     const fetch = this.pageContext;
-    if (!fetch) return this.input.push(this.withMemoryNote(this.withGuidedNote(text)));
+    if (!fetch) return this.input.push(this.withMemoryNote(this.withSettingNotes(text)));
     const ctx = Promise.race([
       fetch().catch(() => null),
       new Promise<null>((r) => setTimeout(() => r(null), CONTEXT_TIMEOUT_MS + 200).unref?.()),
     ]);
     this.turns = this.turns.then(async () => {
       const c = await ctx;
-      if (!this.closed) this.input.push(withContext(this.withMemoryNote(this.withGuidedNote(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
+      if (!this.closed) this.input.push(withContext(this.withMemoryNote(this.withSettingNotes(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
     });
     return this.turns;
   }
@@ -482,6 +487,18 @@ export class Session {
     if (now === this.guided) return turn;
     this.guided = now;
     return `${guidedNote(now)}\n\n${turn}`;
+  }
+
+  // The same for Danger mode: Claude hears when it turns on or off. Read
+  // fresh for every turn, from the extension's setting (or the server's
+  // CLEARCART_DANGER_MODE on the Open Claude in Chrome path), never from
+  // anything Claude or a page sends.
+  private withSettingNotes(turn: string): string {
+    const withGuided = this.withGuidedNote(turn);
+    const on = dangerModeOn();
+    if (on === this.dangerTold) return withGuided;
+    this.dangerTold = on;
+    return `${dangerNote(on)}\n\n${withGuided}`;
   }
 
   // What the model knows of saved memory: "off", or the facts' text.
@@ -794,6 +811,23 @@ export class Session {
       new Promise<{ tabId: null; cart: string }>((r) => setTimeout(() => r({ tabId: null, cart: "" }), 5_000).unref()),
     ]);
     const changed = changes?.trim() ? changes.trim().replace(/([^.!?])$/, "$1.") : "";
+    // Danger mode: the user chose no spoken yes. Say what is being bought,
+    // so they hear it happen, and confirm without waiting. Read now, so a
+    // switch turned off before this call gets the normal read-back.
+    if (dangerModeOn()) {
+      conf.auto = true;
+      this.say(`Placing your order for ${item}, ${total}.${changed ? ` ${changed}` : ""}`);
+      Object.assign(conf, await snap);
+      if (this.state.confirmation !== conf || !dangerModeOn()) {
+        conf.state = "declined";
+        const why = this.state.confirmation !== conf ? "Another checkout started before this one." : "Danger mode was turned off. Call request_checkout again; the user now says yes first.";
+        return { content: [{ type: "text" as const, text: `declined. ${why}` }] };
+      }
+      conf.state = "confirmed";
+      conf.confirmedAt = Date.now();
+      this.status("checkout announced: Danger mode, no yes needed");
+      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. On the demo store call pay_now now; on another store press its Place order button yourself now." }] };
+    }
     this.send({ type: "confirm", item, quantity, total, changes: changed });
     this.say(`You're buying ${quantity} ${item} for ${total}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
     const answer = await new Promise<string | null>((resolve) => {
@@ -928,6 +962,28 @@ export class Session {
           ? " Never type a password or card number; the user types those themselves."
           : "";
     return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""} Do not click it again; another press needs another request_unlock.${next}`);
+  }
+
+  // The pay_now tool body.
+  async payNowCall(): Promise<ToolText> {
+    // A yes Danger mode skipped counts only while Danger mode is still on.
+    const c = this.state.confirmation;
+    if (c?.auto && !dangerModeOn()) {
+      this.state.confirmation = null;
+      this.status("payment not started: Danger mode was turned off");
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Danger mode was turned off. Call request_checkout again; the user now says yes first." }) }] };
+    }
+    this.status("paying");
+    const r = await payNow(this.state);
+    if (r.ok) {
+      this.send({ type: "receipt", ...r.receipt });
+      this.send({ type: "confirm_done", outcome: "paid" });
+      this.status("order placed");
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, last4: r.last4, total: r.receipt.total }) }] };
+    }
+    this.status(`payment not completed: ${r.error}`);
+    this.send({ type: "confirm_done", outcome: "failed" });
+    return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: r.error }) }] };
   }
 
   // The user's last words if they are recent enough to count, else "".
@@ -1074,19 +1130,7 @@ export class Session {
       "pay_now",
       "Pay for the confirmed order. Only works right after request_checkout returned confirmed, with the checkout page open. Fills payment from the secure vault and places the order. Returns { ok, last4 } or { ok: false, error }.",
       {},
-      async () => {
-        this.status("paying");
-        const r = await payNow(this.state);
-        if (r.ok) {
-          this.send({ type: "receipt", ...r.receipt });
-          this.send({ type: "confirm_done", outcome: "paid" });
-          this.status("order placed");
-          return { content: [{ type: "text", text: JSON.stringify({ ok: true, last4: r.last4, total: r.receipt.total }) }] };
-        }
-        this.status(`payment not completed: ${r.error}`);
-        this.send({ type: "confirm_done", outcome: "failed" });
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: r.error }) }] };
-      }
+      () => this.payNowCall()
     );
 
     const requestUnlockTool = tool(

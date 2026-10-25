@@ -36,19 +36,28 @@ type ProtectApi = {
   blocks(l: Lock): boolean;
   unlockClass(l: Lock | null, el?: unknown): string | null;
   sameLabel(a: string, b: string): boolean;
-  dangerLifts(l: Lock | null, el?: unknown): boolean;
+  dangerLifts(l: Lock | null): boolean;
   isCheckoutNav(label: string): boolean;
 };
 export const Protect: ProtectApi = require(path.join(EXT, "protect.js"));
+const Mask: { maskCardRuns(s: string): string; CARD_MASK: string } = require(path.join(EXT, "mask.js"));
+
+// True when text holds a Luhn-valid 13 to 19 digit run (mask.js finds them).
+export function hasCardNumber(text: string): boolean {
+  return Mask.maskCardRuns(String(text)) !== String(text);
+}
+
+export const CARD = "Not sent: that looks like a card number, or the focus is in a card field. Clearcart never types card details; pay_now fills them on the store, and elsewhere the user types them.";
 
 const MASK_SRC = fs.readFileSync(path.join(EXT, "mask.js"), "utf8");
 const PROTECT_SRC = fs.readFileSync(path.join(EXT, "protect.js"), "utf8");
 
 // Danger mode on this path. Open Claude in Chrome has no Clearcart
 // settings, so it comes from the server's own config, like
-// CLEARCART_BROWSE_MODE: CLEARCART_DANGER_MODE=1. Off unless set. It lifts
-// only what Protect.dangerLifts says (sign in and sign up); paying,
-// checkout, masking and the blocklist do not change.
+// CLEARCART_BROWSE_MODE: CLEARCART_DANGER_MODE=1. Off unless set. While on,
+// the button lock is off (every click, key and form_input goes through);
+// password typing is still refused, and masking and the blocklist do not
+// change.
 export function ocicDangerMode(): boolean {
   return /^(1|true|on|yes)$/i.test(process.env.CLEARCART_DANGER_MODE?.trim() || "");
 }
@@ -89,6 +98,21 @@ export const PASSWORD = "Not sent: that is a password field. Clearcart never typ
 // True when the focused element (through open shadow roots) is a password input.
 const FOCUS_PASSWORD = `(function () { var el = document.activeElement; while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
 return !!el && el.tagName === "INPUT" && String(el.type || "").toLowerCase() === "password"; })()`;
+
+// What the focused element is, through open shadow roots and same-origin
+// frames: "card" (a card field, by mask.js), "frame" (a cross-origin frame,
+// often hosted card fields, which cannot be checked) or null.
+const FOCUS_CARD = `var el = document.activeElement, M = globalThis.ClearcartMask;
+for (var g = 0; el && g < 20; g++) {
+  if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+  if (!/^(IFRAME|FRAME|OBJECT|EMBED|FENCEDFRAME)$/.test(el.tagName)) break;
+  var d = null; try { d = el.contentDocument || null; } catch (e) { d = null; }
+  if (!d) return "frame";
+  el = d.activeElement;
+}
+if (!el || el.nodeType !== 1) return null;
+var ac = String(el.getAttribute("autocomplete") || "").toLowerCase();
+return (M && M.isPaymentField(el)) || /(^|\\s)cc-/.test(ac) ? "card" : null;`;
 
 const UNCHECKED = "Locked: Clearcart could not check what this action would press, so it was not sent.";
 
@@ -155,9 +179,8 @@ async function refLock(deps: Deps, tabId: number, ref: string, out?: { role?: st
   const kind = Protect.classifyLabel(info.name, { checkable });
   const label = info.name.slice(0, 60);
   const byName: Lock | null = kind ? { kind, label, optin: checkable, checked: false } : null;
-  // Danger mode lifts sign in and sign up by name; the page's own list
-  // (checked below, with the same mode) still has anything else.
-  if (byName && !(dangerOf(deps) && Protect.dangerLifts(byName))) {
+  // Danger mode: no lock by name; the page's list (same mode) is empty.
+  if (byName && !dangerOf(deps)) {
     // Locked by name whatever the page says; the page, which sees the
     // element, says whether it unlocks on request (a card form's submit or
     // a marked control never does). Unknown: judge by name alone.
@@ -188,10 +211,13 @@ function falsy(v: unknown): boolean {
 // through. tool is the bare tool name (no mcp__browser__ prefix).
 export async function ocicLockReason(tool: string, args: Record<string, unknown>, deps: Deps = defaultDeps): Promise<string | null> {
   const tabId = tabIdOf(args);
+  // Danger mode: no button lock. Only the password checks below still run.
+  const danger = dangerOf(deps);
   try {
     if (tool === "computer") {
       const action = String(args.action || "");
       if (CLICKS.has(action)) {
+        if (danger) return null;
         const points = [xy(args.start_coordinate), xy(args.coordinate)].filter((p): p is [number, number] => !!p);
         if (!Number.isFinite(tabId)) return points.length || args.ref ? UNCHECKED : null;
         for (const [x, y] of points) {
@@ -210,12 +236,16 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
         // Passwords are typed by the user, never by Clearcart.
         if (!Number.isFinite(tabId)) return UNCHECKED;
         if ((await deps.evalInTab<boolean>(tabId, FOCUS_PASSWORD)) === true) return PASSWORD;
+        // Card details are never typed, in either mode.
+        if (hasCardNumber(String(args.text))) return CARD;
+        const focus = await deps.evalInTab<unknown>(tabId, pageScript(FOCUS_CARD, false));
+        if (focus === "card" || focus === "frame") return CARD;
       }
       if (action === "key" || action === "type") {
         const keys = action === "key" ? String(args.text || "").split(" ").filter(Boolean) : /[\r\n]/.test(String(args.text || "")) ? ["Enter"] : [];
         // A control character in a key name ("\r") may be sent as Enter.
         const act = keys.map((k) => (/[\u0000-\u001f\u007f]/.test(k) ? "Enter" : k)).filter((k) => Protect.isActivationKey(k));
-        if (!act.length) return null;
+        if (!act.length || danger) return null;
         if (!Number.isFinite(tabId)) return UNCHECKED;
         for (const k of act) {
           const l = await pageLock(deps, tabId, `P.lockForKey(document, ${JSON.stringify(k)})`);
@@ -227,9 +257,11 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
     }
     if (tool === "form_input") {
       if (typeof args.ref !== "string" || !Number.isFinite(tabId)) return UNCHECKED;
+      if (typeof args.value === "string" && hasCardNumber(args.value)) return CARD;
       const seen: { role?: string; type?: string } = {};
       const l = await refLock(deps, tabId, args.ref, seen);
       if (/^password$/i.test(seen.type || "")) return PASSWORD;
+      if (danger) return null;
       // Unchecking an opt-in is fine; anything else on a locked control is not.
       if (l && !(l.optin && falsy(args.value))) return Protect.message(l, args.ref);
       // A dropdown is uncheck-only too: never choose an opt-in option.
@@ -248,7 +280,7 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
 // controls (by ref where the output has refs), what to do about them, and
 // the lock badges drawn in the tab.
 export async function ocicLockNote(tool: string, args: Record<string, unknown>, output: string, deps: Deps = defaultDeps): Promise<string | null> {
-  if (tool !== "read_page" && tool !== "find" && tool !== "get_page_text") return null;
+  if ((tool !== "read_page" && tool !== "find" && tool !== "get_page_text") || dangerOf(deps)) return null;
   const tabId = tabIdOf(args);
   let page: PageLock[] = [];
   if (Number.isFinite(tabId)) {
@@ -277,8 +309,7 @@ export async function ocicLockNote(tool: string, args: Record<string, unknown>, 
       const name = m[3];
       const checkable = CHECKABLE_ROLES.has(role) || /type="(checkbox|radio)"/.test(line);
       const kind = Protect.classifyLabel(name, { checkable });
-      const keptByName = !!kind && !(dangerOf(deps) && Protect.dangerLifts({ kind, label: name, optin: checkable, checked: false }));
-      const hit = keptByName ? { optin: checkable } : page.find((l) => sameName(l.name, name));
+      const hit = kind ? { optin: checkable } : page.find((l) => sameName(l.name, name));
       if (!hit) continue;
       (hit.optin ? uncheck : locked).push(`${ref} "${name.slice(0, 60)}"`);
     }

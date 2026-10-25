@@ -181,7 +181,8 @@ const sendAgentSettings = () =>
   loadSettings().then(({ guidedMode, memory }) => bridge?.send({ type: MSG.SETTINGS, guidedMode, memory })).catch(() => {});
 
 // Danger mode too, the same way, so the agent says "Danger mode is on." and
-// tells Claude. The extension enforces the lock itself; this only informs.
+// tells Claude. The extension enforces the click lock itself; the server
+// also reads it to skip the spoken yes, so only the user sets it.
 const sendDangerMode = () =>
   loadSettings().then(({ dangerMode: on }) => bridge?.send({ type: MSG.DANGER_MODE, on })).catch(() => {});
 const sendSettings = () => { sendBlocklist(); sendDangerMode(); sendAgentSettings(); };
