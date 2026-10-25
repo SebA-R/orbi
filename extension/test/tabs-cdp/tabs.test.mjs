@@ -238,6 +238,22 @@ test("navigateAndWait times out, and fails with NO_TAB if the tab closes", async
   await assert.rejects(p, (e) => e.code === ERR.NO_TAB);
 });
 
+test("navigateAndWait: Back within a single page app sends loading and no complete, and still finishes", async () => {
+  const c = fresh({ autoComplete: false });
+  const { tabId } = await tabsCreate({});
+  const tab = c._tabs.get(tabId);
+  const t0 = Date.now();
+  // What Chrome does for a same-document Back: "loading", then the status
+  // turns complete with no event for it.
+  const done = await navigateAndWait(tabId, () => {
+    c.tabs.onUpdated.fire(tabId, { status: "loading" }, { ...tab, status: "loading" });
+    tab.status = "complete";
+  }, 5000);
+  assert.equal(done.status, "complete");
+  assert.ok(Date.now() - t0 < 1000, "not the timeout");
+  assert.equal(c.tabs.onUpdated.size, 0);
+});
+
 test("open mode: blocked sites are refused before the tab moves", async () => {
   const c = fresh({ local: { blocklist: [...SUGGESTED_BLOCKLIST, "nordstrom.com"] } });
   const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });

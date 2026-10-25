@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { installChrome } from "./chrome-mock.mjs";
 import {
-  _resetForTests, assertInViewport, attach, click, isAttached, jpegSize, key, onDetach, onTabRemoved, parseKey, screenshot, scroll, type, viewport,
+  _barTiming, _resetForTests, assertInViewport, attach, click, isAttached, jpegSize, key, onDetach, onTabRemoved, parseKey, screenshot, scroll, type, viewport,
 } from "../../background/cdp.js";
 import { ERR } from "../../lib/protocol.js";
 
@@ -153,4 +153,25 @@ test("parseKey refuses control characters (\\r would press Enter)", () => {
   }
   assert.equal(parseKey("Shift+ ").key, " ");
   assert.equal(parseKey("Enter").key, "Enter");
+});
+
+test("a fresh attach waits for the debugging bar and says the viewport moved", async () => {
+  _resetForTests({ settle: true });
+  Object.assign(_barTiming, { wait: 60, settle: 30, poll: 5 });
+  // The bar slides in a few polls after the attach: 900 down to 844.
+  let polls = 0;
+  const send = c.debugger.sendCommand;
+  c.debugger.sendCommand = async (t, m, p) => {
+    if (m === "Page.getLayoutMetrics") c._viewport = { height: [900, 900, 880, 860, 844][Math.min(polls++, 4)] };
+    return send(t, m, p);
+  };
+  assert.equal(await attach(tabId), true);
+  assert.equal((await viewport(tabId)).height, 844, "settled at the new height");
+  assert.equal(await attach(tabId), false, "already attached");
+});
+
+test("a fresh attach with no bar (--silent-debugger-extension-api) answers false", async () => {
+  _resetForTests({ settle: true });
+  Object.assign(_barTiming, { wait: 30, settle: 30, poll: 5 });
+  assert.equal(await attach(tabId), false);
 });

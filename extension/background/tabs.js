@@ -264,7 +264,7 @@ export function navigateAndWait(tabId, start, timeoutMs = NAV_TIMEOUT_MS) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      clearTimeout(grace);
+      clearInterval(poll);
       c.tabs.onUpdated.removeListener(onUpdated);
       c.tabs.onRemoved.removeListener(onRemoved);
       if (err) reject(err);
@@ -282,14 +282,18 @@ export function navigateAndWait(tabId, start, timeoutMs = NAV_TIMEOUT_MS) {
       () => finish(new BridgeError(ERR.TIMEOUT, `page did not finish loading in ${Math.round(timeoutMs / 1000)} s`)),
       timeoutMs,
     );
-    let grace;
+    // Also asks the tab itself: a same-document change (pushState, or Back
+    // within a single page app) may send no status events at all, or a
+    // "loading" with no "complete" after it.
+    let poll;
     c.tabs.onUpdated.addListener(onUpdated);
     c.tabs.onRemoved.addListener(onRemoved);
     Promise.resolve()
       .then(start)
       .then(() => {
-        grace = setTimeout(async () => {
-          if (seenLoading || done) return;
+        if (done) return;
+        poll = setInterval(async () => {
+          if (done) return;
           try {
             const tab = await c.tabs.get(tabId);
             if (tab.status === "complete") finish(null, tab);

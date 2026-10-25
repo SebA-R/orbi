@@ -321,6 +321,32 @@ test("a coordinate click or scroll outside the viewport is refused before any in
   assert.deepEqual([f.calls[1][1].x, f.calls[1][1].y], [720, 450]);
 });
 
+test("the debugging bar opening on the first attach: a point is refused, a ref is measured after it", async () => {
+  const calls = [];
+  let rectY = 20;
+  const r = createRouter({
+    chromeApi: {
+      scripting: { executeScript: async () => {} },
+      tabs: {
+        sendMessage: async (_t, msg) => (msg.method === "guard_ref" ? { ok: true, result: { x: 10, y: rectY, width: 100, height: 40 } } : { ok: true, result: { ok: true } }),
+      },
+    },
+    tabs: { resolveAllowedTab: async (id) => id ?? 7, assertPageAllowed: async () => {} },
+    cdp: {
+      // The bar opens on attach and moves the page up 28px.
+      attach: async () => (calls.push(["attach"]), (rectY = -8), true),
+      viewport: async () => ({ width: 1440, height: 844, dpr: 1 }),
+      click: async (o) => calls.push(["cdp.click", o]),
+      send: async () => {},
+    },
+  });
+  await assert.rejects(r.route("click", { x: 700, y: 400 }), (e) => e.code === "bad_request" && /debugging bar/.test(e.message));
+  assert.ok(!calls.some((c) => c[0] === "cdp.click"), "nothing was pressed");
+  rectY = 20;
+  await r.route("click", { ref: "ref_4" });
+  assert.deepEqual(calls.find((c) => c[0] === "cdp.click")[1], { tabId: 7, x: 60, y: 12 }, "the rect read after the bar opened");
+});
+
 function overlayRouter(script) {
   const calls = [];
   let finds = 0;
