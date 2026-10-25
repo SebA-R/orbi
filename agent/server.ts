@@ -11,7 +11,8 @@ import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createCardsRoute } from "./cards.ts";
-import { DESKTOP_PATH, desktopBridge, setDesktopToken } from "./desktop/bridge.ts";
+import { desktopBridge, setDesktopToken } from "./desktop/bridge.ts";
+import { desktopSocketPath } from "./desktop/link.ts";
 import { desktopTokenPath, ensureDesktopToken } from "./desktop/token.ts";
 import { DesktopVoice, mintCartesiaToken } from "./desktop/voice.ts";
 import { extBridge, extMode } from "./extbridge.ts";
@@ -247,16 +248,10 @@ const server = http.createServer((req, res) => {
 const wss = EXT
   ? new WebSocketServer({ noServer: true })
   : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localUpgrade(req), 403) });
-// /desktop is Orbi Desktop, the native helper (desktop/bridge.ts). It sends
-// no Origin: any Origin is a browser, refused.
-const upgradePath = (req: http.IncomingMessage) => {
-  try {
-    return new URL(req.url || "/", "http://localhost").pathname;
-  } catch {
-    return "";
-  }
-};
-if (EXT) extBridge.attach(server, { "/session": wss, [DESKTOP_PATH]: desktopBridge.wss }, "/ext", (req) => localUpgrade(req) && (upgradePath(req) !== DESKTOP_PATH || desktopBridge.accepts(req)));
+// Orbi Desktop, the native helper, has no WebSocket here: it talks over a
+// Unix domain socket (desktop/link.ts), so /desktop gets a 400 like any
+// unknown path.
+if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", (req) => localUpgrade(req));
 
 // One voice session for all /session sockets (hub.ts). Echo mode goes
 // through the same hub, so it follows the same one-owner rules.
@@ -285,14 +280,18 @@ if (EXT) {
   });
 }
 
-// Orbi Desktop's shared secret (desktop/token.ts). If it can't be made, no
-// helper is let in.
+// Orbi Desktop's shared secret (desktop/token.ts) and its socket
+// (desktop/link.ts). If either can't be made, no helper is let in.
 if (EXT) {
   try {
     setDesktopToken(ensureDesktopToken());
   } catch {
     console.log(`desktop: could not create ${desktopTokenPath()}, so Orbi Desktop can't connect`);
   }
+  desktopBridge.listen(desktopSocketPath()).then(
+    () => console.log(`desktop: listening on ${desktopSocketPath()}`),
+    (e) => console.log(`desktop: no socket for Orbi Desktop (${e instanceof Error ? e.message : e})`)
+  );
 }
 
 // Orbi Desktop's push-to-talk and speaker: one more window on the hub.
@@ -337,6 +336,6 @@ server.listen(PORT, () => {
     console.log("note: no Anthropic API key is set, so Claude can't answer. Run `npm run setup`, or choose Local in Orbi's settings.");
   }
   if (VOICE_ENABLED && !hasCartesia()) console.log("voice: no Cartesia key, so the extension uses basic voice (Chrome's own speech)");
-  console.log(`Orbi agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext, /desktop" : ""}${ECHO ? ", echo mode" : ""})`);
+  console.log(`Orbi agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext" : ""}${ECHO ? ", echo mode" : ""})`);
   if (!fs.existsSync(PUBLIC_DIR)) console.log(`note: ${PUBLIC_DIR} does not exist yet`);
 });

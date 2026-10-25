@@ -1,9 +1,9 @@
 # Orbi Desktop
 
 A native macOS menu-bar helper that lets Orbi see and act on the whole Mac,
-not just Chrome. It connects to the Orbi server at
-`ws://127.0.0.1:5050/desktop` (the server side lives in `agent/desktop/`)
-and answers its requests: read the frontmost app and its Accessibility tree,
+not just Chrome. It connects to the Orbi server over a private Unix socket,
+`~/Library/Application Support/Orbi/desktop.sock` (the server side lives in
+`agent/desktop/`), and answers its requests: read the frontmost app and its Accessibility tree,
 click, type, press keys, scroll, take redacted screenshots, and draw Orbi's
 overlay. Hold Right Option to talk; double-tap it to keep listening.
 
@@ -52,14 +52,13 @@ again after rebuilding (or remove the old entry first).
   "code" or "verification" are blacked out. If redaction fails the request
   fails; the unredacted image is never sent.
 - Nothing acts while the screen is locked (`locked`).
-- It dials loopback only (127.0.0.1, or ::1 when that is where the server
-  listens), and only when a process of the same user listens there. Both
-  sides then prove they hold the token from
+- The link is a Unix domain socket, not TCP, so there is no port to take,
+  shadow or relay through. The helper connects only to this user's socket,
+  in this user's 0700 directory, and getpeereid must report the same user.
+  Both sides then prove they hold the token from
   `~/Library/Application Support/Orbi/desktop.token` (made by the server)
   with an HMAC challenge-response, and the token never crosses the socket.
-  A server that can't prove it gets nothing but a nonce. Before dialing and
-  after welcome, every socket of this user on the port must belong to one
-  process, so a relay that shadow-binds 127.0.0.1 is refused.
+  A server that can't prove it gets nothing but a nonce.
 
 ## Protocol notes (v1)
 
@@ -85,7 +84,7 @@ ends by itself after 5 minutes.
 
 ## Development switches
 
-`ORBI_DESKTOP_URL`, `ORBI_DESKTOP_LOG=1`, `ORBI_DESKTOP_NO_MIC=1`,
+`ORBI_DESKTOP_SOCKET`, `ORBI_DESKTOP_TOKEN_FILE`, `ORBI_DESKTOP_LOG=1`, `ORBI_DESKTOP_NO_MIC=1`,
 `ORBI_DESKTOP_NO_SCREEN=1`, and `ORBI_DESKTOP_DRY_RUN=1` (no UI, no input,
 no capture, all permissions reported off).
 

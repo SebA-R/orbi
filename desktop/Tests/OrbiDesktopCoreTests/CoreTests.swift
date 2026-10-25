@@ -260,3 +260,26 @@ final class PushToTalkTests: XCTestCase {
     XCTAssertEqual(m.state, .idle)
   }
 }
+
+final class FrameTests: XCTestCase {
+  func testRoundTripSplitAnyway() {
+    let bytes = Frame.encode(Frame.json, Data(#"{"a":1}"#.utf8)) + Frame.encode(Frame.binary, Data([1, 2]))
+    // Same bytes as agent/desktop/link.ts encodeFrame.
+    XCTAssertEqual(Array(bytes.prefix(5)), [0, 0, 0, 8, 1])
+    var dec = FrameDecoder()
+    var got: [(UInt8, Data)] = []
+    for b in bytes { XCTAssertTrue(dec.push(Data([b])) { got.append(($0, $1)) }) }
+    XCTAssertEqual(got.map(\.0), [1, 2])
+    XCTAssertEqual(String(data: got[0].1, encoding: .utf8), #"{"a":1}"#)
+    XCTAssertEqual(got[1].1, Data([1, 2]))
+  }
+
+  func testBadFrames() {
+    var a = FrameDecoder()
+    XCTAssertFalse(a.push(Data([0, 0, 0, 0])) { _, _ in })
+    var b = FrameDecoder()
+    XCTAssertFalse(b.push(Data([0, 0, 0, 2, 9, 0])) { _, _ in })
+    var c = FrameDecoder()
+    XCTAssertFalse(c.push(Data([0x7f, 0xff, 0xff, 0xff])) { _, _ in })
+  }
+}

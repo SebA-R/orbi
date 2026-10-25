@@ -4,9 +4,12 @@ The contract between the Orbi agent server (`agent/desktop/`) and the Orbi Deskt
 
 ## Connection
 
-- URL: `ws://localhost:5050/desktop` (the agent server's port, `AGENT_PORT`). It is only available when `CLEARCART_BROWSER=ext`.
-- The server only accepts loopback peers with a local `Host` header. The upgrade must carry **no** `Origin` header, since any Origin means a browser and is refused with HTTP 403.
-- Frames are JSON text, plus binary frames for audio. Keepalive uses WebSocket protocol pings. The server also answers `{type:"ping", t}` with `{type:"pong", t}`.
+- Transport: a Unix domain socket at `~/Library/Application Support/Orbi/desktop.sock` (`ORBI_DESKTOP_SOCKET` overrides). It is only available when `CLEARCART_BROWSER=ext`. There is no TCP endpoint for the helper: `/desktop` on the HTTP port answers 400 like any unknown path. With no port, nothing can shadow it, take it first or relay through it.
+- The directory is mode `0700` and the socket `0600`, so only this user (and root) can connect. Node has no `getpeereid`, so that file mode is the server's uid check. The helper refuses a socket that isn't this user's, in a directory that isn't this user's and private, and after connecting it requires `getpeereid` to report the same uid.
+- On start, the server clears a stale socket only if it is this user's socket and nothing answers on it. A live socket, or a path that isn't this user's socket, is left alone, and the desktop link doesn't start. The path must be under 104 bytes, the macOS limit.
+- Frames: a 4-byte big-endian length, then that many bytes: one type byte (`1` = JSON text, `2` = binary audio) and the payload, at most 32 MB. A frame of length 0, too large, or of an unknown type ends the link.
+- The server closes a link with a JSON frame `{"type":"close","code","reason"}` and then ends the stream. The codes are the ones below.
+- Keepalive: the helper sends `{type:"ping", t}` every 15 s, and the server answers `{type:"pong", t}`. No pong within 10 s counts as a drop.
 - Only one helper is connected at a time, and the newest one wins: when a new helper authenticates, the older socket is closed with `4002 replaced`.
 
 ## Auth
@@ -54,7 +57,7 @@ Here `proof = hex(HMAC-SHA256(key = token, "orbi-desktop helper " + serverNonce 
 
 The key is the token's 64 hex characters as UTF-8.
 
-The proofs show that each side holds the token, but they don't bind the connection. A process that shadow-binds 127.0.0.1 on the server's dual-stack port could take the helper's connection and relay the handshake to the real server. So before dialing, and again after welcome, the helper requires that every TCP socket of this user bound to the port (listening or accepted) belongs to a single process, and that this process listens on loopback or on every address. A relay needs a socket of its own on the port in a second process, so the helper sees it and refuses.
+The handshake runs on the private socket. The socket keeps out other users, and the proofs show that each side holds the token.
 
 - A missing nonce, a wrong proof, or any other message before auth closes with `4004 unauthorized`, and no welcome is sent. Until an authenticated helper is connected, every desktop tool fails with `not_connected`.
 - A wrong `name` or `version` closes with `4003`. No completed handshake within 5 s closes with `4001`.

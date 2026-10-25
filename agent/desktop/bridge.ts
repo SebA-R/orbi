@@ -1,7 +1,9 @@
-// Server side of the Orbi Desktop bridge (ws://localhost:5050/desktop).
+// Server side of the Orbi Desktop bridge, over a Unix domain socket
+// (link.ts: ~/Library/Application Support/Orbi/desktop.sock, framed JSON
+// and audio). There is no TCP endpoint for the helper.
 //
 // The native menu-bar helper (desktop/) is the client: it connects, sends
-// hello, and we reply welcome. After that we send requests ({type:"req"})
+// hello, proves the token (token.ts), and we reply welcome. After that we send requests ({type:"req"})
 // and it answers ({type:"res"}). One helper at a time: a newer hello
 // replaces the older socket (newest wins), like the extension bridge.
 //
@@ -14,15 +16,15 @@
 // here ever logs them: only method names and error codes.
 
 import { EventEmitter } from "node:events";
-import type http from "node:http";
-import { WebSocketServer, type WebSocket } from "ws";
+import type net from "node:net";
+
+import { LinkSocket, listenDesktop } from "./link.ts";
 
 import { userBlockedApps } from "./safety.ts";
 import { NONCE, helperProof, newNonce, proofMatches, serverProof, tokenMatches } from "./token.ts";
 
 export const DESKTOP_PROTOCOL_VERSION = 1;
 export const DESKTOP_HELPER_NAME = "orbi-desktop";
-export const DESKTOP_PATH = "/desktop";
 export const DESKTOP_METHODS = [
   "frontmost",
   "apps_list",
@@ -79,19 +81,14 @@ export interface DesktopBridgeEvents {
   audio: [Buffer];
 }
 
+type WebSocket = LinkSocket;
 type Pending = { ws: WebSocket; method: string; resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
-
-// The Origin of a /desktop upgrade: the helper is a native app, which sends
-// none. Any Origin means a browser (a web page, or an extension) and is
-// refused, so no page can pose as the helper and drive the computer.
-export function desktopOriginAllowed(origin: string | string[] | undefined): boolean {
-  return origin === undefined;
-}
 
 const bool = (v: unknown) => v === true;
 
 export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
-  readonly wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
+  private server: net.Server | null = null;
+  private sockets = new Set<WebSocket>();
   private current: WebSocket | null = null;
   private info: DesktopInfo | null = null;
   private pending = new Map<string, Pending>();
@@ -103,7 +100,18 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
   // (no token could be made) refuses every helper.
   constructor(private log: (line: string) => void = (l) => console.log(l), private blockedApps: () => string[] = () => [], private token: () => string | null = () => null) {
     super();
-    this.wss.on("connection", (ws) => this.accept(ws));
+  }
+
+  // Starts listening on the socket path (link.ts).
+  async listen(sockPath: string): Promise<void> {
+    this.server = await listenDesktop(sockPath, (s) => this.attach(s));
+  }
+
+  // One new connection (from listen, or a test).
+  attach(ws: WebSocket) {
+    this.sockets.add(ws);
+    ws.on("close", () => this.sockets.delete(ws));
+    this.accept(ws);
   }
 
   connected(): boolean {
@@ -152,17 +160,11 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
     if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "audio_stop" }));
   }
 
-  // Lets server.ts route /desktop upgrades here. `verify` is the server's
-  // loopback and Host check (hostcheck.ts); on top of it the helper must
-  // send no Origin.
-  accepts(req: http.IncomingMessage): boolean {
-    return desktopOriginAllowed(req.headers.origin);
-  }
-
   close() {
     this.current?.close(1001, "server closing");
-    for (const ws of this.wss.clients) ws.terminate();
-    this.wss.close();
+    for (const ws of this.sockets) ws.terminate();
+    this.server?.close();
+    this.server = null;
   }
 
   private accept(ws: WebSocket) {

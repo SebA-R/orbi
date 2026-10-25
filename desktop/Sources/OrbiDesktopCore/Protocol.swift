@@ -1,17 +1,15 @@
 import CryptoKit
 import Foundation
 
-// Protocol v1 between the helper (client) and the Orbi server, over
-// ws://localhost:5050/desktop. JSON text frames; binary frames carry audio
-// (mic PCM s16le 16 kHz mono up, TTS PCM s16le 24 kHz mono down).
+// Protocol v1 between the helper (client) and the Orbi server, over a Unix
+// domain socket (Frames.swift). JSON frames; binary frames carry audio (mic
+// PCM s16le 16 kHz mono up, TTS PCM s16le 24 kHz mono down).
 //
 // Coordinates everywhere are global screen points, top-left origin of the
 // main display (the Quartz/AX space).
 public enum Proto {
   public static let version = 1
   public static let name = "orbi-desktop"
-  // 127.0.0.1, never "localhost": no IPv6 ::1 listener can stand in.
-  public static let defaultURL = "ws://127.0.0.1:5050/desktop"
   public static let features = ["element", "focused", "expectRef", "exclude"]
   public static let micSampleRate = 16_000.0
   public static let ttsSampleRate = 24_000.0

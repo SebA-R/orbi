@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
-import http from "node:http";
-import type { AddressInfo } from "node:net";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { WebSocket } from "ws";
 
 // extbridge.ts first: origins.ts and prompt.ts import each other through it.
-import { ExtBridge } from "../extbridge.ts";
-import { DesktopBridge, DesktopError, desktopOriginAllowed } from "../desktop/bridge.ts";
+import "../extbridge.ts";
+import { DesktopBridge, DesktopError } from "../desktop/bridge.ts";
+import { encodeFrame, FrameDecoder, FRAME_BINARY, FRAME_JSON, LinkSocket, listenDesktop } from "../desktop/link.ts";
 import { appBlockReason, classifyElement, decidePress, DesktopUnlockGate, keyEffect, keyLock, maskElement, parseCombo, type AXElement, type Target } from "../desktop/safety.ts";
 import { desktopToolDefinitions, type DesktopHost } from "../desktop/tools.ts";
 import { DesktopVoice, s16ToF32, VOICE_OFF_TEXT } from "../desktop/voice.ts";
@@ -25,28 +25,38 @@ const HELPER_VECTOR = "83ebbb5f69b3e568dbdef5bded7af8a37e2e967972decb3ed1b10e952
 
 // ------------------------------------------------------------ fake helper
 
+// Over the real link (link.ts): a Unix socket in a temp dir, framed.
 class FakeHelper {
-  ws!: WebSocket;
+  ws!: LinkSocket;
   welcome: any = null;
   closed: { code: number } | null = null;
   requests: Array<{ method: string; params: any }> = [];
   binary: Buffer[] = [];
   texts: any[] = [];
-  constructor(public url: string, public handler: (method: string, params: any) => any = () => null, public headers: Record<string, string> = {}) {}
+  private onClosed: Array<(c: { code: number }) => void> = [];
+  constructor(public sockPath: string, public handler: (method: string, params: any) => any = () => null) {}
   serverProved: boolean | null = null;
   // The handshake as the real helper does it: hello with a nonce, check the
   // server's proof, answer with ours (made with authToken).
   open(hello: Record<string, unknown> = { type: "hello", name: "orbi-desktop", version: 1, nonce: newNonce(), features: ["element", "focused", "expectRef", "exclude"], permissions: { accessibility: true, screen: true, mic: false } }, authToken: string = TOKEN): Promise<void> {
-    this.ws = new WebSocket(this.url, { headers: this.headers });
-    this.ws.on("close", (code) => (this.closed = { code }));
+    const sock = net.connect(this.sockPath);
+    this.ws = new LinkSocket(sock);
+    const closed = (code: number) => {
+      if (this.closed) return;
+      this.closed = { code };
+      for (const f of this.onClosed.splice(0)) f(this.closed);
+    };
+    this.ws.on("close", () => closed(1006));
     return new Promise((resolve, reject) => {
-      this.ws.once("error", reject);
-      this.ws.once("unexpected-response", (_r, res) => reject(new Error(`HTTP ${res.statusCode}`)));
-      this.ws.on("message", async (raw, isBinary) => {
+      sock.once("error", reject);
+      this.ws.on("close", () => reject(new Error(`closed ${this.closed?.code}`)));
+      this.ws.on("message", async (raw: string | Buffer, isBinary: boolean) => {
         if (isBinary) return void this.binary.push(raw as Buffer);
         const m = JSON.parse(String(raw));
         this.texts.push(m);
-        if (m.type === "challenge") {
+        if (m.type === "close") {
+          closed(m.code);
+        } else if (m.type === "challenge") {
           this.serverProved = proofMatches(serverProof(TOKEN, String(hello.nonce), m.nonce), m.proof);
           this.ws.send(JSON.stringify({ type: "auth", proof: helperProof(authToken, m.nonce, String(hello.nonce)) }));
         } else if (m.type === "welcome") {
@@ -61,31 +71,28 @@ class FakeHelper {
           }
         }
       });
-      this.ws.once("open", () => this.ws.send(JSON.stringify(hello)));
+      sock.once("connect", () => this.ws.send(JSON.stringify(hello)));
     });
   }
   waitClosed(): Promise<{ code: number }> {
     if (this.closed) return Promise.resolve(this.closed);
-    return new Promise((r) => this.ws.once("close", (code) => r({ code })));
+    return new Promise((r) => this.onClosed.push(r));
   }
 }
 
-// The same routing as server.ts: /desktop through ExtBridge.attach's router,
-// refused when the upgrade carries an Origin.
+// The bridge on its own socket in a temp dir, as server.ts listens.
 async function startDesktop() {
   const bridge = new DesktopBridge(() => {}, () => [], () => TOKEN);
-  const ext = new ExtBridge(() => {});
-  const server = http.createServer((_q, r) => r.writeHead(404).end());
-  ext.attach(server, { "/desktop": bridge.wss }, "/ext", (req) => !req.url?.startsWith("/desktop") || bridge.accepts(req));
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/desktop`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orbi-sock-"));
+  const sockPath = path.join(dir, "Orbi", "desktop.sock");
+  await bridge.listen(sockPath);
   return {
     bridge,
-    url,
+    url: sockPath,
+    dir,
     stop: async () => {
       bridge.close();
-      ext.close();
-      await new Promise<void>((r) => server.close(() => r()));
+      fs.rmSync(dir, { recursive: true, force: true });
     },
   };
 }
@@ -112,7 +119,7 @@ test("bridge handshake: hello gets welcome, requests round trip, errors keep the
   }
 });
 
-test("bridge: wrong name or version is refused, newest helper wins, an Origin is refused", async () => {
+test("bridge: wrong name or version is refused, a wrong proof is refused, newest helper wins", async () => {
   const d = await startDesktop();
   try {
     const bad = new FakeHelper(d.url);
@@ -134,12 +141,12 @@ test("bridge: wrong name or version is refused, newest helper wins, an Origin is
       assert.equal((await h.waitClosed()).code, 4004, JSON.stringify(hello));
     }
     // A message other than auth after the challenge is refused too.
-    const raw = new WebSocket(d.url);
-    await new Promise((r) => raw.once("open", r));
+    const raw = new LinkSocket(net.connect(d.url));
+    const rawClose = new Promise((r) => raw.on("message", (m: string) => { const j = JSON.parse(m); if (j.type === "close") r(j.code); }));
     raw.send(JSON.stringify({ type: "hello", name: "orbi-desktop", version: 1, nonce: newNonce() }));
     await new Promise((r) => raw.once("message", r));
     raw.send(JSON.stringify({ type: "res", id: 1, result: null }));
-    assert.equal(await new Promise((r) => raw.once("close", (code) => r(code))), 4004);
+    assert.equal(await rawClose, 4004);
     assert.equal(d.bridge.connected(), false);
     const old = new FakeHelper(d.url, () => ({ which: "old" }));
     await old.open();
@@ -148,13 +155,50 @@ test("bridge: wrong name or version is refused, newest helper wins, an Origin is
     await neu.open();
     assert.equal((await old.waitClosed()).code, 4002);
     assert.equal((await d.bridge.call<any>("frontmost")).which, "new");
-    const page = new FakeHelper(d.url, () => null, { Origin: "https://evil.example" });
-    await assert.rejects(page.open(), /403/);
-    assert.equal(desktopOriginAllowed(undefined), true);
-    assert.equal(desktopOriginAllowed("chrome-extension://abc"), false);
   } finally {
     await d.stop();
   }
+});
+
+test("link: socket 0600 in a 0700 dir, frames round trip, stale sockets cleared only when ours and dead", async () => {
+  const d = await startDesktop();
+  try {
+    assert.equal(fs.statSync(d.url).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.dirname(d.url)).mode & 0o777, 0o700);
+    // A second server on a live socket is refused, and leaves it alone.
+    await assert.rejects(listenDesktop(d.url, () => {}), /already listening/);
+    assert.ok(fs.statSync(d.url).isSocket());
+  } finally {
+    await d.stop();
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orbi-sock-"));
+  try {
+    // Not a socket: never unlinked.
+    const file = path.join(dir, "desktop.sock");
+    fs.writeFileSync(file, "keep");
+    await assert.rejects(listenDesktop(file, () => {}), /not this user's socket/);
+    assert.equal(fs.readFileSync(file, "utf8"), "keep");
+    fs.rmSync(file);
+    // A dead socket of ours (its server was killed, so nothing unlinked
+    // it): cleared and reused.
+    const child = spawn(process.execPath, ["-e", `require("net").createServer().listen(${JSON.stringify(file)}, () => console.log("up"))`]);
+    await new Promise((r) => child.stdout.once("data", r));
+    child.kill("SIGKILL");
+    await new Promise((r) => child.once("exit", r));
+    assert.ok(fs.statSync(file).isSocket(), "the stale socket is left behind");
+    const again = await listenDesktop(file, () => {});
+    await new Promise<void>((r) => again.close(() => r()));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  // Frames: JSON and binary, split across chunks; bad frames stop the decoder.
+  const got: Array<[number, string]> = [];
+  const dec = new FrameDecoder((t, p) => got.push([t, t === FRAME_JSON ? p.toString() : p.toString("hex")]));
+  const bytes = Buffer.concat([encodeFrame(FRAME_JSON, '{"a":1}'), encodeFrame(FRAME_BINARY, Buffer.from([1, 2]))]);
+  for (const b of bytes) assert.equal(dec.push(Buffer.from([b])), true);
+  assert.deepEqual(got, [[1, '{"a":1}'], [2, "0102"]]);
+  assert.equal(new FrameDecoder(() => {}).push(Buffer.from([0, 0, 0, 0])), false);
+  assert.equal(new FrameDecoder(() => {}).push(Buffer.from([0, 0, 0, 2, 9, 0])), false);
 });
 
 // ------------------------------------------------------------ lock table

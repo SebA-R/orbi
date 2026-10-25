@@ -7,7 +7,8 @@ import OrbiDesktopCore
 
 // Launch-time switches, from the environment (handy for development and the
 // smoke test):
-//   ORBI_DESKTOP_URL       server URL, default ws://127.0.0.1:5050/desktop
+//   ORBI_DESKTOP_SOCKET    the server's Unix socket, default
+//                          ~/Library/Application Support/Orbi/desktop.sock
 //   ORBI_DESKTOP_TOKEN_FILE the server's token, default
 //                          ~/Library/Application Support/Orbi/desktop.token
 //   ORBI_DESKTOP_DRY_RUN=1 no side effects at all: no menu bar item, no
@@ -23,7 +24,8 @@ enum Env {
   static let noMic = dryRun || flag("ORBI_DESKTOP_NO_MIC")
   static let noScreen = dryRun || flag("ORBI_DESKTOP_NO_SCREEN")
   static let logging = flag("ORBI_DESKTOP_LOG") || dryRun
-  static let serverURL = URL(string: vars["ORBI_DESKTOP_URL"] ?? Proto.defaultURL) ?? URL(string: Proto.defaultURL)!
+  static let socketPath = vars["ORBI_DESKTOP_SOCKET"].flatMap { $0.isEmpty ? nil : $0 }
+    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Orbi/desktop.sock").path
   // Made by the server at startup (64 hex characters, mode 0600); read
   // fresh on every connect and sent in hello.
   static let tokenFile = vars["ORBI_DESKTOP_TOKEN_FILE"].map { URL(fileURLWithPath: $0) }

@@ -468,6 +468,15 @@ final class Overlay {
 
   func highlight(_ r: CGRect) { cursor?.highlight(r) }
 
+  // Runs body with the overlay window off screen, for a hit test that must
+  // see what is under it. Put back at once, within the same run loop turn.
+  func withoutWindow<T>(_ body: () -> T) -> T {
+    guard let w = window, w.isVisible else { return body() }
+    w.orderOut(nil)
+    defer { w.orderFrontRegardless() }
+    return body()
+  }
+
   // Only the drawn cursor, not the real pointer (that is input's job).
   private func glide(to p: CGPoint) {
     glide?.cancel()

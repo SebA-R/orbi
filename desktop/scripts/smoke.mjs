@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// Protocol smoke test: a tiny fake Orbi server (no dependencies, minimal
-// WebSocket framing) on a spare port, and the helper run with
+// Protocol smoke test: a tiny fake Orbi server (no dependencies) on a Unix
+// socket in a temp dir, framed like agent/desktop/link.ts, and the helper run with
 // ORBI_DESKTOP_DRY_RUN=1, so it shows nothing, never touches the mouse,
 // keyboard, mic or screen, and reports every permission as false.
 //
 //   swift build && node scripts/smoke.mjs [path/to/OrbiDesktop]
 import { spawn } from "node:child_process";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import fs from "node:fs";
-import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,35 +16,23 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const bin = process.argv[2] || path.join(here, "..", ".build", "debug", "OrbiDesktop");
 
-function frame(op, payload) {
-  const n = payload.length;
-  const head = n < 126 ? Buffer.from([0x80 | op, n]) : n < 65536
-    ? Buffer.from([0x80 | op, 126, n >> 8, n & 255])
-    : Buffer.concat([Buffer.from([0x80 | op, 127, 0, 0, 0, 0]), Buffer.from([n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255])]);
+// The link's framing (agent/desktop/link.ts): u32 BE length, type byte
+// (1 JSON, 2 binary), payload.
+function frame(type, payload) {
+  const head = Buffer.alloc(5);
+  head.writeUInt32BE(payload.length + 1, 0);
+  head[4] = type;
   return Buffer.concat([head, payload]);
 }
-
-// Client frames are masked; enough parsing for text, binary, close and ping.
 function parser(onFrame) {
   let buf = Buffer.alloc(0);
   return (chunk) => {
     buf = Buffer.concat([buf, chunk]);
-    for (;;) {
-      if (buf.length < 2) return;
-      const op = buf[0] & 15;
-      let len = buf[1] & 127, off = 2;
-      if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
-      else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
-      const masked = buf[1] & 128;
-      const need = off + (masked ? 4 : 0) + len;
-      if (buf.length < need) return;
-      let data = buf.subarray(off + (masked ? 4 : 0), need);
-      if (masked) {
-        const m = buf.subarray(off, off + 4);
-        data = Buffer.from(data.map((b, i) => b ^ m[i % 4]));
-      }
-      buf = buf.subarray(need);
-      onFrame(op, data);
+    while (buf.length >= 4) {
+      const len = buf.readUInt32BE(0);
+      if (buf.length < 4 + len) return;
+      onFrame(buf[4], buf.subarray(5, 4 + len));
+      buf = buf.subarray(4 + len);
     }
   };
 }
@@ -66,21 +54,24 @@ function next(match = () => true, ms = 8000) {
   });
 }
 
-const server = http.createServer();
-server.on("upgrade", (req, sock) => {
-  if (req.url !== "/desktop") { sock.destroy(); return; }
-  const accept = createHash("sha1").update(req.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
-  sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+// The socket in a private dir, like the server's. It starts 0755, which
+// the helper must refuse.
+const tokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "orbi-smoke-"));
+const sockDir = path.join(tokenDir, "Orbi");
+fs.mkdirSync(sockDir, { mode: 0o755 });
+fs.chmodSync(sockDir, 0o755);
+const sockPath = path.join(sockDir, "desktop.sock");
+const server = net.createServer((sock) => {
   sockets.push(sock);
-  sock.on("data", parser((op, data) => {
-    if (op === 1) deliver(JSON.parse(data.toString("utf8")));
-    else if (op === 9) sock.write(frame(10, data));
-    else if (op === 8) sock.end();
+  sock.on("data", parser((type, data) => {
+    if (type !== 1) return;
+    const m = JSON.parse(data.toString("utf8"));
+    if (m.type === "ping") sock.write(frame(1, Buffer.from(JSON.stringify({ type: "pong", t: m.t }))));
+    else deliver(m);
   }));
   sock.on("error", () => {});
 });
-await new Promise((r) => server.listen(0, "::", r)); // dual stack, like agent/server.ts
-const port = server.address().port;
+await new Promise((r) => server.listen(sockPath, r));
 
 const send = (obj) => sockets.at(-1).write(frame(1, Buffer.from(JSON.stringify(obj))));
 let seq = 0;
@@ -91,13 +82,12 @@ async function call(method, params) {
 }
 
 // A token file of our own, like the server's (it is read on every connect).
-const tokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "orbi-smoke-"));
 const tokenFile = path.join(tokenDir, "desktop.token");
 const token = "ab".repeat(32);
 const hmac = (msg) => createHmac("sha256", Buffer.from(token)).update(msg).digest("hex");
 
 const child = spawn(bin, [], {
-  env: { ...process.env, ORBI_DESKTOP_DRY_RUN: "1", ORBI_DESKTOP_URL: `ws://127.0.0.1:${port}/desktop`, ORBI_DESKTOP_TOKEN_FILE: tokenFile },
+  env: { ...process.env, ORBI_DESKTOP_DRY_RUN: "1", ORBI_DESKTOP_SOCKET: sockPath, ORBI_DESKTOP_TOKEN_FILE: tokenFile },
   stdio: ["ignore", "ignore", "pipe"],
 });
 let stderr = "";
@@ -114,6 +104,9 @@ try {
   await new Promise((r) => setTimeout(r, 1200));
   check("no dial without a token", sockets.length === 0);
   fs.writeFileSync(tokenFile, token + "\n", { mode: 0o600 });
+  await new Promise((r) => setTimeout(r, 2500));
+  check("no dial into a directory others can enter", sockets.length === 0);
+  fs.chmodSync(sockDir, 0o700);
   // First a server that cannot prove the token: the helper must drop it
   // without sending auth (or anything else), then dial again.
   const h0 = await next((m) => m.type === "hello", 15000);
@@ -178,22 +171,10 @@ try {
   const again = await next((m) => m.type === "hello", 6000);
   check("reconnects after a drop", again.type === "hello");
 
-  // A second process shadow-binds 127.0.0.1 on the same port (it would get
-  // the helper's connection and could relay the handshake): the helper must
-  // not dial it, and must come back once it is gone.
-  const shadow = spawn(process.execPath, ["-e", `
-    const s = require("net").createServer((c) => { console.log("conn"); c.destroy(); });
-    s.listen(${port}, "127.0.0.1", () => console.log("ready"));`], { stdio: ["ignore", "pipe", "inherit"] });
-  let shadowOut = "";
-  shadow.stdout.on("data", (d) => { shadowOut += d; });
-  await new Promise((r, j) => { shadow.stdout.once("data", r); setTimeout(() => j(new Error("shadow did not start")), 3000); });
-  check("shadow bind works on this Mac", shadowOut.includes("ready"));
-  sockets.at(-1).destroy();
-  await new Promise((r) => setTimeout(r, 4000));
-  check("helper never dials the shadowed port", !shadowOut.includes("conn"), shadowOut);
-  shadow.kill();
-  const back = await next((m) => m.type === "hello", 20000);
-  check("reconnects once the shadow is gone", back.type === "hello");
+  // The server's close frame: the helper drops the link and dials again.
+  sockets.at(-1).write(frame(1, Buffer.from(JSON.stringify({ type: "close", code: 4002, reason: "replaced" }))));
+  const back = await next((m) => m.type === "hello", 8000);
+  check("reconnects after a close frame", back.type === "hello");
 } catch (e) {
   check("smoke", false, e.message);
 } finally {

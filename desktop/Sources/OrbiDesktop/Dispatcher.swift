@@ -180,7 +180,10 @@ final class Dispatcher {
     // looks through click-through windows. It must agree with the window
     // list: no answer, or another app (another app's click-through overlay
     // over a blocked one, say), fails closed.
-    guard let sys = AX.hitTest(x: p.x, y: p.y), sys.pid == pid else { throw unsure }
+    var sys = AX.hitTest(x: p.x, y: p.y)
+    // Our own overlay in the way: ask again with it out of the way.
+    if sys?.pid == getpid() { sys = overlay.withoutWindow { AX.hitTest(x: p.x, y: p.y) } }
+    guard let sys, sys.pid == pid else { throw unsure }
   }
 
   private func acting<T>(_ body: () async throws -> T) async rethrows -> T {
