@@ -14,6 +14,7 @@ import { extensionOrigins, hostAllowed, memoryRequestAllowed, upgradeOriginAllow
 import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
 import { backendKey, describeBackend, envLocalContext, envProviderSettings, parseLocalBaseUrl } from "./local/config.ts";
 import { listModels, LocalModelError } from "./local/openai.ts";
+import { purchaseHistory } from "./history.ts";
 import { conversationLog, memoryStore } from "./memory.ts";
 import { currentProvider, memoryOn, Session, type SessionCarry } from "./session.ts";
 
@@ -124,9 +125,9 @@ const localHost = (req: http.IncomingMessage) => hostAllowed(req.headers.host, p
 const localUpgrade = (req: http.IncomingMessage) => localHost(req) && upgradeOriginAllowed(req.headers.origin, port(), EXT_ORIGINS);
 
 // Saved facts for the extension's settings page (memory.ts):
-//   GET    /memory       { enabled, facts: [{ id, text, at }] }
-//   DELETE /memory/<id>  forget one fact
-//   DELETE /memory       forget everything, the recent conversation too
+//   GET    /memory       { enabled, facts: [{ id, text, at }], purchases: [...] }
+//   DELETE /memory/<id>  forget one fact (m...) or past purchase (p...)
+//   DELETE /memory       forget everything, past purchases and the recent conversation too
 // Loopback peers with the Orbi extension's Origin only (hostcheck.ts).
 // Nothing here adds a fact: only the remember tool does.
 const EXT_ORIGINS = extensionOrigins();
@@ -134,9 +135,10 @@ function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathna
   if (!memoryRequestAllowed(req, port(), EXT_ORIGINS)) return json(res, 403, { error: "forbidden" });
   const store = memoryStore();
   const id = pathname.slice("/memory/".length);
-  if (req.method === "GET" && pathname === "/memory") return json(res, 200, { enabled: memoryOn(), facts: store.list() });
+  if (req.method === "GET" && pathname === "/memory") return json(res, 200, { enabled: memoryOn(), facts: store.list(), purchases: purchaseHistory().list() });
   if (req.method === "DELETE" && pathname === "/memory") {
     const n = store.clear();
+    purchaseHistory().clear();
     conversationLog().clear();
     console.log("memory: forgot everything (settings page)");
     return json(res, 200, { ok: true, removed: n });
@@ -144,6 +146,11 @@ function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathna
   if (req.method === "DELETE" && /^m[0-9a-f]{8}$/.test(id)) {
     const hit = store.remove(id);
     if (hit) console.log("memory: forgot a fact (settings page)");
+    return json(res, hit ? 200 : 404, hit ? { ok: true } : { error: "not found" });
+  }
+  if (req.method === "DELETE" && /^p[0-9a-f]{8}$/.test(id)) {
+    const hit = purchaseHistory().remove(id);
+    if (hit) console.log("memory: forgot a past purchase (settings page)");
     return json(res, hit ? 200 : 404, hit ? { ok: true } : { error: "not found" });
   }
   json(res, 405, { error: "method not allowed" });
@@ -200,7 +207,7 @@ const hub = new SessionHub(
     if (ECHO) return echoSession(send);
     // carry: the fail-closed browser state of the session this one replaces
     // (a provider switch), so a card left in a form stays guarded.
-    const session = new Session(send, { memory: memoryStore(), log: conversationLog(), carry: carry as SessionCarry | undefined });
+    const session = new Session(send, { memory: memoryStore(), log: conversationLog(), history: purchaseHistory(), carry: carry as SessionCarry | undefined });
     void session.run().finally(() => {
       console.log("session agent stopped");
       ended();

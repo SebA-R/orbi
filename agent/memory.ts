@@ -36,7 +36,7 @@ export function dataDir(): string {
   return process.env.CLEARCART_DATA_DIR || path.join(HERE, ".data");
 }
 
-function readJson(file: string): any {
+export function readJson(file: string): any {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
@@ -45,14 +45,14 @@ function readJson(file: string): any {
 }
 
 // Write to a temp file and rename, so a crash never leaves half a file.
-function writeJson(file: string, data: unknown) {
+export function writeJson(file: string, data: unknown) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 
-const clean = (t: string) => String(t ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+export const clean = (t: string) => String(t ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
 
 // Text as the filters see it: NFKC (full-width and other compatibility
 // digits become 0-9), lower case, look-alike letters folded to Latin, and
@@ -63,7 +63,7 @@ const CONFUSABLE: Record<string, string> = {
   "α": "a", "ο": "o", "ρ": "p", "ε": "e", "ι": "i", "κ": "k", "ν": "v", "τ": "t", "υ": "u", "χ": "x",
 };
 const DIGIT_WORDS: Record<string, string> = { zero: "0", oh: "0", one: "1", two: "2", three: "3", four: "4", five: "5", six: "6", seven: "7", eight: "8", nine: "9" };
-function fold(text: string): string {
+export function fold(text: string): string {
   return clean(text)
     .normalize("NFKC")
     .toLowerCase()
@@ -76,7 +76,7 @@ function fold(text: string): string {
 // "4242 - 4242"), up to three characters apart.
 const DIGIT_RUN = /\d(?:[^a-z\d]{0,3}\d)+/g;
 const digitCount = (s: string) => s.replace(/\D/g, "").length;
-const longNumber = (t: string, min: number) => (t.match(DIGIT_RUN) || []).some((run) => digitCount(run) >= min);
+export const longNumber = (t: string, min: number) => (t.match(DIGIT_RUN) || []).some((run) => digitCount(run) >= min);
 
 const SENSITIVE: Array<[RegExp, string]> = [
   [/\b(cvc|cvv2?|cvn|cid|csc|security code|card code|card verification|digits on the back|back of (the|your|my) card)\b/, "a card security code"],
@@ -120,6 +120,17 @@ export function sensitiveReason(text: string): string | null {
   return null;
 }
 
+// Why a short piece of text holds a secret (a long number, an email, card,
+// password, ID or bank wording), or null. Used for purchase history
+// (history.ts), where shopping words are fine but secrets never are.
+export function secretReason(text: string, minDigits = 6): string | null {
+  const t = fold(text);
+  if (longNumber(t, minDigits)) return "it holds a long number (a card, account or ID number)";
+  if (/@[a-z0-9-]+\.[a-z]/.test(t)) return "it holds an email address";
+  for (const [re, what] of SENSITIVE) if (re.test(t)) return `it is ${what}`;
+  return null;
+}
+
 // For the transcript: a turn with a long number or a secret goes whole, and
 // Orbi's own replies (which may repeat page text) are kept short and
 // dropped when they read like an instruction.
@@ -139,7 +150,7 @@ export function redactTurn(text: string, role: "user" | "assistant" = "user"): s
 export type Fact = { id: string; text: string; at: number };
 export type AddResult = { ok: true; fact: Fact; existed: boolean } | { ok: false; reason: string };
 
-const norm = (t: string) => clean(t).toLowerCase().replace(/[^a-z0-9' ]/g, "").replace(/\s+/g, " ").trim();
+export const norm = (t: string) => clean(t).toLowerCase().replace(/[^a-z0-9' ]/g, "").replace(/\s+/g, " ").trim();
 
 export class MemoryStore {
   constructor(readonly file = path.join(dataDir(), "memory.json")) {}
@@ -275,8 +286,8 @@ export function isForgetAllAsk(text: string): boolean {
 
 // Only words with no content of their own; "prefer", "always" or "default"
 // must be said to count.
-const STOP = new Set("a an the and to of is are am be i i'm me my you your you're user that this it please remember".split(" "));
-const stem = (w: string) => w.replace(/'s$/, "").replace(/(ing|ed|es|s)$/, "");
+export const STOP = new Set("a an the and to of is are am be i i'm me my you your you're user that this it please remember".split(" "));
+export const stem = (w: string) => w.replace(/'s$/, "").replace(/(ing|ed|es|s)$/, "");
 const contentWords = (t: string) => norm(fold(t)).split(" ").filter((w) => w && !STOP.has(w)).map(stem).filter(Boolean);
 
 // Whether the fact is made of what the user said in the one utterance that
