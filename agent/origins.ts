@@ -92,8 +92,8 @@ export function allowedSite(href: string | null | undefined): boolean {
 }
 
 // Where the unlock gate may arm and pay_with_saved_card may pay: a web page
-// on a site the policy in force lets Orbi use, the blocked sites
-// included (CLEARCART_ALLOW_ANY_SITE does not widen it).
+// on a site the policy in force lets Orbi use. The blocked sites stay
+// blocked, and CLEARCART_ALLOW_ANY_SITE does not widen it.
 export function usableSite(href: string | null | undefined): boolean {
   return !!originOf(href) && !siteBlockReason(href, sitePolicy());
 }

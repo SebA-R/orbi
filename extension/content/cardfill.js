@@ -26,11 +26,12 @@
   var Mask = root.ClearcartMask;
 
   var AUTOCOMPLETE = { "cc-number": 1, "cc-name": 1, "cc-exp": 1, "cc-exp-month": 1, "cc-exp-year": 1, "cc-csc": 1 };
-  // For payment fields without an autocomplete kind. Order matters: the
-  // month and year before the whole expiry, the code and the name before
-  // the number.
+  // For payment fields without an autocomplete kind, tested against the
+  // field's name, id, placeholder and labels one at a time. Order matters:
+  // the month and year before the whole expiry ("MM / YY" is the whole
+  // expiry), the code and the name before the number.
   var GUESS = [
-    ["cc-exp-month", /exp\w*[ _-]*(month|mm)\b|\b(month|mm)[ _-]*exp|\bcc[ _-]*month|card[ _-]*month|expiration[ _-]*month/],
+    ["cc-exp-month", /exp\w*[ _-]*(month|mm)\b(?![ _/-]*(yy|yyyy|year)\b)|\b(month|mm)[ _-]*exp|\bcc[ _-]*month|card[ _-]*month|expiration[ _-]*month/],
     ["cc-exp-year", /exp\w*[ _-]*(year|yy|yyyy)\b|\b(year|yy)[ _-]*exp|\bcc[ _-]*year|card[ _-]*year|expiration[ _-]*year/],
     ["cc-csc", /\b(cvc|cvv|cvv2|cvn|csc|cid)\b|security[ _-]*code|card[ _-]*code|card[ _-]*verification/],
     ["cc-exp", /\bexp(iry|iration|ires|ire)?\b|exp[ _-]*date|valid[ _-]*(thru|through)|mm *\/ *yy/],
@@ -55,11 +56,18 @@
     return out.join(" ");
   }
 
+  // The field's name, id, placeholder, aria-label and labels, each on its
+  // own so one's end and the next one's start never read as one phrase.
   // "encryptedCardNumber" reads as "encrypted card number".
   function words(el) {
     return [el.getAttribute("name"), el.id, el.getAttribute("placeholder"), el.getAttribute("aria-label"),
       el.getAttribute("data-fieldtype"), labelText(el)]
-      .filter(Boolean).join(" ").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().replace(/\s+/g, " ");
+      .filter(Boolean).map(function (w) { return String(w).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().replace(/\s+/g, " ").trim(); });
+  }
+
+  function anyMatch(list, re) {
+    for (var i = 0; i < list.length; i++) if (re.test(list[i])) return true;
+    return false;
   }
 
   function tokens(el) {
@@ -91,10 +99,10 @@
     if (t.indexOf("postal-code") !== -1) return "postal-code";
     var hay = words(el);
     if (Mask && Mask.isPaymentField(el)) {
-      for (var g = 0; g < GUESS.length; g++) if (GUESS[g][1].test(hay)) return GUESS[g][0];
+      for (var g = 0; g < GUESS.length; g++) if (anyMatch(hay, GUESS[g][1])) return GUESS[g][0];
       return null;
     }
-    return POSTAL.test(hay) ? "postal-code" : null;
+    return anyMatch(hay, POSTAL) ? "postal-code" : null;
   }
 
   function inFrame() {

@@ -135,7 +135,7 @@ const msgOf = (e) => String((e && e.message) || e || "failed");
 // "12/30" or "12/2030" -> { mm: "12", yy: "30", yyyy: "2030" }, or null.
 export function expParts(exp) {
   const m = /^\s*(\d{1,2})\s*[/-]\s*(\d{2}|\d{4})\s*$/.exec(String(exp || ""));
-  if (!m) return null;
+  if (!m || Number(m[1]) < 1 || Number(m[1]) > 12) return null;
   const mm = ("0" + m[1]).slice(-2);
   const yy = m[2].slice(-2);
   return { mm, yy, yyyy: m[2].length === 4 ? m[2] : "20" + yy };
