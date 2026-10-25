@@ -39,6 +39,11 @@ export const DEFAULTS = Object.freeze({
   // Clearcart's new tab page (newtab/newtab.html), so Space to talk and
   // subtitles work on new tabs. Off: it forwards to Chrome's own.
   newTabPage: true,
+  // A main-frame network error (no connection, unknown address, refused)
+  // in a normal tab goes to Clearcart's "Can't reach this site" page
+  // (background/errpage.js), where Space to talk works. Off: Chrome's own
+  // error page stays.
+  errorPages: true,
   // Danger mode: the button lock is off and orders are placed without a
   // spoken yes (content/protect.js, agent/session.ts). Off unless the user
   // turns it on, with a confirm step (lib/danger-toggle.js). Masking of card
@@ -102,6 +107,7 @@ export function normalize(raw = {}) {
   if (typeof raw.guidedMode === "boolean") out.guidedMode = raw.guidedMode;
   if (typeof raw.watchablePace === "boolean") out.watchablePace = raw.watchablePace;
   if (typeof raw.newTabPage === "boolean") out.newTabPage = raw.newTabPage;
+  if (typeof raw.errorPages === "boolean") out.errorPages = raw.errorPages;
   // Only a stored true turns it on.
   out.dangerMode = raw.dangerMode === true;
   return out;

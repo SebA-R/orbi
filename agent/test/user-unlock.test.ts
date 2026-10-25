@@ -189,6 +189,8 @@ test("request_unlock: the user's direct ask presses once and logs it", async () 
   f.s.userText("go to checkout");
   const r = await f.s.requestUnlock(ask());
   assert.match(r.content[0].text, /^pressed Proceed to checkout once/);
+  // Claude learns the press is done and that another needs another request_unlock.
+  assert.match(r.content[0].text, /Do not click it again; another press needs another request_unlock\./);
   assert.equal(f.pressed(), 1);
   assert.equal(f.calls.find((c) => c[0] === "lock_arm")![1].scope, "user");
   assert.ok(f.out.some((m) => m.type === "status" && /^unlocked once: checkout "Proceed to checkout" \(user asked\)$/.test(m.text)));

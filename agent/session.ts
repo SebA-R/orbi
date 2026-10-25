@@ -142,6 +142,11 @@ export function browseDenyReason(url: string, policy: SitePolicy = sitePolicy())
 }
 
 const BLANK = /^(about:blank|chrome:\/\/newtab)/;
+// The sweep also leaves chrome-error://chromewebdata/ alone: the extension's
+// name for its "Can't reach this site" page (extension/background/errpage.js),
+// which holds nothing. Only the sweep: the OCIC tab guard keeps BLANK, since
+// Chrome's own error page names the host it failed on.
+const SWEEP_BLANK = /^(about:blank|chrome:\/\/newtab|chrome-error:\/\/chromewebdata\/?$)/;
 
 // Tools that act on an existing tab's page. On the Open Claude in Chrome
 // path the guard checks that tab's current URL first (a redirect or page
@@ -198,7 +203,7 @@ export async function returnStrays(
   for (const t of strays) {
     if (policy.mode === "open") {
       const at = await nav(t.tabId, "back").catch(() => null);
-      if (at && (BLANK.test(at) || !strayReason(at, policy))) continue;
+      if (at && (SWEEP_BLANK.test(at) || !strayReason(at, policy))) continue;
     }
     await nav(t.tabId, STORE_ORIGIN + "/").catch(() => null);
   }
@@ -233,7 +238,7 @@ export function strayReason(url: string, policy: SitePolicy = sitePolicy()): str
 }
 
 export function isStrayTab(url: string | undefined, policy: SitePolicy = sitePolicy()): boolean {
-  return !!url && !BLANK.test(url) && !!strayReason(url, policy);
+  return !!url && !SWEEP_BLANK.test(url) && !!strayReason(url, policy);
 }
 
 // Text of an MCP tool result as the PostToolUse hook receives it.
@@ -581,7 +586,7 @@ export class Session {
     return {};
   };
 
-  // OCIC path: after read_page or find, name the locked refs for Claude and
+  // OCIC path: after read_page, find or get_page_text, name the locked controls for Claude and
   // draw the lock badges in the tab. Our own extension does both itself.
   private lockNotes: HookCallback = async (input) => {
     if (input.hook_event_name !== "PostToolUse" || !input.tool_name.startsWith(B) || extMode()) return {};
@@ -880,7 +885,7 @@ export class Session {
         : d.cls === "account"
           ? " Never type a password or card number; the user types those themselves."
           : "";
-    return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""}${next}`);
+    return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""} Do not click it again; another press needs another request_unlock.${next}`);
   }
 
   // The pay_now tool body.
@@ -942,7 +947,7 @@ export class Session {
 
     const requestUnlockTool = tool(
       "request_unlock",
-      "Press a [locked] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card, or a marked control. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_now. Returns what happened.",
+      "Press a [locked] or [uncheck only] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card. Use it whenever the task needs a locked control or a click comes back Locked, with the ref and label it names; do not give up, retry the click or look for a workaround. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_now. Returns what happened.",
       {
         tabId: z.number().int().optional().describe("Tab id of the page with the control. Default: the last tab used."),
         ref: z.string().optional().describe("The control's ref from read_page or find, e.g. ref_12"),

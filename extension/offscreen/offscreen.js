@@ -13,7 +13,7 @@
 //      controller.onPageKey, so a press ducks our speech at once, ahead of
 //      the worker's VOICE_START.
 // Out: runtime messages with from "offscreen": VOICE_STATE, VOICE_PARTIAL,
-//      VOICE_FINAL, VOICE_ERROR, SUBTITLE, STATUS.
+//      VOICE_FINAL, VOICE_ERROR, SUBTITLE, SUBTITLE_WORD, STATUS.
 import { RT } from "../lib/protocol.js";
 import { DEFAULTS, endpoints, normalize } from "../lib/settings.js";
 import { createLogger } from "../lib/log.js";
@@ -57,6 +57,7 @@ const speaker = new Speaker({
   voiceId: DEFAULT_VOICE_ID,
   log: say,
   onSpeakingChange: (on) => controller && controller.onSpeakingChange(on),
+  onCaption: (c) => controller && controller.onCaption(c),
 });
 const mic = new Mic(ctx);
 
