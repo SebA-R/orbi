@@ -18,7 +18,7 @@ const FRAME_SRC = read("frame.js");
 function setup({ stored = {}, reduce = false, subtitles = false, frame = false, session = null } = {}) {
   const dom = new JSDOM("<!doctype html><html><head></head><body><button id=add style='position:absolute'>Add to cart</button><input id=q placeholder='Search'></body></html>", {
     runScripts: "outside-only",
-    url: "http://localhost:4000/",
+    url: "https://shop.example/",
   });
   const { window } = dom;
   let now = 0;

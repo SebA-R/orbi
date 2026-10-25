@@ -1,7 +1,6 @@
 // Test harness: loads mask.js, protect.js, then page.js into a jsdom window in the same
 // order the worker injects them, with a fake chrome.runtime.onMessage.
 import { readFileSync, existsSync } from "node:fs";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 
@@ -10,7 +9,7 @@ const MASK_SRC = readFileSync(here("../../content/mask.js"), "utf8");
 const PROTECT_SRC = readFileSync(here("../../content/protect.js"), "utf8");
 const PAGE_PATH = here("../../content/page.js");
 
-export function loadPage(html, { url = "http://localhost:4000/", page = true } = {}) {
+export function loadPage(html, { url = "https://shop.example/", page = true } = {}) {
   const dom = new JSDOM(html, { url, runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   const listeners = [];
@@ -39,19 +38,9 @@ export function loadPage(html, { url = "http://localhost:4000/", page = true } =
   return { inject, dom, window, document: window.document, listeners, send, call };
 }
 
-// Starts the demo store on a free-ish port and returns { base, stop }.
-export async function startStore(port = 4200 + Math.floor(Math.random() * 600)) {
-  const proc = spawn(process.execPath, [here("../../../store/server.js")], {
-    env: { ...process.env, STORE_PORT: String(port) },
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  await new Promise((resolve, reject) => {
-    proc.stdout.on("data", (b) => String(b).includes("demo store") && resolve());
-    proc.on("exit", (c) => reject(new Error("store exited " + c)));
-  });
-  const base = `http://localhost:${port}`;
-  return { base, stop: () => proc.kill() };
-}
+// The small test shop (tests/fixtures/shop.mjs): its pages as HTML, and a
+// local server for tests that need real navigation.
+export { pages as shopPages, startShop } from "../../../tests/fixtures/shop.mjs";
 
 export async function fetchHtml(url, init) {
   const r = await fetch(url, init);

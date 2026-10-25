@@ -9,12 +9,13 @@ import { _reset, assertNetSafe, flagOf, forget, noteResponse, setAllowlist } fro
 import { resolveAllowedTab, tabsCreate } from "../../background/tabs.js";
 import { ERR } from "../../lib/protocol.js";
 
-const STORE = "http://localhost:4000";
+// A local test page the user put on the allowed sites.
+const LOCAL = "http://localhost:4100";
 const res = (tabId, url, ip, type = "main_frame") => ({ tabId, url, ip, type });
 
 beforeEach(() => {
   _reset();
-  setAllowlist([STORE]);
+  setAllowlist([LOCAL]);
 });
 
 test("a public name served from loopback or a private address is flagged", () => {
@@ -24,14 +25,14 @@ test("a public name served from loopback or a private address is flagged", () =>
     ["https://lan.example/", "fec0::1"], ["https://lan.example/", "10.0.0.8"],
   ]) {
     _reset();
-    setAllowlist([STORE]);
+    setAllowlist([LOCAL]);
     assert.ok(noteResponse(res(7, url, ip)), `${url} ${ip}`);
     assert.throws(() => assertNetSafe(7), (e) => e.code === ERR.NOT_ALLOWED && /local address/.test(e.message));
   }
 });
 
-test("the store on localhost and public sites pass; a clean page clears the flag", () => {
-  assert.equal(noteResponse(res(7, `${STORE}/cart`, "127.0.0.1")), null);
+test("an allowed local page and public sites pass; a clean page clears the flag", () => {
+  assert.equal(noteResponse(res(7, `${LOCAL}/cart`, "127.0.0.1")), null);
   assert.equal(noteResponse(res(7, "https://www.etsy.com/", "151.101.1.69")), null);
   assertNetSafe(7);
   assert.ok(noteResponse(res(7, "https://evil.example/", "8.8.8.8")) === null);
@@ -51,10 +52,10 @@ test("a cached response without an ip uses the last address seen for its origin"
   assert.equal(noteResponse(res(9, "https://unknown.example/", undefined)), null);
 });
 
-test("before settings load, the store is flagged until the allowlist arrives", () => {
+test("before settings load, an allowed local page is flagged until the allowlist arrives", () => {
   _reset();
-  assert.ok(noteResponse(res(7, `${STORE}/`, "127.0.0.1")));
-  setAllowlist([STORE]);
+  assert.ok(noteResponse(res(7, `${LOCAL}/`, "127.0.0.1")));
+  setAllowlist([LOCAL]);
   assert.equal(flagOf(7), null);
 });
 

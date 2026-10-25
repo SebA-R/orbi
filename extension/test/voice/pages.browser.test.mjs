@@ -78,10 +78,15 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   const stored = await page.evaluate(() => chrome.storage.local.get(["hotkey", "speed", "subtitles"]));
   assert.deepEqual(stored, { hotkey: "F9", speed: 1.4, subtitles: false });
 
-  // Sites: open web by default, editable allowlist, origins only.
+  // Guided mode, the blind and low-vision mode, is off by default.
+  assert.equal(await page.isChecked("#guided-mode"), false);
+  assert.match(await page.textContent("#guided-mode-hint"), /Made for blind and low-vision users/);
+
+  // Sites: open web by default, no allowed sites until the user adds some, origins only.
   assert.equal(await page.isChecked("#mode-open"), true);
-  assert.equal(await page.inputValue("#allowlist"), "http://localhost:4000");
-  await page.fill("#allowlist", "http://localhost:4000\nhttps://me:pw@shop.example");
+  assert.equal(await page.inputValue("#allowlist"), "");
+  assert.doesNotMatch(await page.textContent("#allowlist-hint"), /demo|localhost/);
+  await page.fill("#allowlist", "http://localhost:4100\nhttps://me:pw@shop.example");
   await page.click("button[type=submit]");
   await page.waitForFunction(() => /Not a site address in the allowed sites: https:\/\/me:pw@shop\.example/.test(document.getElementById("status").textContent));
   assert.equal(await page.getAttribute("#allowlist", "aria-invalid"), "true");
@@ -91,7 +96,7 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   assert.equal(await page.inputValue("#blocklist"), suggested.join("\n"));
   assert.deepEqual((await page.evaluate(() => chrome.storage.local.get("blocklist"))).blocklist, suggested, "seeded on install");
   assert.match(await page.textContent("#blocked-sites"), /Always blocked: non-web pages, local network addresses, addresses with a login in them/);
-  await page.fill("#allowlist", "http://localhost:4000\nwww.etsy.com/c/home");
+  await page.fill("#allowlist", "http://localhost:4100\nwww.etsy.com/c/home");
   await page.fill("#blocklist", "# mine\nhttps://www.nordstrom.com/s/1\nnot a site\n*shoe*\nchase");
   await page.click("button[type=submit]");
   await page.waitForFunction(() => /Fix the blocked sites first: not a site, chase/.test(document.getElementById("status").textContent));
@@ -100,15 +105,16 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   assert.match(await page.textContent("#blocklist-errors"), /not a site\nchase/);
   await page.fill("#blocklist", "# mine\nhttps://www.nordstrom.com/\n*shoe*\namazon.com/ap/");
   await page.check("#mode-allowlist");
-  // Browse mode saves on its own; clear its "Saved." so the wait is for Save.
-  await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
+  // Browse mode saves on its own (and says the edited lists still need Save);
+  // clear that so the wait is for Save.
+  await page.waitForFunction(() => /^Saved\./.test(document.getElementById("status").textContent));
   await page.evaluate(() => { document.getElementById("status").textContent = ""; });
   await page.click("button[type=submit]");
   await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
   assert.deepEqual(await page.evaluate(() => chrome.storage.local.get(["browseMode", "allowlist", "blocklist"])), {
-    browseMode: "allowlist", allowlist: ["http://localhost:4000", "https://www.etsy.com"], blocklist: ["# mine", "nordstrom.com", "*shoe*", "amazon.com/ap"],
+    browseMode: "allowlist", allowlist: ["http://localhost:4100", "https://www.etsy.com"], blocklist: ["# mine", "nordstrom.com", "*shoe*", "amazon.com/ap"],
   });
-  assert.equal(await page.inputValue("#allowlist"), "http://localhost:4000\nhttps://www.etsy.com");
+  assert.equal(await page.inputValue("#allowlist"), "http://localhost:4100\nhttps://www.etsy.com");
   assert.equal(await page.inputValue("#blocklist"), "# mine\nnordstrom.com\n*shoe*\namazon.com/ap");
   assert.equal(await page.isVisible("#blocklist-errors"), false);
 
@@ -135,8 +141,20 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   await page.waitForFunction(() => document.getElementById("status").textContent === "Reset to defaults.");
   assert.equal(await page.isChecked("#mode-open"), true);
   assert.deepEqual(await page.evaluate(() => chrome.storage.local.get(["browseMode", "allowlist", "blocklist"])), {
-    browseMode: "open", allowlist: ["http://localhost:4000"], blocklist: suggested,
+    browseMode: "open", allowlist: [], blocklist: suggested,
   });
+  // Open web saves with no allowed sites; Only allowed sites needs one.
+  await page.evaluate(() => { document.getElementById("status").textContent = ""; });
+  await page.click("button[type=submit]");
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
+  await page.check("#mode-allowlist");
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
+  await page.evaluate(() => { document.getElementById("status").textContent = ""; });
+  await page.click("button[type=submit]");
+  await page.waitForFunction(() => /Add at least one allowed site/.test(document.getElementById("status").textContent));
+  await page.evaluate(() => { document.getElementById("status").textContent = ""; });
+  await page.check("#mode-open");
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
   await page.close();
 });
 
@@ -159,8 +177,9 @@ test("offscreen document: talk turn goes to the agent, the reply goes to Sonic",
   stt.ws.send(JSON.stringify({ type: "turn.end", transcript: "find cheap allergy pills" }));
   await page.evaluate(() => __clearcartVoice.controller.stop());
   await until(() => stt.got.some((m) => m.type === "close"));
-  await until(() => session.got.length);
-  assert.deepEqual(session.got[0], { type: "user_text", text: "find cheap allergy pills" });
+  // A barge-in interrupt goes first, then the words.
+  await until(() => session.got.some((m) => m.type === "user_text"));
+  assert.deepEqual(session.got.find((m) => m.type === "user_text"), { type: "user_text", text: "find cheap allergy pills" });
   assert.equal(await page.evaluate(() => __clearcartVoice.controller.state), "thinking");
 
   // Agent reply is spoken through Sonic 3.6 with the configured voice.

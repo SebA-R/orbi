@@ -66,7 +66,7 @@ test("a second socket that talks takes the session over; the first gets standby 
   assert.deepEqual(a.standby(), [{ type: "standby", reason: "moved", text: MOVED_TEXT }]);
   assert.deepEqual(made[0].calls.slice(-2), ["handOff", "interrupt"], "the old window's turn is handed off and stopped");
   made[0].send({ type: "agent_text", text: "Here is the cheapest." });
-  made[0].send({ type: "receipt", item: "Advil", total: "$9.00", last4: "1111" });
+  made[0].send({ type: "receipt", item: "Blue mug", total: "$9.00", last4: "1111" });
   assert.deepEqual(a.spoken(), []);
   assert.deepEqual(b.spoken(), ["Here is the cheapest."]);
   assert.ok(b.got.some((m) => m.type === "receipt"));
@@ -78,7 +78,7 @@ test("words from a window that lost the session are dropped, never sent; talking
   const a = windowOf(hub);
   const b = windowOf(hub);
   a.peer.interrupt();
-  a.peer.userText("buy the advil");
+  a.peer.userText("buy the blue mug");
   b.peer.interrupt();
   a.peer.userText("yes"); // said in a before the user moved to b
   assert.ok(!made[0].calls.includes("text:yes"));
@@ -102,9 +102,9 @@ test("a checkout read-back can't be confirmed from another window", async () => 
   const { hub, session } = realHub();
   const a = windowOf(hub);
   const b = windowOf(hub);
-  a.peer.userText("buy the advil");
+  a.peer.userText("buy the blue mug");
   const s = session();
-  const done = s.requestCheckout({ item: "Advil 50 count", quantity: 1, total: "$14.27" });
+  const done = s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$14.27" });
   await tick();
   assert.ok(a.got.some((m) => m.type === "confirm"), "the read-back goes to the window in use");
   assert.ok(!b.got.some((m) => m.type === "confirm" || m.type === "agent_text"), "and only there");
@@ -123,8 +123,8 @@ test("the window that heard the read-back still confirms it with a yes", async (
   const { hub, session } = realHub();
   const a = windowOf(hub);
   windowOf(hub); // another window, never used
-  a.peer.userText("buy the advil");
-  const done = session().requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  a.peer.userText("buy the blue mug");
+  const done = session().requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
   await tick();
   a.peer.interrupt(); // barge-in to answer
   a.peer.userText("yes");
@@ -136,9 +136,9 @@ test("a yes pay_now has not used yet is withdrawn when the user moves to another
   const { hub, session } = realHub();
   const a = windowOf(hub);
   const b = windowOf(hub);
-  a.peer.userText("buy the advil");
+  a.peer.userText("buy the blue mug");
   const s = session();
-  let done = s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  let done = s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
   await tick();
   a.peer.userText("yes");
   assert.equal((await done).content[0].text, "confirmed");
@@ -148,7 +148,7 @@ test("a yes pay_now has not used yet is withdrawn when the user moves to another
   assert.match((claim as any).error, /No confirmed checkout/);
   // b hears its own read-back and says yes; pay_now takes it; then a takes over.
   s.onSdkMessage({ type: "result", subtype: "success" } as any); // the interrupted turn ends
-  done = s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  done = s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
   await tick();
   b.peer.userText("yes");
   assert.equal((await done).content[0].text, "confirmed");
@@ -161,9 +161,9 @@ test("a yes still being pinned to its tab when the user moves windows never turn
   const { hub, session } = realHub();
   const a = windowOf(hub);
   const b = windowOf(hub);
-  a.peer.userText("buy the advil");
+  a.peer.userText("buy the blue mug");
   const s = session();
-  const done = s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  const done = s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
   await tick();
   a.peer.userText("yes"); // request_checkout now waits for the checkout snapshot
   b.peer.interrupt(); // the user moves to b before that returns
@@ -189,9 +189,9 @@ test("a read-back still waiting when its window closes is declined; the session 
   const { hub, session } = realHub();
   const a = windowOf(hub);
   const b = windowOf(hub);
-  a.peer.userText("buy the advil");
+  a.peer.userText("buy the blue mug");
   const s = session();
-  const done = s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  const done = s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
   await tick();
   a.peer.leave();
   assert.match((await done).content[0].text, /^declined/);
@@ -226,7 +226,7 @@ test("a closed session's late output never reaches the next session's window", (
   assert.equal(made[0].closed, true);
   const b = windowOf(hub);
   b.peer.userText("hello");
-  made[0].send({ type: "receipt", item: "Advil", total: "$9.00", last4: "1111" });
-  made[0].send({ type: "confirm", item: "Advil", quantity: 1, total: "$9.00", changes: "" });
+  made[0].send({ type: "receipt", item: "Blue mug", total: "$9.00", last4: "1111" });
+  made[0].send({ type: "confirm", item: "Blue mug", quantity: 1, total: "$9.00", changes: "" });
   assert.deepEqual(b.got.filter((m) => m.type === "receipt" || m.type === "confirm"), []);
 });

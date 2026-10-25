@@ -46,7 +46,7 @@ test("isNewTabPage: Chrome's new tab pages and Clearcart's own, nothing else", (
   }
 });
 
-test("a user's new tab is listed and can be navigated to a store, but never read or acted on", async () => {
+test("a user's new tab is listed and can be navigated to a site, but never read or acted on", async () => {
   tabList = [
     { id: 1, active: true, url: "chrome://newtab/", title: "New Tab" },
     { id: 2, active: false, url: "https://www.chase.com/", title: "Chase" },

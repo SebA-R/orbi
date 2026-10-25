@@ -364,7 +364,7 @@ test("request_unlock: the user's real exchange presses checkout once", async () 
 
 test("request_unlock: Place order and wallets are refused without arming, even on a direct ask", async () => {
   for (const info of [locked({ kind: "marked", label: "Place order · $14.27", cls: null }), locked({ kind: "express", label: "Apple Pay", cls: null })]) {
-    const f = session(info, "http://localhost:4000/checkout");
+    const f = session(info, "https://shop.example/checkout");
     f.s.userText("place the order");
     const r = await f.s.requestUnlock(ask(info.label));
     assert.doesNotMatch(r.content[0].text, /^pressed/);

@@ -15,7 +15,7 @@ const FACE_SRC = fs.readFileSync(path.join(HERE, "..", "..", "content", "orb-fac
 function setup({ stored = {}, reduce = false } = {}) {
   const dom = new JSDOM("<!doctype html><html><head></head><body><input id=f></body></html>", {
     runScripts: "outside-only",
-    url: "http://localhost:4000/",
+    url: "https://shop.example/",
   });
   const { window } = dom;
 
@@ -725,4 +725,94 @@ test("the action line: a small secondary line under the words, never replacing t
   for (const f of off.changeListeners) f({ subtitles: { newValue: false } }, "local");
   off.window.__clearcartCaption.set("Scrolling");
   assert.equal(off.host(), null);
+});
+
+// Lip-sync: the orb face shapes its mouth to the heard words (content/orb-face.js).
+// The face lives in jsdom's realm: copy its arrays out before deepEqual.
+const plain = (x) => JSON.parse(JSON.stringify(x));
+const shapes = (F, w) => plain(F.wordVisemes(w).map((p) => p.v));
+
+test("lip-sync: words map to friendly mouth shapes, and Sonic's phonemes to the same set", () => {
+  const F = setup().window.__clearcartOrbFace;
+  assert.deepEqual([...F.VISEMES], ["rest", "A", "E", "I", "O", "U", "F"]);
+  assert.deepEqual(shapes(F, "hello"), ["E", "O"]);
+  assert.deepEqual(shapes(F, "you"), ["U"]);
+  assert.deepEqual(shapes(F, "make"), ["rest", "A"], "m closes the lips; the silent e is dropped");
+  assert.deepEqual(shapes(F, "nine"), ["A", "I"], "a long i opens, then narrows");
+  assert.deepEqual(shapes(F, "coffee"), ["O", "F", "E"]);
+  assert.deepEqual(shapes(F, "Bananas,"), ["rest", "A", "I", "A", "I", "A"], "repeated vowels still move");
+  assert.deepEqual(shapes(F, "$9"), ["A"], "a number still talks");
+  assert.equal(F.visemeOf("oʊ"), "O");
+  assert.equal(F.visemeOf("ˈɑː"), "A");
+  assert.equal(F.visemeOf("iː"), "E");
+  assert.equal(F.visemeOf("ɪ"), "I");
+  assert.equal(F.visemeOf("u"), "U");
+  assert.equal(F.visemeOf("b"), "rest");
+  assert.equal(F.visemeOf("v"), "F");
+  assert.equal(F.visemeOf("t"), null, "lip-neutral consonants share the next vowel");
+  assert.match(F.CSS, /\.ccf-v \{[^}]*stroke-linejoin: round;[^}]*d 75ms ease-out/, "soft corners, 75 ms easing");
+});
+
+test("lip-sync: a word's time is split across its vowel groups, or follows the phonemes", () => {
+  const F = setup().window.__clearcartOrbFace;
+  assert.deepEqual(plain(F.plan("milk", 400)), [{ v: "rest", at: 0, end: 92 }, { v: "I", at: 92, end: 400 }]);
+  const hello = F.plan("hello", 300);
+  assert.deepEqual(plain(hello.map((s) => s.v)), ["E", "O"]);
+  assert.equal(hello[0].at, 0);
+  assert.equal(hello[0].end, hello[1].at, "no gaps inside a word");
+  assert.equal(hello.at(-1).end, 300, "ends with the word");
+  assert.deepEqual(plain(F.plan("hello", 400, [["h", 0, 50], ["ə", 50, 120], ["l", 120, 200], ["oʊ", 200, 400]])),
+    [{ v: "A", at: 0, end: 120 }, { v: "O", at: 120, end: 400 }], "phonemes win; consonants go to the next vowel");
+  assert.deepEqual(plain(F.plan("hello", 0)), [], "no length, no shapes");
+});
+
+const LIPS = "Say hello";
+const lipsSetup = (opts) => {
+  const t = setup(opts);
+  t.send({ type: "subtitle", speaker: "agent", text: LIPS, final: true, utteranceId: "u1", karaoke: true });
+  t.send({ type: "voice.state", state: "speaking" });
+  const f = t.$(".card > .ccf");
+  return { t, f, v: () => f.dataset.viseme, synced: () => f.classList.contains("ccf-sync") };
+};
+
+test("lip-sync: plays each heard word from where the voice is, then rests between words", () => {
+  const { t, v, synced } = lipsSetup();
+  t.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 0 });
+  assert.ok(synced(), "the talking loop gives way to the lips");
+  assert.equal(v(), "E");
+  t.tick(150);
+  assert.equal(v(), "O");
+  t.tick(150);
+  assert.equal(v(), "rest", "closed in the pause after the word");
+  // A tab switch replay comes in partway through a word.
+  const r = lipsSetup();
+  r.t.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 200 });
+  assert.equal(r.v(), "O", "picks up mid-word");
+});
+
+test("lip-sync: a stop or barge-in snaps the mouth to rest; no timestamps or reduced motion keep the loop", () => {
+  const a = lipsSetup();
+  a.t.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 0 });
+  a.t.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 20, frozen: true });
+  assert.equal(a.v(), "rest", "stop: rest at once");
+  a.t.tick(400);
+  assert.equal(a.v(), "rest", "nothing still to come moves it");
+  const b = lipsSetup();
+  b.t.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 0 });
+  b.t.send({ type: "voice.state", state: "listening" });
+  assert.equal(b.v(), "rest");
+  assert.equal(b.synced(), false, "barge-in hands the mouth back to the face");
+  b.t.tick(400);
+  assert.equal(b.v(), "rest");
+  const c = lipsSetup();
+  c.t.send({ type: "subtitle.word", utteranceId: "u1", fallback: true });
+  assert.equal(c.synced(), false, "no timestamps: the talking loop");
+  const d = lipsSetup({ reduce: true });
+  d.t.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 0 });
+  assert.equal(d.synced(), false, "reduced motion: the static speaking pose");
+  const e = setup();
+  e.send({ type: "subtitle", speaker: "agent", text: LIPS, final: true }); // Speak replies off: no utteranceId
+  e.send({ type: "voice.state", state: "speaking" });
+  e.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 0 });
+  assert.equal(e.$(".card > .ccf").classList.contains("ccf-sync"), false, "no voice line, no lip-sync");
 });

@@ -112,3 +112,19 @@ label.row { cursor: pointer; }
 .note { margin: 0; padding: 8px 16px; font-size: 13px; line-height: 1.35; background: var(--warn-bg); color: var(--warn-fg); }
 .note[hidden] { display: none; }
 .note + .row { border-top: 1px solid var(--line); }
+
+/* Model provider: the Local chip (model name and status) and the note
+   shown for a few seconds after a switch. */
+.local-line { display: flex; justify-content: flex-end; padding: 0 16px 8px; }
+.local-chip {
+  display: inline-flex; align-items: center; min-height: 26px; max-width: 100%; padding: 0 10px;
+  border-radius: 999px; font-size: 12px; font-weight: 500; overflow-wrap: anywhere;
+  background: var(--wait-bg); color: var(--wait-fg);
+}
+.local-chip[data-state="ok"] { background: var(--ok-bg); color: var(--ok-fg); }
+.local-chip[data-state="todo"] { background: var(--warn-bg); color: var(--warn-fg); }
+.note.info { background: var(--fill); color: var(--soft); }
+.local-line + .row, .local-line + .note + .row { border-top: 1px solid var(--line); }
+@media (forced-colors: active) {
+  .local-chip { border: 1px solid CanvasText; }
+}

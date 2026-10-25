@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 
 import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, blocklistReason, parseBlockLines, parseEntry } from "../../../extension/lib/blocklist.js";
 
-const STORE = "http://localhost:4000";
-const reason = (u, lines) => blocklistReason(u, parseBlockLines(lines).entries, new Set([STORE]));
+// A local test page the user allowed.
+const LOCAL = "http://localhost:4100";
+const reason = (u, lines) => blocklistReason(u, parseBlockLines(lines).entries, new Set([LOCAL]));
 
 test("entry forms parse and normalize", () => {
   assert.deepEqual(parseEntry("Chase.com"), { text: "chase.com", host: "chase.com", any: false, path: "" });
@@ -64,11 +65,11 @@ test("fixed rules hold with an empty list", () => {
     "data:text/html,hi", "javascript:alert(1)", "blob:https://x.example/1", "view-source:https://x.example", "ftp://x.example",
     "not a url", "", undefined,
   ]) assert.ok(reason(u, []), String(u));
-  for (const u of ["http://localhost:5050/", "http://localhost:4001/", "http://127.0.0.1:4000/", "http://[::1]:4000/", "http://app.localhost/", "http://192.168.1.1/", "http://10.0.0.5/", "http://172.16.0.1/", "http://169.254.169.254/"]) {
+  for (const u of ["http://localhost:5050/", "http://localhost:4101/", "http://127.0.0.1:4100/", "http://[::1]:4100/", "http://app.localhost/", "http://192.168.1.1/", "http://10.0.0.5/", "http://172.16.0.1/", "http://169.254.169.254/"]) {
     assert.match(reason(u, []), /local address/, u);
   }
   assert.match(reason("https://www.etsy.com@mail.google.com/", []), /login/);
-  assert.equal(reason(`${STORE}/cart`, []), null, "the allowlisted store");
+  assert.equal(reason(`${LOCAL}/cart`, []), null, "the allowlisted local page");
   assert.equal(reason("http://172.32.0.1/", []), null, "not a private range");
   assert.equal(reason("https://mail.google.com/", []), null, "everything else is the user's list");
 });
@@ -77,7 +78,7 @@ test("the suggested list is valid and covers today's sensitive sites", () => {
   assert.deepEqual(parseBlockLines(SUGGESTED_BLOCKLIST).bad, []);
   assert.deepEqual(parseBlockLines(SUGGESTED_BLOCKLIST).lines, [...SUGGESTED_BLOCKLIST], "already normalized");
   assert.ok(SUGGESTED_BLOCKLIST.includes("# Banks and money: any address with these words in its name"));
-  const r = (u) => blocklistReason(u, SUGGESTED_ENTRIES, new Set([STORE]));
+  const r = (u) => blocklistReason(u, SUGGESTED_ENTRIES, new Set([LOCAL]));
   for (const u of [
     "https://mail.google.com/mail/u/0", "https://outlook.live.com/mail", "https://account.proton.me/", "https://vault.bitwarden.com/",
     "https://my.1password.com/", "https://secure.chase.com/", "https://www.rbcroyalbank.com/", "https://www.td.com/ca/en",
@@ -96,6 +97,6 @@ test("IPv4-mapped, compatible and site-local IPv6 and loopback DNS names are loc
   for (const u of [
     "http://[::ffff:127.0.0.1]:5050/", "http://[::ffff:192.168.1.1]/", "http://[::7f00:1]/", "http://[fec0::]/",
     "http://localtest.me:5050/cartesia-token", "http://127.0.0.1.nip.io:5050/",
-  ]) assert.match(blocklistReason(u, SUGGESTED_ENTRIES, new Set([STORE])) || "", /local address/, u);
-  assert.equal(blocklistReason(`${STORE}/`, SUGGESTED_ENTRIES, new Set([STORE])), null);
+  ]) assert.match(blocklistReason(u, SUGGESTED_ENTRIES, new Set([LOCAL])) || "", /local address/, u);
+  assert.equal(blocklistReason(`${LOCAL}/`, SUGGESTED_ENTRIES, new Set([LOCAL])), null);
 });

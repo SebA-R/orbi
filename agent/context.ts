@@ -85,9 +85,9 @@ export function contextBlock(ctx: PageContext, policy?: SitePolicy): string | nu
     return `${CONTEXT_LABEL} Active tab: tab ${tab}, an error page: Chrome${where} (navigate it to try again or to go somewhere else)`;
   }
   // A new tab page has nothing on it; say so, so the tab is not taken for a
-  // blocked site. navigate can still open a store in it.
+  // blocked site. navigate can still open a site in it.
   if (a.newTab === true && !a.blocked) {
-    return `${CONTEXT_LABEL} Active tab: tab ${Number.isInteger(a.tabId) ? a.tabId : "?"}, an empty new tab page (navigate it to open a store here)`;
+    return `${CONTEXT_LABEL} Active tab: tab ${Number.isInteger(a.tabId) ? a.tabId : "?"}, an empty new tab page (navigate it to open a site here)`;
   }
   const url = originPath(a.url);
   if (a.blocked || !url || (policy && siteBlockReason(url, policy))) return `${CONTEXT_LABEL} Active tab: a blocked site.`;

@@ -1,27 +1,26 @@
 // Button lock end to end in the real extension: an isolated Playwright
 // Chromium (never the user's Chrome) loads a temp copy of extension/ whose
 // default agent URL points at this test's own fake agent server, so it never
-// talks to a live agent on :5050. The fake agent drives a private demo store
-// over the real bridge and checks every agent input path is refused on the
-// protected Place order button, then that press_protected with a lock_arm
-// nonce (the pay flow's path) places the order.
+// talks to a live agent on :5050. The fake agent drives the test shop
+// (tests/fixtures/shop.mjs), the only allowed site, over the real bridge and
+// checks every agent input path is refused on the protected Place order
+// button, then that press_protected with a lock_arm nonce (the pay flow's
+// path) places the order.
 
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
 import { WebSocketServer } from "ws";
 
-import { EXT_DIR, REPO } from "./helpers.mjs";
+import { startShop } from "../../fixtures/shop.mjs";
+import { EXT_DIR } from "./helpers.mjs";
 
-const STORE_PORT = 4400 + Math.floor(Math.random() * 400);
-const STORE = `http://localhost:${STORE_PORT}`;
 const CARD = { name: "Test Shopper", number: "4111111111111111", exp: "12/30", csc: "737" };
 
-let store, wss, ctx, worker, extDir, profile, ext;
+let shop, SHOP, wss, ctx, worker, extDir, profile, ext;
 let seq = 0;
 const pending = new Map();
 let connected;
@@ -56,11 +55,8 @@ async function waitFor(fn, what, ms = 15_000) {
 }
 
 before(async () => {
-  store = spawn(process.execPath, [path.join(REPO, "store", "server.js")], {
-    env: { ...process.env, STORE_PORT: String(STORE_PORT) },
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  await waitFor(() => fetch(STORE + "/").then((r) => r.ok), "the store");
+  shop = await startShop();
+  SHOP = shop.base;
 
   wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise((r) => wss.once("listening", r));
@@ -86,12 +82,12 @@ before(async () => {
     });
   });
 
-  // Temp copy with this test's agent URL and store as the defaults.
+  // Temp copy with this test's agent URL and the shop as the allowed site.
   extDir = fs.mkdtempSync(path.join(os.tmpdir(), "clearcart-lock-ext-"));
   fs.cpSync(EXT_DIR, extDir, { recursive: true, filter: (p) => !p.split(path.sep).includes("test") && !p.includes("node_modules") });
   const settings = path.join(extDir, "lib", "settings.js");
   const src = fs.readFileSync(settings, "utf8");
-  const patched = src.replace('agentUrl: "ws://localhost:5050"', `agentUrl: "${agentUrl}"`).replace('["http://localhost:4000"]', `["${STORE}"]`);
+  const patched = src.replace('agentUrl: "ws://localhost:5050"', `agentUrl: "${agentUrl}"`).replace("allowlist: Object.freeze([])", `allowlist: Object.freeze(["${SHOP}"])`);
   assert.notEqual(patched, src, "settings defaults not found");
   fs.writeFileSync(settings, patched);
 
@@ -109,15 +105,15 @@ before(async () => {
 after(async () => {
   await ctx?.close().catch(() => {});
   wss?.close();
-  store?.kill();
+  await shop?.stop();
   for (const d of [profile, extDir]) if (d) fs.rmSync(d, { recursive: true, force: true });
 });
 
 const refOf = (tree, re) => /\[(ref_\d+)\]/.exec(tree.split("\n").find((l) => re.test(l)) || "")?.[1];
 
 test("every agent input path is locked on Place order; press_protected with a nonce places the order", async () => {
-  await fetch(STORE + "/reset", { method: "POST", redirect: "manual" });
-  const { tabId } = await call("tabs_create", { url: STORE + "/product/cetirizine-30" });
+  await fetch(SHOP + "/reset", { method: "POST", redirect: "manual" });
+  const { tabId } = await call("tabs_create", { url: SHOP + "/product/mug" });
   const add = (await call("find", { tabId, query: "Add to cart" })).matches.find((m) => m.role === "button");
   assert.equal(add.locked, undefined, "Add to cart is never locked");
   await call("click", { tabId, ref: add.ref });
@@ -131,7 +127,7 @@ test("every agent input path is locked on Place order; press_protected with a no
   assert.equal((await fails("form_input", { tabId, ref: addon, value: true })).code, "locked");
   assert.equal((await fails("click", { tabId, ref: addon })).code, "locked", "a click would check it");
 
-  await call("navigate", { tabId, url: STORE + "/checkout" });
+  await call("navigate", { tabId, url: SHOP + "/checkout" });
   tree = (await call("read_page", { tabId, filter: "all" })).tree;
   const place = refOf(tree, /button "Place order/);
   assert.match(tree, /Place order[^\n]*\[locked\]/);
@@ -155,7 +151,7 @@ test("every agent input path is locked on Place order; press_protected with a no
     await call("type", { tabId, text: "1 Test Lane" });
   }
   // 5. Space with the button focused
-  const page = ctx.pages().find((p) => p.url().startsWith(STORE + "/checkout"));
+  const page = ctx.pages().find((p) => p.url().startsWith(SHOP + "/checkout"));
   await page.focus("#place-order");
   assert.equal((await fails("key", { tabId, key: " " })).code, "locked");
   assert.equal((await fails("key", { tabId, key: "Enter" })).code, "locked");

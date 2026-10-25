@@ -33,11 +33,46 @@
       <span class="orb-mark" aria-hidden="true"></span>
       <div>
         <h1>Clearcart settings</h1>
-        <p class="lede">Switches and menus save as soon as you change them. Site lists and the server address save with the Save button at the bottom.</p>
+        <p class="lede">Talk to the web: Clearcart navigates, reads and acts on pages for you. Switches and menus save as soon as you change them. Site lists and the server address save with the Save button at the bottom.</p>
       </div>
     </header>
 
     <form id="form" novalidate>
+      <section class="group" id="model" aria-labelledby="model-h">
+        <h2 id="model-h">Model</h2>
+        <div class="card">
+          <div class="row">
+            <span class="row-text"><span id="provider-label">Model provider</span>
+              <span class="hint" id="provider-hint">Switching starts a new conversation.</span></span>
+            <div class="seg" role="radiogroup" aria-labelledby="provider-label" aria-describedby="provider-hint">
+              <label>Claude<input type="radio" name="provider" value="claude" id="provider-claude" data-setting="provider"></label>
+              <label>Local<input type="radio" name="provider" value="local" id="provider-local" data-setting="provider"></label>
+            </div>
+          </div>
+          <div class="row stack">
+            <label for="local-base-url">Local server address</label>
+            <input id="local-base-url" name="localBaseUrl" class="field mono" type="text" spellcheck="false" autocomplete="off" aria-describedby="local-base-url-hint local-base-url-error">
+            <p class="error" id="local-base-url-error" hidden></p>
+            <p class="hint" id="local-base-url-hint">Must be on this computer, for example http://localhost:11434/v1 for Ollama or http://localhost:1234/v1 for LM Studio.</p>
+          </div>
+          <div class="row stack">
+            <label for="local-model">Local model</label>
+            <input id="local-model" name="localModel" class="field mono" type="text" spellcheck="false" autocomplete="off" aria-describedby="local-model-hint local-model-error">
+            <p class="error" id="local-model-error" hidden></p>
+            <span class="label-line" id="local-pick-line" hidden><label for="local-model-pick">Installed models</label>
+              <select id="local-model-pick" class="sel"></select></span>
+            <p class="hint" id="local-model-hint">The model name as your local server lists it, for example llama3.1:8b.</p>
+          </div>
+          <div class="row">
+            <span class="row-text"><span>Connection</span>
+              <span class="hint strong" id="local-test-status" role="status" aria-live="polite"></span></span>
+            <span class="row-end"><span class="tag" id="local-state" data-state="wait">Not checked</span>
+              <button type="button" class="btn" id="local-test">Test connection</button></span>
+          </div>
+        </div>
+        <p class="foot">Works with Ollama or LM Studio running on this computer. Local models are less capable than Claude and may not handle complex pages.</p>
+      </section>
+
       <section class="group" id="voice" aria-labelledby="voice-h">
         <h2 id="voice-h">Voice and talk keys</h2>
         <div class="card">
@@ -57,7 +92,7 @@
           <p class="hint warn" id="speak-replies-note" role="status" hidden></p>
           <label class="row" for="guided-mode">
             <span class="row-text"><span id="guided-mode-label">Guided mode</span>
-              <span class="hint" id="guided-mode-hint">Clearcart describes each page and lets you choose. Turn off to let it pick and act on its own.</span></span>
+              <span class="hint" id="guided-mode-hint">Made for blind and low-vision users: Clearcart describes each page, reads out choices and lets you pick. Off by default.</span></span>
             <input id="guided-mode" name="guidedMode" class="sw" type="checkbox" role="switch" data-setting="guidedMode" aria-labelledby="guided-mode-label" aria-describedby="guided-mode-hint">
           </label>
         </div>
@@ -71,7 +106,7 @@
         <div class="card">
           <div class="row">
             <span class="row-text"><span id="mode-label">Browse mode</span>
-              <span class="hint" id="mode-hint">Open web: any store, except the blocked sites below. Only allowed sites: just the allowed sites below.</span></span>
+              <span class="hint" id="mode-hint">Open web: any site, except the blocked sites below. Only allowed sites: just the allowed sites below.</span></span>
             <div class="seg" role="radiogroup" aria-labelledby="mode-label" aria-describedby="mode-hint">
               <label>Open web<input type="radio" name="browseMode" value="open" id="mode-open" data-setting="browseMode"></label>
               <label>Only allowed sites<input type="radio" name="browseMode" value="allowlist" id="mode-allowlist" data-setting="browseMode"></label>
@@ -95,7 +130,7 @@
           <div class="row stack">
             <label for="allowlist">Allowed sites, one per line</label>
             <textarea id="allowlist" name="allowlist" class="field" rows="3" spellcheck="false" autocomplete="off" aria-describedby="allowlist-hint"></textarea>
-            <p class="hint" id="allowlist-hint">Site addresses only, for example https://www.etsy.com. Keep the demo store, http://localhost:4000.</p>
+            <p class="hint" id="allowlist-hint">Site addresses only, for example https://www.etsy.com. Empty by default. In Only allowed sites mode these are the only sites Clearcart opens.</p>
           </div>
         </div>
         <p class="foot">Which sites Clearcart may open. It can use your open tabs on these sites and opens its own in the background. Tabs on blocked sites stay hidden from it, and it only closes tabs it opened.</p>

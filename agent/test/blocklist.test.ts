@@ -11,8 +11,9 @@ import * as extList from "../../extension/lib/blocklist.js";
 // @ts-ignore: plain JS module from the extension
 import { DEFAULTS } from "../../extension/lib/settings.js";
 
-const STORE = "http://localhost:4000";
-const open = (o: Partial<SitePolicy> = {}): SitePolicy => ({ mode: "open", allowed: new Set([STORE]), blocked: new Set(), entries: SUGGESTED_ENTRIES, ...o });
+// A local test page the user allowed.
+const LOCAL = "http://localhost:4100";
+const open = (o: Partial<SitePolicy> = {}): SitePolicy => ({ mode: "open", allowed: new Set([LOCAL]), blocked: new Set(), entries: SUGGESTED_ENTRIES, ...o });
 
 test("the agent uses the extension's code and suggested list, and the extension seeds the same list", () => {
   assert.equal(blocklistReason, extList.blocklistReason);
@@ -41,32 +42,32 @@ test("fixed rules hold with an empty list", () => {
   for (const u of ["chrome://settings", "about:blank", "file:///etc/passwd", "data:text/html,x", "javascript:alert(1)", "http://localhost:5050/", "http://127.0.0.1:4001/", "http://192.168.0.1/"]) {
     assert.ok(siteBlockReason(u, p), u);
   }
-  assert.match(siteBlockReason("http://localhost:4000@mail.google.com/", p) || "", /login/);
-  assert.equal(siteBlockReason(`${STORE}/cart`, p), null);
+  assert.match(siteBlockReason("http://localhost:4100@mail.google.com/", p) || "", /login/);
+  assert.equal(siteBlockReason(`${LOCAL}/cart`, p), null);
 });
 
 test("open mode: CLEARCART_BLOCKED_ORIGINS entries win, even over the allowlist", () => {
-  const p = open({ blocked: new Set(["https://www.etsy.com", STORE]) });
+  const p = open({ blocked: new Set(["https://www.etsy.com", LOCAL]) });
   assert.equal(siteBlockReason("https://www.etsy.com/x", p), "on the blocklist");
-  assert.equal(siteBlockReason(`${STORE}/`, p), "on the blocklist");
+  assert.equal(siteBlockReason(`${LOCAL}/`, p), "on the blocklist");
   assert.equal(siteBlockReason("https://etsy.com/x", p), null, "exact origins");
 });
 
 test("open mode: a user list entry beats the allowlist", () => {
-  const p = open({ allowed: new Set([STORE, "https://www.etsy.com"]), entries: parseBlockLines(["etsy.com"]).entries });
+  const p = open({ allowed: new Set([LOCAL, "https://www.etsy.com"]), entries: parseBlockLines(["etsy.com"]).entries });
   assert.match(siteBlockReason("https://www.etsy.com/", p) || "", /etsy\.com/);
 });
 
 test("allowlist mode keeps the old origin check", () => {
-  const p: SitePolicy = { mode: "allowlist", allowed: new Set([STORE, "https://www.aritzia.com"]), blocked: new Set(), entries: [] };
-  assert.equal(siteBlockReason(`${STORE}/x`, p), null);
+  const p: SitePolicy = { mode: "allowlist", allowed: new Set([LOCAL, "https://www.aritzia.com"]), blocked: new Set(), entries: [] };
+  assert.equal(siteBlockReason(`${LOCAL}/x`, p), null);
   assert.equal(siteBlockReason("https://www.aritzia.com/us", p), null);
   assert.equal(siteBlockReason("https://www.etsy.com/", p), "not on the allowlist");
-  assert.equal(siteBlockReason("http://localhost:4000@evil.example/", p), "not on the allowlist");
+  assert.equal(siteBlockReason("http://localhost:4100@evil.example/", p), "not on the allowlist");
 });
 
-test("local addresses in every spelling are blocked, the store still passes", () => {
-  const local = new Set([STORE]);
+test("local addresses in every spelling are blocked, an allowed local page still passes", () => {
+  const local = new Set([LOCAL]);
   for (const u of [
     "http://[::ffff:127.0.0.1]:5050/cartesia-token", "http://[::ffff:192.168.1.1]/", "http://[::7f00:1]:5050/", "http://[fec0::]/",
     "http://[::1]:5050/", "http://[::]/", "http://[fe80::1]/", "http://[fd00::1]/", "http://[64:ff9b::7f00:1]/", "http://[2002:c0a8:101::]/",
@@ -77,7 +78,7 @@ test("local addresses in every spelling are blocked, the store still passes", ()
     assert.match(blocklistReason(u, [], local) || "", /local address/, u);
     assert.match(blocklistReason(u, SUGGESTED_ENTRIES, local) || "", /local address/, u);
   }
-  assert.equal(blocklistReason(`${STORE}/cart`, SUGGESTED_ENTRIES, local), null);
+  assert.equal(blocklistReason(`${LOCAL}/cart`, SUGGESTED_ENTRIES, local), null);
   for (const u of ["http://[2606:4700::1111]/", "http://8.8.8.8/", "http://[::ffff:8.8.8.8]/", "https://www.etsy.com/"]) {
     assert.equal(blocklistReason(u, SUGGESTED_ENTRIES, local), null, u);
   }
