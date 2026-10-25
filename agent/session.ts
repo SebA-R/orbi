@@ -14,7 +14,7 @@ import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
 import { ocicLockNote, ocicLockReason } from "./ocic-lock.ts";
 import { ALLOWED_ORIGINS, allowedSite, EXTRA_SITES, isCheckoutUrl, originOf, STORE_ORIGIN } from "./origins.ts";
-import { payNow, type PayState } from "./pay.ts";
+import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -97,6 +97,13 @@ export function navigateLockReason(url: string): string | null {
     return "Locked: Clearcart does not open checkout or payment pages on this site. Stop at the cart and tell the user.";
   }
   return null;
+}
+
+// A tab the sweep sends home: off the allowed sites, or on a checkout page
+// navigate would have refused (a redirect or an in-page link can land there).
+export function isStrayTab(url: string | undefined): boolean {
+  if (!url || /^(about:blank|chrome:\/\/newtab)/.test(url)) return false;
+  return !allowedSite(url) || navigateLockReason(url) !== null;
 }
 
 // Text of an MCP tool result as the PostToolUse hook receives it.
@@ -263,7 +270,7 @@ export class Session {
     } catch {
       return {};
     }
-    const strays = tabs.filter((t) => t.url && !allowedSite(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
+    const strays = tabs.filter((t) => isStrayTab(t.url));
     for (const t of strays) {
       await callBrowserTool("navigate", { url: STORE_ORIGIN + "/", tabId: t.tabId }).catch(() => {});
     }
@@ -272,7 +279,7 @@ export class Session {
     return {
       hookSpecificOutput: {
         hookEventName: "PostToolUse" as const,
-        additionalContext: `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
+        additionalContext: `A tab left the allowed sites or landed on a checkout page Clearcart does not open, and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
       },
     };
   };
@@ -286,7 +293,7 @@ export class Session {
     } catch {
       return {};
     }
-    const strays = tabs.filter((t) => t.url && !allowedSite(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
+    const strays = tabs.filter((t) => isStrayTab(t.url));
     for (const t of strays) {
       await extBridge.call("navigate", { url: STORE_ORIGIN + "/", tabId: t.tabId }).catch(() => {});
     }
@@ -295,7 +302,7 @@ export class Session {
     return {
       hookSpecificOutput: {
         hookEventName: "PostToolUse" as const,
-        additionalContext: `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
+        additionalContext: `A tab left the allowed sites or landed on a checkout page Clearcart does not open, and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
       },
     };
   }
@@ -314,18 +321,22 @@ export class Session {
           .describe("One short sentence on anything you changed for the user, e.g. \"I removed a pre-checked Subscribe and Save membership that would have added $4.99.\" Omit if nothing changed."),
       },
       async ({ item, quantity, total, changes }) => {
-        this.state.confirmation = { item, quantity, total, state: "pending" };
+        // Pin the yes to this checkout tab and the cart on it (pay.ts).
+        const snap = await checkoutSnapshot(this.state.lastTabId);
+        const conf: Confirmation = { item, quantity, total, state: "pending", tabId: snap.tabId, cart: snap.cart };
+        this.state.confirmation = conf;
         const note = changes?.trim() ? ` ${changes.trim().replace(/([^.!?])$/, "$1.")}` : "";
         this.say(`You're buying ${quantity} ${item} for ${total}.${note} Say yes to pay, or no to change it.`);
         const answer = await new Promise<string | null>((resolve) => {
           this.awaitingAnswer = resolve;
         });
-        if (answer !== null && isExplicitYes(answer)) {
-          this.state.confirmation.state = "confirmed";
+        if (answer !== null && isExplicitYes(answer) && this.state.confirmation === conf) {
+          conf.state = "confirmed";
+          conf.confirmedAt = Date.now();
           this.status("checkout confirmed");
           return { content: [{ type: "text", text: "confirmed" }] };
         }
-        this.state.confirmation.state = "declined";
+        conf.state = "declined";
         this.status("checkout declined");
         return { content: [{ type: "text", text: `declined. The user said: ${JSON.stringify(answer ?? "")}` }] };
       }

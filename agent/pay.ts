@@ -27,7 +27,72 @@ export function onStore(href: string | null | undefined, pathPrefix = "/"): bool
 }
 const DEFAULT_ADDRESS = process.env.CLEARCART_SHIP_ADDRESS || "2150 Shattuck Ave, Berkeley, CA 94704";
 
-export type Confirmation = { item: string; quantity: number; total: string; state: "pending" | "confirmed" | "declined" | "used" };
+// What the user said yes to. confirmedAt, tabId and cart pin the yes to a
+// moment, a tab and a cart: pay_now refuses a yes older than
+// CONFIRM_TTL_MS, on another tab, or for a cart that has changed since.
+export type Confirmation = {
+  item: string;
+  quantity: number;
+  total: string;
+  state: "pending" | "confirmed" | "declined" | "used";
+  confirmedAt?: number;
+  tabId?: number | null;
+  cart?: string;
+};
+
+export const CONFIRM_TTL_MS = 60_000;
+
+const NO_CONFIRMATION = "No confirmed checkout. Call request_checkout and get an explicit yes first.";
+
+// The priced lines of a checkout page's text (line items, subtotal,
+// add-ons, tax, total), whitespace squashed: the cart the user heard.
+export function cartLines(text: string): string {
+  return String(text || "")
+    .split("\n")
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter((l) => /[$\u00a3\u20ac]\s?\d/.test(l))
+    .join("\n");
+}
+
+// Takes the confirmation for one pay_now, synchronously, before any await:
+// it is "used" from here on whatever happens next, so a second pay_now (or
+// a retry after an early return) needs a new yes. Refuses a yes that is
+// missing, stale or not tied to a tab.
+export function claimConfirmation(state: PayState, now = Date.now()): { ok: true; c: Confirmation } | { ok: false; error: string } {
+  const c = state.confirmation;
+  if (!c || c.state !== "confirmed") return { ok: false, error: NO_CONFIRMATION };
+  c.state = "used";
+  if (typeof c.confirmedAt !== "number" || now - c.confirmedAt > CONFIRM_TTL_MS || now < c.confirmedAt) {
+    return { ok: false, error: "The user's yes is more than a minute old. Call request_checkout again before paying." };
+  }
+  if (typeof c.tabId !== "number") {
+    return { ok: false, error: `No checkout tab was open when the user said yes. Open ${CHECKOUT_PREFIX} and call request_checkout again.` };
+  }
+  return { ok: true, c };
+}
+
+// The yes the unlock gate checks, for a claimed confirmation.
+function claimedYes(c: Confirmation) {
+  return { total: c.total, state: "confirmed" };
+}
+
+const TAB_CHANGED = "The checkout tab is not the one the user said yes on. Call request_checkout again.";
+const CART_CHANGED = "The cart changed since the user said yes. Call request_checkout again with the page as it is now.";
+
+// The checkout tab and its priced lines, for request_checkout to pin the
+// yes to. Either may be null or "" when there is no checkout tab.
+export async function checkoutSnapshot(preferred: number | null): Promise<{ tabId: number | null; cart: string }> {
+  try {
+    if (extMode()) {
+      const tabId = await findCheckoutTabExt(extBridge, preferred);
+      return { tabId, cart: tabId == null ? "" : cartLines(await pageText(extBridge, tabId)) };
+    }
+    const tabId = await findCheckoutTab(preferred);
+    return { tabId, cart: tabId == null ? "" : cartLines(String(await evalInTab<string>(tabId, "document.body ? document.body.innerText : ''").catch(() => ""))) };
+  } catch {
+    return { tabId: null, cart: "" };
+  }
+}
 
 export type PayState = {
   lastTabId: number | null;
@@ -85,15 +150,15 @@ const CLEAR_FIELDS = `(() => {
 
 export async function payNow(state: PayState): Promise<PayResult> {
   if (extMode()) return payNowExt(state);
-  const c = state.confirmation;
-  if (!c || c.state !== "confirmed") {
-    return { ok: false, error: "No confirmed checkout. Call request_checkout and get an explicit yes first." };
-  }
+  const claim = claimConfirmation(state);
+  if (!claim.ok) return claim;
+  const c = claim.c;
 
-  const tabId = await findCheckoutTab(state.lastTabId);
+  const tabId = await findCheckoutTab(c.tabId!);
   if (tabId == null) {
     return { ok: false, error: `The current tab is not the checkout page. Navigate to ${CHECKOUT_PREFIX} first.` };
   }
+  if (tabId !== c.tabId) return { ok: false, error: TAB_CHANGED };
 
   // The amount on the page must match what the user said yes to.
   let pageTotal = "";
@@ -101,7 +166,6 @@ export async function payNow(state: PayState): Promise<PayResult> {
     pageTotal = String(await evalInTab<string>(tabId, `(document.getElementById("order-total")||{}).textContent||""`));
   } catch {}
   if (Math.abs(money(pageTotal) - money(c.total)) > 0.005) {
-    c.state = "used";
     return {
       ok: false,
       error: `The checkout total is ${pageTotal || "unknown"}, but the user confirmed ${c.total}. Call request_checkout again with the page total.`,
@@ -125,13 +189,15 @@ export async function payNow(state: PayState): Promise<PayResult> {
     } catch {}
   }
 
+  if (c.cart) {
+    const now = cartLines(String(await evalInTab<string>(tabId, "document.body ? document.body.innerText : ''").catch(() => "")));
+    if (now !== c.cart) return { ok: false, error: CART_CHANGED };
+  }
+
   // Button lock: the grant is the only thing that lets our code press the
   // protected #place-order (see unlock.ts). Issued while the yes is fresh.
-  const issued = unlockGate.issue({ confirmation: c, tabId, href: await tabHref(tabId), pageTotal });
-  if (!issued.ok) {
-    c.state = "used";
-    return { ok: false, error: issued.error };
-  }
+  const issued = unlockGate.issue({ confirmation: claimedYes(c), tabId, href: await tabHref(tabId), pageTotal });
+  if (!issued.ok) return { ok: false, error: issued.error };
 
   let card;
   try {
@@ -140,7 +206,6 @@ export async function payNow(state: PayState): Promise<PayResult> {
     return { ok: false, error: (e as Error).message };
   }
   const four = last4(card.number);
-  c.state = "used";
 
   const values = JSON.stringify({ name: card.name, number: card.number, exp: card.exp, csc: card.csc, address: DEFAULT_ADDRESS });
   const fill =
@@ -313,25 +378,27 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
   const readCard = deps.getCard ?? getCard;
   const pollMs = deps.pollMs ?? 400;
 
-  const c = state.confirmation;
-  if (!c || c.state !== "confirmed") {
-    return { ok: false, error: "No confirmed checkout. Call request_checkout and get an explicit yes first." };
-  }
+  const claim = claimConfirmation(state);
+  if (!claim.ok) return claim;
+  const c = claim.c;
 
-  const tabId = await findCheckoutTabExt(bridge, state.lastTabId);
+  const tabId = await findCheckoutTabExt(bridge, c.tabId!);
   if (tabId == null) {
     return { ok: false, error: `The current tab is not the checkout page. Navigate to ${CHECKOUT_PREFIX} first.` };
   }
+  if (tabId !== c.tabId) return { ok: false, error: TAB_CHANGED };
 
   // The amount on the page must match what the user said yes to.
-  const pageTotal = pageMoney(await pageText(bridge, tabId), /Order total\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i);
+  const checkoutText = await pageText(bridge, tabId);
+  const pageTotal = pageMoney(checkoutText, /Order total\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i);
   if (Math.abs(money(pageTotal) - money(c.total)) > 0.005) {
-    c.state = "used";
     return {
       ok: false,
       error: `The checkout total is ${pageTotal || "unknown"}, but the user confirmed ${c.total}. Call request_checkout again with the page total.`,
     };
   }
+
+  if (c.cart && cartLines(checkoutText) !== c.cart) return { ok: false, error: CART_CHANGED };
 
   let fields: Array<{ kind?: string; filled?: boolean }> = [];
   try {
@@ -345,11 +412,8 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
   const addressFilled = fields.some((f) => f.kind === "address" && f.filled);
 
   // Button lock: issue the grant while the yes is fresh (see unlock.ts).
-  const issued = gate.issue({ confirmation: c, tabId, href: await extTabUrl(bridge, tabId), pageTotal });
-  if (!issued.ok) {
-    c.state = "used";
-    return { ok: false, error: issued.error };
-  }
+  const issued = gate.issue({ confirmation: claimedYes(c), tabId, href: await extTabUrl(bridge, tabId), pageTotal });
+  if (!issued.ok) return { ok: false, error: issued.error };
 
   let card: Card;
   try {
@@ -358,7 +422,6 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
     return { ok: false, error: (e as Error).message };
   }
   const four = last4(card.number);
-  c.state = "used";
 
   state.cardFieldsLive = true;
   try {
