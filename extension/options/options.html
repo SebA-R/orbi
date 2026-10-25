@@ -27,6 +27,7 @@
     code { font-family: ui-monospace, monospace; font-size: 0.9em; }
     .error { color: var(--error); margin: 4px 0 0; white-space: pre-line; }
     #status, #mic-status { min-height: 1.5em; margin: 8px 0 0; }
+    #danger-confirm[hidden] { display: none; }
   </style>
 </head>
 <body>
@@ -53,6 +54,8 @@
         <label for="speed">Speaking speed: <output id="speed-out" for="speed"></output></label>
         <input id="speed" name="speed" type="range" step="0.1">
 
+        <label class="row"><input id="guided-mode" name="guidedMode" type="checkbox" aria-describedby="guided-mode-hint"> Guided mode</label>
+        <p class="hint" id="guided-mode-hint">Clearcart describes each page and lets you choose. Turn off to let it pick and act on its own.</p>
         <label class="row"><input id="subtitles" name="subtitles" type="checkbox"> Show subtitles on the page</label>
         <label class="row"><input id="sounds" name="sounds" type="checkbox"> Play sounds (listening, sent, order result, errors)</label>
         <label class="row"><input id="quiet-tabs" name="quietTabs" type="checkbox" aria-describedby="quiet-tabs-hint"> Quiet other tabs while talking</label>
@@ -85,6 +88,13 @@
         <p class="error" id="blocklist-errors" hidden></p>
         <p class="hint" id="blocklist-fixed">Always blocked: non-web pages, local network addresses, addresses with a login in them.</p>
         <div class="row"><button type="button" class="secondary" id="restore-blocklist">Restore suggested list</button></div>
+      </fieldset>
+
+      <fieldset id="danger">
+        <legend>Danger mode</legend>
+        <label class="row"><input id="danger-mode" type="checkbox"> Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.</label>
+        <p id="danger-confirm" class="row" hidden><button type="button" id="danger-yes">Turn on Danger mode</button> <button type="button" class="secondary" id="danger-no">Cancel</button></p>
+        <p class="hint">Off by default. It saves as soon as you confirm. Clearcart still never sees or types card numbers or passwords, and blocked sites stay blocked.</p>
       </fieldset>
 
       <fieldset>

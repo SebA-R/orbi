@@ -4,6 +4,7 @@
 import { HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SETUP_PATH, SETUP_STEPS, agentHealth, hasSiteAccess, keyName, micState, setupDone, updateBadge } from "../lib/setup.js";
+import { bindDangerToggle } from "../lib/danger-toggle.js";
 
 const $ = (id) => document.getElementById(id);
 const openTab = (path) => {
@@ -26,16 +27,31 @@ const VOICE = {
   speaking: (key) => ["Speaking", `Clearcart is answering. Hold ${key} to interrupt.`],
 };
 let voiceState = "idle";
+// The mini orb face in the header. Decorative: the status region says the state.
+const FACE = globalThis.__clearcartOrbFace;
+let face = null;
+if (FACE) {
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(FACE.CSS);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    face = FACE.create(document);
+    $("mini-orb").append(face.el);
+  } catch {}
+}
 function showVoice(state = voiceState) {
   if (!Object.hasOwn(VOICE, state)) return;
   voiceState = state;
   const [title, sub] = VOICE[state](keyName(settings.hotkey));
   $("orb").dataset.state = state;
+  face?.setState(state);
   if ($("voice-title").textContent !== title) $("voice-title").textContent = title;
   if ($("voice-sub").textContent !== sub) $("voice-sub").textContent = sub;
 }
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.from === "offscreen" && msg.type === RT.VOICE_STATE) showVoice(msg.state);
+  if (msg?.from !== "offscreen") return;
+  if (msg.type === RT.VOICE_STATE) showVoice(msg.state);
+  else if (msg.type === "voice.level") face?.setLevel(msg.level); // optional, not sent yet
 });
 
 // Setup pill: the same checks as the setup page; it opens the setup page.
@@ -66,6 +82,8 @@ $("speed").min = String(SPEED_MIN);
 $("speed").max = String(SPEED_MAX);
 const showSpeed = () => { $("speed-out").textContent = `${Number($("speed").value).toFixed(1)}x`; };
 
+const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no"), chip: $("danger-chip") }, saveSettings);
+
 function fill(s) {
   settings = s;
   const radio = document.querySelector(`input[name="browseMode"][value="${s.browseMode}"]`);
@@ -75,7 +93,9 @@ function fill(s) {
   $("subtitles").checked = s.subtitles;
   $("sounds").checked = s.sounds;
   $("quiet-tabs").checked = s.quietTabs;
+  danger.fill(s);
   $("follow-tab").checked = s.followTab;
+  $("guided-mode").checked = s.guidedMode;
   showSpeed();
   showVoice();
 }
@@ -91,6 +111,7 @@ $("subtitles").addEventListener("change", () => save({ subtitles: $("subtitles")
 $("sounds").addEventListener("change", () => save({ sounds: $("sounds").checked }));
 $("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));
 $("follow-tab").addEventListener("change", () => save({ followTab: $("follow-tab").checked }));
+$("guided-mode").addEventListener("change", () => save({ guidedMode: $("guided-mode").checked }));
 
 // Links
 const allSettings = (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); window.close(); };

@@ -87,13 +87,18 @@ const voice = installVoiceRelay({ onVoiceState: frame.onVoiceState });
 
 // Bridge to the agent server: each request is routed to tabs/CDP or the page
 // script. Results never include card values (fill_payment answers last4).
+// Danger mode, cached from chrome.storage.local and kept current by
+// onChanged below. Starts off, so a page call before the first load is
+// locked as usual.
+let dangerMode = false;
+const dangerReady = loadSettings().then((s) => { dangerMode = s.dangerMode; }).catch(() => { dangerMode = false; });
 // Follow: the tab Clearcart acts on comes to the front (follow.js). A tab or
 // window the user picks themselves pauses that until their next turn.
 const follow = createFollower();
 chrome.tabs.onActivated.addListener((info) => follow.onActivated(info));
 chrome.windows?.onFocusChanged?.addListener((id) => follow.onWindowFocused(id));
 chrome.tabs.onRemoved.addListener((tabId) => follow.forget(tabId));
-const router = createRouter({ follow, onAgentTab: frame.onAgentTab });
+const router = createRouter({ follow, onAgentTab: frame.onAgentTab, dangerMode: () => dangerReady.then(() => dangerMode) });
 
 // The user started talking: snapshot what they are looking at and pointing
 // at now, for the page_context call that comes with their words.
@@ -121,12 +126,21 @@ let bridge = null;
 // sites too, so send them on every connect and every change.
 const sendBlocklist = () =>
   loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
+// Guided mode shapes the agent's prompt; sent on connect and on change.
+const sendAgentSettings = () =>
+  loadSettings().then(({ guidedMode }) => bridge?.send({ type: MSG.SETTINGS, guidedMode })).catch(() => {});
+
+// Danger mode too, the same way, so the agent says "Danger mode is on." and
+// tells Claude. The extension enforces the lock itself; this only informs.
+const sendDangerMode = () =>
+  loadSettings().then(({ dangerMode: on }) => bridge?.send({ type: MSG.DANGER_MODE, on })).catch(() => {});
+const sendSettings = () => { sendBlocklist(); sendDangerMode(); sendAgentSettings(); };
 
 async function startBridge() {
   const settings = await loadSettings();
   const url = endpoints(settings.agentUrl).ext;
   if (!bridge) {
-    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onOpen: sendBlocklist, onState: (s) => log.info(`bridge ${s}`) });
+    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onOpen: sendSettings, onState: (s) => log.info(`bridge ${s}`) });
     bridge.start();
   } else {
     bridge.setUrl(url);
@@ -138,6 +152,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.allowlist) loadAllowlist();
   if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
   if (changes.blocklist) sendBlocklist();
+  if (changes.guidedMode) sendAgentSettings();
+  if (changes.dangerMode) {
+    // Straight from the change, so the very next page call has it.
+    dangerMode = changes.dangerMode.newValue === true;
+    sendDangerMode();
+  }
 });
 
 startBridge().catch((e) => log.warn(`bridge start failed: ${e.message}`));

@@ -30,7 +30,7 @@ test("injects both content scripts into open web tabs and skips the rest quietly
   assert.deepEqual(done.sort(), [1, 4]);
   assert.deepEqual(calls.filter((c) => c.target.tabId === 1), [
     { target: { tabId: 1, allFrames: true }, files: ["content/hotkey.js"] },
-    { target: { tabId: 1, allFrames: false }, files: ["content/subtitles.js"] },
+    { target: { tabId: 1, allFrames: false }, files: ["content/orb-face.js", "content/subtitles.js"] },
     { target: { tabId: 1, allFrames: false }, files: ["content/frame.js"] },
     { target: { tabId: 1, allFrames: false }, files: ["content/context.js"] },
   ]);
@@ -45,6 +45,7 @@ test("worker injects on install, update, reload and new site access; scripts gua
   assert.match(worker, /onInstalled\.addListener\([\s\S]*?injectIntoOpenTabs\(\)[\s\S]*?\}\);/);
   assert.match(worker, /permissions\.onAdded\.addListener\(\(\) => \{[\s\S]*?injectIntoOpenTabs\(\)/);
   assert.match(await src("content/hotkey.js"), /if \(!win \|\| win\.__clearcartHotkey\) return/);
+  assert.match(await src("content/orb-face.js"), /if \(globalThis\.__clearcartOrbFace\) return/);
   assert.match(await src("content/subtitles.js"), /if \(globalThis\[FLAG\]\) return/);
   assert.match(await src("content/frame.js"), /if \(globalThis\[FLAG\]\) return/);
   assert.match(await src("content/context.js"), /if \(globalThis\.__clearcartContext\) return/);

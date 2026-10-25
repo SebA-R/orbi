@@ -102,3 +102,16 @@ test("sounds defaults on and keeps a stored false", () => {
   assert.equal(normalize({ sounds: false }).sounds, false);
   assert.equal(normalize({ sounds: "off" }).sounds, true);
 });
+
+test("guidedMode defaults on, keeps booleans only, and round-trips through storage", async () => {
+  assert.equal(DEFAULTS.guidedMode, true);
+  assert.equal(normalize({}).guidedMode, true);
+  assert.equal(normalize({ guidedMode: "false" }).guidedMode, true, "non-boolean falls back");
+  assert.equal(normalize({ guidedMode: false }).guidedMode, false);
+  const store = memoryStorage();
+  assert.equal((await loadSettings(store)).guidedMode, true);
+  assert.equal((await saveSettings({ guidedMode: false }, store)).guidedMode, false);
+  assert.equal(store.data.guidedMode, false);
+  assert.equal((await loadSettings(store)).guidedMode, false);
+  assert.equal((await saveSettings({ guidedMode: true }, store)).guidedMode, true);
+});
