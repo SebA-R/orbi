@@ -8,7 +8,10 @@
 //        VOICE_START {settings?, silent?, latch?}, VOICE_CONFIRM, VOICE_CANCEL, VOICE_HUSH, VOICE_STOP, PTT_TOGGLE, TTS_STOP,
 //        TTS_SPEAK {text}, SETTINGS_CHANGED {settings}
 //      Anything else (including PTT_* that content scripts broadcast to every
-//      extension page) is ignored; the worker is the only router.
+//      extension page) is ignored; the worker is the only router. The one
+//      exception: a page's own PTT_* broadcast (pageKey) goes to
+//      controller.onPageKey, so a press ducks our speech at once, ahead of
+//      the worker's VOICE_START.
 // Out: runtime messages with from "offscreen": VOICE_STATE, VOICE_PARTIAL,
 //      VOICE_FINAL, VOICE_ERROR, SUBTITLE, SUBTITLE_WORD, STATUS.
 import { RT } from "../lib/protocol.js";
@@ -21,7 +24,7 @@ import { Mic } from "../lib/voice/mic.js";
 import { createChime, linkCues } from "../lib/voice/chime.js";
 import { createTokenSource } from "../lib/voice/token.js";
 import { AgentSession } from "../lib/voice/agent-session.js";
-import { VoiceController } from "../lib/voice/controller.js";
+import { VoiceController, pageKey } from "../lib/voice/controller.js";
 
 const log = createLogger("offscreen");
 const say = (msg) => log.info(msg);
@@ -95,7 +98,12 @@ function applySettings(next) {
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (!msg || msg.target !== "offscreen") return;
+  if (!msg) return;
+  // A page's own hotkey broadcast (not the worker's copy): duck our speech
+  // now, without waiting for VOICE_START to come round through the worker.
+  const key = pageKey(msg);
+  if (key) return void controller.onPageKey(key);
+  if (msg.target !== "offscreen") return;
   switch (msg.type) {
     case RT.VOICE_START:
       applySettings(msg.settings);
@@ -125,6 +133,10 @@ chrome.runtime.onMessage.addListener((msg) => {
       break;
     case RT.SETTINGS_CHANGED:
       applySettings(msg.settings);
+      break;
+    // A restarted worker knows nothing of a turn in progress; tell it.
+    case RT.VOICE_SYNC:
+      controller.announce();
       break;
   }
 });

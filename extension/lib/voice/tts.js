@@ -5,7 +5,8 @@ import { WordClock } from './karaoke.js';
 
 // Speaks text with Sonic over one shared TTS websocket. Each utterance is its own context;
 // requests go out immediately, audio plays strictly in order, and stop() cuts everything (barge-in).
-// duck() fades our speech to near silence while the talk key is touched; unduck() brings it back.
+// duck() fades our speech to near silence while the talk key is touched (20 ms: fast
+// enough to be gone at once, slow enough not to click); unduck() brings it back over 80 ms.
 //
 // Captions follow the audio, not the text: onCaption gets
 //   { kind: "line", utteranceId, text, karaoke }   when a line starts to be heard
@@ -18,7 +19,8 @@ import { WordClock } from './karaoke.js';
 // AudioContext clock (karaoke.js). A line that produced no audio is still
 // shown, plainly, once the lines before it have been heard.
 export const DUCK_LEVEL = 0.03;
-export const DUCK_SECONDS = 0.08;
+export const DUCK_SECONDS = 0.02;
+export const UNDUCK_SECONDS = 0.08;
 export const CAPTION_TICK_MS = 40;
 // A line playing this long without any timestamps is shown plainly.
 export const NO_TIMESTAMPS_AFTER_S = 1;
@@ -26,7 +28,8 @@ export const NO_TIMESTAMPS_AFTER_S = 1;
 export class Speaker {
   constructor({
     ctx, getToken, getSpeed, voiceId, log, onSpeakingChange, onCaption,
-    setInterval: every = (fn, ms) => setInterval(fn, ms), clearInterval: unevery = (t) => clearInterval(t),
+    // unref: the caption clock never holds node (tests) open.
+    setInterval: every = (fn, ms) => { const t = setInterval(fn, ms); t?.unref?.(); return t; }, clearInterval: unevery = (t) => clearInterval(t),
   }) {
     this.ctx = ctx;
     this.getToken = getToken;
@@ -94,17 +97,17 @@ export class Speaker {
     return out;
   }
 
-  #rampTo(level) {
+  #rampTo(level, seconds) {
     const g = this.out.gain;
     const now = this.ctx.currentTime;
     g.cancelScheduledValues(now);
     g.setValueAtTime(g.value, now);
-    g.linearRampToValueAtTime(level, now + DUCK_SECONDS);
+    g.linearRampToValueAtTime(level, now + seconds);
   }
 
-  duck() { this.#rampTo(DUCK_LEVEL); }
+  duck() { this.#rampTo(DUCK_LEVEL, DUCK_SECONDS); }
 
-  unduck() { this.#rampTo(1); }
+  unduck() { this.#rampTo(1, UNDUCK_SECONDS); }
 
   // Barge-in: silence now, cancel anything still generating.
   stop() {

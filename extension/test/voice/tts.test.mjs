@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { Speaker, DUCK_LEVEL, DUCK_SECONDS } from "../../lib/voice/tts.js";
+import { Speaker, DUCK_LEVEL, DUCK_SECONDS, UNDUCK_SECONDS } from "../../lib/voice/tts.js";
 
 function fakeCtx() {
   const gains = [];
@@ -28,14 +28,14 @@ function fakeCtx() {
   return { ctx, gains };
 }
 
-test("duck fades our speech to near silence in about 80 ms; unduck restores it", () => {
+test("duck fades our speech to near silence in 20 ms; unduck restores it over 80 ms", () => {
   const { ctx, gains } = fakeCtx();
   const sp = new Speaker({ ctx, getToken: async () => "t", getSpeed: () => 1, voiceId: "v", log: () => {} });
   sp.duck();
   assert.deepEqual(gains[0].ramps.at(-1), [DUCK_LEVEL, 10 + DUCK_SECONDS]);
-  assert.ok(DUCK_SECONDS <= 0.1);
+  assert.ok(DUCK_SECONDS <= 0.03);
   sp.unduck();
-  assert.deepEqual(gains[0].ramps.at(-1), [1, 10 + DUCK_SECONDS]);
+  assert.deepEqual(gains[0].ramps.at(-1), [1, 10 + UNDUCK_SECONDS]);
 });
 
 test("stop mutes and drops the output node, so already-scheduled audio is silent", () => {

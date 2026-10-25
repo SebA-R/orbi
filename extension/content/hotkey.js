@@ -266,13 +266,24 @@
     // and the worker injects a fresh one, so this copy steps aside.
     const myId = chromeApi.runtime && chromeApi.runtime.id;
     const orphaned = () => { try { return !!myId && !chromeApi.runtime.id; } catch { return true; } };
-    const onDown = (e) => { if (orphaned()) return detach(); detector.onKeyDown(e); };
+    // A press another listener already took (a second Clearcart build, such
+    // as Clearcart Preview, registered first in this frame) is left to it, so
+    // one press never opens two mics. Never while ours is held or latched:
+    // that press may be the one that ends it.
+    const onDown = (e) => {
+      if (orphaned()) return detach();
+      if (e.defaultPrevented && !detector.held && !detector.latched) return;
+      detector.onKeyDown(e);
+    };
     const onUp = (e) => { if (orphaned()) return detach(); detector.onKeyUp(e); };
     const detach = () => {
       detector.cancel();
       win.removeEventListener("keydown", onDown, true);
       win.removeEventListener("keyup", onUp, true);
     };
+    // Navigating away or removing this frame mid-hold: its keyup will never
+    // come here, so release now rather than leave the mic listening.
+    win.addEventListener("pagehide", () => detector.cancel());
     win.addEventListener("keydown", onDown, true);
     win.addEventListener("keyup", onUp, true);
     win.addEventListener("blur", () => detector.cancel());

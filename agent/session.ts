@@ -9,6 +9,11 @@
 // says goes out as a "(not spoken)" status, and the SDK turn is interrupted.
 // The next turn speaks again. An interrupt during a checkout read-back only
 // stops the speech: the read-back keeps waiting for a spoken answer.
+//
+// Every Clearcart window shares this one session (hub.ts). When the user
+// moves to another window, handOff() declines a read-back or unlock question
+// still waiting (it was asked in the old window, so no yes from the new one
+// may answer it) and mutes the turn in progress like a barge-in.
 
 import dns from "node:dns";
 import path from "node:path";
@@ -342,8 +347,14 @@ type UserWords = {
   passwordYes: { tabId: number; label: string; origin: string } | null;
 };
 
+const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null });
+
 type ToolText = { content: Array<{ type: "text"; text: string }> };
 const said = (text: string): ToolText => ({ content: [{ type: "text", text }] });
+
+// What Claude is told when a question got no answer at all: the window that
+// asked it went away or the user moved to another one (handOff, close).
+const NO_ANSWER = "No answer came: the user moved to another Clearcart window, or it closed, before answering.";
 
 export class Session {
   private input = new InputQueue();
@@ -353,7 +364,7 @@ export class Session {
   private closed = false;
   private q: Query | null = null;
   // The user's most recent words, for request_unlock's direct-ask match.
-  private lastUser: UserWords = { text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null };
+  private lastUser: UserWords = noWords();
   // A sign in the user asked for before typing their own password. Lives
   // only until the next utterance, which becomes passwordYes if it is an
   // explicit yes.
@@ -436,7 +447,7 @@ export class Session {
   }
 
   // The user started talking over us.
-  interrupt() {
+  interrupt(note = "interrupted by the user") {
     if (this.closed) return;
     this.stopActions();
     this.held.forEach((t) => this.unspoken(t));
@@ -445,8 +456,37 @@ export class Session {
     // barge-in; the user is about to answer it.
     if (this.awaitingAnswer || this.turnsOpen === 0 || this.muted) return;
     this.muted = true;
-    this.status("interrupted by the user");
+    this.status(note);
     this.q?.interrupt().catch((e) => this.status(`interrupt failed: ${(e as Error).message}`));
+  }
+
+  // The user moved to another Clearcart window, or the one they used went
+  // away (hub.ts). A read-back or unlock question still waiting was asked
+  // there, so it is declined, never confirmed. A yes given there that
+  // pay_now has not used yet is withdrawn too: paying needs a read-back the
+  // user hears in the window they are in now. (A payment already under way
+  // is left to finish; its receipt goes to the new window.) The words said
+  // there stop counting for request_unlock, and the turn in progress is
+  // muted.
+  handOff() {
+    if (this.closed) return;
+    const pending = this.awaitingAnswer;
+    this.awaitingAnswer = null;
+    this.passwordAsk = null;
+    this.lastUser = noWords();
+    pending?.(null);
+    // Dropped rather than marked, so a read-back whose yes is still being
+    // pinned to its tab (request_checkout awaiting the snapshot) can't turn
+    // confirmed afterwards either.
+    const yes = this.state.confirmation;
+    if (yes && yes.state !== "used") {
+      this.state.confirmation = null;
+      if (yes.state === "confirmed") {
+        yes.state = "declined";
+        this.status("checkout yes withdrawn: the user moved to another Clearcart window");
+      }
+    }
+    this.interrupt("interrupted: the user moved to another Clearcart window");
   }
 
   close() {
@@ -690,7 +730,12 @@ export class Session {
     conf.state = "declined";
     this.status("checkout declined");
     this.send({ type: "confirm_done", outcome: "declined" });
-    return { content: [{ type: "text" as const, text: `declined. The user said: ${JSON.stringify(answer ?? "")}` }] };
+    const why = answer === null
+      ? NO_ANSWER
+      : this.state.confirmation === null && isExplicitYes(answer)
+        ? "The user moved to another Clearcart window before their yes could count."
+        : `The user said: ${JSON.stringify(answer)}`;
+    return { content: [{ type: "text" as const, text: `declined. ${why}` }] };
   }
 
   // Where a tab is now, on either browser path, or null.
@@ -759,13 +804,19 @@ export class Session {
     }
     let how = "user asked";
     if (d.kind === "ask") {
+      // Like request_checkout: a muted turn's question is never heard, so
+      // the user's next words must not answer it.
+      if (this.muted) {
+        this.status(`unlock not asked: the user interrupted (${d.cls})`);
+        return said("declined, nothing was pressed. The user interrupted before the question was asked.");
+      }
       this.say(d.question);
       const answer = await new Promise<string | null>((resolve) => {
         this.awaitingAnswer = resolve;
       });
       if (answer === null || !isExplicitYes(answer)) {
         this.status(`unlock declined: ${d.cls}`);
-        return said(`declined, nothing was pressed. The user said: ${JSON.stringify(answer ?? "")}`);
+        return said(`declined, nothing was pressed. ${answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}`}`);
       }
       how = "user confirmed";
     } else {
