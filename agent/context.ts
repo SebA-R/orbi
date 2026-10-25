@@ -12,7 +12,7 @@
 import { siteBlockReason, type SitePolicy } from "./origins.ts";
 
 export type PageContext = {
-  active?: { tabId?: number; title?: string; url?: string; blocked?: boolean } | null;
+  active?: { tabId?: number; title?: string; url?: string; blocked?: boolean; newTab?: boolean } | null;
   selection?: string;
   pointing?: {
     via?: string;
@@ -68,6 +68,11 @@ const VIA: Record<string, string> = { hover: "under the mouse", click: "last cli
 export function contextBlock(ctx: PageContext, policy?: SitePolicy): string | null {
   const a = ctx?.active;
   if (!a) return null;
+  // A new tab page has nothing on it; say so, so the tab is not taken for a
+  // blocked site. navigate can still open a store in it.
+  if (a.newTab === true && !a.blocked) {
+    return `${CONTEXT_LABEL} Active tab: tab ${Number.isInteger(a.tabId) ? a.tabId : "?"}, an empty new tab page (navigate it to open a store here)`;
+  }
   const url = originPath(a.url);
   if (a.blocked || !url || (policy && siteBlockReason(url, policy))) return `${CONTEXT_LABEL} Active tab: a blocked site.`;
   const parts = [`Active tab: tab ${Number.isInteger(a.tabId) ? a.tabId : "?"}, ${quote(cleanText(a.title, 120))}, ${url}`];

@@ -171,6 +171,10 @@ export function createRouter({
   async function collectContext() {
     const tab = typeof tabs.activeTab === "function" ? await tabs.activeTab() : null;
     if (!tab) return { active: null };
+    // An empty new tab page: nothing to read, but the agent may navigate it.
+    if (typeof tabs.onNewTab === "function" && tabs.onNewTab(tab)) {
+      return { active: { tabId: tab.id, title: "New Tab", url: "chrome://newtab/", newTab: true } };
+    }
     try {
       await tabs.resolveAllowedTab(tab.id, { peek: true });
     } catch {
