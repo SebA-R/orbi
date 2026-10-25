@@ -80,3 +80,19 @@ test("request_checkout from an interrupted turn is declined without a read-back"
   assert.ok(!sent.some((m) => m.type === "confirm"));
   assert.equal((s as any).state.confirmation, null);
 });
+
+test("a say progress note from the interrupted turn is not spoken; the SDK turn is interrupted", () => {
+  const { s, sent } = session();
+  let interrupts = 0;
+  (s as any).q = { interrupt: async () => { interrupts++; } };
+  s.userText("find allergy pills");
+  s.interrupt();
+  (s as any).say("Adding it to your cart now.");
+  s.onSdkMessage(result("error_during_execution"));
+  assert.equal(interrupts, 1);
+  assert.deepEqual(spoken(sent), []);
+  assert.ok(sent.some((m) => m.type === "status" && /not spoken\) Adding it to your cart/.test(m.text)));
+  s.userText("the cheapest one");
+  (s as any).say("Looking now.");
+  assert.deepEqual(spoken(sent), ["Looking now."], "the next turn speaks again");
+});
