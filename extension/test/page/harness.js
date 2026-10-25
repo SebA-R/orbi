@@ -1,4 +1,4 @@
-// Test harness: loads mask.js then page.js into a jsdom window in the same
+// Test harness: loads mask.js, protect.js, then page.js into a jsdom window in the same
 // order the worker injects them, with a fake chrome.runtime.onMessage.
 import { readFileSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -7,6 +7,7 @@ import { JSDOM } from "jsdom";
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const MASK_SRC = readFileSync(here("../../content/mask.js"), "utf8");
+const PROTECT_SRC = readFileSync(here("../../content/protect.js"), "utf8");
 const PAGE_PATH = here("../../content/page.js");
 
 export function loadPage(html, { url = "http://localhost:4000/", page = true } = {}) {
@@ -15,9 +16,11 @@ export function loadPage(html, { url = "http://localhost:4000/", page = true } =
   const listeners = [];
   window.chrome = { runtime: { id: "test", onMessage: { addListener: (fn) => listeners.push(fn) } } };
   window.eval(MASK_SRC);
-  // Same order as the worker: mask.js, then page.js. Re-callable to test idempotence.
+  window.eval(PROTECT_SRC);
+  // Same order as the worker: mask.js, protect.js, then page.js. Re-callable to test idempotence.
   const inject = () => {
     window.eval(MASK_SRC);
+    window.eval(PROTECT_SRC);
     window.eval(readFileSync(PAGE_PATH, "utf8"));
   };
   if (page && existsSync(PAGE_PATH)) window.eval(readFileSync(PAGE_PATH, "utf8"));

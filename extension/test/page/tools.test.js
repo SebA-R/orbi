@@ -117,13 +117,21 @@ test("rect returns a viewport box and scrolls into view", async () => {
   assert.equal(scrolled.block, "center");
 });
 
-test("click_ref clicks the element", async () => {
+test("click_ref clicks the element, and refuses the locked Place order", async () => {
   const p = load("checkout", "/checkout");
   let clicks = 0;
-  p.document.getElementById("place-order").addEventListener("click", (e) => { clicks++; e.preventDefault(); });
-  const ref = await refOf(p, "place order", "button");
+  let orders = 0;
+  const search = p.document.querySelector('form[role=search] button');
+  search.addEventListener("click", (e) => { clicks++; e.preventDefault(); });
+  p.document.getElementById("place-order").addEventListener("click", (e) => { orders++; e.preventDefault(); });
+  const ref = await refOf(p, "search", "button");
   assert.equal((await p.call("click_ref", { ref })).ok, true);
   assert.equal(clicks, 1);
+  const locked = await p.call("click_ref", { ref: await refOf(p, "place order", "button") });
+  assert.equal(locked.ok, false);
+  assert.equal(locked.error.code, "locked");
+  assert.match(locked.error.message, /^Locked: 'Place order/);
+  assert.equal(orders, 0);
 });
 
 test("read_fields classifies checkout fields without values", async () => {
