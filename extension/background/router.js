@@ -524,6 +524,10 @@ export function createRouter({
         // Asked once per user turn: following starts again.
         follow.newTurn();
         return pageContext();
+      case "actions_stop":
+        // The turn ended or was interrupted: nothing paced keeps playing.
+        actor.abortAll("the turn ended");
+        return { ok: true };
     }
     const tabId = await tabs.resolveAllowedTab(params.tabId);
     indicate(tabId);

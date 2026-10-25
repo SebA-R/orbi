@@ -424,3 +424,20 @@ test("router: scroll at watchable pace checks its numbers", async () => {
   const f = routerFakes();
   await assert.rejects(f.router.route("scroll", { tabId: 3, x: "a", y: 1, dy: 3 }), (e) => e.code === "bad_request");
 });
+
+test("router: actions_stop at turn end stops a paced click and typing, and answers at once", async () => {
+  const f = routerFakes();
+  let stopped = null;
+  const hook = (t) => { if (t > 120 && !stopped) stopped = f.router.route("actions_stop", {}); };
+  await assert.rejects(f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" }), hook), (e) => e.code === "interrupted");
+  assert.deepEqual(await stopped, { ok: true });
+  assert.equal(mouse(f.cdp.sent, "mousePressed").length, 0);
+  assert.equal(f.pages.filter((p) => p.method === "click_ref").length, 0, "no DOM click after a stop");
+
+  stopped = null;
+  const before = f.cdp.sent.length;
+  await assert.rejects(f.clock.run(f.router.route("type", { tabId: 3, text: "a fairly long line of text" }), (t) => { if (!stopped && f.cdp.sent.length - before > 6) stopped = f.router.route("actions_stop", {}); }), (e) => e.code === "interrupted");
+  const typed = f.cdp.sent.slice(before).filter((s) => s.type === "char").length;
+  assert.ok(typed > 0 && typed < 26, `stopped part way (${typed} chars)`);
+  assert.equal(f.actor.active(), 0);
+});

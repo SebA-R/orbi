@@ -57,6 +57,8 @@ export const TOOLS = Object.freeze([
 // control the user asked for (lock_arm scope "user"); lock_info reads what
 // a ref is locked as. agent_tabs feeds the server's tab sweep;
 // page_context is what the user is looking at, attached to their words.
+// actions_stop ends any paced click, typing or scroll still playing (sent
+// at turn end and on interrupt).
 export const INTERNAL = Object.freeze([
   "tab_info",
   "agent_tabs",
@@ -70,6 +72,7 @@ export const INTERNAL = Object.freeze([
   "press_protected",
   "press_unlocked",
   "lock_info",
+  "actions_stop",
 ]);
 
 export const METHODS = Object.freeze([...TOOLS, ...INTERNAL]);
