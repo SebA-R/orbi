@@ -117,12 +117,13 @@ async function refLock(deps: Deps, tabId: number, ref: string): Promise<Lock | n
   return hit ? { kind: hit.kind, label: hit.name.slice(0, 60), optin: hit.optin, checked: hit.checked } : null;
 }
 
-async function pointLock(deps: Deps, tabId: number, [x, y]: [number, number]): Promise<Lock | null> {
-  return deps.evalInTab<Lock | null>(tabId, pageScript(`${LOCK_JSON} return J(P.lockAt(document, ${x}, ${y}));`));
+// Runs a P.lockAt or P.lockForKey call in the page.
+function pageLock(deps: Deps, tabId: number, call: string): Promise<Lock | null> {
+  return deps.evalInTab<Lock | null>(tabId, pageScript(`${LOCK_JSON} return J(${call});`));
 }
 
-async function keyLock(deps: Deps, tabId: number, key: string): Promise<Lock | null> {
-  return deps.evalInTab<Lock | null>(tabId, pageScript(`${LOCK_JSON} return J(P.lockForKey(document, ${JSON.stringify(key)}));`));
+function tabIdOf(args: Record<string, unknown>): number {
+  return typeof args.tabId === "number" ? args.tabId : Number(args.tabId);
 }
 
 function falsy(v: unknown): boolean {
@@ -133,15 +134,15 @@ function falsy(v: unknown): boolean {
 // The deny reason for one of Claude's OCIC browser calls, or null to let it
 // through. tool is the bare tool name (no mcp__browser__ prefix).
 export async function ocicLockReason(tool: string, args: Record<string, unknown>, deps: Deps = defaultDeps): Promise<string | null> {
-  const tabId = typeof args.tabId === "number" ? args.tabId : Number(args.tabId);
+  const tabId = tabIdOf(args);
   try {
     if (tool === "computer") {
       const action = String(args.action || "");
       if (CLICKS.has(action)) {
         const points = [xy(args.start_coordinate), xy(args.coordinate)].filter((p): p is [number, number] => !!p);
         if (!Number.isFinite(tabId)) return points.length || args.ref ? UNCHECKED : null;
-        for (const p of points) {
-          const l = await pointLock(deps, tabId, p);
+        for (const [x, y] of points) {
+          const l = await pageLock(deps, tabId, `P.lockAt(document, ${x}, ${y})`);
           if (l) return Protect.message(l);
         }
         if (!points.length && typeof args.ref === "string") {
@@ -156,7 +157,7 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
         if (!act.length) return null;
         if (!Number.isFinite(tabId)) return UNCHECKED;
         for (const k of act) {
-          const l = await keyLock(deps, tabId, k);
+          const l = await pageLock(deps, tabId, `P.lockForKey(document, ${JSON.stringify(k)})`);
           if (l) return Protect.message(l);
         }
         return null;
@@ -180,7 +181,7 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
 // not to try them, and the lock badges drawn in the tab.
 export async function ocicLockNote(tool: string, args: Record<string, unknown>, output: string, deps: Deps = defaultDeps): Promise<string | null> {
   if (tool !== "read_page" && tool !== "find") return null;
-  const tabId = typeof args.tabId === "number" ? args.tabId : Number(args.tabId);
+  const tabId = tabIdOf(args);
   let page: PageLock[] = [];
   if (Number.isFinite(tabId)) {
     try {
