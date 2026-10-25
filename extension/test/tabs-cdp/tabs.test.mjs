@@ -97,6 +97,7 @@ test("navigate back and forward", async () => {
   assert.equal((await navigate({ url: "back" })).url, `${STORE}/a`);
   assert.equal((await navigate({ url: "forward" })).url, `${STORE}/b`);
   assert.equal((await tabInfo({ tabId })).url, `${STORE}/b`);
+  await assert.rejects(navigate({ url: "forward" }), (e) => e.code === ERR.BAD_REQUEST && /forward/.test(e.message));
 });
 
 test("navigate back off the allowlist reports NOT_ALLOWED", async () => {
