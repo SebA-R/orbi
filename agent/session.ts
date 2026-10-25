@@ -20,7 +20,7 @@ import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
 import { withContext, type PageContext } from "./context.ts";
-import { ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
+import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
@@ -270,6 +270,16 @@ export function isExplicitYes(text: string): boolean {
   return affirmed && !rest.trim();
 }
 
+// Danger mode, the user's setting: from the extension over the bridge
+// (extBridge.dangerMode), or CLEARCART_DANGER_MODE on the Open Claude in
+// Chrome path. Only for the spoken notice: the lock itself is enforced where
+// the clicks are checked (the extension, ocic-lock.ts). It never touches
+// request_checkout, pay_now, the unlock gates, masking or the blocklist.
+export const DANGER_LINE = "Danger mode is on.";
+export function dangerModeOn(): boolean {
+  return extMode() ? extBridge.dangerMode() : ocicDangerMode();
+}
+
 class InputQueue implements AsyncIterable<SDKUserMessage> {
   private items: SDKUserMessage[] = [];
   private waiters: Array<(r: IteratorResult<SDKUserMessage>) => void> = [];
@@ -370,6 +380,9 @@ export class Session {
   // start, then the last note sent with a user turn (see withGuidedNote).
   guided = currentGuided();
 
+  // "Danger mode is on." was spoken in this session.
+  private dangerSaid = false;
+
   constructor(private send: (m: ServerMessage) => void) {}
 
   userText(text: string) {
@@ -390,6 +403,11 @@ export class Session {
       this.awaitingAnswer = null;
       resolve(text);
       return;
+    }
+    if (!this.dangerSaid && dangerModeOn()) {
+      this.dangerSaid = true;
+      this.status("Danger mode is on: sign in and sign up are not locked; paying still needs the user's yes");
+      this.say(DANGER_LINE);
     }
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;

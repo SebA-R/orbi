@@ -8,7 +8,7 @@
 <body>
   <main>
     <header class="top">
-      <h1>Clearcart</h1>
+      <h1>Clearcart <span id="danger-chip" class="danger-chip" hidden>Danger mode</span></h1>
       <a class="icon" id="gear" href="../options/options.html" aria-label="All settings">
         <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"></path></svg>
       </a>
@@ -46,6 +46,8 @@
       <label class="row" for="subtitles"><span>Subtitles on the page</span><input id="subtitles" class="sw" type="checkbox" role="switch"></label>
       <label class="row" for="quiet-tabs"><span>Quiet other tabs while talking</span><input id="quiet-tabs" class="sw" type="checkbox" role="switch"></label>
       <label class="row" for="follow-tab"><span>Follow Clearcart to its tab</span><input id="follow-tab" class="sw" type="checkbox" role="switch"></label>
+      <label class="row danger-row" for="danger-mode"><span>Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.</span><input id="danger-mode" class="sw" type="checkbox" role="switch"></label>
+      <p id="danger-confirm" class="danger-confirm" hidden><button type="button" id="danger-yes">Turn on Danger mode</button><button type="button" id="danger-no">Cancel</button></p>
       <nav class="links" aria-label="More settings">
         <a id="all-settings" href="../options/options.html">All settings</a>
         <a id="blocked-sites" href="../options/options.html#blocked-sites">Blocked sites</a>
