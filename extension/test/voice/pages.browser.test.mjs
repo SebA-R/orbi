@@ -100,6 +100,9 @@ test("options page saves settings and grants the microphone", { skip }, async ()
   assert.match(await page.textContent("#blocklist-errors"), /not a site\nchase/);
   await page.fill("#blocklist", "# mine\nhttps://www.nordstrom.com/\n*shoe*\namazon.com/ap/");
   await page.check("#mode-allowlist");
+  // Browse mode saves on its own; clear its "Saved." so the wait is for Save.
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
+  await page.evaluate(() => { document.getElementById("status").textContent = ""; });
   await page.click("button[type=submit]");
   await page.waitForFunction(() => document.getElementById("status").textContent === "Saved.");
   assert.deepEqual(await page.evaluate(() => chrome.storage.local.get(["browseMode", "allowlist", "blocklist"])), {

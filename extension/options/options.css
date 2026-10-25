@@ -1,0 +1,109 @@
+/* Options page: the popup's look (tokens and controls in lib/ui.css) as a
+   centered column of settings groups, like iOS Settings. Each group is an
+   h2, a white card of rows split by 1px lines, and an optional footnote. */
+/* Keeps a focused control clear of the sticky save bar when tabbing down. */
+html { background: var(--bg); scroll-padding-bottom: 96px; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+main { width: min(680px, 100% - 32px); margin: 0 auto; padding: 36px 0 0; }
+p { margin: 0; }
+a { color: inherit; }
+code { font-family: var(--mono); font-size: .92em; }
+/* A little thicker than the popup's ring: this page is read at a distance. */
+:focus-visible { outline-width: 3px; }
+
+/* Header: the orb as the brand mark. */
+.masthead { display: flex; align-items: center; gap: 16px; padding: 0 4px; }
+.orb-mark {
+  flex: none; width: 52px; height: 52px; border-radius: 50%;
+  background: var(--orb); filter: saturate(.85);
+  box-shadow: 0 10px 26px rgba(94, 139, 255, .32), inset 0 -5px 12px rgba(60, 40, 140, .22);
+}
+h1 { margin: 0; font-size: 28px; line-height: 1.2; font-weight: 700; letter-spacing: -.02em; }
+.lede { margin-top: 4px; font-size: 15px; color: var(--muted); text-wrap: pretty; }
+
+/* Groups */
+.group { margin-top: 32px; }
+.subgroup { margin-top: 20px; }
+h2, h3 { margin: 0 0 8px; padding: 0 16px; font-weight: 600; letter-spacing: -.01em; }
+h2 { font-size: 19px; }
+h3 { font-size: 16px; color: var(--soft); }
+.card { background: var(--sheet); border-radius: 16px; box-shadow: var(--card-shadow); }
+.foot { margin-top: 8px; padding: 0 16px; font-size: 14px; color: var(--muted); text-wrap: pretty; }
+
+/* Rows: the divider is inset 16 px, as in iOS. Rows wrap, so controls drop
+   below their label instead of clipping when zoomed. */
+.row {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 8px 16px; min-height: 52px; margin: 0 0 0 16px; padding: 10px 16px 10px 0;
+}
+.card .row { border-top: 1px solid var(--line); }
+.card > .row:first-child, .card > :first-child > .row:first-child { border-top: none; }
+label.row { cursor: pointer; }
+.row-text { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row-end { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.row.stack { flex-direction: column; align-items: stretch; gap: 6px; }
+.label-line { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.hint { font-size: 14px; color: var(--muted); }
+.hint.strong { color: var(--soft); font-weight: 500; }
+.value { color: var(--muted); font-variant-numeric: tabular-nums; }
+.row.confirm { justify-content: flex-start; min-height: 0; padding-top: 0; border-top: none; }
+
+/* Text fields: a visible 3:1 edge, because a gray fill alone is too faint. */
+.field {
+  width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--field-line); border-radius: 10px;
+  background: var(--bg); color: var(--fg); font: 15px/1.45 var(--font);
+}
+textarea.field { resize: vertical; }
+.field.mono { font-family: var(--mono); font-size: 14px; }
+.field[aria-invalid="true"] { border: 2px solid var(--error); }
+.error { color: var(--error); font-size: 14px; font-weight: 500; white-space: pre-line; }
+
+.speed { display: flex; align-items: center; gap: 12px; }
+.speed input { width: 180px; max-width: 50vw; height: 44px; margin: 0; accent-color: var(--fg); cursor: pointer; }
+.speed output { min-width: 36px; text-align: right; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* Buttons and links that act like buttons: 44 px tall. */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px;
+  border: 1px solid transparent; border-radius: 12px; background: var(--fill); color: var(--fg);
+  font: 500 15px var(--font); text-decoration: none; cursor: pointer;
+}
+.btn:hover { background: var(--hover); }
+.btn.primary { min-width: 120px; background: var(--primary-bg); color: var(--primary-fg); font-weight: 600; }
+.btn.amber { background: var(--amber); color: var(--on-amber); font-weight: 600; }
+
+/* Status tags */
+.tag {
+  display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; white-space: nowrap; background: var(--wait-bg); color: var(--wait-fg);
+}
+.tag[data-state="ok"] { background: var(--ok-bg); color: var(--ok-fg); }
+.tag[data-state="todo"] { background: var(--warn-bg); color: var(--warn-fg); }
+
+/* Save bar: stays in view while scrolling, except on short windows (or
+   when zoomed in a lot), where it sits at the end of the page instead. */
+.savebar {
+  position: sticky; bottom: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px 16px; margin-top: 32px; padding: 12px 16px 16px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  border-top: 1px solid var(--line);
+}
+#status { flex: 1 1 240px; min-height: 1.45em; font-weight: 500; }
+@media (max-height: 520px) { .savebar { position: static; } html { scroll-padding-bottom: 0; } }
+
+@media (max-width: 520px) {
+  main { width: calc(100% - 24px); padding-top: 24px; }
+  h1 { font-size: 24px; }
+  .orb-mark { width: 44px; height: 44px; }
+}
+
+@media (forced-colors: active) {
+  .card, .tag, .btn, .savebar { border: 1px solid CanvasText; }
+  .orb-mark { border: 2px solid CanvasText; }
+  .field[aria-invalid="true"] { border-color: Mark; }
+}
