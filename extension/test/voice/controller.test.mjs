@@ -121,6 +121,14 @@ test("blocked mic aborts STT, returns to idle and reports mic_blocked", async ()
   assert.deepEqual(states(r.emitted), ["listening", "idle"]);
 });
 
+test("mic failure after a silent start brings our ducked speech back up", async () => {
+  const r = rig({ micFails: "NotReadableError" });
+  await r.c.start({ silent: true });
+  assert.deepEqual(r.log, ["tts.duck", "tts.unduck"]);
+  assert.equal(r.c.listening, false);
+  assert.deepEqual(r.agent.sent, []);
+});
+
 test("toggle starts then stops", async () => {
   const r = rig();
   await r.c.toggle();

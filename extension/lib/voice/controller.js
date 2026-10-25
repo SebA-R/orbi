@@ -92,6 +92,7 @@ export class VoiceController {
     } catch (err) {
       this.mic.sink = null;
       s.abort();
+      if (!this.confirmed) this.speaker.unduck?.(); // a silent start ducked our speech
       this.listening = false;
       this.confirmed = false;
       this.held = [];
