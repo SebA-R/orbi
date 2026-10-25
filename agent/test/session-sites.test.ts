@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { parseBlockLines } from "../blocklist.ts";
 import { extBridge } from "../extbridge.ts";
 import { STORE_ORIGIN, type SitePolicy } from "../origins.ts";
 import { sitesPrompt } from "../prompt.ts";
@@ -10,7 +11,7 @@ import { browseDenyReason, returnStrays, Session, sweepNote } from "../session.t
 
 process.env.CLEARCART_BROWSER = "ext";
 const B = "mcp__browser__";
-const ALLOWLIST: SitePolicy = { mode: "allowlist", allowed: new Set([STORE_ORIGIN]), blocked: new Set() };
+const ALLOWLIST: SitePolicy = { mode: "allowlist", allowed: new Set([STORE_ORIGIN]), blocked: new Set(), entries: [] };
 
 const pre = (s: Session, tool: string, tool_input: Record<string, unknown>) =>
   (s as any).guard({ hook_event_name: "PreToolUse", tool_name: B + tool, tool_input }, undefined, { signal: new AbortController().signal });
@@ -26,6 +27,24 @@ test("open mode (default): navigate may open any store, not blocked sites", asyn
   }
   assert.match(denied(await pre(s, "tabs_create", { url: "https://accounts.google.com/" })) || "", /Blocked/);
   assert.equal(denied(await pre(s, "tabs_create", {})), null);
+});
+
+test("ext mode: the guard and sweep use the list the extension sent", async () => {
+  const s = new Session(() => {});
+  (extBridge as any).entries = parseBlockLines(["# mine", "etsy.com", "*shoe*"]).entries;
+  try {
+    assert.match(denied(await pre(s, "navigate", { url: "https://www.etsy.com/" })) || "", /etsy\.com/);
+    assert.match(denied(await pre(s, "navigate", { url: "https://bestshoes.example/" })) || "", /\*shoe\*/);
+    assert.equal(denied(await pre(s, "navigate", { url: "https://mail.google.com/" })), null, "the user took it off the list");
+    assert.match(denied(await pre(s, "navigate", { url: "http://localhost:5050/" })) || "", /local address/, "fixed rules stay");
+    const f = fakeNav({});
+    assert.equal(await returnStrays([{ tabId: 1, url: "https://www.etsy.com/" }, { tabId: 2, url: "https://mail.google.com/" }], f.nav), 1);
+    (extBridge as any).entries = [];
+    assert.equal(denied(await pre(s, "navigate", { url: "https://www.etsy.com/" })), null, "an empty list blocks nothing extra");
+    assert.match(denied(await pre(s, "navigate", { url: "file:///etc/passwd" })) || "", /not a web page/);
+  } finally {
+    (extBridge as any).entries = null;
+  }
 });
 
 test("open mode keeps the checkout page block on every site but the store", async () => {

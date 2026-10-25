@@ -6,6 +6,9 @@
 //   server -> ext  { type: "request", id, method, params }
 //   ext -> server  { type: "response", id, ok: true, result }
 //                  { type: "response", id, ok: false, error: { code, message } }
+//   ext -> server  { type: "blocklist", lines } after welcome and whenever
+//                  the user saves it (the options page's blocked sites).
+//                  One way: the server cannot change extension settings.
 //   either way     { type: "ping", t } answered by { type: "pong", t }
 //
 // Runtime messages (inside the extension, chrome.runtime / chrome.tabs
@@ -21,6 +24,7 @@ export const MSG = Object.freeze({
   RESPONSE: "response",
   PING: "ping",
   PONG: "pong",
+  BLOCKLIST: "blocklist",
 });
 
 // Tools the agent may expose to Claude.

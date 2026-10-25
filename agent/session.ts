@@ -86,9 +86,16 @@ function extPrompt(prompt: string): string {
   return prompt.replace("calling tabs_context_mcp with createIfEmpty true", "calling tabs_context, and tabs_create if the group has no tabs");
 }
 
+// In ext mode the extension's blocked sites list replaces the suggested one
+// once it has sent it.
+export function sitePolicy(): SitePolicy {
+  const entries = extMode() ? extBridge.blocklist() : null;
+  return entries ? { ...SITE_POLICY, entries } : SITE_POLICY;
+}
+
 // The browse policy for a URL Claude asked to open (navigate, tabs_create).
 // Null when it may open.
-export function browseDenyReason(url: string, policy: SitePolicy = SITE_POLICY): string | null {
+export function browseDenyReason(url: string, policy: SitePolicy = sitePolicy()): string | null {
   if (url === "back" || url === "forward") return null;
   const why = siteBlockReason(url, policy);
   if (!why) return null;
@@ -106,7 +113,7 @@ const BLANK = /^(about:blank|chrome:\/\/newtab)/;
 export async function returnStrays(
   tabs: Array<{ tabId: number; url?: string }>,
   nav: (tabId: number, url: string) => Promise<string | null>,
-  policy: SitePolicy = SITE_POLICY
+  policy: SitePolicy = sitePolicy()
 ): Promise<number> {
   const strays = tabs.filter((t) => t.url && !BLANK.test(t.url) && siteBlockReason(t.url, policy));
   for (const t of strays) {
@@ -119,9 +126,9 @@ export async function returnStrays(
   return strays.length;
 }
 
-export function sweepNote(n: number, policy: SitePolicy = SITE_POLICY): string {
+export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string {
   return policy.mode === "open"
-    ? `A tab opened a blocked site and was sent back${n > 1 ? " (" + n + " tabs)" : ""}. Never open email, bank, password, government, health or account sites; tell the user instead.`
+    ? `A tab opened a blocked site and was sent back${n > 1 ? " (" + n + " tabs)" : ""}. Never open sites on the user's blocked list; tell the user instead.`
     : `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...policy.allowed].join(", ")}.`;
 }
 

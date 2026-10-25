@@ -9,7 +9,8 @@ import * as cdp from "./cdp.js";
 import { createRouter } from "./router.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
-import { endpoints, loadSettings } from "../lib/settings.js";
+import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
+import { MSG } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -17,6 +18,7 @@ const log = createLogger("worker");
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   console.info(`[clearcart] installed (${reason}), version ${VERSION}`);
+  seedBlocklist().catch((e) => log.warn(`blocklist seed failed: ${e.message}`));
   // The offscreen document cannot ask for the microphone, so the first run
   // opens the options page where the user grants it.
   if (reason === "install") chrome.runtime.openOptionsPage().catch(() => {});
@@ -56,11 +58,21 @@ async function onRequest(method, params) {
 
 let bridge = null;
 
+// The agent server's navigation guard and tab sweep use the user's blocked
+// sites too, so send them on every connect and every change.
+async function sendBlocklist() {
+  const { blocklist } = await loadSettings();
+  bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist });
+}
+
 async function startBridge() {
   const settings = await loadSettings();
   const url = endpoints(settings.agentUrl).ext;
   if (!bridge) {
-    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onState: (s) => log.info(`bridge ${s}`) });
+    bridge = new BridgeClient({
+      url, version: VERSION, log, onRequest, onState: (s) => log.info(`bridge ${s}`),
+      onOpen: () => sendBlocklist().catch(() => {}),
+    });
     bridge.start();
   } else {
     bridge.setUrl(url);
@@ -68,7 +80,9 @@ async function startBridge() {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
+  if (area !== "local") return;
+  if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
+  if (changes.blocklist) sendBlocklist().catch(() => {});
 });
 
 startBridge().catch((e) => log.warn(`bridge start failed: ${e.message}`));
