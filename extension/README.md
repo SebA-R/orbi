@@ -13,7 +13,7 @@ Our own Chrome extension (Manifest V3) for Clearcart. It replaces the third-part
 ## Install
 
 1. Open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and pick this `extension/` folder. The extension id is fixed by the manifest key (`dhgknfenfoidnchmjfaicafhieepefoc`).
-2. The options page opens on first install (or right-click the toolbar icon → Options). Press **Grant microphone** and allow it. The offscreen voice document can't ask for the mic itself; it inherits this grant.
+2. The setup page opens on first install, and after an update when something is still missing. It checks site access on all sites (Chrome can hold back `<all_urls>` after an update if site access was limited before), the microphone (the offscreen voice document can't ask for it; it inherits this grant), the agent server's `/healthz` and the talk key, each with one button. The toolbar icon shows **!** while site access or the mic is missing, and its popup has the same checklist plus browse mode, talk key, speed and subtitles. Run it again from the options page.
 3. In the repo's `.env`, set `CLEARCART_BROWSER=ext`, then restart the agent server (`npm --prefix agent start`). The server log should say `ext: extension connected`.
 4. Start the store as usual (`node store/server.js`) and hold Space to talk.
 
@@ -61,7 +61,9 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP` |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
-| `options/` | Options page and the microphone grant |
+| `options/` | Options page |
+| `setup/`, `popup/` | Setup page (install and update) and the toolbar popup; both draw `setup/checklist.js` |
+| `lib/setup.js`, `lib/mic-grant.js` | Setup checks, the badge and the onInstalled rule; the microphone grant shared by options and setup |
 | `lib/` | Protocol, bridge client, settings, redacting logger, voice modules |
 
 ### Bridge requests
