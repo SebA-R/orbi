@@ -488,3 +488,33 @@ test("clicking the page fades the card out early, then clears it", () => {
   t.send({ type: "subtitle", speaker: "agent", text: "Next.", final: true });
   assert.ok(t.visible(), "the next line shows again");
 });
+
+test("the action line: a small secondary line under the words, never replacing them", () => {
+  const t = setup();
+  const caption = t.window.__clearcartCaption;
+  assert.equal(typeof caption.set, "function");
+  t.send({ type: "subtitle", speaker: "agent", text: "Found three pairs", final: false });
+  caption.set("Clicking Add to cart");
+  assert.equal(t.$(".act").textContent, "Clicking Add to cart");
+  assert.equal(t.$(".agent").textContent.trim(), "Found three pairs");
+  assert.equal(t.$(".act").previousElementSibling, t.$(".agent"));
+  t.send({ type: "subtitle", speaker: "agent", text: "Found three pairs of linen", final: false });
+  assert.equal(t.$(".act").textContent, "Clicking Add to cart", "speech does not clear it");
+  caption.set("");
+  assert.equal(t.$(".act").textContent, "");
+  assert.match(t.$(".agent").textContent, /linen/);
+  // On a hidden card it shows the card, and the usual timer hides it.
+  const u = setup();
+  u.send({ type: "voice.state", state: "thinking" });
+  u.window.__clearcartCaption.set("Scrolling");
+  assert.ok(u.visible());
+  u.tick(11000);
+  assert.equal(u.visible(), false);
+  u.tick(1000);
+  assert.equal(u.$(".act").textContent, "");
+  // Subtitles off: no caption.
+  const off = setup();
+  for (const f of off.changeListeners) f({ subtitles: { newValue: false } }, "local");
+  off.window.__clearcartCaption.set("Scrolling");
+  assert.equal(off.host(), null);
+});
