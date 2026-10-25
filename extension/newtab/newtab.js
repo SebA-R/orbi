@@ -73,6 +73,20 @@ function start() {
     });
   });
 
+  // The page, not the search box, holds the keyboard, so holding Space talks
+  // at once. Chrome still gives a new tab's first focus to the address bar
+  // and a page can't take it back; once the page has focus (F6 or a click,
+  // see the focus hint in voice.js) Space reaches hotkey.js on <main>.
+  // "/" jumps to the search box.
+  $("main").focus({ preventScroll: true });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "/" || e.altKey || e.ctrlKey || e.metaKey || e.defaultPrevented) return;
+    const el = document.activeElement;
+    if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+    e.preventDefault();
+    $("q").focus();
+  });
+
   $("settings").addEventListener("click", (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
 
   // Basic voice (no Cartesia key): the "Type to Orbi" box. Typed words
