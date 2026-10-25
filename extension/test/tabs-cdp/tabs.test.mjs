@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { installChrome } from "./chrome-mock.mjs";
 import {
   BLANK_PAGE, LEGACY_GROUP_TITLE, STATE_KEY, agentTabs, assertPageAllowed, navigate, navigateAndWait, onTabRemoved, originPath, resolveAllowedTab, resolveTab,
-  isPaySite, tabInfo, tabsActivate, tabsClose, tabsContext, tabsCreate, ungroupLegacy,
+  frameAllowed, isAllowed, tabInfo, tabsActivate, tabsClose, tabsContext, tabsCreate, ungroupLegacy,
 } from "../../background/tabs.js";
 import * as netguard from "../../background/netguard.js";
 import { ERR } from "../../lib/protocol.js";
@@ -253,12 +253,15 @@ test("open mode: blocked sites are refused before the tab moves", async () => {
   await assert.rejects(tabsCreate({ url: "https://mail.google.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
-test("pay sites stay the allowlist in open mode, and there are none by default", async () => {
+test("the pay unlock follows the browse policy; a payment frame needs only the fixed rules", async () => {
   fresh();
-  assert.equal(await isPaySite(`${SHOP}/checkout`), false);
-  fresh({ local: { allowlist: [SHOP] } });
-  assert.equal(await isPaySite(`${SHOP}/checkout`), true);
-  assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
+  assert.equal(await isAllowed(`${SHOP}/checkout`), true, "open mode: any site that is not blocked");
+  assert.equal(await isAllowed("https://mail.google.com/"), false);
+  assert.equal(await frameAllowed("https://js.stripe.com/v3/elements-inner-card.html"), true);
+  assert.equal(await frameAllowed("http://127.0.0.1:4101/card-frame"), false);
+  fresh({ local: { browseMode: "allowlist", allowlist: ["https://www.etsy.com"] } });
+  assert.equal(await isAllowed(`${SHOP}/checkout`), false, "allowlist mode: only the allowed sites");
+  assert.equal(await isAllowed("https://www.etsy.com/checkout"), true);
 });
 
 test("incognito: the manifest keeps Orbi out, and an incognito tab is hidden and refused", async () => {

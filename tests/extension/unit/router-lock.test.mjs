@@ -31,7 +31,8 @@ function fakes({ locked = new Set(), url = "http://localhost:4100/checkout", cdp
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 7,
     tabInfo: async ({ tabId }) => ({ tabId, url: state.url, title: "t" }),
-    isPaySite: async (u) => new URL(u).origin === "http://localhost:4100",
+    // Orbi may use any site but the blocked ones (here, mail.google.com).
+    isAllowed: async (u) => new URL(u).origin !== "https://mail.google.com",
     assertPageAllowed: async () => {},
   };
   const cdp = {
@@ -140,10 +141,12 @@ test("press_protected asks the page to confirm an order button, and falls back t
   assert.ok(g.calls.some((c) => c[1] === "press_ref"));
 });
 
-test("lock_arm refuses a site that is browsable but not a pay site", async () => {
+test("lock_arm arms on any page Orbi may use, never on a blocked one", async () => {
   const f = fakes({ url: "https://www.etsy.com/checkout" });
-  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked", message: /not an Orbi pay site/ });
-  // A tabs module without isPaySite fails closed.
+  assert.match((await f.router.route("lock_arm", { tabId: 7 })).nonce, /^nonce-/);
+  const g = fakes({ url: "https://mail.google.com/checkout" });
+  await assert.rejects(g.router.route("lock_arm", { tabId: 7 }), { code: "locked", message: /site Orbi does not use/ });
+  // A tabs module without isAllowed fails closed.
   const bare = createRouter({ chromeApi: {}, tabs: { resolveAllowedTab: async () => 7, tabInfo: async () => ({ url: "http://localhost:4100/checkout" }) }, cdp: {} });
   await assert.rejects(bare.route("lock_arm", { tabId: 7 }), { code: "locked" });
 });
@@ -180,9 +183,8 @@ test("key specs that send Enter or Space under another spelling are checked or r
 
 // User-directed unlock (request_unlock on the server): lock_arm scope "user"
 // works on any allowed site, and its nonce only fits press_unlocked.
-test("user scope: arms off the pay sites, presses once, and never fits press_protected", async () => {
+test("user scope: arms on an allowed site, presses once, and never fits press_protected", async () => {
   const f = fakes({ url: "https://www.etsy.com/cart" });
-  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked" }, "order scope still needs a pay site");
   const target = { tabId: 7, ref: "ref_4", label: "Proceed to checkout", cls: "checkout" };
   const a = await f.router.route("lock_arm", { tabId: 7, scope: "user" });
   assert.deepEqual(await f.router.route("press_unlocked", { ...target, nonce: a.nonce }), { ok: true, via: "cdp" });

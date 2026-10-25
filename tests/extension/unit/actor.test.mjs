@@ -299,7 +299,7 @@ function routerFakes({
     resolveAllowedTab: async (id) => id ?? 7,
     assertPageAllowed: async () => {},
     tabInfo: async ({ tabId }) => ({ tabId, url: "https://shop.example/checkout" }),
-    isPaySite: async () => true,
+    isAllowed: async () => true,
     tabsCreate: async ({ url, onCreated }) => (onCreated?.(11), { tabId: 11, url }),
     navigate: async ({ tabId, url }) => ({ tabId, url }),
     tabsClose: async ({ tabId }) => ({ tabId }),
