@@ -6,28 +6,25 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSdkMcpServer, query, tool, type HookCallback, type HookJSONOutput, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
 import { callBrowserTool, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
 import { ocicLockNote, ocicLockReason } from "./ocic-lock.ts";
-import { ALLOWED_ORIGINS, allowedSite, EXTRA_SITES, isCheckoutUrl, originOf, STORE_ORIGIN } from "./origins.ts";
+import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
 import { payNow, type PayState } from "./pay.ts";
-import { SYSTEM_PROMPT } from "./prompt.ts";
+import { SITES_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MODEL = process.env.CLEARCART_MODEL || "claude-sonnet-5-5";
 const BROWSER_SERVER =
   process.env.OCIC_SERVER || "/Users/sebastianarellano-rubach/code/open-claude-in-chrome/host/mcp-server.js";
 
-// Allowed origins come from origins.ts (CLEARCART_ALLOWED_ORIGINS plus the
-// store). pay_now stays store-only.
-
-const SITES_PROMPT = EXTRA_SITES.length
-  ? `\n\nOther sites\n- You may also browse ${EXTRA_SITES.join(", ")}. On those sites stop once the item is in the cart and the cart page is open: never start checkout (checkout, payment and sign-in buttons are locked there, and checkout pages will not open), never log in or create an account, never enter an address, card or other personal details, and decline marketing sign-ups and non-essential cookies. If a CAPTCHA, bot check or access-denied page appears, do not try to get around it; tell the user.`
-  : "";
+// Which sites may be browsed comes from origins.ts (CLEARCART_BROWSE_MODE:
+// open web minus a blocklist, or the allowlist). pay_now stays store-only
+// and the unlock gate only serves CLEARCART_PAY_ORIGINS.
 
 const B = "mcp__browser__";
 const C = "mcp__clearcart__";
@@ -87,6 +84,45 @@ const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
 
 function extPrompt(prompt: string): string {
   return prompt.replace("calling tabs_context_mcp with createIfEmpty true", "calling tabs_context, and tabs_create if the group has no tabs");
+}
+
+// The browse policy for a URL Claude asked to open (navigate, tabs_create).
+// Null when it may open.
+export function browseDenyReason(url: string, policy: SitePolicy = SITE_POLICY): string | null {
+  if (url === "back" || url === "forward") return null;
+  const why = siteBlockReason(url, policy);
+  if (!why) return null;
+  if (policy.mode === "allowlist") return `Blocked: Clearcart only browses ${[...policy.allowed].join(", ")}.`;
+  return `Blocked: Clearcart does not open ${originOf(url) || "that page"} (${why}). Tell the user if they asked for it.`;
+}
+
+const BLANK = /^(about:blank|chrome:\/\/newtab)/;
+
+// Tab sweep: any Clearcart-group tab whose page is not allowed (a clicked
+// link, a redirect, history) is sent away from it. Allowlist mode: to the
+// store home page. Open mode: back to the page before, or to the store home
+// page when going back does not land somewhere allowed. `nav` loads a URL
+// (or "back") in a tab and returns where the tab ended up, or null.
+export async function returnStrays(
+  tabs: Array<{ tabId: number; url?: string }>,
+  nav: (tabId: number, url: string) => Promise<string | null>,
+  policy: SitePolicy = SITE_POLICY
+): Promise<number> {
+  const strays = tabs.filter((t) => t.url && !BLANK.test(t.url) && siteBlockReason(t.url, policy));
+  for (const t of strays) {
+    if (policy.mode === "open") {
+      const at = await nav(t.tabId, "back").catch(() => null);
+      if (at && (BLANK.test(at) || !siteBlockReason(at, policy))) continue;
+    }
+    await nav(t.tabId, STORE_ORIGIN + "/").catch(() => null);
+  }
+  return strays.length;
+}
+
+export function sweepNote(n: number, policy: SitePolicy = SITE_POLICY): string {
+  return policy.mode === "open"
+    ? `A tab opened a blocked site and was sent back${n > 1 ? " (" + n + " tabs)" : ""}. Never open email, bank, password, government, health or account sites; tell the user instead.`
+    : `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...policy.allowed].join(", ")}.`;
 }
 
 // Button lock for navigation: checkout and payment pages are off limits on
@@ -198,11 +234,10 @@ export class Session {
       if (this.state.cardFieldsLive && (extMode() ? EXT_BLOCKED_WHILE_CARD_LIVE : BLOCKED_WHILE_CARD_LIVE).has(name)) {
         return deny("Blocked: card details are in the checkout form. Wait for pay_now to finish.");
       }
-      if (name === B + "navigate" && !process.env.CLEARCART_ALLOW_ANY_SITE) {
-        const url = String(args.url || "");
-        if (url !== "back" && url !== "forward" && !allowedSite(url)) {
-          return deny(`Blocked: Clearcart only browses ${[...ALLOWED_ORIGINS].join(", ")}.`);
-        }
+      const opens = name === B + "navigate" || ((name === B + "tabs_create" || name === B + "tabs_create_mcp") && args.url != null);
+      if (opens && !process.env.CLEARCART_ALLOW_ANY_SITE) {
+        const blocked = browseDenyReason(String(args.url || ""));
+        if (blocked) return deny(blocked);
       }
       if (name === B + "navigate") {
         const locked = navigateLockReason(String(args.url || ""));
@@ -236,54 +271,35 @@ export class Session {
     return { hookSpecificOutput: { hookEventName: "PostToolUse" as const, additionalContext: note } };
   };
 
-  // After every browser call, any MCP-group tab that left the store (a clicked
-  // link, a redirect, history) is sent back to the store home page.
+  // After every browser call, send back any MCP-group tab that landed on a
+  // site it may not be on (returnStrays).
   private sweep: HookCallback = async (input) => {
     if (input.hook_event_name !== "PostToolUse" || !input.tool_name.startsWith(B)) return {};
     if (process.env.CLEARCART_ALLOW_ANY_SITE) return {};
-    if (extMode()) return this.sweepExt();
-    let tabs: Array<{ tabId: number; url?: string }> = [];
+    const ext = extMode();
+    type Tab = { tabId: number; url?: string };
+    const list = async (): Promise<Tab[]> =>
+      ext
+        ? (await extBridge.call<{ tabs?: Tab[] }>("tabs_context", {}, 10_000))?.tabs || []
+        : JSON.parse(resultText(await callBrowserTool("tabs_context_mcp", {})).split("\n")[0]).availableTabs || [];
+    // Our extension's navigate reports where the tab ended up (and refuses a
+    // landing it does not allow). The OCIC one does not, so list again.
+    const nav = async (tabId: number, url: string): Promise<string | null> => {
+      if (ext) return (await extBridge.call<{ url?: string }>("navigate", { url, tabId }))?.url ?? null;
+      await callBrowserTool("navigate", { url, tabId });
+      return (await list()).find((t) => t.tabId === tabId)?.url ?? null;
+    };
+    let tabs: Tab[];
     try {
-      tabs = JSON.parse(resultText(await callBrowserTool("tabs_context_mcp", {})).split("\n")[0]).availableTabs || [];
+      tabs = await list();
     } catch {
       return {};
     }
-    const strays = tabs.filter((t) => t.url && !allowedSite(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
-    for (const t of strays) {
-      await callBrowserTool("navigate", { url: STORE_ORIGIN + "/", tabId: t.tabId }).catch(() => {});
-    }
-    if (!strays.length) return {};
-    this.status(`returned ${strays.length} tab(s) to the store`);
-    return {
-      hookSpecificOutput: {
-        hookEventName: "PostToolUse" as const,
-        additionalContext: `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
-      },
-    };
+    const n = await returnStrays(tabs, nav);
+    if (!n) return {};
+    this.status(`returned ${n} tab(s) from blocked sites`);
+    return { hookSpecificOutput: { hookEventName: "PostToolUse" as const, additionalContext: sweepNote(n) } };
   };
-
-  // The same sweep over the extension bridge: tabs_context lists the
-  // Clearcart group, navigate sends strays home.
-  private async sweepExt(): Promise<HookJSONOutput> {
-    let tabs: Array<{ tabId: number; url?: string }> = [];
-    try {
-      tabs = (await extBridge.call<{ tabs?: typeof tabs }>("tabs_context", {}, 10_000))?.tabs || [];
-    } catch {
-      return {};
-    }
-    const strays = tabs.filter((t) => t.url && !allowedSite(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
-    for (const t of strays) {
-      await extBridge.call("navigate", { url: STORE_ORIGIN + "/", tabId: t.tabId }).catch(() => {});
-    }
-    if (!strays.length) return {};
-    this.status(`returned ${strays.length} tab(s) to the store`);
-    return {
-      hookSpecificOutput: {
-        hookEventName: "PostToolUse" as const,
-        additionalContext: `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
-      },
-    };
-  }
 
   private tools() {
     const requestCheckout = tool(
