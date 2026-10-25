@@ -76,6 +76,8 @@ test("captionWords and alignWords map Sonic's words onto the caption's words", (
   // Sonic may split or drop punctuation differently; indexes stay on the display words.
   assert.deepEqual(alignWords(display, ["It's", "$4.99", "for", "30", "count,", "okay?"]), [0, 1, 2, 3, 4, 5]);
   assert.deepEqual(alignWords(display, ["it", "s", "4", "99", "for", "thirty", "count", "okay"]), [0, 0, 1, 1, 2, 3, 4, 5]);
+  // Punctuation sent as its own word stays on the word before it.
+  assert.deepEqual(alignWords(captionWords("Okay, adding it"), ["Okay", ",", "adding", "it"]), [0, 0, 1, 2]);
 });
 
 test("the request asks Sonic for word timestamps in the words as written", async () => {
@@ -151,7 +153,8 @@ test("stop() freezes the highlight on the word being heard and stops advancing",
   ws.push({ type: "timestamps", context_id: id, word_timestamps: TS });
   r.at(10.4);
   r.sp.stop(); // barge-in, double-tap, TTS_STOP and standby all end here
-  assert.deepEqual(r.words().at(-1), { kind: "word", utteranceId: id, index: 1, frozen: true });
+  // "it," runs 0.3 to 0.45 s of audio: 150 ms, 50 ms of it heard at 10.4.
+  assert.deepEqual(r.words().at(-1), { kind: "word", utteranceId: id, index: 1, ms: 150, elapsed: 50, frozen: true });
   const n = r.captions.length;
   r.at(10.9);
   ws.push({ type: "timestamps", context_id: id, word_timestamps: TS }); // late, from the cancelled context
@@ -218,4 +221,44 @@ test("the controller turns captions into SUBTITLE and SUBTITLE_WORD, and leaves 
     { type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 2 },
     { type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 2, frozen: true },
   ]);
+});
+
+test("each word carries how long it lasts and how much has been heard, for the sweep", async () => {
+  const r = rig({ speed: 2 });
+  const { ws, id } = await speakLine(r, TEXT);
+  ws.push({ type: "chunk", context_id: id, data: chunk(1) });
+  ws.push({ type: "timestamps", context_id: id, word_timestamps: TS });
+  const rate = 2 / SONIC_MAX_SPEED;
+  // "nine" is 0.5 to 0.75 s of audio: 250 ms at rate 1, 187.5 ms here.
+  r.at(10.05 + 0.55 / rate);
+  const w = r.words().at(-1);
+  assert.equal(w.index, 2);
+  assert.equal(w.ms, Math.round(250 / rate));
+  assert.ok(Math.abs(w.elapsed - 50 / rate) <= 1, `elapsed ${w.elapsed}`);
+});
+
+test("output latency is taken off the clock, so the highlight never runs ahead of the sound", async () => {
+  const r = rig();
+  r.ctx.baseLatency = 0.01;
+  r.ctx.outputLatency = 0.2; // Bluetooth headphones
+  const { ws, id } = await speakLine(r, TEXT);
+  ws.push({ type: "chunk", context_id: id, data: chunk(1) });
+  ws.push({ type: "timestamps", context_id: id, word_timestamps: TS });
+  r.at(10.2);
+  assert.deepEqual(r.captions, [], "the first sample is not audible until 10.26");
+  r.at(10.05 + 0.21 + 0.31);
+  assert.equal(r.words().at(-1).index, 1);
+});
+
+test("a stop just after the last word was heard reports done, not frozen", async () => {
+  const r = rig();
+  const { ws, id } = await speakLine(r, TEXT);
+  ws.push({ type: "chunk", context_id: id, data: chunk(1) });
+  ws.push({ type: "timestamps", context_id: id, word_timestamps: TS });
+  ws.push({ type: "done", context_id: id, done: true });
+  r.at(10.9);
+  r.ctx.currentTime = 11.07; // past the end, before the next tick
+  r.sp.stop();
+  assert.equal(r.words().at(-1).done, true);
+  assert.ok(!r.words().some((w) => w.frozen));
 });

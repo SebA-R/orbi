@@ -219,6 +219,7 @@ export function createVoiceRelay({
       if (!line) return;
       line.at = now;
       replay.word = clean;
+      replay.wordAt = now;
     } else return;
     replay.at = now;
   }
@@ -247,8 +248,13 @@ export function createVoiceRelay({
       if (item.kind === "state" ? replay.state !== item.msg
         : item.kind === "word" ? replay.word !== item.msg
         : !replay.lines.includes(item.entry)) continue;
+      // A word still being heard has gone on since it was saved: the new
+      // tab's sweep across it picks up where the voice is now.
+      const out = item.kind === "word" && !item.msg.frozen && Number.isFinite(item.msg.elapsed) && Number.isFinite(item.msg.ms)
+        ? { ...item.msg, elapsed: Math.min(item.msg.ms, item.msg.elapsed + (Date.now() - replay.wordAt)) }
+        : item.msg;
       try {
-        await chromeApi.tabs.sendMessage(tabId, item.msg);
+        await chromeApi.tabs.sendMessage(tabId, out);
       } catch {
         return; // no content script there (chrome:// page); nothing to show
       }

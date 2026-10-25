@@ -36,7 +36,11 @@ export function alignWords(display, spoken) {
   let prev = 0;
   for (const w of spoken) {
     const n = norm(w);
-    const pos = n ? stream.indexOf(n, cursor) : -1;
+    if (!n) { // punctuation on its own: stays on the word before it
+      map.push(Math.min(prev, Math.max(0, display.length - 1)));
+      continue;
+    }
+    const pos = stream.indexOf(n, cursor);
     if (pos >= 0 && pos - cursor <= 48) {
       prev = owner[pos];
       cursor = pos + n.length;
@@ -55,6 +59,7 @@ export class WordClock {
     this.chunks = []; // { offset (samples into the line), length, at (ctx time), rate }
     this.samples = 0;
     this.starts = []; // audio seconds when each timestamp word starts
+    this.ends = []; // and ends
     this.targets = []; // display index for each timestamp word
     this.spoken = [];
   }
@@ -73,8 +78,10 @@ export class WordClock {
     for (let i = 0; i < n; i++) {
       const s = Number(ts.start[i]);
       if (!Number.isFinite(s)) continue;
+      const e = Number(ts.end && ts.end[i]);
       this.spoken.push(String(ts.words[i]));
       this.starts.push(s);
+      this.ends.push(Number.isFinite(e) && e > s ? e : s);
     }
     this.targets = alignWords(this.words, this.spoken);
   }
@@ -95,6 +102,31 @@ export class WordClock {
       heard = (c.offset + played) / this.sampleRate;
     }
     return heard;
+  }
+
+  // AudioContext time when audio second `a` is heard (Infinity if not scheduled yet).
+  ctxTimeOf(a) {
+    const s = a * this.sampleRate;
+    for (let k = this.chunks.length - 1; k >= 0; k--) {
+      const c = this.chunks[k];
+      if (s >= c.offset) return c.at + Math.min(s - c.offset, c.length) / this.sampleRate / c.rate;
+    }
+    return Infinity;
+  }
+
+  // When display word d is heard, in AudioContext time: from the start of its
+  // first timestamp word to the end of its last one (Sonic may split it).
+  spanOf(d) {
+    let a = Infinity;
+    let b = -Infinity;
+    this.targets.forEach((t, i) => {
+      if (t !== d) return;
+      a = Math.min(a, this.starts[i]);
+      b = Math.max(b, this.ends[i]);
+    });
+    if (a === Infinity) return null;
+    const start = this.ctxTimeOf(a);
+    return { start, end: Math.max(start, this.ctxTimeOf(b)) };
   }
 
   // The display word being heard at AudioContext time t: -1 before the first

@@ -9,9 +9,10 @@ import { WordClock } from './karaoke.js';
 //
 // Captions follow the audio, not the text: onCaption gets
 //   { kind: "line", utteranceId, text, karaoke }   when a line starts to be heard
-//   { kind: "word", utteranceId, index }            each time the heard word changes
+//   { kind: "word", utteranceId, index, ms, elapsed } each time the heard word changes:
+//                                                    the word lasts ms, elapsed of it already heard
 //   { kind: "word", utteranceId, index, done }      the whole line has been heard
-//   { kind: "word", utteranceId, index, frozen }    stop() cut it off at that word
+//   { kind: "word", utteranceId, index, ms, elapsed, frozen }  stop() cut it off there
 //   { kind: "word", utteranceId, fallback }         Sonic sent no timestamps: show it plainly
 // using the word timestamps Sonic sends (add_timestamps) mapped onto the
 // AudioContext clock (karaoke.js). A line that produced no audio is still
@@ -223,7 +224,7 @@ export class Speaker {
   // Advances the caption to what is being heard. Lines go strictly in order:
   // the next one shows only after the one before has been heard to the end.
   tick() {
-    const now = this.ctx.currentTime;
+    const now = this.#heardTime();
     while (this.lines.length) {
       const utt = this.lines[0];
       const c = utt.clock;
@@ -245,7 +246,7 @@ export class Speaker {
           const i = c.indexAt(now);
           if (i > utt.index) {
             utt.index = i;
-            this.onCaption({ kind: 'word', utteranceId: utt.id, index: i });
+            this.onCaption({ kind: 'word', utteranceId: utt.id, index: i, ...this.#timing(utt, now) });
           }
         }
       }
@@ -256,17 +257,34 @@ export class Speaker {
     if (!this.lines.length) this.#stopTicker();
   }
 
+  // How long the word being heard lasts and how much of it has been heard,
+  // in ms of playback (so the caption's sweep across it keeps pace).
+  #timing(utt, now) {
+    const span = utt.index >= 0 ? utt.clock.spanOf(utt.index) : null;
+    if (!span || !Number.isFinite(span.end)) return {};
+    const ms = Math.round((span.end - span.start) * 1000);
+    return { ms, elapsed: Math.max(0, Math.min(ms, Math.round((now - span.start) * 1000))) };
+  }
+
   #line(utt, karaoke) {
     utt.shown = true;
     if (!karaoke) utt.plain = true;
     this.onCaption({ kind: 'line', utteranceId: utt.id, text: utt.text, karaoke });
   }
 
+  // AudioContext time of what is reaching the ears now: currentTime is when
+  // audio leaves the graph, and the device (Bluetooth most of all) adds more.
+  #heardTime() {
+    const lag = (Number(this.ctx.baseLatency) || 0) + (Number(this.ctx.outputLatency) || 0);
+    return this.ctx.currentTime - lag;
+  }
+
   // stop() mid-line: the highlight stays on the word that was being heard.
   #freezeCaption() {
+    if (this.lines.length) this.tick(); // catch up first: a line heard to its end is done, not frozen
     const utt = this.lines[0];
     if (utt && utt.shown && !utt.plain) {
-      this.onCaption({ kind: 'word', utteranceId: utt.id, index: utt.index, frozen: true });
+      this.onCaption({ kind: 'word', utteranceId: utt.id, index: utt.index, ...this.#timing(utt, this.#heardTime()), frozen: true });
     }
     this.lines = [];
     this.#stopTicker();
