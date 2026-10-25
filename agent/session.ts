@@ -280,20 +280,37 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-// The checkout pass: after the user asked to go to checkout and the
-// "Proceed to checkout" control was pressed, that tab may open checkout
-// pages on that origin. It must land within PASS_LAND_MS, and ends when the
-// tab leaves checkout pages or after PASS_MAX_MS. Never covers a blocked
-// site, and never lets Claude pay (Place order stays locked).
-export const PASS_LAND_MS = 60_000;
-export const PASS_MAX_MS = 15 * 60_000;
-export type CheckoutPass = { tabId: number; origin: string; landBy: number; until: number; landed: boolean };
+// The checkout pass: set only after the user asked to go to checkout and
+// the "Proceed to checkout" control was pressed. That one tab may stay on
+// checkout pages of that origin. It must land within PASS_LAND_MS, ends
+// when the tab leaves checkout pages or after PASS_MAX_MS, and lets Claude
+// navigate there at most once (navUsed). Never covers a blocked site, and
+// never lets Claude pay (Place order stays locked).
+export const PASS_LAND_MS = 30_000;
+export const PASS_MAX_MS = 2 * 60_000;
+export type CheckoutPass = { tabId: number; origin: string; landBy: number; until: number; landed: boolean; navUsed?: boolean };
 
 export function passCovers(pass: CheckoutPass | null, tabId: number | null, url: string | undefined, now = Date.now()): boolean {
   if (!pass || tabId == null || !url || pass.tabId !== tabId) return false;
   if (now > pass.until || (!pass.landed && now > pass.landBy)) return false;
   return originOf(url) === pass.origin && isCheckoutUrl(url);
 }
+
+// How long the user's last words count for request_unlock's direct match.
+export const USER_WORDS_TTL_MS = 60_000;
+
+// The user's most recent words, bound to the tab Clearcart was on when they
+// spoke and that tab's origin then. spent: unlock classes already pressed
+// for these words. passwordYes: these words are an explicit yes to an
+// earlier "type your password, then tell me" for that sign in.
+type UserWords = {
+  text: string;
+  spent: Set<string>;
+  at: number;
+  tabId: number | null;
+  origin: Promise<string | null>;
+  passwordYes: { tabId: number; label: string; origin: string } | null;
+};
 
 type ToolText = { content: Array<{ type: "text"; text: string }> };
 const said = (text: string): ToolText => ({ content: [{ type: "text", text }] });
@@ -306,10 +323,11 @@ export class Session {
   private closed = false;
   private q: Query | null = null;
   // The user's most recent words, for request_unlock's direct-ask match.
-  // spent: unlock classes already pressed for these words.
-  private lastUser = { text: "", spent: new Set<string>() };
-  // A sign in the user asked for before typing their own password.
-  private passwordAsk: { tabId: number; label: string } | null = null;
+  private lastUser: UserWords = { text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null };
+  // A sign in the user asked for before typing their own password. Lives
+  // only until the next utterance, which becomes passwordYes if it is an
+  // explicit yes.
+  private passwordAsk: { tabId: number; label: string; origin: string } | null = null;
   checkoutPass: CheckoutPass | null = null;
   // Set when a tab sweep could not run or could not move a stray tab. Every
   // browser call is refused until a sweep succeeds (fail closed).
@@ -321,7 +339,17 @@ export class Session {
 
   userText(text: string) {
     if (this.closed || !text.trim()) return;
-    this.lastUser = { text, spent: new Set() };
+    const tabId = this.state.lastTabId;
+    const pw = this.passwordAsk;
+    this.passwordAsk = null;
+    this.lastUser = {
+      text,
+      spent: new Set(),
+      at: Date.now(),
+      tabId,
+      origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
+      passwordYes: pw && isExplicitYes(text) ? pw : null,
+    };
     if (this.awaitingAnswer) {
       const resolve = this.awaitingAnswer;
       this.awaitingAnswer = null;
@@ -373,7 +401,7 @@ export class Session {
       }
       if (opens) {
         const navTab = name === B + "navigate" ? tabIdOf(args) ?? this.state.lastTabId : null;
-        const locked = navigateLockReason(String(args.url || ""), (u) => passCovers(this.checkoutPass, navTab, u));
+        const locked = navigateLockReason(String(args.url || ""), (u) => this.useCheckoutPass(navTab, u));
         if (locked) return deny(locked);
       }
       if (checkSites && !extMode() && TAB_TOOLS.has(name)) {
@@ -436,6 +464,23 @@ export class Session {
     }
     this.sweepBroken = false;
     return n;
+  }
+
+  // Claude's one navigate on the checkout pass: true at most once per pass.
+  useCheckoutPass(tabId: number | null, url: string): boolean {
+    const p = this.checkoutPass;
+    if (!p || p.navUsed || !passCovers(p, tabId, url)) return false;
+    p.navUsed = true;
+    return true;
+  }
+
+  // The user's last words if they still count for this tab and its origin
+  // (bound when spoken, USER_WORDS_TTL_MS), else empty words.
+  private async wordsFor(tabId: number, href: string): Promise<UserWords | null> {
+    const w = this.lastUser;
+    if (!w.text || w.tabId !== tabId || Date.now() - w.at > USER_WORDS_TTL_MS) return null;
+    const origin = await w.origin;
+    return origin && origin === originOf(href) ? w : null;
   }
 
   // The tabs the sweep checks: the checkout pass tab is left out while it is
@@ -590,15 +635,18 @@ export class Session {
     }
     const ref = args.ref || "label";
     const label = String(info.label || args.label);
-    const pw = this.passwordAsk;
-    const passwordAsk = !!pw && pw.tabId === tabId && Protect.sameLabel(pw.label, label);
-    const d = decideUnlock(info, { userText: this.lastUser.text, spent: this.lastUser.spent, passwordAsk });
+    const origin = originOf(href);
+    const words = await this.wordsFor(tabId, href);
+    const userText = words?.text ?? "";
+    const pw = words?.passwordYes;
+    const passwordYes = !!pw && pw.tabId === tabId && pw.origin === origin && Protect.sameLabel(pw.label, label);
+    const d = decideUnlock(info, { userText, spent: words?.spent, passwordYes });
     if (d.kind === "refuse") {
       if (info.locked) this.status(`unlock refused: ${info.kind}`);
       return said(d.message);
     }
     if (d.kind === "needs_password") {
-      if (info.cls && isDirectAsk(this.lastUser.text, info.cls as UnlockClass, label)) this.passwordAsk = { tabId, label };
+      if (origin && info.cls && isDirectAsk(userText, info.cls as UnlockClass, label)) this.passwordAsk = { tabId, label, origin };
       this.status("unlock waiting: the user types their password");
       return said(d.message);
     }
@@ -614,14 +662,9 @@ export class Session {
       }
       how = "user confirmed";
     } else {
-      this.lastUser.spent.add(d.cls);
+      words!.spent.add(d.cls);
     }
     if (d.cls === "account") this.passwordAsk = null;
-    const origin = originOf(href);
-    if (d.cls === "checkout" && origin) {
-      const now = Date.now();
-      this.checkoutPass = { tabId, origin, landBy: now + PASS_LAND_MS, until: now + PASS_MAX_MS, landed: false };
-    }
     let failed: string | null;
     try {
       failed = await this.pressUnlocked(tabId, ref, label, d.cls);
@@ -629,9 +672,13 @@ export class Session {
       failed = (e as Error).message;
     }
     if (failed) {
-      if (d.cls === "checkout") this.checkoutPass = null;
       this.status(`unlock failed: ${d.cls}`);
       return said(`Not pressed: ${failed}`);
+    }
+    // The pass starts only after the press worked, for this tab alone.
+    if (d.cls === "checkout" && origin) {
+      const now = Date.now();
+      this.checkoutPass = { tabId, origin, landBy: now + PASS_LAND_MS, until: now + PASS_MAX_MS, landed: false };
     }
     this.status(`unlocked once: ${d.cls} "${label}" (${how})`);
     const next =

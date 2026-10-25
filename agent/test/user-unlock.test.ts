@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { extBridge } from "../extbridge.ts";
-import { Session, navigateLockReason, passCovers } from "../session.ts";
+import { Session, navigateLockReason, passCovers, PASS_MAX_MS, USER_WORDS_TTL_MS } from "../session.ts";
 import { decideUnlock, isDirectAsk, pressUnlockedExt, UserUnlockGate, type LockInfo } from "../user-unlock.ts";
 import { LockedError } from "../unlock.ts";
 
@@ -26,7 +26,14 @@ test("matcher: direct asks for the same action grant", () => {
     ["subscribe", "subscription", "Subscribe & Save"],
     ["start the free trial", "subscription", "Start free trial"],
     ["save my card", "payment-method", "Save card"],
-    ["press Continue", "marked", "Continue"],
+    ["please sign me in", "account", "Sign in"],
+    ["could you go ahead and check out", "checkout", "Checkout"],
+    ["go ahead and subscribe", "subscription", "Subscribe & Save"],
+    ["log me out", "account", "Log out"],
+    ["sign out", "account", "Sign out"],
+    ["join", "subscription", "Join Prime"],
+    ["press Create account", "account", "Create account"],
+    ["click the Subscribe button", "subscription", "Subscribe"],
   ];
   for (const [t, c, l] of yes) assert.equal(isDirectAsk(t, c, l), true, `${t} -> ${l}`);
 });
@@ -43,7 +50,30 @@ test("matcher: hedged, questioning or other asks do not grant", () => {
     ["sign me up", "account", "Sign in"],
     ["sign me in", "checkout", "Checkout"],
     ["go to checkout", "account", "Sign in"],
-    ["continue", "marked", "Continue"],
+    ["continue", "account", "Continue with Google"],
+    ["press Continue", "marked", "Continue"],
+    ["uncheck subscribe and save", "subscription", "Subscribe & Save"],
+    ["turn off subscribe and save", "subscription", "Subscribe & Save"],
+    ["remove the subscription", "subscription", "Subscribe"],
+    ["skip the login", "account", "Log in"],
+    ["close the login popup", "account", "Log in"],
+    ["dismiss the sign in box", "account", "Sign in"],
+    ["ignore the sign in", "account", "Sign in"],
+    ["I already joined", "subscription", "Join Prime"],
+    ["already signed in", "account", "Sign in"],
+    ["avoid checkout", "checkout", "Checkout"],
+    ["leave checkout", "checkout", "Checkout"],
+    ["cancel checkout", "checkout", "Checkout"],
+    ["sign in is broken", "account", "Sign in"],
+    ["why do I need to log in", "account", "Log in"],
+    ["how do I sign up", "account", "Sign up"],
+    ["never subscribe", "subscription", "Subscribe"],
+    ["I have questions about checkout", "checkout", "Checkout"],
+    ["the page wants me to sign in", "account", "Sign in"],
+    ["I want to sign in", "account", "Sign in"],
+    ["find socks, I will log in later", "account", "Log in"],
+    ["sign me in", "account", "Sign out"],
+    ["log out", "account", "Log in"],
     ["add the blue one to my cart", "checkout", "Checkout"],
     ["", "checkout", "Checkout"],
     ["check out", null, "Place order"],
@@ -61,6 +91,7 @@ test("decideUnlock: payment and wallet controls never unlock, whatever the user 
     locked({ kind: "express", label: "Apple Pay", cls: null }),
     locked({ kind: "payment-form", label: "Continue", cls: null }),
     locked({ kind: "frame", label: "embedded frame", cls: null }),
+    locked({ kind: "marked", label: "Continue", cls: "marked" as any }),
   ]) {
     for (const userText of ["place the order", "buy it now", "pay with apple pay", "yes", "press Continue"]) {
       assert.equal(decideUnlock(info, { userText }).kind, "refuse", `${info.label} / ${userText}`);
@@ -87,8 +118,8 @@ test("decideUnlock: a sign in waits for the user's own password, then their 'don
   assert.equal(d.kind, "needs_password");
   assert.match((d as any).message, /never types or reads passwords/);
   const filled = { ...signin, passwordFilled: true };
-  assert.equal(decideUnlock(filled, { userText: "done", passwordAsk: true }).kind, "grant");
-  assert.equal(decideUnlock(filled, { userText: "done", passwordAsk: false }).kind, "ask");
+  assert.equal(decideUnlock(filled, { userText: "yes", passwordYes: true }).kind, "grant");
+  assert.equal(decideUnlock(filled, { userText: "yes", passwordYes: false }).kind, "ask");
 });
 
 test("grant: single use, bound to tab, origin, control and class, expires", () => {
@@ -146,6 +177,7 @@ function session(info: LockInfo, url = "https://shop.example/cart") {
     return {};
   };
   const s = new Session((m) => out.push(m));
+  (s as any).state.lastTabId = 3;
   return { s, calls, out, pressed: () => calls.filter((c) => c[0] === "press_unlocked").length };
 }
 
@@ -164,6 +196,62 @@ test("request_unlock: the user's direct ask presses once and logs it", async () 
   assert.equal(navigateLockReason("https://shop.example/checkout", (u) => passCovers(f.s.checkoutPass, 3, u)), null);
   assert.match(navigateLockReason("https://shop.example/checkout", (u) => passCovers(f.s.checkoutPass, 4, u))!, /^Locked:/);
   assert.match(navigateLockReason("https://other.example/checkout", (u) => passCovers(f.s.checkoutPass, 3, u))!, /^Locked:/);
+  // Claude's navigate may use the pass once; it lasts about two minutes.
+  assert.equal(f.s.useCheckoutPass(4, "https://shop.example/checkout"), false);
+  assert.equal(f.s.useCheckoutPass(3, "https://shop.example/checkout"), true);
+  assert.equal(f.s.useCheckoutPass(3, "https://shop.example/checkout"), false, "single use");
+  const p = f.s.checkoutPass!;
+  assert.ok(p.until - Date.now() <= PASS_MAX_MS && PASS_MAX_MS <= 2 * 60_000);
+  assert.equal(passCovers(p, 3, "https://shop.example/checkout", p.until + 1), false);
+});
+
+test("request_unlock: no checkout pass when the press fails", async () => {
+  const f = session(locked({}));
+  (extBridge as any).call = ((orig) => async (m: string, p: any) => (m === "press_unlocked" ? Promise.reject(new Error("covered")) : orig(m, p)))((extBridge as any).call);
+  f.s.userText("go to checkout");
+  assert.match((await f.s.requestUnlock(ask())).content[0].text, /^Not pressed/);
+  assert.equal(f.s.checkoutPass, null);
+});
+
+test("request_unlock: the user's words are bound to the tab and origin they were spoken on, and expire", async () => {
+  // Another tab.
+  let f = session(locked({}));
+  f.s.userText("go to checkout");
+  let pending = f.s.requestUnlock({ ...ask(), tabId: 9 });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to go to checkout?");
+  f.s.userText("no");
+  await pending;
+  assert.equal(f.pressed(), 0);
+  // The tab moved to another origin after the words.
+  const urls = ["https://shop.example/cart", "https://evil.example/cart"];
+  f = session(locked({}));
+  const call = (extBridge as any).call;
+  let n = 0;
+  (extBridge as any).call = async (m: string, p: any) => (m === "tab_info" ? { url: urls[Math.min(n++, 1)] } : call(m, p));
+  f.s.userText("go to checkout");
+  pending = f.s.requestUnlock(ask());
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(f.out.some((m) => m.type === "agent_text"), "asks instead");
+  f.s.userText("no");
+  await pending;
+  assert.equal(f.pressed(), 0);
+  // Expired words.
+  f = session(locked({}));
+  const realNow = Date.now;
+  f.s.userText("go to checkout");
+  const t0 = realNow();
+  Date.now = () => t0 + USER_WORDS_TTL_MS + 1;
+  try {
+    pending = f.s.requestUnlock(ask());
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(f.out.some((m) => m.type === "agent_text"), "asks instead");
+    f.s.userText("no");
+    await pending;
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(f.pressed(), 0);
 });
 
 test("request_unlock: page text or Claude's reason never counts as the user's ask", async () => {
@@ -214,7 +302,24 @@ test("request_unlock: an empty password waits for the user, and the press follow
   assert.match((await f.s.requestUnlock(ask("Sign in"))).content[0].text, /password field is empty/);
   assert.equal(f.pressed(), 0);
   info.passwordFilled = true;
-  f.s.userText("done");
+  f.s.userText("yes");
   assert.match((await f.s.requestUnlock(ask("Sign in"))).content[0].text, /^pressed Sign in once.*Never type a password/);
   assert.equal(f.pressed(), 1);
+});
+
+test("request_unlock: the password ask needs an explicit yes as the very next words", async () => {
+  for (const next of [["ok"], ["done"], ["find socks", "yes"]]) {
+    const info = locked({ kind: "account", label: "Sign in", cls: "account", password: true, passwordFilled: false });
+    const f = session(info);
+    f.s.userText("sign me in");
+    assert.match((await f.s.requestUnlock(ask("Sign in"))).content[0].text, /password field is empty/);
+    info.passwordFilled = true;
+    for (const w of next) f.s.userText(w);
+    const pending = f.s.requestUnlock(ask("Sign in"));
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to press Sign in?", next.join(" / "));
+    f.s.userText("no");
+    await pending;
+    assert.equal(f.pressed(), 0, next.join(" / "));
+  }
 });

@@ -2,12 +2,13 @@
 //
 // The button lock (extension/content/protect.js) keeps Claude's tools off
 // checkout, sign in, subscribe, saved card and marked controls. When the
-// user's own words ask for that action ("sign me in", "go to checkout"),
-// request_unlock presses the control once; otherwise the agent asks one
-// short question and needs an explicit yes (isExplicitYes).
+// user's own words ask for that action as an imperative ("sign me in", "go
+// to checkout"), request_unlock presses the control once; otherwise it asks
+// one short question and needs an explicit yes (isExplicitYes). Marked
+// controls never unlock this way.
 //
-// What never unlocks here: placing an order, buy now, pay, wallets, and the
-// submit of a card form. Those go only through request_checkout and pay_now
+// What never unlocks here: placing an order, buy now, pay, wallets, marked
+// controls, and the submit of a card form. Those go only through request_checkout and pay_now
 // (unlock.ts). Passwords and card numbers are never typed by Claude: fields
 // stay masked and refused, and a sign in is pressed only after the user has
 // filled the password themselves.
@@ -27,64 +28,105 @@ import { LockedError } from "./unlock.ts";
 
 export const USER_GRANT_TTL_MS = 60_000;
 
-// Unlock classes (Protect.unlockClass).
-export type UnlockClass = "checkout" | "account" | "subscription" | "payment-method" | "marked";
+// Unlock classes (Protect.unlockClass). A marked control
+// (data-clearcart-protected) never unlocks on request.
+export type UnlockClass = "checkout" | "account" | "subscription" | "payment-method";
 
 // Finer intents, so "sign up" never unlocks "Sign in".
-type Intent = "checkout" | "signin" | "signup" | "subscribe" | "save-card";
+type Intent = "checkout" | "signin" | "signout" | "signup" | "subscribe" | "save-card";
 
 const norm = (s: string) => ` ${String(s ?? "").toLowerCase().replace(/&/g, " and ").replace(/['’]/g, "").replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim()} `;
 
-// What the user's words ask for. Each pattern runs on norm() text.
+// What the user's words ask for. Each pattern runs on one clause of norm()
+// text with its polite filler stripped, and must start at the clause start:
+// the action verb leads, as an imperative request ("sign me in", "go to
+// checkout"). "uncheck subscribe", "close the login popup" or "I already
+// joined" never match.
 const USER_INTENTS: Array<[Intent, RegExp]> = [
   // "check out" is everyday English ("check out the reviews"), so only
-  // bare, or followed by a word that is not a thing to look at.
-  ["checkout", / (go|proceed|continue|head|move|take me|bring me|get me|get) (on |over |straight )?to (the )?check ?out /],
-  ["checkout", / check ?out( (now|please|for me|then|and|so|thanks|thank you|already|with|on|at|here|right now))* $/],
-  ["checkout", / check ?out (and|then|with|on|at|now|please|for me) /],
-  ["checkout", / (start|begin|open) (the )?check ?out /],
-  ["signin", / (sign|log) (me |us )?(back )?in(to)? /],
-  ["signin", / (signin|login) /],
-  ["signup", / sign (me |us )?up( for (an |a )?account| for the site| on (the )?site| here| now| please)* $/],
-  ["signup", / (create|make|open|set up|register) (me )?(an |a |my )?(new )?account /],
-  ["signup", / register( me)? /],
-  ["signup", / signup /],
-  ["subscribe", / subscribe /],
-  ["subscribe", / sign (me |us )?up for (the |a |an )?(subscription|membership|trial|free trial|plan|newsletter)/],
-  ["subscribe", / (start|begin|try) (the |a |my )?(free )?trial /],
-  ["subscribe", / (join|become a member|enroll|upgrade)/],
-  ["save-card", / (save|remember|store|add) (my |the |this |a |new )*(card|credit card|debit card|payment method|payment) /],
+  // bare, or with a few closing words.
+  ["checkout", /^ (go|proceed|continue|head|move) (on |over |straight |right )?(to|into) (the )?check ?out /],
+  ["checkout", /^ (take|bring|get) (me|us) (to|into) (the )?check ?out /],
+  ["checkout", /^ check ?out( (now|please|for me|thanks|thank you|right now))* $/],
+  ["checkout", /^ (start|begin|open) (the )?check ?out /],
+  ["signin", /^ (sign|log) (me |us )?(back )?in(to)? /],
+  ["signin", /^ (signin|login)( me)? /],
+  ["signout", /^ (sign|log) (me |us )?out /],
+  ["signout", /^ (signout|logout)( me)? /],
+  ["signup", /^ sign (me |us )?up( (for (an |a )?account|for the site|on (the )?site|here|now|please))* $/],
+  ["signup", /^ (create|make|open|set up|register) (me )?(an |a |my )?(new )?account /],
+  ["signup", /^ register( me)? /],
+  ["signup", /^ signup /],
+  ["subscribe", /^ subscribe /],
+  ["subscribe", /^ sign (me |us )?up for (the |a |an )?(subscription|membership|trial|free trial|plan|newsletter) /],
+  ["subscribe", /^ (start|begin|try) (the |a |my )?(free )?trial /],
+  ["subscribe", /^ (join|become a member|enroll|upgrade) /],
+  ["save-card", /^ (save|remember|store|add) (my |the |this |a |new )*(card|credit card|debit card|payment method|payment) /],
 ];
 
 // What a control's label is for.
 const LABEL_INTENTS: Array<[Intent, RegExp]> = [
   ["checkout", / check ?out /],
   ["signin", / (sign in|signin|log in|login|sign in with|log in with|continue with) /],
+  ["signout", / (sign out|signout|log out|logout) /],
   ["signup", / (sign up|signup|create (an |my )?account|register) /],
   ["subscribe", / (subscribe|trial|try free|try it free|join|member|membership|enroll|upgrade|auto ?deliver|auto ?ship|autoship) /],
   ["save-card", / (card|payment method|payment details|payment) /],
 ];
 
+const CLASSES = new Set<string>(["checkout", "account", "subscription", "payment-method"]);
+
 const INTENT_CLASS: Record<Intent, UnlockClass> = {
   checkout: "checkout",
   signin: "account",
+  signout: "account",
   signup: "account",
   subscribe: "subscription",
   "save-card": "payment-method",
 };
 
-// Words that turn a request into a question, a condition, a refusal or
-// something for later. Any of them means "ask first".
-const HEDGE = / (dont|do not|not|never|no|nope|stop|wait|hold on|without|instead|unless|if|whether|should|shouldnt|maybe|might|perhaps|probably|wonder|wondering|thinking|think|considering|not sure|later|tomorrow|eventually|before|what|why|how|which|where|when|who|is there|are there|is it|does|do i|did|can i|could i|tell me|explain|describe|read|cancel|undo|pretend|imagine|hypothetically|say|says|said|asks?|asked|page|website|site says)( |$)/;
+// Words that turn a request into a question, a refusal, a complaint, a
+// condition or something for later. Any of them anywhere means "ask
+// first" (the spoken confirmation), never a direct press.
+const HEDGE = new RegExp(
+  " (" +
+    [
+      "dont", "do not", "not", "never", "no", "nope", "stop", "wait", "hold on", "without", "instead", "unless", "if", "whether",
+      "should", "shouldnt", "maybe", "might", "perhaps", "probably", "wonder", "wondering", "thinking", "think", "considering",
+      "later", "tomorrow", "eventually", "before", "what", "why", "how", "which", "where", "when", "who", "is there", "are there",
+      "is it", "does", "do i", "did", "can i", "could i", "tell me", "explain", "describe", "read", "cancel", "undo", "pretend",
+      "imagine", "hypothetically", "say", "says", "said", "asks?", "asked", "page", "website", "site says",
+      "skip", "skipping", "close", "closing", "dismiss", "ignore", "avoid", "leave", "uncheck", "untick", "deselect",
+      "turn off", "switch off", "remove", "broken", "already", "question", "questions", "problem", "error", "isnt", "wont", "cant",
+    ].join("|") +
+    ")(?= )"
+);
+
+// Polite lead-ins stripped from the start of a clause.
+const FILLER = /^ (please|ok|okay|yes|yeah|yep|alright|all right|now|great|cool|sure|just|hey|so|and|then|lets|can you|could you|would you|will you|can we|could we|go ahead and) /;
 
 // A question that is really a request: "can you sign me in?".
 const POLITE = /^ (please |ok |okay |yes |yeah |now |great |cool )*(can you|could you|would you|will you|can we|could we) /;
 
+// The user's words as clauses, each " ... " with filler stripped.
+function clauses(raw: string): string[] {
+  const out: string[] = [];
+  for (const part of String(raw).split(/[,.;:!?]+/)) {
+    for (const c of norm(part).split(/ (?:and then|and|then|after that) /)) {
+      let s = ` ${c.trim()} `;
+      for (let prev = ""; prev !== s; ) {
+        prev = s;
+        s = s.replace(FILLER, " ");
+      }
+      if (s.trim()) out.push(s);
+    }
+  }
+  return out;
+}
+
 function userIntents(text: string): Set<Intent> {
   const out = new Set<Intent>();
-  const n = norm(text);
-  if (!n.trim()) return out;
-  for (const [intent, re] of USER_INTENTS) if (re.test(n)) out.add(intent);
+  for (const c of clauses(text)) for (const [intent, re] of USER_INTENTS) if (re.test(c)) out.add(intent);
   return out;
 }
 
@@ -96,11 +138,13 @@ function labelIntents(label: string): Set<Intent> {
 }
 
 // True when the user's most recent words directly ask for pressing this
-// control: an unhedged request whose intent matches both the control's
-// unlock class and its label, or "press <label>" naming it outright.
-// Only ever pass the user's transcribed words here, never page text.
+// control: an unhedged imperative whose action verb leads a clause and
+// whose intent matches both the control's unlock class and its label, or
+// "press <label>" naming it outright. Anything else goes through the
+// spoken confirmation. Only ever pass the user's transcribed words here,
+// never page text.
 export function isDirectAsk(userText: string, cls: UnlockClass | null, label: string): boolean {
-  if (!cls || !userText || !label) return false;
+  if (!cls || !CLASSES.has(cls) || !userText || !label) return false;
   const raw = String(userText);
   // A long ramble is not a direct ask; a question that is not a polite
   // request ("is there a sign in button?") is not either.
@@ -110,9 +154,10 @@ export function isDirectAsk(userText: string, cls: UnlockClass | null, label: st
   if (HEDGE.test(n)) return false;
   // "press Create account", "click the Subscribe button".
   const name = norm(label).trim();
-  const named = new RegExp(` (press|click|tap|hit|select|choose|push) (the |on )?${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( button| link)? `);
-  if (name && named.test(n)) return true;
-  if (cls === "marked") return false;
+  if (name) {
+    const named = new RegExp(`^ (press|click|tap|hit|select|choose|push) (the |on )?${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( button| link)? $`);
+    if (clauses(raw).some((c) => named.test(c))) return true;
+  }
   const want = userIntents(raw);
   for (const intent of labelIntents(label)) if (want.has(intent) && INTENT_CLASS[intent] === cls) return true;
   return false;
@@ -221,8 +266,8 @@ var r = el.getBoundingClientRect();
 if (!(r.width > 0 && r.height > 0)) return "hidden";
 var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
 if (!hit || !(hit === el || el.contains(hit))) return "covered";
+el.click();
 P.release(el);
-setTimeout(function () { el.click(); }, 30);
 return "pressed";`;
 }
 
@@ -234,23 +279,21 @@ export type Decision =
   | { kind: "grant"; cls: UnlockClass; label: string; direct: true }
   | { kind: "ask"; cls: UnlockClass; label: string; question: string };
 
-// "done" after the user typed their own password.
-const DONE = /^ (ok |okay |yes |yeah |alright |all right )*(done|im done|i am done|finished|ready|typed it|i typed it|entered it|i entered it|its in|go ahead|go|yes|yeah|ok|okay)( now| thanks| thank you)? $/;
-
 export const NOT_LOCKED = "That control is not locked. Press it with click as usual.";
 
 // What request_unlock does for a control: refuse it, wait for the user's
 // own password, press it at once (the user's latest words asked for it), or
 // ask one short question first. spent: unlock classes already granted
-// directly for this utterance (one press per ask). passwordAsk: the user
-// asked for this sign in before their password was typed.
+// directly for this utterance (one press per ask). passwordYes: the user
+// asked for this sign in before their password was typed, and these words,
+// the very next ones, are an explicit yes (session.ts isExplicitYes).
 export function decideUnlock(
   info: LockInfo,
-  opts: { userText: string; spent?: Set<string>; passwordAsk?: boolean }
+  opts: { userText: string; spent?: Set<string>; passwordYes?: boolean }
 ): Decision {
   if (!info || !info.locked) return { kind: "refuse", message: NOT_LOCKED };
   const label = String(info.label || "this control");
-  const cls = (info.cls || null) as UnlockClass | null;
+  const cls = (info.cls && CLASSES.has(info.cls) ? info.cls : null) as UnlockClass | null;
   if (!cls) {
     switch (info.kind) {
       case "express":
@@ -268,11 +311,11 @@ export function decideUnlock(
   if (cls === "account" && info.password && !info.passwordFilled) {
     return {
       kind: "needs_password",
-      message: "The password field is empty. Clearcart never types or reads passwords. Ask the user to type their password into the page themselves and to tell you when they are done, then call request_unlock again for this control.",
+      message: "The password field is empty. Clearcart never types or reads passwords. Ask the user to type their password into the page themselves and to say yes when they are done, then call request_unlock again for this control.",
     };
   }
   const spent = opts.spent?.has(cls);
-  const direct = !spent && (isDirectAsk(opts.userText, cls, label) || (!!opts.passwordAsk && cls === "account" && DONE.test(norm(opts.userText))));
+  const direct = !spent && (isDirectAsk(opts.userText, cls, label) || (!!opts.passwordYes && cls === "account"));
   if (direct) return { kind: "grant", cls, label, direct: true };
   const question = cls === "checkout" ? "Do you want me to go to checkout?" : `Do you want me to press ${label}?`;
   return { kind: "ask", cls, label, question };
