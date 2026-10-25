@@ -192,6 +192,12 @@ export function createRouter({
     // newTab too, so an agent server that predates errorPage still says
     // the tab may be navigated.
     if (typeof tabs.onErrorPage === "function" && tabs.onErrorPage(tab)) {
+      // Hidden (a user's error page for a blocked site): a blocked tab.
+      try {
+        await tabs.resolveTab(tab.id);
+      } catch {
+        return { active: { blocked: true } };
+      }
       const failed = typeof tabs.failedAddress === "function" ? await tabs.failedAddress(tab).catch(() => null) : null;
       const active = { tabId: tab.id, title: "Can't reach this site", url: "chrome-error://chromewebdata/", newTab: true, errorPage: true };
       if (failed) active.failedUrl = failed;

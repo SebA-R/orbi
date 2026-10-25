@@ -9,7 +9,7 @@
 //     "Can't reach this site" page (errpage.js) are listed and may be
 //     navigated to a store, but are never read or acted on. The error page
 //     is listed as chrome-error://chromewebdata/, without the address that
-//     failed.
+//     failed; a user's error page for a blocked site is hidden.
 //   - That check runs again on every call (resolveAllowedTab), not only when
 //     the tabs are listed: a tab can move between calls.
 //   - Clearcart only closes tabs it opened itself.
@@ -92,6 +92,14 @@ export function onErrorPage(tab) {
 // A page of Clearcart's own with nothing on it to read: a new tab page or
 // the error page. Listed, may be navigated, never read or acted on.
 export const onEmptyPage = (tab) => onNewTab(tab) || onErrorPage(tab);
+
+// The user's tab is on Clearcart's error page for a site the browse mode
+// does not allow: hidden like Chrome's own error page for it would be.
+async function errorPageHidden(tab, settings, mine) {
+  if (mine || !onErrorPage(tab)) return false;
+  const rec = await recordFor(tab.url || tab.pendingUrl).catch(() => null);
+  return !!rec && !!blockReason(rec.url, settings);
+}
 
 // The address Clearcart's error page in this tab failed on, origin and path
 // only, or null. Null too when that address is not allowed: a blocked
@@ -181,7 +189,7 @@ export async function tabsContext() {
   const tabs = [];
   for (const t of all) {
     const mine = state.created.includes(t.id);
-    if (hiddenReason(t, settings, { blankOk: mine })) continue;
+    if (hiddenReason(t, settings, { blankOk: mine }) || (await errorPageHidden(t, settings, mine))) continue;
     const newTab = onNewTab(t);
     const errorPage = !newTab && onErrorPage(t);
     tabs.push({
@@ -208,12 +216,13 @@ export async function resolveTab(tabId, { nav = false } = {}) {
   else {
     // The last used tab, unless it has since moved somewhere blocked.
     if (state.last != null) tab = await api().tabs.get(state.last).catch(() => null);
-    if (tab && hiddenReason(tab, settings, { blankOk: state.created.includes(tab.id) })) tab = null;
+    const mine0 = tab && state.created.includes(tab.id);
+    if (tab && (hiddenReason(tab, settings, { blankOk: mine0 }) || (await errorPageHidden(tab, settings, mine0)))) tab = null;
     if (!tab) tab = await activeTab();
     if (!tab) throw new BridgeError(ERR.NO_TAB, "no open tab; call tabs_create");
   }
   const mine = state.created.includes(tab.id);
-  if (!(nav && mine) && hiddenReason(tab, settings, { blankOk: mine && nav })) {
+  if (!(nav && mine) && (hiddenReason(tab, settings, { blankOk: mine && nav }) || (await errorPageHidden(tab, settings, mine)))) {
     // No origin in the message: a blocked tab of the user's stays private.
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Clearcart does not use it`);
   }
