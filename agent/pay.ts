@@ -36,6 +36,8 @@ export type Confirmation = {
   total: string;
   state: "pending" | "confirmed" | "declined" | "used";
   confirmedAt?: number;
+  // Confirmed by Danger mode without a spoken yes (session.ts).
+  auto?: boolean;
   tabId?: number | null;
   cart?: string;
 };

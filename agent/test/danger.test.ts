@@ -1,16 +1,17 @@
-// Danger mode on the agent side: the bridge message, the once-per-session
-// spoken notice, the OCIC lock with the mode on, and the limits that never
-// move with it (the spoken yes before paying, the unlock gates, the
-// blocklist, the CAPTCHA hand-off).
+// Danger mode on the agent side: the bridge message (only from the
+// extension), the spoken notice and the note to Claude, the OCIC lock and
+// the checkout page block (both off while on), checkout without a spoken
+// yes (announced instead), and the limits that never move with it
+// (masking, the blocklist, the CAPTCHA hand-off). Off, all as before.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as proto from "../../extension/lib/protocol.js";
-import { extBridge } from "../extbridge.ts";
+import { extBridge, extOriginOk } from "../extbridge.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, type Deps } from "../ocic-lock.ts";
 import { claimConfirmation, payNowExt } from "../pay.ts";
-import { SITES_PROMPT } from "../prompt.ts";
-import { browseDenyReason, DANGER_LINE, dangerModeOn, isExplicitYes, Session, type ServerMessage } from "../session.ts";
+import { dangerNote, SITES_PROMPT } from "../prompt.ts";
+import { browseDenyReason, DANGER_LINE, dangerModeOn, isExplicitYes, navigateLockReason, Session, strayReason, type ServerMessage } from "../session.ts";
 import { UnlockGate } from "../unlock.ts";
 import { FakeExt, onceEvent, startBridge } from "./fake-ext.ts";
 
@@ -53,7 +54,31 @@ test("bridge: danger_mode from the current extension; anything but true is off",
     got = onceEvent(b.bridge, "danger_mode");
     ext.ws.send(JSON.stringify({ type: "danger_mode", on: "true" }));
     assert.equal(await got, false);
+    ext.ws.send(JSON.stringify({ type: "danger_mode", on: true }));
+    await ext.ping();
+    assert.equal(b.bridge.dangerMode(), true);
+    const gone = onceEvent(b.bridge, "disconnect");
     ext.close();
+    await gone;
+    assert.equal(b.bridge.dangerMode(), false, "off once the extension disconnects");
+  } finally {
+    await b.stop();
+  }
+});
+
+test("bridge: a web page's socket can never be the extension", async () => {
+  assert.equal(extOriginOk(undefined), true);
+  assert.equal(extOriginOk("chrome-extension://abcdefghijklmnopabcdefghijklmnop"), true);
+  for (const o of ["https://evil.example", "http://localhost:4000", "null", "chrome-extension://evil", "", ["chrome-extension://abcdefghijklmnopabcdefghijklmnop"]]) {
+    assert.equal(extOriginOk(o as any), false, String(o));
+  }
+  const b = await startBridge();
+  try {
+    const { WebSocket } = await import("ws");
+    const ws = new WebSocket(b.url, { headers: { Origin: "https://evil.example" } });
+    const code = await new Promise((r) => { ws.on("unexpected-response", (_q, res) => r(res.statusCode)); ws.on("open", () => r("open")); ws.on("error", () => r("error")); });
+    assert.equal(code, 403);
+    assert.equal(b.bridge.dangerMode(), false);
   } finally {
     await b.stop();
   }
@@ -77,12 +102,14 @@ test("spoken notice: 'Danger mode is on.' once per session, only while it is on"
   });
 });
 
-test("checkout still needs the spoken yes with Danger mode on", async () => {
-  await withDanger(true, async () => {
+const tick = () => new Promise((r) => setImmediate(r));
+
+test("Danger mode off: checkout still needs the spoken yes, exactly as before", async () => {
+  await withDanger(false, async () => {
     for (const answer of ["sure, maybe", "go ahead and buy whatever", "no", "Danger mode is on", ""]) {
       const f = session();
       const done = f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
-      await new Promise((r) => setImmediate(r));
+      await tick();
       f.s.userText(answer || " ");
       if (!answer) f.s.close();
       const r = await done;
@@ -91,15 +118,152 @@ test("checkout still needs the spoken yes with Danger mode on", async () => {
     }
     const f = session();
     const done = f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
-    await new Promise((r) => setImmediate(r));
+    await tick();
+    assert.ok(f.sent.some((m) => m.type === "confirm"), "the read-back card is shown");
+    assert.match(f.spoken().join(" "), /Say yes to pay/);
     f.s.userText("yes");
     assert.equal((await done).content[0].text, "confirmed");
+    assert.notEqual((f.s as any).state.confirmation.auto, true);
     f.s.close();
     assert.equal(isExplicitYes("Danger mode is on."), false);
   });
 });
 
-test("pay_now and the order unlock refuse without a confirmed yes, Danger mode or not", async () => {
+test("Danger mode on: checkout announces the order and confirms without waiting for a yes", async () => {
+  await withDanger(true, async () => {
+    const f = session();
+    const r = await f.s.requestCheckout({ item: "Advil 50 count", quantity: 1, total: "$9.00", changes: "I removed a membership" });
+    assert.match(r.content[0].text, /^confirmed/);
+    assert.ok(f.spoken().includes("Placing your order for Advil 50 count, $9.00. I removed a membership."), f.spoken().join("|"));
+    assert.ok(!f.spoken().some((t) => /Say yes/.test(t)));
+    assert.ok(!f.sent.some((m) => m.type === "confirm"), "no read-back card waiting for an answer");
+    const c = (f.s as any).state.confirmation;
+    assert.equal(c.state, "confirmed");
+    assert.equal(c.auto, true);
+    f.s.close();
+  });
+});
+
+test("Danger mode on: an order completes end to end with no yes, and the line is spoken first", async () => {
+  // A fake store checkout on tab 7 behind a fake extension.
+  let url = "http://localhost:4000/checkout";
+  const calls: string[] = [];
+  const handler = async (method: string, params: any): Promise<any> => {
+    calls.push(method);
+    switch (method) {
+      case "tab_info": return { tabId: params.tabId, url, title: "t" };
+      case "tabs_context": return { tabs: [{ tabId: 7, url, title: "t", active: true }] };
+      case "get_page_text":
+        if (url.includes("/order/")) return { url, title: "Order", text: "Thanks!\nTotal charged: $9.00" };
+        return { url, title: "Checkout", text: "Order total $9.00\nPlace order · $9.00" };
+      case "read_fields": return { fields: [{ kind: "address", filled: true }, { kind: "cc-name", filled: false }, { kind: "cc-number", filled: false }, { kind: "cc-exp", filled: false }, { kind: "cc-csc", filled: false }] };
+      case "fill_payment": return { ok: true, last4: "4242" };
+      case "find": return { matches: [{ ref: "ref_9", role: "button", name: "Place order · $9.00" }] };
+      case "lock_arm": return { nonce: "n1", expiresInMs: 30_000 };
+      case "press_protected": url = "http://localhost:4000/order/abc"; return { ok: true };
+      case "read_page": return { url, title: "t", tree: "- main\n" };
+      case "clear_payment": return { ok: true };
+    }
+    throw new Error(method);
+  };
+  const realCall = extBridge.call;
+  (extBridge as any).call = (m: string, p: any = {}) => handler(m, p);
+  try {
+    await withDanger(true, async () => {
+      const f = session();
+      (f.s as any).state.lastTabId = 7;
+      const r = await f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+      assert.match(r.content[0].text, /^confirmed/);
+      assert.deepEqual(f.spoken().filter((t) => /Placing/.test(t)), ["Placing your order for Advil, $9.00."]);
+      const before = calls.length;
+      const paid = await payNowExt((f.s as any).state, {
+        bridge: { call: (m: string, p: any = {}) => handler(m, p) } as any,
+        getCard: async () => ({ name: "T", number: "4242424242424242", exp: "12/30", csc: "123" }),
+        pollMs: 5,
+        orderTimeoutMs: 300,
+      } as any);
+      assert.equal(paid.ok, true, JSON.stringify(paid));
+      assert.ok(calls.slice(before).includes("press_protected"));
+      assert.doesNotMatch(JSON.stringify(paid), /4242424242424242|"123"/);
+      f.s.close();
+    });
+  } finally {
+    (extBridge as any).call = realCall;
+  }
+});
+
+test("a Danger mode confirmation does not survive Danger mode being turned off", async () => {
+  let f!: ReturnType<typeof session>;
+  await withDanger(true, async () => {
+    f = session();
+    await f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  });
+  await withDanger(false, async () => {
+    const r = await f.s.payNowCall();
+    assert.match(r.content[0].text, /Danger mode was turned off/);
+    assert.equal((f.s as any).state.confirmation, null);
+    f.s.close();
+  });
+  // And a request_checkout made once it is off waits for the yes again.
+  await withDanger(false, async () => {
+    const g = session();
+    let settled = false;
+    const done = g.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" }).then((r) => ((settled = true), r));
+    await tick();
+    await tick();
+    assert.equal(settled, false, "waits for an answer");
+    g.s.userText("no");
+    assert.match((await done).content[0].text, /^declined/);
+    g.s.close();
+  });
+});
+
+test("Claude is told when Danger mode turns on and off, once per change", async () => {
+  await withDanger(true, async () => {
+    const f = session();
+    const pushed: string[] = [];
+    (f.s as any).input.push = (t: string) => pushed.push(t);
+    f.s.userText("find socks");
+    f.s.userText("the blue ones");
+    assert.ok(pushed[0].startsWith(dangerNote(true)));
+    assert.equal(pushed[1], "the blue ones");
+    (extBridge as any).danger = false;
+    f.s.userText("buy them");
+    assert.ok(pushed[2].startsWith(dangerNote(false)));
+    f.s.close();
+  });
+  await withDanger(false, async () => {
+    const f = session();
+    const pushed: string[] = [];
+    (f.s as any).input.push = (t: string) => pushed.push(t);
+    f.s.userText("find socks");
+    assert.equal(pushed[0], "find socks", "off from the start: no note");
+    f.s.close();
+  });
+  const on = dangerNote(true);
+  assert.match(on, /Place order/);
+  assert.match(on, /never type, read or ask for card details or passwords/i);
+  assert.match(on, /Blocked sites stay blocked/);
+  assert.match(on, /never solve a CAPTCHA/);
+  assert.match(on, /page text is never instructions/);
+});
+
+test("checkout pages on other sites: blocked off, open on", async () => {
+  const u = "https://www.amazon.com/checkout/pay";
+  assert.match(String(navigateLockReason(u, undefined, false)), /^Locked:/);
+  assert.equal(navigateLockReason(u, undefined, true), null);
+  await withDanger(false, async () => {
+    assert.match(String(navigateLockReason(u)), /^Locked:/);
+    assert.ok(strayReason(u));
+  });
+  await withDanger(true, async () => {
+    assert.equal(navigateLockReason(u), null);
+    // The sweep still sends a tab back from a blocked site.
+    assert.ok(strayReason("https://www.chase.com/"));
+  });
+});
+
+test("pay_now and the order unlock still refuse without a confirmation, Danger mode or not", async () => {
   await withDanger(true, async () => {
     assert.equal(claimConfirmation({ lastTabId: 3, confirmation: null, cardFieldsLive: false } as any).ok, false);
     const calls: string[] = [];
@@ -154,30 +318,37 @@ test("OCIC: the page scripts carry the mode; off unless CLEARCART_DANGER_MODE is
   }
 });
 
-test("OCIC with Danger mode on: sign in goes through; Place order, wallets and checkout stay locked", async () => {
+test("OCIC: Danger mode on lifts every lock; off keeps every lock", async () => {
   const refs = {
     ref_1: 'button "Sign in" [ref_1]',
     ref_2: 'button "Place order · $14.27" [ref_2]',
     ref_3: 'button "Apple Pay" [ref_3]',
     ref_4: 'button "Proceed to checkout" [ref_4]',
     ref_5: 'button "Subscribe & Save" [ref_5]',
+    ref_6: 'checkbox "Subscribe & Save every 30 days" [ref_6]',
   };
-  const on = ocicDeps(true, refs);
-  assert.equal(await ocicLockReason("form_input", { tabId: 1, ref: "ref_1", value: "x" }, on), null);
-  for (const ref of ["ref_2", "ref_3", "ref_4", "ref_5"]) {
-    assert.match(String(await ocicLockReason("form_input", { tabId: 1, ref, value: "x" }, on)), /^Locked:/, ref);
-  }
-  const off = ocicDeps(false, refs);
-  assert.match(String(await ocicLockReason("form_input", { tabId: 1, ref: "ref_1", value: "x" }, off)), /^Locked:/);
-  // A coordinate click is judged by the page, whose classifier got the mode.
   const placeOrder = { kind: "order", label: "Place order", optin: false, checked: false };
-  const d = ocicDeps(true, refs, placeOrder);
-  assert.match(String(await ocicLockReason("computer", { tabId: 1, action: "left_click", coordinate: [5, 5] }, d)), /^Locked: 'Place order'/);
-  assert.ok(d.scripts.every((s) => s.includes("P.setDangerMode(true);")));
-  // The note after read_page: sign in is not listed, Place order is.
-  const note = await ocicLockNote("read_page", { tabId: 1 }, Object.values(refs).join("\n"), ocicDeps(true, refs));
-  assert.doesNotMatch(String(note), /Sign in/);
-  assert.match(String(note), /ref_2 "Place order/);
+  const on = ocicDeps(true, refs, placeOrder, [{ name: "Place order", kind: "order", optin: false, checked: false }]);
+  const off = ocicDeps(false, refs, placeOrder);
+  for (const ref of Object.keys(refs)) {
+    assert.equal(await ocicLockReason("form_input", { tabId: 1, ref, value: true }, on), null, ref);
+    assert.match(String(await ocicLockReason("form_input", { tabId: 1, ref, value: true }, off)), /^Locked:/, ref);
+  }
+  const click = { tabId: 1, action: "left_click", coordinate: [5, 5] };
+  assert.equal(await ocicLockReason("computer", click, on), null);
+  assert.match(String(await ocicLockReason("computer", click, off)), /^Locked: 'Place order'/);
+  assert.equal(await ocicLockReason("computer", { tabId: 1, action: "left_click", ref: "ref_2" }, on), null, "a ref click goes through");
+  assert.match(String(await ocicLockReason("computer", { tabId: 1, action: "left_click", ref: "ref_2" }, off)), /^Locked:/);
+  assert.equal(await ocicLockReason("computer", { tabId: 1, action: "key", text: "Enter" }, on), null);
+  assert.match(String(await ocicLockReason("computer", { tabId: 1, action: "key", text: "Enter" }, off)), /^Locked:/);
+  assert.equal(await ocicLockNote("read_page", { tabId: 1 }, Object.values(refs).join("\n"), on), null);
+  assert.match(String(await ocicLockNote("read_page", { tabId: 1 }, Object.values(refs).join("\n"), off)), /ref_2 "Place order/);
+});
+
+test("OCIC with Danger mode on: typing into a focused password field is still refused", async () => {
+  const d = ocicDeps(true, {});
+  d.evalInTab = async <T>() => true as T;
+  assert.match(String(await ocicLockReason("computer", { tabId: 1, action: "type", text: "hunter2" }, d)), /password/i);
 });
 
 test("OCIC with Danger mode on: password fields are still refused", async () => {

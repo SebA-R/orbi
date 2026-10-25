@@ -35,7 +35,7 @@ type ProtectApi = {
   blocks(l: Lock): boolean;
   unlockClass(l: Lock | null, el?: unknown): string | null;
   sameLabel(a: string, b: string): boolean;
-  dangerLifts(l: Lock | null, el?: unknown): boolean;
+  dangerLifts(l: Lock | null): boolean;
   isCheckoutNav(label: string): boolean;
 };
 export const Protect: ProtectApi = require(path.join(EXT, "protect.js"));
@@ -45,9 +45,10 @@ const PROTECT_SRC = fs.readFileSync(path.join(EXT, "protect.js"), "utf8");
 
 // Danger mode on this path. Open Claude in Chrome has no Clearcart
 // settings, so it comes from the server's own config, like
-// CLEARCART_BROWSE_MODE: CLEARCART_DANGER_MODE=1. Off unless set. It lifts
-// only what Protect.dangerLifts says (sign in and sign up); paying,
-// checkout, masking and the blocklist do not change.
+// CLEARCART_BROWSE_MODE: CLEARCART_DANGER_MODE=1. Off unless set. While on,
+// the button lock is off (every click, key and form_input goes through);
+// password typing is still refused, and masking and the blocklist do not
+// change.
 export function ocicDangerMode(): boolean {
   return /^(1|true|on|yes)$/i.test(process.env.CLEARCART_DANGER_MODE?.trim() || "");
 }
@@ -149,9 +150,7 @@ async function refLock(deps: Deps, tabId: number, ref: string, out?: { role?: st
   const kind = Protect.classifyLabel(info.name, { checkable });
   const label = info.name.slice(0, 60);
   const byName = kind ? { kind, label, optin: checkable, checked: false } : null;
-  // Danger mode lifts sign in and sign up by name; the page's own list
-  // (checked below, with the same mode) still has anything else.
-  if (byName && !(dangerOf(deps) && Protect.dangerLifts(byName))) return byName;
+  if (byName && !dangerOf(deps)) return byName;
   const hit = (await pageLocks(deps, tabId)).find((l) => sameName(l.name, info.name));
   return hit ? { kind: hit.kind, label: hit.name.slice(0, 60), optin: hit.optin, checked: hit.checked } : null;
 }
@@ -174,10 +173,13 @@ function falsy(v: unknown): boolean {
 // through. tool is the bare tool name (no mcp__browser__ prefix).
 export async function ocicLockReason(tool: string, args: Record<string, unknown>, deps: Deps = defaultDeps): Promise<string | null> {
   const tabId = tabIdOf(args);
+  // Danger mode: no button lock. Only the password checks below still run.
+  const danger = dangerOf(deps);
   try {
     if (tool === "computer") {
       const action = String(args.action || "");
       if (CLICKS.has(action)) {
+        if (danger) return null;
         const points = [xy(args.start_coordinate), xy(args.coordinate)].filter((p): p is [number, number] => !!p);
         if (!Number.isFinite(tabId)) return points.length || args.ref ? UNCHECKED : null;
         for (const [x, y] of points) {
@@ -200,7 +202,7 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
         const keys = action === "key" ? String(args.text || "").split(" ").filter(Boolean) : /[\r\n]/.test(String(args.text || "")) ? ["Enter"] : [];
         // A control character in a key name ("\r") may be sent as Enter.
         const act = keys.map((k) => (/[\u0000-\u001f\u007f]/.test(k) ? "Enter" : k)).filter((k) => Protect.isActivationKey(k));
-        if (!act.length) return null;
+        if (!act.length || danger) return null;
         if (!Number.isFinite(tabId)) return UNCHECKED;
         for (const k of act) {
           const l = await pageLock(deps, tabId, `P.lockForKey(document, ${JSON.stringify(k)})`);
@@ -215,6 +217,7 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
       const seen: { role?: string; type?: string } = {};
       const l = await refLock(deps, tabId, args.ref, seen);
       if (/^password$/i.test(seen.type || "")) return PASSWORD;
+      if (danger) return null;
       // Unchecking an opt-in is fine; anything else on a locked control is not.
       if (l && !(l.optin && falsy(args.value))) return Protect.message(l);
       // A dropdown is uncheck-only too: never choose an opt-in option.
@@ -232,7 +235,7 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
 // After read_page or find: a note naming the locked refs, so Claude knows
 // not to try them, and the lock badges drawn in the tab.
 export async function ocicLockNote(tool: string, args: Record<string, unknown>, output: string, deps: Deps = defaultDeps): Promise<string | null> {
-  if (tool !== "read_page" && tool !== "find") return null;
+  if ((tool !== "read_page" && tool !== "find") || dangerOf(deps)) return null;
   const tabId = tabIdOf(args);
   let page: PageLock[] = [];
   if (Number.isFinite(tabId)) {
@@ -252,8 +255,7 @@ export async function ocicLockNote(tool: string, args: Record<string, unknown>, 
     const name = m[3];
     const checkable = CHECKABLE_ROLES.has(role) || /type="(checkbox|radio)"/.test(line);
     const kind = Protect.classifyLabel(name, { checkable });
-    const keptByName = !!kind && !(dangerOf(deps) && Protect.dangerLifts({ kind, label: name, optin: checkable, checked: false }));
-    const hit = keptByName ? { optin: checkable } : page.find((l) => sameName(l.name, name));
+    const hit = kind ? { optin: checkable } : page.find((l) => sameName(l.name, name));
     if (!hit) continue;
     (hit.optin ? uncheck : locked).push(`${ref} "${name.slice(0, 60)}"`);
   }

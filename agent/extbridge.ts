@@ -71,6 +71,13 @@ export interface ExtBridgeEvents {
   danger_mode: [boolean];
 }
 
+// The Origin header of an /ext upgrade: absent (not a browser) or an
+// extension's. A page's socket always carries its page origin.
+export function extOriginOk(origin: string | string[] | undefined): boolean {
+  if (origin === undefined) return true;
+  return typeof origin === "string" && /^chrome-extension:\/\/[a-p]{32}$/.test(origin.trim());
+}
+
 export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
   private current: WebSocket | null = null;
@@ -107,8 +114,9 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   }
 
   // The user's Danger mode setting as the extension last sent it (false
-  // until it does). Informational: the extension enforces the lock itself,
-  // and nothing here can change the setting.
+  // until it does, and again once it disconnects). The extension enforces
+  // the click lock itself; the server reads this to skip the spoken yes
+  // (session.ts), so only the connected extension can set it.
   dangerMode(): boolean {
     return this.danger;
   }
@@ -167,6 +175,14 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       const target = pathname === path ? this.wss : others[pathname];
       if (!target) {
         socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      // Only the extension may be the extension: a web page's socket names
+      // its own origin, which is never chrome-extension://. Otherwise any
+      // open tab could connect here, take over the bridge and send settings
+      // such as Danger mode. Clients outside a browser send no Origin.
+      if (target === this.wss && !extOriginOk(req.headers.origin)) {
+        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
       }
       target.handleUpgrade(req, socket, head, (ws) => target.emit("connection", ws, req));
@@ -245,6 +261,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       if (this.current === ws) {
         this.current = null;
         this.info = null;
+        this.danger = false;
         this.log("ext: extension disconnected");
         this.emit("disconnect", { reason: "closed" });
       }
@@ -256,6 +273,8 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     const old = this.current;
     this.current = ws;
     this.info = { version, connectedAt: Date.now() };
+    // A new connection states Danger mode itself (the worker sends it on connect).
+    this.danger = false;
     if (old && old !== ws) {
       this.dropPending(old, "replaced by a newer extension connection");
       old.close(4002, "replaced");
