@@ -7,6 +7,7 @@ Our own Chrome extension (Manifest V3) for Clearcart. It replaces the third-part
 - Connects to the Clearcart agent server over a WebSocket (`ws://localhost:5050/ext`) and runs browser tools for it: tabs, navigation, page reading, form input, clicks, keys, scrolling and screenshots.
 - Only acts on allowlisted origins (by default the demo store at `http://localhost:4000`), and only in tabs of its own "Clearcart" tab group.
 - Never returns card numbers: page-reading tools mask payment fields and card-like digit runs, `form_input` and typing refuse payment fields and card numbers, and the card is filled by `pay_now` in one `fill_payment` call that answers only `last4`.
+- Button lock: the agent can never press a protected control (place order, buy now, pay, checkout, wallet buttons, subscribe, save card, sign in, sign up, the submit of a card or password form, anything marked `data-clearcart-protected`). Only `pay_now`, after the user's spoken yes, presses the order button once, with a single-use unlock. People are never locked out: the lock checks the agent's tool calls only.
 - Hold **Space** on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab. Recording starts the moment the key goes down, so the first word is kept; the chime and the listening state come on once it has been held for 200 ms. A quick tap is thrown away and does what Space normally does. In text fields Space types a space (use Option+Space there).
 
 ## Install
@@ -40,7 +41,7 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | `background/worker.js` | Service worker: starts the bridge, routes requests, tab and debugger lifecycle, the voice relay |
 | `background/router.js` | Maps each bridge method to tabs/CDP or the page script, with the card guard on `type`/`key` |
 | `background/tabs.js`, `cdp.js`, `allowlist.js` | The Clearcart tab group, navigation, `chrome.debugger` input and screenshots, the origin allowlist |
-| `content/mask.js`, `content/page.js` | Injected on demand into agent tabs: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field` |
+| `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field`, the button lock classifier, its checks and badges |
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP` |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
@@ -54,7 +55,33 @@ The agent server sends `{ type: "request", id, method, params }` and the worker 
 - `tabs_context`, `tabs_create`, `navigate` (`"back"`/`"forward"` too), `tab_info` → `tabs.js`.
 - `click`, `type`, `key`, `scroll`, `screenshot` → `cdp.js`. `click` with a `ref` clicks the centre of the page's `rect` and falls back to `click_ref` if CDP can't attach. `type` and single-character `key` are refused (`payment_field`) when the text holds a Luhn-valid 13-19 digit run or the focused element is a card field.
 - Page methods inject `content/mask.js` then `content/page.js` with `chrome.scripting` (idempotent; refs stay stable for the document's life), send `PAGE_CALL` to the top frame and retry once on "Receiving end does not exist".
-- Only the 12 `TOOLS` are exposed to Claude. `INTERNAL` methods (`tab_info`, `read_fields`, `fill_payment`, `clear_payment`, `rect`, `click_ref`) are called only by the server's own code.
+- Only the 12 `TOOLS` are exposed to Claude. `INTERNAL` methods (`tab_info`, `read_fields`, `fill_payment`, `clear_payment`, `rect`, `click_ref`, `lock_arm`, `press_protected`) are called only by the server's own code.
+
+### Button lock
+
+`content/protect.js` decides which controls are protected. It holds every word list in one place (with tests in `tests/extension/unit/protect.test.mjs`):
+
+| Kind | Examples | Who may press |
+| --- | --- | --- |
+| `order` | Place order, Buy now, Pay, Complete purchase, Submit order, Confirm order, Checkout, Proceed to checkout, Continue to payment | `pay_now` once after a yes, never the agent |
+| `marked` | anything inside `data-clearcart-protected` (the store's `#place-order`) | same as `order` |
+| `payment-form` | the submit control of a form that holds card fields, whatever it says | same as `order` |
+| `express` | Apple Pay, Google Pay, PayPal, Shop Pay, Amazon Pay, Klarna, 1-Click, Express checkout | only the user |
+| `subscription` | Subscribe, Subscribe and Save, Start free trial, Join now, Membership | only the user |
+| `payment-method` | Add payment method, Add card, Save card | only the user |
+| `account` | Sign in, Log in, Sign up, Create account, Register, Continue with Google, and the submit of a password form | only the user; Clearcart never logs in or creates accounts |
+| `frame` | a click that lands in a cross-origin frame (hosted card fields, wallet buttons) | only the user |
+
+Checkboxes, radios, listbox options and tabs that opt into a subscription, saved card, wallet or account are **uncheck only**: the agent may turn them off, never on. Add to cart, quantity, remove and similar shopping controls are never locked. A label with a help or undo word (remove, cancel, edit, help, guide, learn more, policy, continue shopping, back to, sign out...) is not locked by the word lists, and labels longer than six words (twenty for checkboxes) are treated as sentences, so "Remove from cart", "Checkout guide" and "Check out our new arrivals" stay clickable. Ids and `name` attributes count for order and money words (`#place-order`, `buyNowButton`). The tradeoff is fail closed: an info link like "Pay over time" or a newsletter "Subscribe" is locked too, which only costs the agent a click it should not need.
+
+Enforcement, all in the extension and failing closed (if a check cannot run, the input is not sent):
+
+- `click` by ref: `guard_ref` checks the element, its ancestors and whatever covers its centre, then CDP clicks. By coordinates: `guard_point` hit-tests the point (through open shadow roots and same-origin frames, up the ancestors; a `<label>` stands for its control; a cross-origin frame is locked). `click_ref` refuses locked targets in the page.
+- `key` Enter or Space: `guard_key` checks the focused element, and for Enter also the form a field would submit (a form with card or password fields, or a locked submit). `type` text with a newline is checked as Enter.
+- `form_input`: refused on locked controls; an uncheck-only box may be set to false.
+- `read_page` lines end in `[locked]` or `[uncheck only]` after the ref, and `find` matches carry `locked: true` or `uncheckOnly: true`.
+- Badges: a small padlock with "Locked for AI" (or "AI can only uncheck") over each protected control, drawn when the page script loads. The overlay is in a closed shadow root under `<html>`, `aria-hidden`, `pointer-events: none`, so it changes nothing a screen reader announces, never blocks a person's click, and never shows up in `read_page` or `get_page_text`.
+- Unlock: `lock_arm` returns a nonce bound to the tab and its current allowlisted origin for 30 s. `press_protected { ref, nonce }` spends the nonce first, checks the tab is still on that origin, asks the page (`press_check`) that the ref is an `order`, `marked` or `payment-form` control and not covered, then clicks it (DOM `press_ref` if CDP fails). Wallets, subscriptions, saved cards, accounts and frames never unlock. The agent server only calls these after its own unlock gate (`agent/unlock.ts`).
 
 ### Voice and subtitles
 
@@ -74,10 +101,13 @@ npm --prefix agent test                        # bridge, tools and pay_now with 
 npm --prefix agent run test:e2e:ext            # full flow: store on 4300, agent on 5300, the real extension
 ```
 
+Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, the e2e), so they never connect to a live agent on :5050. `tests/extension/browser/load.test.mjs` and `extension/test/voice/pages.browser.test.mjs` still load `extension/` as is, so their worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
+
 ## Known gaps
 
 - Host permissions cover `http://localhost/*` only. Allowlisting a real site in options isn't enough on its own: page calls need host access to that origin too (an optional host permission request is not wired yet).
 - Typing guard: a card field inside a cross-origin iframe (hosted payment forms) reports as "none" from the top frame, so only the Luhn check protects it there.
+- Button lock: the classifier reads names, ids and forms, so a commit button with no words at all (an icon with no label, outside a card or password form, not marked) is not caught. Keys other than Enter and Space, and a `select` whose change handler places an order, are not checked. Navigating straight to a checkout URL is refused by the agent server (on sites other than the store), not by the extension. A link click that lands on a checkout page is not sent back.
 - Subtitles show in the top frame only, and not over fullscreen (top-layer) elements.
 - Chrome may close the `AUDIO_PLAYBACK` offscreen document after about 30 s of silence; the next press recreates it, but an `agent_text` that arrives while it is closed is lost.
 - `navigate("back")` after only programmatic navigations may report `bad_request` (Chrome's history intervention skips entries without a user gesture).
