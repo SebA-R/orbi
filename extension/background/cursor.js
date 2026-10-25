@@ -3,9 +3,10 @@
 // Clearcart's cursor. Each sample is sent right after its input went to CDP,
 // so the cursor moves in step with what the page receives.
 //
-// The cursor is hidden ({ phase: "hide" }) when the user switches tabs,
-// interrupts (the actor's "stop"), the turn ends (voice back to idle) or the
-// setting showCursor goes off. Every message carries the voice state, so
+// A { phase: "hide" } goes out when the user switches tabs, interrupts (the
+// actor's "stop") or the turn ends (voice back to idle); content/cursor.js
+// treats it as rest and keeps the cursor at its last position. Only the
+// setting showCursor off removes it. Every message carries the voice state, so
 // the orb on the cursor wears the same face as the one in the subtitles.
 //
 // CDP input coordinates are already in the top frame's viewport, so no
