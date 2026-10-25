@@ -35,6 +35,7 @@ type ProtectApi = {
   blocks(l: Lock): boolean;
   unlockClass(l: Lock | null, el?: unknown): string | null;
   sameLabel(a: string, b: string): boolean;
+  dangerLifts(l: Lock | null, el?: unknown): boolean;
   isCheckoutNav(label: string): boolean;
 };
 export const Protect: ProtectApi = require(path.join(EXT, "protect.js"));
@@ -42,14 +43,24 @@ export const Protect: ProtectApi = require(path.join(EXT, "protect.js"));
 const MASK_SRC = fs.readFileSync(path.join(EXT, "mask.js"), "utf8");
 const PROTECT_SRC = fs.readFileSync(path.join(EXT, "protect.js"), "utf8");
 
+// Danger mode on this path. Open Claude in Chrome has no Clearcart
+// settings, so it comes from the server's own config, like
+// CLEARCART_BROWSE_MODE: CLEARCART_DANGER_MODE=1. Off unless set. It lifts
+// only what Protect.dangerLifts says (sign in and sign up); paying,
+// checkout, masking and the blocklist do not change.
+export function ocicDangerMode(): boolean {
+  return /^(1|true|on|yes)$/i.test(process.env.CLEARCART_DANGER_MODE?.trim() || "");
+}
+
 // The classifier inside the page, on a private global object so the page's
 // own scripts cannot swap ClearcartProtect for a fake. `body` sees P.
-export function pageScript(body: string): string {
+export function pageScript(body: string, danger: boolean = ocicDangerMode()): string {
   return `(function (globalThis) {
 var module = undefined;
 ${MASK_SRC}
 ${PROTECT_SRC}
 var P = globalThis.ClearcartProtect;
+P.setDangerMode(${danger === true ? "true" : "false"});
 ${body}
 })({})`;
 }
@@ -57,7 +68,11 @@ ${body}
 export type Deps = {
   evalInTab: <T = unknown>(tabId: number, code: string) => Promise<T>;
   readRef: (tabId: number, ref: string) => Promise<string>;
+  // Danger mode (default: ocicDangerMode()).
+  danger?: () => boolean;
 };
+
+const dangerOf = (deps: Deps) => (deps.danger ? deps.danger() === true : ocicDangerMode());
 
 const defaultDeps: Deps = {
   evalInTab,
@@ -108,7 +123,7 @@ async function pageLocks(deps: Deps, tabId: number): Promise<PageLock[]> {
     tabId,
     pageScript(`return P.listLocks(document, 300).map(function (x) {
   return { name: P.labelOf(x.el), kind: x.lock.kind, optin: !!x.lock.optin, checked: !!x.lock.checked };
-});`)
+});`, dangerOf(deps))
   );
   if (!Array.isArray(r)) throw new Error("no lock list");
   return r;
@@ -133,14 +148,17 @@ async function refLock(deps: Deps, tabId: number, ref: string, out?: { role?: st
   const checkable = CHECKABLE_ROLES.has(info.role) || info.type === "checkbox" || info.type === "radio";
   const kind = Protect.classifyLabel(info.name, { checkable });
   const label = info.name.slice(0, 60);
-  if (kind) return { kind, label, optin: checkable, checked: false };
+  const byName = kind ? { kind, label, optin: checkable, checked: false } : null;
+  // Danger mode lifts sign in and sign up by name; the page's own list
+  // (checked below, with the same mode) still has anything else.
+  if (byName && !(dangerOf(deps) && Protect.dangerLifts(byName))) return byName;
   const hit = (await pageLocks(deps, tabId)).find((l) => sameName(l.name, info.name));
   return hit ? { kind: hit.kind, label: hit.name.slice(0, 60), optin: hit.optin, checked: hit.checked } : null;
 }
 
 // Runs a P.lockAt or P.lockForKey call in the page.
 function pageLock(deps: Deps, tabId: number, call: string): Promise<Lock | null> {
-  return deps.evalInTab<Lock | null>(tabId, pageScript(`${LOCK_JSON} return J(${call});`));
+  return deps.evalInTab<Lock | null>(tabId, pageScript(`${LOCK_JSON} return J(${call});`, dangerOf(deps)));
 }
 
 function tabIdOf(args: Record<string, unknown>): number {
@@ -220,7 +238,7 @@ export async function ocicLockNote(tool: string, args: Record<string, unknown>, 
   if (Number.isFinite(tabId)) {
     try {
       page = await pageLocks(deps, tabId);
-      await deps.evalInTab(tabId, pageScript("return P.showBadges(document);")).catch(() => {});
+      await deps.evalInTab(tabId, pageScript("return P.showBadges(document);", dangerOf(deps))).catch(() => {});
     } catch {}
   }
   const locked: string[] = [];
@@ -234,7 +252,8 @@ export async function ocicLockNote(tool: string, args: Record<string, unknown>, 
     const name = m[3];
     const checkable = CHECKABLE_ROLES.has(role) || /type="(checkbox|radio)"/.test(line);
     const kind = Protect.classifyLabel(name, { checkable });
-    const hit = kind ? { optin: checkable } : page.find((l) => sameName(l.name, name));
+    const keptByName = !!kind && !(dangerOf(deps) && Protect.dangerLifts({ kind, label: name, optin: checkable, checked: false }));
+    const hit = keptByName ? { optin: checkable } : page.find((l) => sameName(l.name, name));
     if (!hit) continue;
     (hit.optin ? uncheck : locked).push(`${ref} "${name.slice(0, 60)}"`);
   }

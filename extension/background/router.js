@@ -119,7 +119,11 @@ export function createRouter({
   cdp = cdpModule,
   now = () => Date.now(),
   newNonce = () => globalThis.crypto.randomUUID(),
+  // Danger mode from the user's settings (worker.js). Read for every page
+  // call; any failure or non-true answer is off.
+  dangerMode = async () => false,
   follow = createFollower({ chromeApi }),
+  onAgentTab = () => {},
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
@@ -150,6 +154,8 @@ export function createRouter({
   // a second per tab (each injection keeps it up a little longer).
   const shown = new Map();
   function indicate(tabId) {
+    // The active-tab frame (background/frame.js) follows every call.
+    try { onAgentTab(tabId); } catch {}
     const t = now();
     if (t - (shown.get(tabId) || 0) < 1_000) return;
     shown.set(tabId, t);
@@ -211,7 +217,8 @@ export function createRouter({
 
   async function pageCallWith(tabId, method, params, files) {
     const { tabId: _drop, ...rest } = params || {};
-    const msg = { type: RT.PAGE_CALL, method, params: rest };
+    const danger = await Promise.resolve().then(dangerMode).then((v) => v === true, () => false);
+    const msg = { type: RT.PAGE_CALL, method, params: rest, dangerMode: danger };
     let doc = await inject(tabId, files);
     let reply;
     try {

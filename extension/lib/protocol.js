@@ -9,6 +9,8 @@
 //   ext -> server  { type: "blocklist", lines } after welcome and whenever
 //                  the user saves it (the options page's blocked sites).
 //                  One way: the server cannot change extension settings.
+//   ext -> server  { type: "danger_mode", on } the same way, for the user's
+//                  Danger mode setting (the extension enforces it itself).
 //   either way     { type: "ping", t } answered by { type: "pong", t }
 //
 // Runtime messages (inside the extension, chrome.runtime / chrome.tabs
@@ -25,6 +27,9 @@ export const MSG = Object.freeze({
   PING: "ping",
   PONG: "pong",
   BLOCKLIST: "blocklist",
+  // { type: "settings", guidedMode }: agent behavior settings, worker to agent.
+  SETTINGS: "settings",
+  DANGER_MODE: "danger_mode",
 });
 
 // Tools the agent may expose to Claude.
@@ -101,18 +106,21 @@ export const RT = Object.freeze({
   PTT_CONFIRM: "ptt.confirm",
   PTT_CANCEL: "ptt.cancel",
   PTT_TOGGLE: "ptt.toggle",
+  PTT_HUSH: "ptt.hush",
   VOICE_START: "voice.start",
   VOICE_STOP: "voice.stop",
   VOICE_CONFIRM: "voice.confirm",
   VOICE_CANCEL: "voice.cancel",
+  VOICE_HUSH: "voice.hush",
   VOICE_PARTIAL: "voice.partial",
   VOICE_FINAL: "voice.final",
   VOICE_STATE: "voice.state",
+  VOICE_STATE_QUERY: "voice.state.query",
   VOICE_ERROR: "voice.error",
   TTS_SPEAK: "tts.speak",
   TTS_STOP: "tts.stop",
-  CHIME: "chime",
   SUBTITLE: "subtitle",
+  FRAME: "frame",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
 });

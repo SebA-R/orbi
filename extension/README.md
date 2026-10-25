@@ -9,7 +9,7 @@ Our own Chrome extension (Manifest V3) for Clearcart. It replaces the third-part
 - Knows what you are looking at: with each thing you say, the agent gets the active tab, your text selection and what you are pointing at (see [What you are pointing at](#what-you-are-pointing-at)), so "add this one to my cart" works.
 - Never returns card numbers: page-reading tools mask payment fields and card-like digit runs, `form_input` and typing refuse payment fields and card numbers, and the card is filled by `pay_now` in one `fill_payment` call that answers only `last4`.
 - Button lock: the agent can never press a protected control (place order, buy now, pay, checkout, wallet buttons, subscribe, save card, sign in, sign up, the submit of a card or password form, anything marked `data-clearcart-protected`). Only `pay_now`, after the user's spoken yes, presses the order button once, with a single-use unlock. People are never locked out: the lock checks the agent's tool calls only.
-- Hold **Space** on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab. Recording starts the moment the key goes down, so the first word is kept; the chime and the listening state come on once it has been held for 200 ms. A quick tap is thrown away and does what Space normally does. In text fields Space types a space; hold Option+Space (Alt+Space) there instead. With Space as the talk key, Option+Space works on any page, confirms at once and needs no hold delay.
+- Hold **Space** on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab. Recording starts the moment the key goes down, so the first word is kept; the listening sound and state come on once it has been held for 200 ms. A quick tap is thrown away and does what Space normally does. In text fields Space types a space; hold Option+Space (Alt+Space) there instead. With Space as the talk key, Option+Space works on any page, confirms at once and needs no hold delay.
 
 ## Install
 
@@ -46,9 +46,9 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 - Always blocked, fixed in code: `chrome:`, `chrome-extension:`, `about:`, `file:`, `data:`, `javascript:` and other non-web pages, addresses with a login in them, and localhost and private network addresses other than the allowed sites (so the agent console is off limits), in any spelling (`[::ffff:127.0.0.1]`, `[::7f00:1]`, `[fec0::]`, `2130706433`) and under loopback DNS names such as `localtest.me` and `127.0.0.1.nip.io`. Because any name can resolve to this computer, `background/netguard.js` also checks the IP each Clearcart tab's page and frames actually came from (`chrome.webRequest`): a tab served from a loopback or private address on an origin that is not an allowed site is refused for every call, and closed if Clearcart opened it.
 - **Only these sites**: the allowed sites, as before.
 - Either way: blocked tabs stay hidden and refused, and the button lock and the agent server's checkout page block (on every site but the store) stay on, and `lock_arm` only arms on an allowed site, so open browsing never widens the unlock.
-- The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever store you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it.
+- The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever store you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it. Guided mode goes the same way (`{ type: "settings", guidedMode }`).
 
-`chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. Don't pick the same keys as the hold key.
+`chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. It latches like Option+Space: Space sends, and a minute without speech stops it. Don't pick the same keys as the hold key.
 
 ## How it fits together
 
@@ -62,9 +62,11 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field`, the button lock classifier, its checks and badges |
 | `content/context.js` | Declared content script (top frame): remembers the element under the mouse and the last one clicked or focused, for `page_context` |
 | `content/indicator.js` | Injected on each call that touches a tab: the "Clearcart is using this tab" pill |
-| `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP` |
+| `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP`, Option+Space latch, double-tap Space hush |
+| `content/orb-face.js` | The mini orb face (eyes and a smile) that shows the voice state; loaded before `subtitles.js` and by the popup |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
-| `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
+| `content/frame.js`, `background/frame.js` | Active-tab frame: a faint rotating spectrum ring around the tab Clearcart is acting on during a turn or within 10 s of an agent call (declared content script, top frame; the worker sends `FRAME {on}`) |
+| `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, earcons, its own `/session` socket |
 | `options/` | Options page |
 | `setup/`, `popup/` | Setup page (install and update), drawn by `setup/checklist.js`, and the toolbar popup, which follows `VOICE_STATE` and counts the same checks |
 | `lib/setup.js`, `lib/mic-grant.js` | Setup checks, the badge and the onInstalled rule; the microphone grant shared by options and setup |
