@@ -1,4 +1,4 @@
-/* Clearcart new tab page: the popup's orb and colors on a calm, full page.
+/* Clearcart new tab page and "Can't reach this site" page: the popup's orb and colors on a calm, full page.
    System fonts only: the extension loads nothing remote. */
 :root {
   color-scheme: light dark;
@@ -121,3 +121,14 @@ main {
 @media (prefers-reduced-motion: reduce) {
   .orb, .orb::after { animation: none !important; }
 }
+
+/* The "Can't reach this site" page (error.html). */
+.failed { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 520px; text-align: center; }
+.failed h1 { font-size: 28px; font-weight: 600; letter-spacing: -.02em; }
+.failed .address { font-size: 15px; color: var(--soft); overflow-wrap: anywhere; }
+.failed .code { font-size: 13px; color: var(--muted); letter-spacing: .02em; }
+.failed button {
+  margin-top: 6px; min-height: 44px; padding: 0 24px; border: none; border-radius: 22px;
+  background: var(--btn); color: var(--btn-fg); font: inherit; font-weight: 600; cursor: pointer;
+}
+@media (forced-colors: active) { .failed button { border: 2px solid CanvasText; } }

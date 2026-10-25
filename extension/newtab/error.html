@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-ready="false">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Can't reach this site</title>
+  <link rel="stylesheet" href="newtab.css">
+</head>
+<body>
+  <header class="top">
+    <a class="icon" id="settings" href="../options/options.html" aria-label="Clearcart settings">
+      <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"></path></svg>
+    </a>
+  </header>
+
+  <main id="main">
+    <p class="brand"><span class="mini-orb" id="mini-orb"></span>Clearcart</p>
+
+    <section class="failed" aria-labelledby="failed-title">
+      <h1 id="failed-title">Can't reach this site</h1>
+      <p id="failed-text">Chrome could not load the page.</p>
+      <p class="address" id="failed-url" hidden></p>
+      <p class="code" id="failed-code" hidden></p>
+      <button type="button" id="retry" hidden>Retry</button>
+    </section>
+
+    <section class="hero" aria-labelledby="voice-title">
+      <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
+      <h2 class="voice-title" id="voice-title">Hold Space to talk</h2>
+      <p class="voice-sub" id="voice-sub">Option + Space keeps listening until you press Space.</p>
+      <p class="hint">Ask Clearcart to go somewhere else.</p>
+      <p class="hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
+    </section>
+
+    <p class="shortcut" id="shortcut" hidden></p>
+    <p class="error" id="error" role="alert" hidden></p>
+    <p class="visually-hidden" id="voice-live" role="status" aria-live="polite"></p>
+  </main>
+
+  <script src="guard.js"></script>
+  <script src="../content/hotkey.js"></script>
+  <script src="../content/orb-face.js"></script>
+  <script src="../content/subtitles.js"></script>
+  <script type="module" src="error.js"></script>
+</body>
+</html>
