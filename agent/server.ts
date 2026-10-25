@@ -17,10 +17,15 @@ import { listModels, LocalModelError } from "./local/openai.ts";
 import { purchaseHistory } from "./history.ts";
 import { conversationLog, memoryStore } from "./memory.ts";
 import { currentProvider, memoryOn, Session, type SessionCarry } from "./session.ts";
+import { orbiConfigPath } from "./userconfig.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 dotenv.config({ path: path.join(ROOT, ".env"), quiet: true });
+// The keys `npm run setup` saved (userconfig.ts). The repo's .env and the
+// process environment win over it. Only the path is ever logged.
+const USER_CONFIG = orbiConfigPath();
+const userConfigLoaded = !dotenv.config({ path: USER_CONFIG, quiet: true }).error;
 
 const PORT = Number(process.env.AGENT_PORT || 5050);
 // CLEARCART_BROWSER=ext: the Orbi extension connects to /ext and drives
@@ -262,6 +267,10 @@ wss.on("connection", (ws: WebSocket) => {
 });
 
 server.listen(PORT, () => {
+  if (userConfigLoaded) console.log(`config: ${USER_CONFIG}`);
+  if (!process.env.ANTHROPIC_API_KEY?.trim() && envProviderSettings().provider === "claude") {
+    console.log("note: no Anthropic API key is set, so Claude can't answer. Run `npm run setup`, or choose Local in Orbi's settings.");
+  }
   if (VOICE_ENABLED && !hasCartesia()) console.log("voice: no Cartesia key, so the extension uses basic voice (Chrome's own speech)");
   console.log(`Orbi agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext" : ""}${ECHO ? ", echo mode" : ""})`);
   if (!fs.existsSync(PUBLIC_DIR)) console.log(`note: ${PUBLIC_DIR} does not exist yet`);

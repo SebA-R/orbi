@@ -1,0 +1,3 @@
+#!/bin/sh
+# Orbi's server control: ./orbi setup | start | stop | status | uninstall
+exec node "$(dirname "$0")/scripts/orbi.mjs" "$@"

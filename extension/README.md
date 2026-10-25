@@ -15,7 +15,7 @@ Our own Chrome extension (Manifest V3) for Orbi. It replaces the third-party bro
 
 1. Open `chrome://extensions`, turn on **Developer mode**, press **Load unpacked** and pick this `extension/` folder. The extension id is fixed by the manifest key (`dhgknfenfoidnchmjfaicafhieepefoc`).
 2. The setup page opens on first install, and after an update when something is still missing. It checks site access on all sites (Chrome can hold back `<all_urls>` after an update if site access was limited before), the microphone (the offscreen voice document can't ask for it; it inherits this grant), the agent server's `/healthz` and the talk key, each with one button. The toolbar icon shows **!** while site access or the mic is missing, and its popup shows the live voice state on an orb (Ready, Listening, Thinking, Speaking), a setup line ("Setup: N of 4" opens the setup page) and the everyday settings: model provider, browse mode, talk key, speed, Guided mode, Speak replies, subtitles, error pages, sounds, quiet other tabs, follow, watchable pace, cursor and Danger mode. Run it again from the options page.
-3. In the repo's `.env`, set `CLEARCART_BROWSER=ext`, then restart the agent server (`npm --prefix agent start`). The server log should say `ext: extension connected`.
+3. Run `npm run setup` (it sets `CLEARCART_BROWSER=ext`), or set it in the repo's `.env`, then restart the agent server (`npm --prefix agent start`). The server log should say `ext: extension connected`.
 4. Hold Space on any page to talk.
 
 Chrome shows a "Orbi started debugging this browser" bar while the agent clicks or types (CDP input). That's expected; if you cancel it, clicks fall back to DOM clicks.
