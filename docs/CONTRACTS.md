@@ -31,7 +31,7 @@ Node 20+, TypeScript where it helps, no build step required to run (`npx tsx` is
 ## Vault (`vault/`)
 
 - `vault/index.ts` (imported by the agent server): `CardVault`, the cards saved on the options page's Payment cards section, in `agent/.data/cards.json` (0600, gitignored). Each card is one AES-256-GCM record; the 256-bit key is made once and kept in the macOS login Keychain (service `clearcart-vault-key`). `list()` and `pick()` give only id, nickname, brand and last 4; only `withCard(id, fn)` decrypts, for one fill, and clears the fields after. Never log a card field. See `vault/README.md`.
-- `agent/cards.ts`: `GET /cards`, `POST /cards`, `DELETE /cards/<id>`, `POST /cards/<id>/default`, for the Orbi extension's origin over loopback only, rate limited.
+- `agent/cards.ts`: `POST /cards/list`, `POST /cards`, `DELETE /cards/<id>`, `POST /cards/<id>/default`, for the Orbi extension's origin over loopback only, rate limited.
 - `npm --prefix agent run add-test-card` (or `vault/setup-test-card.sh`): saves the published Visa test number 4111 1111 1111 1111 as "Test Visa". An old single demo card (service `clearcart-card`, account `demo`) moves into the vault once.
 
 ## Voice console (`voice/public/`)

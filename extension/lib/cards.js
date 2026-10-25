@@ -3,7 +3,9 @@
 //
 // The agent keeps them encrypted on this computer (vault/index.ts) and
 // serves them to this extension's origin only (agent/cards.ts):
-//   GET /cards, POST /cards, DELETE /cards/<id>, POST /cards/<id>/default
+//   POST /cards/list, POST /cards, DELETE /cards/<id>, POST /cards/<id>/default
+// (the list is a POST too: Chrome sends no Origin with an extension page's
+// GET, and the agent answers this extension's Origin only)
 // A list holds ids, nicknames, brands and last 4 digits, never a number,
 // expiry or security code. addCard sends what the user typed once, and
 // nothing here keeps or logs it.
@@ -34,7 +36,7 @@ const clean = (c) => ({ id: c.id, nickname: String(c.nickname), brand: String(c.
 // { cards: [{ id, nickname, brand, last4 }], defaultId }. Throws when the
 // server can't be reached.
 export async function listCards(agentUrl, fetchImpl = globalThis.fetch) {
-  const body = await call(agentUrl, "GET", "/cards", fetchImpl);
+  const body = await call(agentUrl, "POST", "/cards/list", fetchImpl);
   const cards = Array.isArray(body?.cards)
     ? body.cards.filter((c) => c && ID.test(c.id) && typeof c.nickname === "string" && typeof c.brand === "string" && /^\d{4}$/.test(c.last4)).map(clean)
     : [];

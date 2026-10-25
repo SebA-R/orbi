@@ -1,14 +1,16 @@
 // Saved cards for the extension's settings page (vault/index.ts):
 //
-//   GET    /cards                { cards: [{ id, nickname, brand, last4 }], defaultId }
+//   POST   /cards/list           { cards: [{ id, nickname, brand, last4 }], defaultId }
 //   POST   /cards                add one: { nickname?, name, number, exp, csc, zip? }
 //   DELETE /cards/<id>           remove one
 //   POST   /cards/<id>/default   the card pay_with_saved_card uses by default
 //
 // Loopback peers with the Orbi extension's Origin only, the /memory
-// rule (hostcheck.ts), so no web page can reach it. JSON bodies of at most
-// 4 KB, and rate limited. No answer ever holds a number, expiry or security
-// code, nothing here logs a body, and errors are generic.
+// rule (hostcheck.ts), so no web page can reach it. Chrome sends no Origin
+// with a GET from an extension page, so even the list is a POST: every call
+// here carries the extension's Origin. JSON bodies of at most 4 KB, and
+// rate limited. No answer ever holds a number, expiry or security code,
+// nothing here logs a body, and errors are generic.
 
 import type http from "node:http";
 import path from "node:path";
@@ -115,14 +117,14 @@ export function createCardsRoute(opts: CardsRouteOptions) {
 
   return async function cardsRoute(req: http.IncomingMessage, res: http.ServerResponse, pathname: string): Promise<void> {
     if (!opts.allowed(req)) return json(res, 403, { error: "forbidden" });
-    const read = req.method === "GET";
+    const read = pathname === "/cards/list";
     if (!(read ? reads : writes).take(now())) {
       res.setHeader("Retry-After", "60");
       return json(res, 429, { error: "Too many requests. Try again in a minute." });
     }
     const v = getVault();
     try {
-      if (pathname === "/cards" && read) {
+      if (read && req.method === "POST") {
         await v.migrateLegacy().then((r) => r === "moved" && log("cards: moved the old demo card into the vault"), () => {});
         return json(res, 200, v.list());
       }
