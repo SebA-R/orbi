@@ -43,8 +43,11 @@ export function serialize(values) {
 
 export function writeConfig(file, values) {
   const dir = path.dirname(file);
+  const existed = fs.existsSync(dir);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(dir, 0o700); } catch {}
+  // Tighten only a folder that is Orbi's own (new, or named orbi/Orbi),
+  // never a home folder or repo that ORBI_CONFIG happens to point into.
+  if (!existed || /^orbi$/i.test(path.basename(dir))) try { fs.chmodSync(dir, 0o700); } catch {}
   const tmp = path.join(dir, `.config.env.${process.pid}.tmp`);
   try { fs.unlinkSync(tmp); } catch {}
   const fd = fs.openSync(tmp, "wx", 0o600); // a fresh file, so the mode applies

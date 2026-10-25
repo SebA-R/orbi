@@ -11,12 +11,15 @@ export function serverCommand({ root, node = process.execPath }) {
   return [node, path.join(root, "agent", "node_modules", "tsx", "dist", "cli.mjs"), "server.ts"];
 }
 
-export function buildPlist({ root, logs, node = process.execPath, port }) {
+// config: the config file setup wrote, so the server reads that one even
+// when the login session lacks the shell's XDG_CONFIG_HOME or ORBI_CONFIG.
+export function buildPlist({ root, logs, node = process.execPath, port, config }) {
   const args = serverCommand({ root, node });
   const env = {
     // launchd starts with a bare PATH; the Agent SDK and the Keychain
     // helper need node and the system tools.
     PATH: [path.dirname(node), "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
+    ...(config ? { ORBI_CONFIG: config } : {}),
     ...(port ? { AGENT_PORT: String(port) } : {}),
   };
   const kv = (k, v) => `\t\t<key>${esc(k)}</key>\n\t\t<string>${esc(v)}</string>`;

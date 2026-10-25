@@ -1,6 +1,6 @@
 // Where `npm run setup` (scripts/orbi.mjs) keeps the user's keys and
 // options: one dotenv file outside the repo, mode 0600. Keep this in step
-// with configPath() in scripts/orbi/paths.mjs (test/userconfig.test.ts
+// with configPath() in scripts/orbi/paths.mjs (scripts/orbi/test/installer.test.mjs
 // checks they agree).
 //
 //   ORBI_CONFIG set        that file

@@ -89,6 +89,7 @@ test("--autostart writes a LaunchAgent with no keys in it, and logs to ~/Library
   assert.ok(!text.includes(ANTHROPIC));
   assert.match(text, /Library\/Logs\/Orbi\/agent\.log/);
   assert.match(text, /<string>server\.ts<\/string>/);
+  assert.match(text, /<key>ORBI_CONFIG<\/key>\s*<string>[^<]*\.config\/orbi\/config\.env<\/string>/);
   assert.equal(spawnSync("plutil", ["-lint", plist]).status, 0);
   assert.ok(!r.stdout.includes(ANTHROPIC));
   const u = run(home, ["uninstall", "--delete-config"], "");

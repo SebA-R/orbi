@@ -58,7 +58,14 @@ const out = new Writable({
 
 function reader() {
   if (!rl) {
-    rl = readline.createInterface({ input: process.stdin, output: out, terminal: !!process.stdin.isTTY });
+    // historySize 0: a hidden key must never come back with the up arrow.
+    rl = readline.createInterface({ input: process.stdin, output: out, terminal: !!process.stdin.isTTY, historySize: 0 });
+    // Ctrl+C stops setup before anything is saved or started.
+    rl.on("SIGINT", () => {
+      muted = false;
+      process.stdout.write("\nSetup stopped. Nothing more was saved.\n");
+      process.exit(130);
+    });
     lines = rl[Symbol.asyncIterator]();
   }
   return lines;
@@ -75,6 +82,11 @@ async function ask(question, { hidden = false } = {}) {
     muted = false;
   }
   if (hidden || !process.stdin.isTTY) process.stdout.write("\n");
+  // Input closed (Ctrl+D) at a terminal: stop rather than take every default.
+  if (r.done && process.stdin.isTTY) {
+    process.stdout.write("Setup stopped. Nothing more was saved.\n");
+    process.exit(130);
+  }
   return r.done ? "" : String(r.value).trim();
 }
 
@@ -154,7 +166,8 @@ function isOurServer(pid) {
   }
   if (process.platform === "win32") return true;
   const r = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
-  return r.status === 0 && r.stdout.includes("server.ts");
+  const [, tsx] = serverCommand({ root: ROOT });
+  return r.status === 0 && r.stdout.includes(tsx) && r.stdout.includes("server.ts");
 }
 
 function launchctl(args) {
@@ -183,7 +196,9 @@ function bootstrap(argv) {
     const r = spawnSync("git", ["clone", "--depth", "1", "--quiet", process.env.ORBI_REPO_URL || REPO_URL, target], { stdio: "inherit" });
     if (r.status !== 0) fail("git could not download Orbi. Check your connection and try again.");
   }
-  const r = spawnSync(process.execPath, [path.join(target, "scripts", "orbi.mjs"), ...argv], { stdio: "inherit" });
+  const script = path.join(target, "scripts", "orbi.mjs");
+  if (!fs.existsSync(script)) fail(`Your Orbi folder at ${target} is from before the setup command and could not be updated. Run git pull in it, or set ORBI_HOME to a new folder.`);
+  const r = spawnSync(process.execPath, [script, ...argv], { stdio: "inherit" });
   process.exit(r.status ?? 1);
 }
 
@@ -304,8 +319,9 @@ function autostart() {
   fs.mkdirSync(logs, { recursive: true });
   const plist = plistPath();
   fs.mkdirSync(path.dirname(plist), { recursive: true });
-  fs.writeFileSync(plist, buildPlist({ root: ROOT, logs, port: process.env.AGENT_PORT ? port() : undefined }), { mode: 0o644 });
+  fs.writeFileSync(plist, buildPlist({ root: ROOT, logs, config: configPath(), port: process.env.AGENT_PORT ? port() : undefined }), { mode: 0o644 });
   say(`Orbi will start when you log in (${tilde(plist)}). Logs go to ${tilde(logs)}.`);
+  say("If you change or upgrade Node, run setup --autostart again so it points at the new one.");
   if (!LAUNCHCTL) return;
   launchctl(["bootout", `${domain()}/${LABEL}`]);
   const r = launchctl(["bootstrap", domain(), plist]);
