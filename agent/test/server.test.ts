@@ -8,7 +8,9 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
-import { hostAllowed } from "../hostcheck.ts";
+import fs from "node:fs";
+import os from "node:os";
+import { extensionIdFromKey, extensionOrigins, hostAllowed, isLoopbackAddress, memoryRequestAllowed } from "../hostcheck.ts";
 import { FakeExt } from "./fake-ext.ts";
 
 const AGENT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -173,6 +175,67 @@ test("one session across /session sockets: the one that talks takes over, the ot
     assert.ok(!a.got.some((m) => m.text === "You said: hi from b"), "b's reply went to b only");
     a.ws.close();
     b.ws.close();
+  } finally {
+    child.kill();
+  }
+});
+
+// /memory: the settings page's view of saved facts. Loopback, this
+// computer's Host and the Clearcart extension's Origin only.
+const EXT_ORIGIN = "chrome-extension://dhgknfenfoidnchmjfaicafhieepefoc";
+
+function request(port: number, method: string, pathname: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: "127.0.0.1", port, method, path: pathname, headers: { Host: `localhost:${port}`, ...headers } }, (res) => {
+      let body = "";
+      res.on("data", (d) => (body += d));
+      res.on("end", () => resolve({ status: res.statusCode || 0, body }));
+    });
+    req.once("error", reject);
+    req.end();
+  });
+}
+
+test("memory endpoint origin rules: the extension id from the manifest key, loopback peers only", () => {
+  const key = JSON.parse(fs.readFileSync(path.join(AGENT, "..", "extension", "manifest.json"), "utf8")).key;
+  assert.equal(extensionIdFromKey(key), "dhgknfenfoidnchmjfaicafhieepefoc");
+  assert.ok(extensionOrigins().has(EXT_ORIGIN));
+  for (const a of ["127.0.0.1", "::1", "::ffff:127.0.0.1", "127.0.0.2"]) assert.ok(isLoopbackAddress(a), a);
+  for (const a of ["192.168.1.5", "10.0.0.1", "::ffff:10.0.0.1", "fe80::1", "", undefined]) assert.equal(isLoopbackAddress(a), false, String(a));
+  const req = (origin: string | undefined, remoteAddress: string, host = "localhost:5050") => ({ headers: { host, origin }, socket: { remoteAddress } });
+  assert.ok(memoryRequestAllowed(req(EXT_ORIGIN, "127.0.0.1"), 5050));
+  assert.equal(memoryRequestAllowed(req(EXT_ORIGIN, "192.168.1.5"), 5050), false, "LAN peer");
+  assert.equal(memoryRequestAllowed(req(EXT_ORIGIN, "127.0.0.1", "evil.example:5050"), 5050), false, "foreign Host");
+  assert.equal(memoryRequestAllowed(req("https://evil.example", "127.0.0.1"), 5050), false, "web page");
+  assert.equal(memoryRequestAllowed(req("chrome-extension://abcdefghijklmnopabcdefghijklmnop", "127.0.0.1"), 5050), false, "another extension");
+  assert.equal(memoryRequestAllowed(req(undefined, "127.0.0.1"), 5050), false, "no Origin");
+});
+
+test("memory endpoint: the extension lists and deletes, pages and foreign hosts are refused", async () => {
+  const port = 5176;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cc-mem-srv-"));
+  const file = path.join(dir, "memory.json");
+  const facts = [{ id: "m0000000a", text: "you wear a medium", at: 1 }, { id: "m0000000b", text: "you prefer Etsy", at: 2 }];
+  fs.writeFileSync(file, JSON.stringify({ version: 1, facts }));
+  const child = await startServer(port, { CLEARCART_DATA_DIR: dir });
+  try {
+    const ok = await request(port, "GET", "/memory", { Origin: EXT_ORIGIN });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(JSON.parse(ok.body), { enabled: true, facts });
+    for (const h of [{}, { Origin: "https://evil.example" }, { Origin: "null" }, { Origin: EXT_ORIGIN, Host: `evil.example:${port}` }]) {
+      assert.equal((await request(port, "GET", "/memory", h)).status, 403, JSON.stringify(h));
+      assert.equal((await request(port, "DELETE", "/memory", h)).status, 403, JSON.stringify(h));
+      assert.equal((await request(port, "DELETE", "/memory/m0000000a", h)).status, 403, JSON.stringify(h));
+    }
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).facts.length, 2, "nothing deleted by refused requests");
+    assert.equal((await request(port, "POST", "/memory", { Origin: EXT_ORIGIN })).status, 405, "no way to add a fact over HTTP");
+    assert.equal((await request(port, "DELETE", "/memory/m0000000a", { Origin: EXT_ORIGIN })).status, 200);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).facts.map((f: any) => f.id), ["m0000000b"]);
+    assert.equal((await request(port, "DELETE", "/memory/m0000000a", { Origin: EXT_ORIGIN })).status, 404);
+    fs.writeFileSync(path.join(dir, "transcript.json"), JSON.stringify({ turns: [{ role: "user", text: "hi", at: Date.now() }] }));
+    const all = await request(port, "DELETE", "/memory", { Origin: EXT_ORIGIN });
+    assert.deepEqual(JSON.parse(all.body), { ok: true, removed: 1 });
+    assert.ok(!fs.existsSync(file) && !fs.existsSync(path.join(dir, "transcript.json")), "forget everything clears both");
   } finally {
     child.kill();
   }
