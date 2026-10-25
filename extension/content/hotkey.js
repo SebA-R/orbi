@@ -36,7 +36,8 @@
 // each frame has its own detector and the key goes to whichever has focus;
 // they all talk to the worker's one voice controller, which ignores a second
 // start while listening. Focus leaving a frame mid-hold blurs it, which ends
-// that hold. As a backstop, a talk-key keyup in a frame that did not see the
+// that hold. A frame whose page rewrites it with document.open() gets its
+// listeners back. As a backstop, a talk-key keyup in a frame that did not see the
 // press ends a hold (not a latch) another frame of this tab left open.
 //
 // Content scripts declared in the manifest can't be ES modules, so this file
@@ -348,22 +349,38 @@
       detector.onKeyDown(e);
     };
     const onUp = (e) => { if (e.isTrusted === false) return; if (orphaned()) return detach(); detector.onKeyUp(e); };
+    const onLeave = () => detector.cancel();
+    // Hidden, the tab may stop hearing the voice state; visible again, it asks.
+    const onVisibility = () => {
+      if (doc.visibilityState === "hidden") detector.forgetVoiceState();
+      else send(RT.VOICE_STATE_QUERY);
+    };
+    let rewrites = null;
     const detach = () => {
       detector.cancel();
       win.removeEventListener("keydown", onDown, true);
       win.removeEventListener("keyup", onUp, true);
+      if (rewrites) rewrites.disconnect();
     };
-    // Navigating away or removing this frame mid-hold: its keyup will never
-    // come here, so release now rather than leave the mic listening.
-    win.addEventListener("pagehide", () => detector.cancel());
-    win.addEventListener("keydown", onDown, true);
-    win.addEventListener("keyup", onUp, true);
-    win.addEventListener("blur", () => detector.cancel());
-    // Hidden, the tab may stop hearing the voice state; visible again, it asks.
-    doc.addEventListener("visibilitychange", () => {
-      if (doc.visibilityState === "hidden") detector.forgetVoiceState();
-      else send(RT.VOICE_STATE_QUERY);
-    });
+    // Adding a listener that is already there does nothing, so this can run
+    // again.
+    const listen = () => {
+      // Navigating away or removing this frame mid-hold: its keyup will never
+      // come here, so release now rather than leave the mic listening.
+      win.addEventListener("pagehide", onLeave);
+      win.addEventListener("keydown", onDown, true);
+      win.addEventListener("keyup", onUp, true);
+      win.addEventListener("blur", onLeave);
+      doc.addEventListener("visibilitychange", onVisibility);
+    };
+    listen();
+    // document.open() (a page writing a frame's document, as iframe rich-text
+    // editors do) erases every listener on the window and the document, ours
+    // too, and replaces the document's children: put ours back then.
+    try {
+      rewrites = new win.MutationObserver(() => { if (!orphaned()) listen(); });
+      rewrites.observe(doc, { childList: true });
+    } catch {}
     // The worker sends the voice state to the tab that is talking (all frames).
     chromeApi.runtime.onMessage?.addListener((msg) => {
       if (!msg || orphaned()) return;

@@ -721,8 +721,17 @@
     return { buttons: out };
   }
 
+  // A document whose whole body is the editor (designMode, or an editable
+  // body, as old rich-text editors in a frame have).
+  var EDITABLE_DOC = { kind: "other", payment: false, text: true };
+  function editableDoc(doc) {
+    return doc.designMode === "on" || !!(doc.body && doc.body.isContentEditable);
+  }
+
   // Kind of the element that has keyboard focus, so the worker can refuse
-  // CDP typing into a card field. Never returns the value.
+  // CDP typing into a card field. Never returns the value. nothing: no
+  // element has focus (only the page or a frame's page), so typed text
+  // would go nowhere.
   function focusedField() {
     var el = document.activeElement;
     for (var guard = 0; el && guard < 20; guard++) {
@@ -735,10 +744,14 @@
       try { sub = el.contentDocument || null; } catch (_) { sub = null; }
       if (!sub) return { kind: "frame", payment: true, text: false };
       var inner = sub.activeElement;
-      if (!inner || inner === sub.body || inner === sub.documentElement) return { kind: "none", payment: false };
+      if (!inner || inner === sub.body || inner === sub.documentElement) {
+        return editableDoc(sub) ? EDITABLE_DOC : { kind: "none", payment: false, nothing: true };
+      }
       el = inner;
     }
-    if (!el || el === document.body || el === document.documentElement) return { kind: "none", payment: false };
+    if (!el || el === document.body || el === document.documentElement) {
+      return editableDoc(document) ? EDITABLE_DOC : { kind: "none", payment: false, nothing: true };
+    }
     var tag = el.tagName;
     if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
       return { kind: el.isContentEditable ? "other" : "none", payment: false, text: !!el.isContentEditable };

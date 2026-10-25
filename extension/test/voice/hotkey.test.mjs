@@ -497,3 +497,28 @@ test("synthetic key events from the page never talk", () => {
   fire("keyup", key("Space", { altKey: true }, { isTrusted: false }));
   assert.deepEqual(messages, []);
 });
+
+test("a frame rewritten with document.open() gets its listeners back", () => {
+  const { install } = load();
+  // Like the DOM: adding the same listener twice keeps one.
+  let listeners = {};
+  const add = (k, fn) => { (listeners[k] ||= new Set()).add(fn); };
+  let rewritten;
+  const win = {
+    addEventListener: (t, fn) => add(t, fn),
+    MutationObserver: class { constructor(fn) { rewritten = fn; } observe() {} disconnect() {} },
+  };
+  const doc = { visibilityState: "visible", addEventListener: (t, fn) => add(`doc:${t}`, fn) };
+  const messages = [];
+  install({ win, doc, chromeApi: { runtime: { sendMessage: (m) => { messages.push(m); } } } });
+  const fire = (t, e) => (listeners[t] || []).forEach((fn) => fn(e));
+  // document.open() erases every listener and replaces the document's children.
+  listeners = {};
+  fire("keydown", key("Space", { altKey: true }));
+  assert.deepEqual(messages, []);
+  rewritten();
+  rewritten();
+  assert.equal(listeners.keydown.size, 1);
+  fire("keydown", key("Space", { altKey: true }));
+  assert.deepEqual(messages.map((m) => m.type), ["ptt.start"]);
+});

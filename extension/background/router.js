@@ -33,6 +33,12 @@
 // turns in steps, and the lock and hit-test checks run again at press time
 // (after the pointer arrives). Off, clicks and scrolls go to CDP at once.
 // Tab work, reads and screenshots are never slowed.
+//
+// Canvas editors: Google Docs, Sheets and Slides draw the file on a canvas,
+// so get_page_text gets the file's text from its export link (gdocs.js),
+// and read_page and get_page_text say how to edit there. Typing with
+// nothing focused is refused with a message to click into the editor first,
+// instead of answering ok for text that went nowhere.
 
 import * as tabsModule from "./tabs.js";
 import * as cdpModule from "./cdp.js";
@@ -41,6 +47,7 @@ import { assertInViewport, parseKey } from "./cdp.js";
 import { createActor } from "./actor.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
 import { luhnValid } from "../lib/log.js";
+import { APPS, editNote, exportText, googleFileOf } from "./gdocs.js";
 
 export const PAGE_FILES = ["content/mask.js", "content/protect.js", "content/page.js"];
 // page_context also loads the pointer tracker, for tabs that were open
@@ -204,6 +211,8 @@ export function createRouter({
   watchable = async () => false,
   settle = (ms) => new Promise((r) => setTimeout(r, ms)),
   actor = createActor({ cdp, tabWindow: async (id) => (await chromeApi.tabs.get(id)).windowId }),
+  // Fetches a Google file's export (gdocs.js).
+  fetchImpl = (...a) => globalThis.fetch(...a),
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
@@ -336,6 +345,30 @@ export function createRouter({
     await recheck(tabId, typeof reply.href === "string" ? reply.href : undefined);
     if (!reply.ok) throw new BridgeError(reply.error?.code || ERR.INTERNAL, reply.error?.message || `${method} failed`);
     return reply.result;
+  }
+
+  // get_page_text, with a Google Docs, Sheets or Slides file's own text in
+  // place of the menus the page script sees (gdocs.js). The full address
+  // (a sheet's gid is in its hash) is used only while it is the page that
+  // answered.
+  async function pageText(tabId, params) {
+    const r = await pageCall(tabId, "get_page_text", params);
+    let file = r && googleFileOf(r.url);
+    if (!file) return r;
+    const full = await Promise.resolve(chromeApi.tabs.get(tabId)).then((t) => t && t.url, () => null);
+    if (typeof full === "string" && full.split(/[?#]/)[0] === r.url) file = googleFileOf(full) || file;
+    const text = await exportText(file, { fetchImpl });
+    // The tab may have moved to a blocked site during the download.
+    await recheck(tabId);
+    const app = APPS[file.app];
+    if (text == null) {
+      return { ...r, note: `${app.name} draws the ${app.what} on a canvas and its text could not be downloaded (not signed in, no access, or the owner turned off downloads), so this text is only the page's menus. Take a screenshot to read the ${app.what}.` };
+    }
+    const max = Math.max(100, Math.min(Number(params.maxChars) || 20000, 200000));
+    let all = r.text ? `${text}\n\n---\n\n${r.text}` : text;
+    const truncated = all.length > max;
+    if (truncated) all = all.slice(0, max) + "\n… (truncated)";
+    return { ...r, text: all, truncated, source: `${app.name} file text`, note: editNote(file.app) };
   }
 
   const paced = () => Promise.resolve().then(watchable).then((v) => v === true, () => false);
@@ -794,7 +827,10 @@ export function createRouter({
       case "click":
         return clickAt(tabId, params, epoch);
       case "type": {
-        await guardType(tabId, params.text);
+        const focus = await guardType(tabId, params.text);
+        if (focus && focus.nothing && params.text) {
+          throw new BridgeError(ERR.NO_ELEMENT, "Nothing that takes text has focus. Click the field or editor first (in Google Docs or another canvas editor, click in the document where the text goes), then type.");
+        }
         const start = docs.get(tabId);
         // A typed newline can submit the focused field's form.
         if (/[\r\n]/.test(String(params.text ?? ""))) await pageCall(tabId, "guard_key", { key: "Enter" });
@@ -853,6 +889,12 @@ export function createRouter({
         await recheck(tabId);
         return shot;
       }
+    }
+    if (method === "get_page_text") return pageText(tabId, params);
+    if (method === "read_page") {
+      const r = await pageCall(tabId, method, params);
+      const file = r && googleFileOf(r.url);
+      return file ? { ...r, note: editNote(file.app) } : r;
     }
     if (PAGE_METHODS.has(method)) return pageCall(tabId, method, params);
     throw new BridgeError(ERR.UNKNOWN_METHOD, `unknown method: ${method}`);

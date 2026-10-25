@@ -369,3 +369,65 @@ test("dismiss_overlay: a sign-in or payment dialog is refused with nothing press
   const none = overlayRouter({ find: () => ({ found: false }) });
   assert.equal((await none.router.route("dismiss_overlay", {})).dismissed, false);
 });
+
+// Google Docs, Sheets and Slides (background/gdocs.js).
+function docsFakes({ url = "https://docs.google.com/document/d/1jfHEhSnJs75Jd188KNDu0UE-SKfh7QSgtpYzw1LElUc/edit", tabUrl = url + "?tab=t.0", focus, exported = "Doc body text" } = {}) {
+  const calls = [];
+  const chromeApi = {
+    scripting: { executeScript: async () => {} },
+    tabs: {
+      get: async () => ({ id: 7, url: tabUrl }),
+      sendMessage: async (_t, msg) => {
+        calls.push(["page", msg.method]);
+        if (msg.method === "focused_field") return { ok: true, result: focus };
+        return { ok: true, href: tabUrl, result: { url, title: "Doc - Google Docs", text: "File\n\nEdit", truncated: false } };
+      },
+    },
+  };
+  const tabs = { resolveAllowedTab: async (id) => id ?? 7, assertPageAllowed: async (id, u) => calls.push(["allowed", u ?? null]) };
+  const cdp = { send: async (_t, m, p) => calls.push(["cdp.send", m, p]), click: async () => {}, key: async () => {} };
+  const fetchImpl = async (u) => {
+    calls.push(["fetch", u]);
+    if (exported == null) return { ok: false, status: 403, url: u, headers: { get: () => "text/html" }, text: async () => "" };
+    return { ok: true, status: 200, url: "https://doc-0s-docstext.googleusercontent.com/x", headers: { get: (h) => (h === "content-type" ? "text/plain" : null) }, text: async () => exported };
+  };
+  return { calls, router: createRouter({ chromeApi, tabs, cdp, fetchImpl }) };
+}
+
+test("get_page_text on a Google Doc reads the file's text, then checks the tab again", async () => {
+  const { calls, router } = docsFakes();
+  const r = await router.route("get_page_text", { tabId: 7 });
+  assert.equal(r.text, "Doc body text\n\n---\n\nFile\n\nEdit");
+  assert.equal(r.source, "Google Docs file text");
+  assert.match(r.note, /click in the document/);
+  const fetchAt = calls.findIndex((c) => c[0] === "fetch");
+  assert.equal(calls[fetchAt][1], "https://docs.google.com/document/d/1jfHEhSnJs75Jd188KNDu0UE-SKfh7QSgtpYzw1LElUc/export?format=txt");
+  assert.ok(calls.slice(fetchAt).some((c) => c[0] === "allowed"), "allowlist checked after the download");
+  // A sheet exports the tab shown.
+  const s = docsFakes({ url: "https://docs.google.com/spreadsheets/d/1uuLbAjXtZuXK-N8nNT4FQzzi4bvgXtxI6BAdiIEDUHo/edit", tabUrl: "https://docs.google.com/spreadsheets/d/1uuLbAjXtZuXK-N8nNT4FQzzi4bvgXtxI6BAdiIEDUHo/edit#gid=9" });
+  await s.router.route("get_page_text", {});
+  assert.match(s.calls.find((c) => c[0] === "fetch")[1], /format=csv&gid=9$/);
+});
+
+test("get_page_text keeps the page text, with a note, when the file can't be downloaded; other sites never fetch", async () => {
+  const d = docsFakes({ exported: null });
+  const r = await d.router.route("get_page_text", {});
+  assert.equal(r.text, "File\n\nEdit");
+  assert.match(r.note, /could not be downloaded/);
+  const other = docsFakes({ url: "https://www.example.com/a", tabUrl: "https://www.example.com/a" });
+  const o = await other.router.route("get_page_text", {});
+  assert.equal(o.note, undefined);
+  assert.ok(!other.calls.some((c) => c[0] === "fetch"));
+});
+
+test("type with nothing focused is refused before any key; read_page on Docs says how to edit", async () => {
+  const { calls, router } = docsFakes({ focus: { kind: "none", payment: false, nothing: true } });
+  await assert.rejects(router.route("type", { text: "hello" }), { code: "no_element", message: /Click the field or editor first/ });
+  assert.ok(!calls.some((c) => c[0] === "cdp.send"));
+  // A focused element that is not a text field still types (insertText), as before.
+  const b = docsFakes({ focus: { kind: "none", payment: false } });
+  await b.router.route("type", { text: "a" });
+  assert.ok(b.calls.some((c) => c[0] === "cdp.send" && c[1] === "Input.insertText"));
+  const rp = await router.route("read_page", {});
+  assert.match(rp.note, /Google Docs draws the document on a canvas/);
+});
