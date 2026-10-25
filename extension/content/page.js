@@ -268,9 +268,282 @@
     return { url: location.href, title: Mask.maskCardRuns(document.title), tree: lines.join("\n") };
   }
 
+  // ------------------------------------------------------------------ find
+  // Case-insensitive match of every query word against role + name (+ id,
+  // placeholder, name attribute). Exact name matches rank first, then
+  // interactive elements, then document order.
+  function find(params) {
+    var query = clean(params.query, 200).toLowerCase();
+    if (!query) throw PageError(ERR.BAD_REQUEST, "query is required");
+    var limit = Math.max(1, Math.min(Number(params.limit) || 20, 100));
+    var words = query.split(" ");
+    var hits = [];
+    var all = document.body ? document.body.getElementsByTagName("*") : [];
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var role = roleOf(el);
+      if (!role) continue;
+      if (hiddenByStyle(el) || (el.closest && el.closest("[hidden],[aria-hidden=true]"))) continue;
+      var name = Mask.maskCardRuns(nameOf(el, role));
+      var hay = (role + " " + name + " " + (el.id || "") + " " + (el.getAttribute("name") || "") + " " +
+        (el.getAttribute("placeholder") || "")).toLowerCase();
+      var ok = words.every(function (w) { return hay.indexOf(w) !== -1; });
+      if (!ok) continue;
+      var score = 0;
+      if (name.toLowerCase() === query) score += 4;
+      else if (name.toLowerCase().indexOf(query) !== -1) score += 2;
+      if (isInteractive(el, role)) score += 1;
+      hits.push({ el: el, role: role, name: name, score: score, order: i });
+    }
+    hits.sort(function (a, b) { return b.score - a.score || a.order - b.order; });
+    return {
+      matches: hits.slice(0, limit).map(function (h) { return { ref: refFor(h.el), role: h.role, name: h.name }; }),
+    };
+  }
+
+  // --------------------------------------------------------- get_page_text
+  var BLOCK = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|BR|DD|DETAILS|DIALOG|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|SUMMARY|TABLE|TBODY|THEAD|TFOOT|TR|UL)$/;
+
+  function collectText(root, skip, out) {
+    for (var c = root.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3) { out.push(c.nodeValue); continue; }
+      if (c.nodeType !== 1 || c === skip) continue;
+      var tag = c.tagName;
+      if (SKIP_TAGS[tag] || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") continue;
+      if (hiddenByStyle(c)) continue;
+      if (tag === "TD" || tag === "TH") { collectText(c, skip, out); out.push("\t"); continue; }
+      var block = BLOCK.test(tag);
+      if (block) out.push("\n");
+      if (tag === "IMG" && c.getAttribute("alt")) out.push(c.getAttribute("alt"));
+      collectText(c, skip, out);
+      if (block) out.push("\n");
+    }
+    return out;
+  }
+
+  function tidy(s) {
+    return s.replace(/[ \t ]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  function getPageText(params) {
+    var maxChars = Math.max(100, Math.min(Number(params.maxChars) || 20000, 200000));
+    var body = document.body;
+    var main = body && (body.querySelector("main,[role=main]") || body.querySelector("article"));
+    var text = "";
+    if (main) text = tidy(collectText(main, null, []).join(""));
+    if (body) {
+      var rest = tidy(collectText(body, main, []).join(""));
+      if (rest) text = text ? text + "\n\n---\n\n" + rest : rest;
+    }
+    text = Mask.maskCardRuns(text);
+    var truncated = text.length > maxChars;
+    if (truncated) text = text.slice(0, maxChars) + "\n… (truncated)";
+    return { url: location.href, title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
+  }
+
+  // ------------------------------------------------------------ form_input
+  function nativeSet(el, value) {
+    // Use the prototype setter so frameworks that track value (React) see it.
+    var proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype
+      : el.tagName === "SELECT" ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    var d = Object.getOwnPropertyDescriptor(proto, "value");
+    if (d && d.set) d.set.call(el, value);
+    else el.value = value;
+  }
+
+  function fire(el) {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function truthy(v) {
+    if (typeof v === "boolean") return v;
+    return /^(true|on|yes|1|checked)$/i.test(String(v).trim());
+  }
+
+  function formInput(params) {
+    var el = elementFor(params.ref);
+    if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; payment is entered only by pay_now");
+    if (!("value" in params)) throw PageError(ERR.BAD_REQUEST, "value is required");
+    var value = params.value;
+    if (typeof value !== "boolean" && Mask.luhn(String(value))) {
+      throw PageError(ERR.PAYMENT_FIELD, "refusing to type a card number into the page");
+    }
+    if (el.disabled) throw PageError(ERR.BAD_REQUEST, "element is disabled");
+    var tag = el.tagName;
+    if (tag === "INPUT" && (el.type === "checkbox" || el.type === "radio")) {
+      var want = truthy(value);
+      if (el.type === "radio" && !want) throw PageError(ERR.BAD_REQUEST, "a radio can only be selected");
+      if (el.checked !== want) {
+        el.checked = want;
+        fire(el);
+      }
+      return { ok: true };
+    }
+    if (tag === "SELECT") {
+      var s = String(value);
+      var opts = Array.prototype.slice.call(el.options);
+      var hit = opts.find(function (o) { return o.value === s; }) ||
+        opts.find(function (o) { return clean(o.textContent).toLowerCase() === s.trim().toLowerCase(); });
+      if (!hit) throw PageError(ERR.BAD_REQUEST, "no option matching value");
+      nativeSet(el, hit.value);
+      fire(el);
+      return { ok: true };
+    }
+    if (tag === "INPUT" || tag === "TEXTAREA") {
+      if (el.readOnly) throw PageError(ERR.BAD_REQUEST, "element is read-only");
+      if (typeof el.focus === "function") el.focus();
+      nativeSet(el, String(value));
+      fire(el);
+      return { ok: true };
+    }
+    if (el.isContentEditable) {
+      el.textContent = String(value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return { ok: true };
+    }
+    throw PageError(ERR.BAD_REQUEST, "element is not a form field");
+  }
+
+  // ------------------------------------------------------ rect / click_ref
+  function rect(params) {
+    var el = elementFor(params.ref);
+    if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    var r = el.getBoundingClientRect();
+    return { x: r.x !== undefined ? r.x : r.left, y: r.y !== undefined ? r.y : r.top, width: r.width, height: r.height };
+  }
+
+  function clickRef(params) {
+    var el = elementFor(params.ref);
+    if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", behavior: "instant" });
+    if (typeof el.focus === "function") el.focus();
+    el.click();
+    return { ok: true };
+  }
+
+  // -------------------------------------------- read_fields / fill_payment
+  function kindOf(el) {
+    var ac = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+    if (ac.indexOf("cc-number") !== -1) return "cc-number";
+    if (ac.indexOf("cc-name") !== -1 || ac.indexOf("cc-given-name") !== -1) return "cc-name";
+    if (ac.indexOf("cc-exp") !== -1 || ac.indexOf("cc-exp-month") !== -1 || ac.indexOf("cc-exp-year") !== -1) return "cc-exp";
+    if (ac.indexOf("cc-csc") !== -1) return "cc-csc";
+    if (ac.some(function (t) { return /^(street-address|address-line\d|address-level\d|postal-code|country)$/.test(t); })) return "address";
+    var hay = [el.getAttribute("name"), el.id, el.getAttribute("placeholder"), el.getAttribute("aria-label"),
+      el.labels ? Array.prototype.map.call(el.labels, textOf).join(" ") : ""].join(" ").toLowerCase();
+    if (Mask.isPaymentField(el)) {
+      if (/cvc|cvv|csc|security/.test(hay)) return "cc-csc";
+      if (/exp|mm\s*\/\s*yy/.test(hay)) return "cc-exp";
+      if (/name|holder/.test(hay)) return "cc-name";
+      if (/number|card/.test(hay)) return "cc-number";
+    }
+    if (/address/.test(hay)) return "address";
+    return "other";
+  }
+
+  function formFields() {
+    var out = [];
+    var els = document.querySelectorAll("input,textarea,select");
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var t = (el.type || "").toLowerCase();
+      if (/^(hidden|submit|button|reset|image|file)$/.test(t)) continue;
+      if (hiddenByStyle(el)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+
+  function readFields() {
+    return {
+      fields: formFields().map(function (el) {
+        var t = (el.type || "").toLowerCase();
+        return {
+          name: el.getAttribute("name") || el.id || "",
+          autocomplete: el.getAttribute("autocomplete") || "",
+          kind: kindOf(el),
+          filled: t === "checkbox" || t === "radio" ? !!el.checked : String(el.value || "").length > 0,
+        };
+      }),
+    };
+  }
+
+  function expParts(exp) {
+    var m = /^\s*(\d{1,2})\s*[\/\-]\s*(\d{2}|\d{4})\s*$/.exec(String(exp || ""));
+    if (!m) return null;
+    var mm = ("0" + m[1]).slice(-2);
+    var yy = m[2].slice(-2);
+    return { mm: mm, yy: yy, yyyy: m[2].length === 4 ? m[2] : "20" + yy };
+  }
+
+  function fillPayment(params) {
+    var card = params.card;
+    if (!card || typeof card !== "object") throw PageError(ERR.BAD_REQUEST, "card is required");
+    var number = String(card.number || "").replace(/[\s-]/g, "");
+    if (!/^\d{12,19}$/.test(number)) throw PageError(ERR.BAD_REQUEST, "card.number must be 12-19 digits");
+    var exp = expParts(card.exp);
+    if (card.exp && !exp) throw PageError(ERR.BAD_REQUEST, "card.exp must be MM/YY");
+    var fields = formFields();
+    var byKind = { "cc-number": [], "cc-name": [], "cc-exp": [], "cc-csc": [], address: [] };
+    fields.forEach(function (el) { var k = kindOf(el); if (byKind[k]) byKind[k].push(el); });
+    if (!byKind["cc-number"].length) throw PageError(ERR.NO_ELEMENT, "no card number field on this page");
+
+    function put(el, v) {
+      if (v == null || v === "") return;
+      if (el.tagName === "SELECT") {
+        var opts = Array.prototype.slice.call(el.options);
+        var hit = opts.find(function (o) { return o.value === v || Number(o.value) === Number(v) || clean(o.textContent) === v; });
+        if (!hit) return;
+        v = hit.value;
+      }
+      nativeSet(el, v);
+      fire(el);
+    }
+
+    byKind["cc-number"].forEach(function (el) { put(el, number); });
+    byKind["cc-name"].forEach(function (el) { put(el, card.name ? String(card.name) : ""); });
+    byKind["cc-csc"].forEach(function (el) { put(el, card.csc ? String(card.csc) : ""); });
+    byKind["cc-exp"].forEach(function (el) {
+      if (!exp) return;
+      var ac = (el.getAttribute("autocomplete") || "").toLowerCase();
+      if (/cc-exp-month/.test(ac)) put(el, exp.mm);
+      else if (/cc-exp-year/.test(ac)) put(el, el.tagName === "SELECT" || (el.maxLength > 0 && el.maxLength < 4) ? (el.maxLength === 2 ? exp.yy : exp.yyyy) : exp.yyyy);
+      else put(el, exp.mm + "/" + exp.yy);
+    });
+    if (params.address != null && byKind.address.length) {
+      var addr = typeof params.address === "string" ? params.address
+        : [params.address.line1, params.address.line2, params.address.city, params.address.region, params.address.postal, params.address.country]
+          .filter(Boolean).join(", ");
+      byKind.address.forEach(function (el) {
+        if (!el.value) put(el, addr);
+      });
+    }
+    return { ok: true, last4: number.slice(-4) };
+  }
+
+  function clearPayment() {
+    formFields().forEach(function (el) {
+      var k = kindOf(el);
+      if (k.indexOf("cc-") === 0 || Mask.isPaymentField(el)) {
+        if (el.tagName === "SELECT") el.selectedIndex = -1;
+        else nativeSet(el, "");
+        fire(el);
+      }
+    });
+    return { ok: true };
+  }
+
   // ------------------------------------------------------------ dispatcher
   var METHODS = {
     read_page: readPage,
+    find: find,
+    get_page_text: getPageText,
+    form_input: formInput,
+    rect: rect,
+    click_ref: clickRef,
+    read_fields: readFields,
+    fill_payment: fillPayment,
+    clear_payment: clearPayment,
   };
 
   function call(method, params) {
