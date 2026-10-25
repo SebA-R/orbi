@@ -103,11 +103,11 @@ test("pressing again while it speaks barges in", async () => {
 
 test("status and receipt are forwarded as STATUS; empty agent_text is ignored", () => {
   const r = rig();
-  r.c.onAgentMessage({ type: "status", text: "navigate http://localhost:4000/search" });
+  r.c.onAgentMessage({ type: "status", text: "navigate https://shop.example/search" });
   r.c.onAgentMessage({ type: "receipt", item: "Cetirizine", total: "$18.49", last4: "1111" });
   r.c.onAgentMessage({ type: "agent_text", text: "" });
   assert.deepEqual(r.emitted.filter((m) => m.type === RT.STATUS), [
-    { type: RT.STATUS, kind: "status", text: "navigate http://localhost:4000/search" },
+    { type: RT.STATUS, kind: "status", text: "navigate https://shop.example/search" },
     { type: RT.STATUS, kind: "receipt", receipt: { item: "Cetirizine", total: "$18.49", last4: "1111" } },
   ]);
   assert.equal(r.log.length, 0);

@@ -29,19 +29,20 @@ test("agent URL must be a ws(s) URL on this machine", () => {
 });
 
 test("origins are parsed and credentials are refused", () => {
-  assert.equal(normalizeOrigin("http://localhost:4000/cart"), "http://localhost:4000");
-  assert.equal(normalizeOrigin("http://localhost:4000@evil.example/"), null);
+  assert.equal(normalizeOrigin("http://localhost:4100/cart"), "http://localhost:4100");
+  assert.equal(normalizeOrigin("http://localhost:4100@evil.example/"), null);
   assert.equal(normalizeOrigin("javascript:alert(1)"), null);
 });
 
 test("normalize falls back to defaults for bad values", () => {
-  assert.deepEqual(normalize({}), { ...DEFAULTS, allowlist: ["http://localhost:4000"], blocklist: [...SUGGESTED_BLOCKLIST] });
+  assert.deepEqual(normalize({}), { ...DEFAULTS, allowlist: [], blocklist: [...SUGGESTED_BLOCKLIST] });
+  assert.deepEqual(DEFAULTS.allowlist, [], "no allowed sites until the user adds some");
   const s = normalize({ agentUrl: "ws://x.example", hotkey: "Nope", speed: 9, subtitles: "yes", allowlist: ["bad"] });
   assert.equal(s.agentUrl, DEFAULTS.agentUrl);
   assert.equal(s.hotkey, DEFAULTS.hotkey);
   assert.equal(s.speed, 2);
   assert.equal(s.subtitles, true);
-  assert.deepEqual(s.allowlist, ["http://localhost:4000"]);
+  assert.deepEqual(s.allowlist, [], "bad lines are dropped, nothing is put back");
   assert.deepEqual(normalize({ allowlist: ["http://localhost:4100/", "http://localhost:4100"] }).allowlist, ["http://localhost:4100"]);
 });
 
@@ -97,8 +98,8 @@ test("first install seeds the suggested list once; a stored list is left alone",
 });
 
 test("parseOriginLines takes one site per line and reports bad lines", () => {
-  const r = parseOriginLines("https://www.etsy.com/c/home\nwww.aritzia.com\n\n  http://localhost:4000 \njavascript:alert(1)\nhttps://me:pw@shop.example\nhttps://www.etsy.com");
-  assert.deepEqual(r.origins, ["https://www.etsy.com", "https://www.aritzia.com", "http://localhost:4000"]);
+  const r = parseOriginLines("https://www.etsy.com/c/home\nwww.aritzia.com\n\n  http://localhost:4100 \njavascript:alert(1)\nhttps://me:pw@shop.example\nhttps://www.etsy.com");
+  assert.deepEqual(r.origins, ["https://www.etsy.com", "https://www.aritzia.com", "http://localhost:4100"]);
   assert.deepEqual(r.bad, ["javascript:alert(1)", "https://me:pw@shop.example"]);
 });
 
@@ -109,15 +110,15 @@ test("sounds defaults on and keeps a stored false", () => {
   assert.equal(normalize({ sounds: "off" }).sounds, true);
 });
 
-test("guidedMode defaults on, keeps booleans only, and round-trips through storage", async () => {
-  assert.equal(DEFAULTS.guidedMode, true);
-  assert.equal(normalize({}).guidedMode, true);
-  assert.equal(normalize({ guidedMode: "false" }).guidedMode, true, "non-boolean falls back");
-  assert.equal(normalize({ guidedMode: false }).guidedMode, false);
+test("guidedMode (the blind and low-vision mode) defaults off, keeps booleans only, and round-trips through storage", async () => {
+  assert.equal(DEFAULTS.guidedMode, false);
+  assert.equal(normalize({}).guidedMode, false);
+  assert.equal(normalize({ guidedMode: "true" }).guidedMode, false, "non-boolean falls back");
+  assert.equal(normalize({ guidedMode: true }).guidedMode, true);
   const store = memoryStorage();
-  assert.equal((await loadSettings(store)).guidedMode, true);
-  assert.equal((await saveSettings({ guidedMode: false }, store)).guidedMode, false);
-  assert.equal(store.data.guidedMode, false);
   assert.equal((await loadSettings(store)).guidedMode, false);
   assert.equal((await saveSettings({ guidedMode: true }, store)).guidedMode, true);
+  assert.equal(store.data.guidedMode, true);
+  assert.equal((await loadSettings(store)).guidedMode, true);
+  assert.equal((await saveSettings({ guidedMode: false }, store)).guidedMode, false);
 });

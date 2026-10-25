@@ -9,7 +9,7 @@ import { INTERNAL, TOOLS } from "../../../extension/lib/protocol.js";
 
 const LOCKED = { ok: false, error: { code: "locked", message: "Locked: 'Place order' can only be pressed by Clearcart after the user says yes." } };
 
-function fakes({ locked = new Set(), url = "http://localhost:4000/checkout", cdpClickFails = false } = {}) {
+function fakes({ locked = new Set(), url = "http://localhost:4100/checkout", cdpClickFails = false } = {}) {
   const calls = [];
   let clock = 1_000;
   let n = 0;
@@ -31,7 +31,7 @@ function fakes({ locked = new Set(), url = "http://localhost:4000/checkout", cdp
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 7,
     tabInfo: async ({ tabId }) => ({ tabId, url: state.url, title: "t" }),
-    isPaySite: async (u) => new URL(u).origin === "http://localhost:4000",
+    isPaySite: async (u) => new URL(u).origin === "http://localhost:4100",
     assertPageAllowed: async () => {},
   };
   const cdp = {
@@ -117,9 +117,9 @@ test("press_protected: nonce bound to its tab, its origin and a short TTL", asyn
   await assert.rejects(f.router.route("press_protected", { tabId: 7, ref: "ref_9", nonce: a.nonce }), { code: "locked" });
 
   const b = await f.router.route("lock_arm", { tabId: 7 });
-  f.state.url = "http://localhost:4100/checkout";
+  f.state.url = "http://localhost:4200/checkout";
   await assert.rejects(f.router.route("press_protected", { tabId: 7, ref: "ref_9", nonce: b.nonce }), { code: "locked", message: /changed origin/ });
-  f.state.url = "http://localhost:4000/checkout";
+  f.state.url = "http://localhost:4100/checkout";
 
   const c = await f.router.route("lock_arm", { tabId: 7 });
   f.tick(UNLOCK_TTL_MS + 1);
@@ -142,7 +142,7 @@ test("lock_arm refuses a site that is browsable but not a pay site", async () =>
   const f = fakes({ url: "https://www.etsy.com/checkout" });
   await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked", message: /not a Clearcart pay site/ });
   // A tabs module without isPaySite fails closed.
-  const bare = createRouter({ chromeApi: {}, tabs: { resolveAllowedTab: async () => 7, tabInfo: async () => ({ url: "http://localhost:4000/checkout" }) }, cdp: {} });
+  const bare = createRouter({ chromeApi: {}, tabs: { resolveAllowedTab: async () => 7, tabInfo: async () => ({ url: "http://localhost:4100/checkout" }) }, cdp: {} });
   await assert.rejects(bare.route("lock_arm", { tabId: 7 }), { code: "locked" });
 });
 

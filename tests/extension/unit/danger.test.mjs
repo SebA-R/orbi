@@ -111,7 +111,7 @@ function routerFakes(dangerMode, url = "https://shop.example/cart") {
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 7,
     tabInfo: async ({ tabId }) => ({ tabId, url, title: "t" }),
-    isPaySite: async (u) => new URL(u).origin === "http://localhost:4000",
+    isPaySite: async (u) => new URL(u).origin === "http://localhost:4100",
     assertPageAllowed: async () => {},
   };
   const cdp = { click: async () => {}, type: async () => {}, key: async () => {} };

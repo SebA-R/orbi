@@ -15,7 +15,7 @@ const FACE_SRC = fs.readFileSync(path.join(HERE, "..", "..", "content", "orb-fac
 function setup({ stored = {}, reduce = false } = {}) {
   const dom = new JSDOM("<!doctype html><html><head></head><body><input id=f></body></html>", {
     runScripts: "outside-only",
-    url: "http://localhost:4000/",
+    url: "https://shop.example/",
   });
   const { window } = dom;
 

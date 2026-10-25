@@ -14,7 +14,7 @@ const SRC = fs.readFileSync(path.join(HERE, "..", "..", "content", "frame.js"), 
 function setup() {
   const dom = new JSDOM("<!doctype html><html><head></head><body><input id=f></body></html>", {
     runScripts: "outside-only",
-    url: "http://localhost:4000/",
+    url: "https://shop.example/",
   });
   const { window } = dom;
   let now = 0;
