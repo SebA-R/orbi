@@ -625,7 +625,7 @@ async function startServer(port: number, env: Record<string, string>): Promise<C
   return child;
 }
 
-function get(port: number, pathname: string, headers: Record<string, string>, method = "GET"): Promise<{ status: number; body: any }> {
+function get(port: number, pathname: string, headers: Record<string, string>, method = "GET", send?: string): Promise<{ status: number; body: any }> {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port, method, path: pathname, headers: { Host: `localhost:${port}`, ...headers } }, (res) => {
       let body = "";
@@ -639,11 +639,11 @@ function get(port: number, pathname: string, headers: Record<string, string>, me
       });
     });
     req.once("error", reject);
-    req.end();
+    req.end(send);
   });
 }
 
-test("GET /local-models: the extension gets the model list; other origins, foreign hosts and remote URLs are refused", async () => {
+test("GET and POST /local-models: the extension gets the model list; other origins, foreign hosts and remote URLs are refused", async () => {
   const model = await fakeModel(() => ({ text: "" }));
   const port = 5177;
   const child = await startServer(port, { CLEARCART_LOCAL_URL: model.url });
@@ -654,7 +654,17 @@ test("GET /local-models: the extension gets the model list; other origins, forei
     for (const h of [{}, { Origin: "https://evil.example" }, { Origin: EXT_ORIGIN, Host: `evil.example:${port}` }]) {
       assert.equal((await get(port, "/local-models", h)).status, 403, JSON.stringify(h));
     }
-    assert.equal((await get(port, "/local-models", { Origin: EXT_ORIGIN }, "POST")).status, 405);
+    for (const h of [{}, { Origin: "https://evil.example" }, { Origin: EXT_ORIGIN, Host: `evil.example:${port}` }]) {
+      assert.equal((await get(port, "/local-models", h, "POST")).status, 403, `POST ${JSON.stringify(h)}`);
+    }
+    const posted = await get(port, "/local-models", { Origin: EXT_ORIGIN }, "POST");
+    assert.equal(posted.status, 200, "POST is what the extension sends (Chrome sends no Origin on its GET)");
+    assert.deepEqual(posted.body, ok.body);
+    const viaBody = await get(port, "/local-models", { Origin: EXT_ORIGIN, "Content-Type": "application/json" }, "POST", JSON.stringify({ baseUrl: model.url }));
+    assert.equal(viaBody.status, 200);
+    assert.equal((await get(port, "/local-models", { Origin: EXT_ORIGIN }, "POST", JSON.stringify({ baseUrl: "http://10.0.0.2:11434/v1" }))).status, 400);
+    assert.equal((await get(port, "/local-models", { Origin: EXT_ORIGIN }, "POST", "{nope")).status, 400);
+    assert.equal((await get(port, "/local-models", { Origin: EXT_ORIGIN }, "PUT")).status, 405);
     for (const u of ["https://api.openai.com/v1", "http://10.0.0.2:11434/v1", "http://localhost@evil.example/"]) {
       assert.equal((await get(port, `/local-models?baseUrl=${encodeURIComponent(u)}`, { Origin: EXT_ORIGIN })).status, 400, u);
     }

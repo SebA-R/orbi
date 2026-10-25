@@ -100,7 +100,7 @@ const showSpeed = () => { $("speed-out").textContent = `${Number($("speed").valu
 const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no"), chip: $("danger-chip") }, saveSettings);
 
 // Model provider: the Local chip names the model and whether the agent
-// server can reach it (GET /local-models). Only the latest check counts.
+// server can reach it (POST /local-models). Only the latest check counts.
 let localRun = 0;
 async function refreshLocal() {
   const run = ++localRun;

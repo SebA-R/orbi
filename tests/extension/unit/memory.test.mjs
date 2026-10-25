@@ -32,10 +32,10 @@ test("memory defaults on, keeps booleans only, and round-trips through storage",
   assert.equal((await loadSettings(store)).memory, false);
 });
 
-test("listMemory reads GET /memory on the agent's http address and keeps well-formed facts", async () => {
+test("listMemory reads POST /memory/list on the agent's http address and keeps well-formed facts", async () => {
   const f = fakeFetch({ body: { enabled: true, facts: [{ id: "m0000000a", text: "you wear a medium", at: 5 }, { id: "../x", text: "bad" }, { id: "m0000000b" }] } });
   const r = await listMemory("ws://localhost:5050", f);
-  assert.deepEqual(f.calls, [{ url: "http://localhost:5050/memory", method: "GET" }]);
+  assert.deepEqual(f.calls, [{ url: "http://localhost:5050/memory/list", method: "POST" }]);
   assert.deepEqual(r, { enabled: true, facts: [{ id: "m0000000a", text: "you wear a medium", at: 5 }] });
   await assert.rejects(listMemory("ws://localhost:5050", fakeFetch({ status: 403, body: {} })));
 });
@@ -55,7 +55,7 @@ test("forgetFact and forgetAll send DELETE, and a bad id is never sent", async (
 test("an agent address off this computer falls back to localhost", async () => {
   const f = fakeFetch({ body: { facts: [] } });
   await listMemory("ws://evil.example:5050", f);
-  assert.equal(f.calls[0].url, "http://localhost:5050/memory");
+  assert.equal(f.calls[0].url, "http://localhost:5050/memory/list");
 });
 
 test("options page: the Memory switch is a data-setting row, facts are text with a Delete each, Forget everything asks first", () => {

@@ -249,8 +249,12 @@ test("memory endpoint: the extension lists and deletes, pages and foreign hosts 
     const ok = await request(port, "GET", "/memory", { Origin: EXT_ORIGIN });
     assert.equal(ok.status, 200);
     assert.deepEqual(JSON.parse(ok.body), { enabled: true, facts, purchases: [] });
+    const listed = await request(port, "POST", "/memory/list", { Origin: EXT_ORIGIN });
+    assert.equal(listed.status, 200, "POST /memory/list is what the extension sends (Chrome sends no Origin on its GET)");
+    assert.deepEqual(JSON.parse(listed.body), { enabled: true, facts, purchases: [] });
     for (const h of [{}, { Origin: "https://evil.example" }, { Origin: "null" }, { Origin: EXT_ORIGIN, Host: `evil.example:${port}` }]) {
       assert.equal((await request(port, "GET", "/memory", h)).status, 403, JSON.stringify(h));
+      assert.equal((await request(port, "POST", "/memory/list", h)).status, 403, JSON.stringify(h));
       assert.equal((await request(port, "DELETE", "/memory", h)).status, 403, JSON.stringify(h));
       assert.equal((await request(port, "DELETE", "/memory/m0000000a", h)).status, 403, JSON.stringify(h));
     }

@@ -140,7 +140,9 @@ const localHost = (req: http.IncomingMessage) => isLoopbackAddress(req.socket.re
 const localUpgrade = (req: http.IncomingMessage) => localHost(req) && upgradeOriginAllowed(req.headers.origin, port(), EXT_ORIGINS);
 
 // Saved facts for the extension's settings page (memory.ts):
-//   GET    /memory       { enabled, facts: [{ id, text, at }], purchases: [...] }
+//   POST   /memory/list  { enabled, facts: [{ id, text, at }], purchases: [...] }
+//   GET    /memory       the same, for clients that send an Origin on a GET
+//                        (Chrome sends none from an extension page)
 //   DELETE /memory/<id>  forget one fact (m...) or past purchase (p...)
 //   DELETE /memory       forget everything, past purchases and the recent conversation too
 // Loopback peers with the Orbi extension's Origin only (hostcheck.ts).
@@ -150,7 +152,7 @@ function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathna
   if (!memoryRequestAllowed(req, port(), EXT_ORIGINS)) return json(res, 403, { error: "forbidden" });
   const store = memoryStore();
   const id = pathname.slice("/memory/".length);
-  if (req.method === "GET" && pathname === "/memory") return json(res, 200, { enabled: memoryOn(), facts: store.list(), purchases: purchaseHistory().list() });
+  if ((req.method === "GET" && pathname === "/memory") || (req.method === "POST" && pathname === "/memory/list")) return json(res, 200, { enabled: memoryOn(), facts: store.list(), purchases: purchaseHistory().list() });
   if (req.method === "DELETE" && pathname === "/memory") {
     const n = store.clear();
     purchaseHistory().clear();
@@ -177,17 +179,48 @@ function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathna
 const cardsRoute = createCardsRoute({ allowed: (req) => memoryRequestAllowed(req, port(), EXT_ORIGINS) });
 
 // The local model's list for the extension's settings page:
-//   GET /local-models[?baseUrl=<url>]
+//   POST /local-models[?baseUrl=<url>]  (or a JSON body { baseUrl })
+//   GET  /local-models[?baseUrl=<url>]  the same; Chrome sends no Origin on
+//                                       a GET from an extension page
 //   200 { ok: true, connected: true, baseUrl, models: [{ id, tools? }], current }
 //   502 { ok: false, connected: false, baseUrl, error }  (the endpoint is down)
 // tools is there when the server says (Ollama). baseUrl defaults to the
 // current setting and must pass the same check (http(s) to localhost,
 // 127.0.0.1 or [::1]), so this never fetches anything off this computer.
 // Loopback peers with the Orbi extension's Origin only, like /memory.
+// An optional small JSON body: null when empty, undefined when bad or too big.
+function readSmallJson(req: http.IncomingMessage, max = 4096): Promise<unknown> {
+  return new Promise((resolve) => {
+    let raw = "";
+    let done = false;
+    req.on("data", (c: Buffer) => {
+      if (done) return;
+      raw += c;
+      if (raw.length > max) (done = true), resolve(undefined), req.destroy();
+    });
+    req.on("end", () => {
+      if (done) return;
+      done = true;
+      if (!raw.trim()) return resolve(null);
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        resolve(undefined);
+      }
+    });
+    req.on("error", () => !done && ((done = true), resolve(undefined)));
+  });
+}
+
 async function localModelsRoute(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
   if (!memoryRequestAllowed(req, port(), EXT_ORIGINS)) return json(res, 403, { error: "forbidden" });
-  if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
-  const asked = url.searchParams.get("baseUrl");
+  if (req.method !== "GET" && req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+  let asked = url.searchParams.get("baseUrl");
+  if (req.method === "POST" && asked === null) {
+    const body = await readSmallJson(req);
+    if (body === undefined) return json(res, 400, { ok: false, error: "send JSON (at most 4 KB) or no body" });
+    if (body && typeof body === "object" && "baseUrl" in body) asked = String((body as { baseUrl: unknown }).baseUrl);
+  }
   const baseUrl = asked === null ? currentProvider().localBaseUrl : parseLocalBaseUrl(asked);
   if (!baseUrl) return json(res, 400, { ok: false, error: "baseUrl must be an http(s) URL on this computer (localhost, 127.0.0.1 or [::1])" });
   try {

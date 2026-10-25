@@ -228,7 +228,9 @@ export function endpoints(agentUrl) {
   return { ext: `${base}/ext`, session: `${base}/session`, http, token: `${http}/cartesia-token`, localModels: `${http}/local-models` };
 }
 
-// The agent server's view of the local model server (GET /local-models).
+// The agent server's view of the local model server (POST /local-models:
+// Chrome sends no Origin on a GET from an extension page, and the server
+// needs one).
 // Returns { state, models }: "ok" (reachable, with its model names),
 // "down" (the server says the local model is not reachable, or the agent
 // server itself is not), or "missing" (an agent server without
@@ -236,7 +238,7 @@ export function endpoints(agentUrl) {
 export async function localModels(agentUrl, fetchFn = globalThis.fetch, timeoutMs = 4000) {
   let res;
   try {
-    res = await fetchFn(endpoints(agentUrl).localModels, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    res = await fetchFn(endpoints(agentUrl).localModels, { method: "POST", cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
   } catch {
     return { state: "down", models: [] };
   }
