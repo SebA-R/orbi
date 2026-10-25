@@ -10,7 +10,7 @@ import Foundation
 public enum Proto {
   public static let version = 1
   public static let name = "orbi-desktop"
-  public static let features = ["element", "focused", "expectRef", "exclude"]
+  public static let features = ["element", "focused", "expectRef", "exclude", "overlay2"]
   public static let micSampleRate = 16_000.0
   public static let ttsSampleRate = 24_000.0
 }

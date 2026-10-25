@@ -121,7 +121,7 @@ try {
 
   const hello = await next((m) => m.type === "hello", 15000);
   check("hello carries a nonce, never the token", /^[0-9a-f]{64}$/.test(hello.nonce) && !("token" in hello) && !JSON.stringify(hello).includes(token));
-  check("hello features", JSON.stringify(hello.features) === JSON.stringify(["element", "focused", "expectRef", "exclude"]));
+  check("hello features", JSON.stringify(hello.features) === JSON.stringify(["element", "focused", "expectRef", "exclude", "overlay2"]));
   check("hello", hello.name === "orbi-desktop" && hello.version === 1, JSON.stringify(hello));
   check("dry run reports no permissions", !hello.permissions.accessibility && !hello.permissions.screen && !hello.permissions.mic);
 
@@ -161,6 +161,10 @@ try {
   check("overlay ring frame", (await call("overlay", { state: "thinking", ring: { x: 1, y: 2, w: 30, h: 20 } })).result?.ok === true);
   check("overlay empty ring frame", code(await call("overlay", { state: "thinking", ring: { x: 1, y: 2, w: 0, h: 20 } })) === "bad_request");
   check("overlay ok", (await call("overlay", { state: "thinking", subtitle: "Hi", ring: true, cursor: { x: 10, y: 10 } })).result?.ok === true);
+  check("overlay2 speech", (await call("overlay", { speech: { id: "u1", text: "Hi there.", timestamps: { words: ["Hi", "there."], start: [0, 0.2], end: [0.2, 0.5] } } })).result?.ok === true);
+  check("overlay2 bad speech", code(await call("overlay", { speech: { id: "u1", phonemes: { phonemes: ["h"], start: [], end: [] } } })) === "bad_request");
+  check("overlay2 line and cue", (await call("overlay", { state: "listening", latched: true, line: { speaker: "user", text: "add milk" }, cue: "listen" })).result?.ok === true);
+  check("overlay2 bad cue", code(await call("overlay", { cue: "boom" })) === "bad_request");
   send({ type: "req", id: "m", params: {} });
   check("request without method", code(await next((m) => m.type === "res" && m.id === "m")) === "bad_request");
   sockets.at(-1).write(frame(2, Buffer.alloc(4800))); // TTS audio: must not crash

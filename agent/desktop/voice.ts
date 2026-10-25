@@ -16,7 +16,11 @@
 //   - latch_toggle: hands free, the first toggle starts listening like
 //     ptt_down and the next ends it like ptt_up.
 //   - agent_text is spoken with Sonic (PCM s16le 24 kHz to the helper),
-//     and its subtitle and state go to the helper's overlay.
+//     and its subtitle and state go to the helper's overlay. A helper with
+//     the "overlay2" feature gets the line as overlay {speech} instead, with
+//     Sonic's word and phoneme timestamps as they arrive, so it shows the
+//     karaoke words and moves the orb's lips in step with the audio, as
+//     lib/voice/tts.js does in the extension.
 // CLEARCART_VOICE=false: nothing reaches Cartesia; replies show as
 // subtitles only, and push-to-talk says voice is off.
 
@@ -74,6 +78,17 @@ export function s16ToF32(pcm: Buffer): ArrayBuffer {
 type WsLike = { readyState: number; send(d: string): void; close(): void; onopen: any; onmessage: any; onclose: any; onerror: any };
 type WsCtor = new (url: string) => WsLike;
 
+// One overlay {speech} update (docs/desktop-protocol.md): text when a line
+// is queued, Sonic's timestamps as they come (seconds of the line's audio),
+// done once all its audio has been sent.
+export type SpeechUpdate = {
+  id: string;
+  text?: string;
+  timestamps?: { words: string[]; start: number[]; end: number[] };
+  phonemes?: { phonemes: string[]; start: number[]; end: number[] };
+  done?: true;
+};
+
 // Sonic over one TTS socket. Utterances play strictly in order; stop()
 // cancels everything still generating (barge-in).
 export class SonicSpeaker {
@@ -86,7 +101,14 @@ export class SonicSpeaker {
   private idleTimer: NodeJS.Timeout | null = null;
 
   constructor(
-    private o: { getToken: () => Promise<string>; onAudio: (pcm: Buffer) => void; onIdle: () => void; log: (l: string) => void; WebSocketImpl?: WsCtor }
+    private o: {
+      getToken: () => Promise<string>;
+      onAudio: (pcm: Buffer) => void;
+      onIdle: () => void;
+      onSpeech?: (s: SpeechUpdate) => void;
+      log: (l: string) => void;
+      WebSocketImpl?: WsCtor;
+    }
   ) {}
 
   speaking(): boolean {
@@ -97,6 +119,7 @@ export class SonicSpeaker {
     if (!text.trim()) return;
     const utt = { id: `od-${Date.now().toString(36)}-${(this.seq++).toString(36)}`, chunks: [] as Buffer[], done: false };
     this.queue.push(utt);
+    this.o.onSpeech?.({ id: utt.id, text });
     try {
       const ws = await this.socket();
       if (!this.queue.includes(utt)) return; // stopped while connecting
@@ -108,6 +131,9 @@ export class SonicSpeaker {
           language: "en",
           context_id: utt.id,
           output_format: { container: "raw", encoding: "pcm_s16le", sample_rate: TTS_RATE },
+          add_timestamps: true,
+          use_normalized_timestamps: false, // the words as written, to match the caption
+          add_phoneme_timestamps: true, // the orb's lip-sync
           continue: false,
         })
       );
@@ -170,6 +196,8 @@ export class SonicSpeaker {
     const utt = this.queue.find((u) => u.id === m.context_id);
     if (!utt) return;
     if (m.type === "chunk" && typeof m.data === "string") utt.chunks.push(Buffer.from(m.data, "base64"));
+    else if (m.type === "timestamps" && m.word_timestamps) this.o.onSpeech?.({ id: utt.id, timestamps: stamps(m.word_timestamps, "words") });
+    else if (m.type === "phoneme_timestamps" && m.phoneme_timestamps) this.o.onSpeech?.({ id: utt.id, phonemes: stamps(m.phoneme_timestamps, "phonemes") });
     else if (m.type === "error") this.o.log("desktop: TTS error");
     if (m.done || m.type === "done" || m.type === "error") utt.done = true;
     this.pump();
@@ -185,6 +213,9 @@ export class SonicSpeaker {
       u.chunks = [];
       if (!u.done) return;
       this.queue.shift();
+      // After the line's last audio, so the helper knows the audio that
+      // follows is the next line's.
+      this.o.onSpeech?.({ id: u.id, done: true });
       if (!this.queue.length) {
         if (this.idleTimer) clearTimeout(this.idleTimer);
         this.idleTimer = setTimeout(() => {
@@ -195,6 +226,12 @@ export class SonicSpeaker {
       }
     }
   }
+}
+
+// Sonic's {words|phonemes, start, end}, only those fields, as plain lists.
+function stamps<K extends "words" | "phonemes">(ts: any, key: K) {
+  const list = (v: unknown) => (Array.isArray(v) ? v : []);
+  return { [key]: list(ts[key]).map(String), start: list(ts.start).map(Number), end: list(ts.end).map(Number) } as Record<K, string[]> & { start: number[]; end: number[] };
 }
 
 type Stt = { open(): void; sendAudio(b: ArrayBuffer): void; finish(): void; abort(): void };
@@ -208,7 +245,7 @@ export type DesktopVoiceOptions = {
   speaker?: (o: ConstructorParameters<typeof SonicSpeaker>[0]) => Pick<SonicSpeaker, "speak" | "stop" | "close" | "speaking">;
 };
 
-type Bridge = Pick<DesktopBridge, "on" | "overlay" | "sendAudio" | "audioStop" | "connected">;
+type Bridge = Pick<DesktopBridge, "on" | "overlay" | "sendAudio" | "audioStop" | "connected"> & Partial<Pick<DesktopBridge, "helperInfo">>;
 
 export class DesktopVoice {
   private peer: HubPeer | null = null;
@@ -230,9 +267,17 @@ export class DesktopVoice {
         getToken: this.getToken,
         onAudio: (pcm) => this.bridge.sendAudio(pcm),
         onIdle: () => this.bridge.overlay({ state: "idle" }),
+        onSpeech: (s) => {
+          if (this.karaoke()) this.bridge.overlay({ speech: s });
+        },
         log: this.log,
       });
     }
+  }
+
+  // The helper shows Sonic's lines word by word (hello feature overlay2).
+  private karaoke(): boolean {
+    return this.bridge.helperInfo?.()?.features.includes("overlay2") ?? false;
   }
 
   start() {
@@ -328,7 +373,8 @@ export class DesktopVoice {
     if (m.type === "agent_text") {
       if (this.muted || !m.text) return;
       if (this.speaker) {
-        this.bridge.overlay({ state: "speaking", subtitle: m.text });
+        // overlay2: the caption comes with the audio, from onSpeech.
+        this.bridge.overlay(this.karaoke() ? { state: "speaking" } : { state: "speaking", subtitle: m.text });
         void this.speaker.speak(m.text);
       } else this.bridge.overlay({ state: "idle", subtitle: m.text });
     } else if (m.type === "standby") {

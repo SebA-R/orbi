@@ -16,6 +16,9 @@ import OrbiDesktopCore
 //                          no app activation; every permission reports false
 //   ORBI_DESKTOP_NO_MIC=1, ORBI_DESKTOP_NO_SCREEN=1  turn one off
 //   ORBI_DESKTOP_LOG=1     log to stderr (never text typed or heard)
+//   ORBI_DESKTOP_SNAPSHOT=scenes.json, ORBI_DESKTOP_SNAPSHOT_OUT=dir
+//                          with the dry run only: render the overlay off
+//                          screen to PNGs and quit (OverlaySnapshots.swift)
 enum Env {
   static let vars = ProcessInfo.processInfo.environment
   static func flag(_ k: String) -> Bool { ["1", "true", "yes"].contains((vars[k] ?? "").lowercased()) }
@@ -24,6 +27,8 @@ enum Env {
   static let noMic = dryRun || flag("ORBI_DESKTOP_NO_MIC")
   static let noScreen = dryRun || flag("ORBI_DESKTOP_NO_SCREEN")
   static let logging = flag("ORBI_DESKTOP_LOG") || dryRun
+  static let snapshotScenes = dryRun ? vars["ORBI_DESKTOP_SNAPSHOT"].map { URL(fileURLWithPath: $0) } : nil
+  static let snapshotOut = URL(fileURLWithPath: vars["ORBI_DESKTOP_SNAPSHOT_OUT"] ?? FileManager.default.currentDirectoryPath)
   static let socketPath = vars["ORBI_DESKTOP_SOCKET"].flatMap { $0.isEmpty ? nil : $0 }
     ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Orbi/desktop.sock").path
   // Made by the server at startup (64 hex characters, mode 0600); read
@@ -35,6 +40,26 @@ enum Env {
     guard let s = try? String(contentsOf: tokenFile, encoding: .utf8) else { return nil }
     let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
     return t.isEmpty ? nil : t
+  }
+}
+
+// The menu's settings, as the extension's options page has them
+// (lib/settings.js), kept in the helper's own defaults:
+//   watchablePace  clicks and scrolls at a pace the user can follow (the
+//                  pointer glides, rests, then presses; the wheel turns in
+//                  steps). Off: the pointer jumps and presses at once, the
+//                  scroll is one step. Typing keeps its rhythm either way.
+//   showCursor     Orbi's drawn cursor. Purely visual.
+enum Settings {
+  static let defaults = UserDefaults.standard
+  static func bool(_ k: String) -> Bool { defaults.object(forKey: k) as? Bool ?? true }
+  static var watchablePace: Bool {
+    get { bool("watchablePace") }
+    set { defaults.set(newValue, forKey: "watchablePace") }
+  }
+  static var showCursor: Bool {
+    get { bool("showCursor") }
+    set { defaults.set(newValue, forKey: "showCursor") }
   }
 }
 

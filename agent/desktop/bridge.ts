@@ -15,6 +15,7 @@
 // Params and results can hold what is on the user's screen, so nothing
 // here ever logs them: only method names and error codes.
 
+import type { SpeechUpdate } from "./voice.ts";
 import { EventEmitter } from "node:events";
 import type net from "node:net";
 
@@ -70,7 +71,15 @@ export type DesktopPermissions = { accessibility: boolean; screen: boolean; mic:
 // "expectRef" (click {x,y} re-checks the element under the point).
 export type DesktopInfo = { connectedAt: number; permissions: DesktopPermissions; features: string[] };
 export type OverlayState = "idle" | "listening" | "thinking" | "speaking";
-export type Overlay = { state: OverlayState; subtitle?: string; cursor?: { x: number; y: number }; ring?: { x: number; y: number; w: number; h: number } };
+// v1 fields; the rest need the helper's "overlay2" feature (state may then
+// be left out). docs/desktop-protocol.md has them all.
+export type Overlay = {
+  state?: OverlayState;
+  subtitle?: string;
+  cursor?: { x: number; y: number };
+  ring?: boolean | { x: number; y: number; w: number; h: number; label?: string };
+  speech?: SpeechUpdate;
+};
 
 export interface DesktopBridgeEvents {
   connect: [DesktopInfo];

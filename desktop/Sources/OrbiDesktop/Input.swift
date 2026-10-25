@@ -34,18 +34,22 @@ final class Input {
     post(CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left))
   }
 
-  // Glide the real pointer (and the drawn cursor) to p.
-  func move(to p: CGPoint, size: Double?) async throws {
+  // Settings.watchablePace, read for every gesture.
+  private var watchable: Bool { Settings.watchablePace }
+
+  // Glide the real pointer (and the drawn cursor, sample by sample) to p.
+  // action names the gesture for the cursor: click, scroll or hover.
+  func move(to p: CGPoint, size: Double?, action: String = "hover") async throws {
     let started = epoch
     let from = pointer
-    let path = reduceMotionOn
+    let path = reduceMotionOn || !watchable
       ? [PathStep(x: p.x, y: p.y, ms: 0)]
       : planPath(from: Point(x: from.x, y: from.y), to: Point(x: p.x, y: p.y), rng: &rng, size: size)
     for step in path {
       try await sleep(step.ms, started)
       let q = CGPoint(x: step.x, y: step.y)
       moveEvent(q)
-      overlay.cursorAt(q)
+      overlay.cursorMove(q, to: p, action: action)
     }
   }
 
@@ -54,8 +58,8 @@ final class Input {
   func click(at p: CGPoint, size: Double?, button: Button, count: Int, allowed: () throws -> Void) async throws {
     let started = epoch
     let plan = planClick(from: Point(x: pointer.x, y: pointer.y), to: Point(x: p.x, y: p.y), rng: &rng, size: size)
-    try await move(to: p, size: size)
-    try await sleep(plan.dwellMs, started)
+    try await move(to: p, size: size, action: "click")
+    try await sleep(watchable ? plan.dwellMs : 0, started)
     try allowed()
     let (down, up, cg): (CGEventType, CGEventType, CGMouseButton) = switch button {
     case .left: (.leftMouseDown, .leftMouseUp, .left)
@@ -75,6 +79,7 @@ final class Input {
       u?.setIntegerValueField(.mouseEventClickState, value: Int64(i))
       u?.flags = []
       post(u)
+      overlay.release(p)
     }
   }
 
@@ -99,6 +104,7 @@ final class Input {
     let u = CGEvent(keyboardEventSource: source, virtualKey: combo.keyCode, keyDown: false)
     u?.flags = f
     post(u)
+    overlay.keyPressed()
     try await sleep(0, started)
   }
 
@@ -106,6 +112,7 @@ final class Input {
   // modifier (like the talk key) never combines with it.
   func type(_ text: String, allowed: () throws -> Void) async throws {
     let started = epoch
+    overlay.typing(text)
     for step in planTyping(text, rng: &rng) {
       try await sleep(step.gapMs, started)
       try allowed()
@@ -119,6 +126,7 @@ final class Input {
         post(e)
         if down { try? await Task.sleep(nanoseconds: UInt64(step.holdMs * 1_000_000)) }
       }
+      overlay.keyPressed()
     }
   }
 
@@ -126,9 +134,10 @@ final class Input {
   // wheel deltaY), positive dx scrolls right.
   func scroll(at p: CGPoint, dx: Int, dy: Int, allowed: () throws -> Void) async throws {
     let started = epoch
-    try await move(to: p, size: nil)
+    try await move(to: p, size: nil, action: "scroll")
     try allowed()
-    for step in planScroll(dx: dx, dy: dy, rng: &rng) {
+    let steps = watchable ? planScroll(dx: dx, dy: dy, rng: &rng) : [ScrollStep(dx: dx, dy: dy, ms: 0)]
+    for step in steps {
       try await sleep(step.ms, started)
       try allowed()
       let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
@@ -136,6 +145,7 @@ final class Input {
       e?.flags = []
       e?.location = p // the checked point, wherever the user's hand moved the pointer
       post(e)
+      overlay.wheel(p)
     }
   }
 }
