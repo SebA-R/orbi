@@ -1,8 +1,10 @@
 // Claude's browser tools when CLEARCART_BROWSER=ext: an in-process MCP server
 // named "browser" (tools appear as mcp__browser__<name>) whose every tool is
 // one or two calls over the extension bridge. Only the 12 TOOLS from
-// extension/lib/protocol.js are exposed; INTERNAL methods (fill_payment and
-// friends) stay reachable from our own code only.
+// extension/lib/protocol.js are exposed; INTERNAL methods (fill_payment,
+// lock_arm, press_protected and friends) stay reachable from our own code
+// only. Clicks, keys and form_input on protected controls are refused by the
+// extension itself (button lock), whatever arguments Claude sends.
 
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -21,6 +23,8 @@ function text(value: unknown): ToolResult {
 function failure(e: unknown): ToolResult {
   const code = e instanceof ExtError ? e.code : ERR.INTERNAL;
   const message = e instanceof Error ? e.message : String(e);
+  // Button lock refusals already read as a sentence for Claude.
+  if (code === ERR.LOCKED) return { content: [{ type: "text", text: message }], isError: true };
   return { content: [{ type: "text", text: `Error (${code}): ${message}` }], isError: true };
 }
 
@@ -90,13 +94,13 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "read_page",
-      'Accessibility tree of the page as indented lines like - button "Add to bag" [ref_12]. Use the refs with click and form_input.',
+      'Accessibility tree of the page as indented lines like - button "Add to bag" [ref_12]. Use the refs with click and form_input. Lines ending in [locked] are controls you can never press (order, checkout, payment, subscribe, sign in); [uncheck only] boxes may only be turned off.',
       { tabId, filter: z.enum(["interactive", "all"]).optional(), maxNodes: z.number().int().positive().max(2000).optional() },
       pass("read_page")
     ),
     tool(
       "find",
-      "Find elements by visible text, role or label. Returns { matches: [{ ref, role, name }] }.",
+      "Find elements by visible text, role or label. Returns { matches: [{ ref, role, name, locked?, uncheckOnly? }] }.",
       { tabId, query: z.string(), limit: z.number().int().positive().max(100).optional() },
       pass("find")
     ),
@@ -108,13 +112,13 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "form_input",
-      "Set the value of a form field (text, select, checkbox) by ref. Payment fields are refused.",
+      "Set the value of a form field (text, select, checkbox) by ref. Payment fields and locked controls are refused; [uncheck only] boxes may be set to false.",
       { tabId, ref: z.string(), value: z.union([z.string(), z.number(), z.boolean()]) },
       pass("form_input")
     ),
     tool(
       "click",
-      "Click an element by ref (preferred), or at viewport coordinates x, y.",
+      "Click an element by ref (preferred), or at viewport coordinates x, y. Clicks on locked controls are refused.",
       {
         tabId,
         ref: z.string().optional().describe("Element ref from read_page or find, e.g. ref_12"),

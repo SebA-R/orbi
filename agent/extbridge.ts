@@ -31,7 +31,7 @@ export const TOOLS = [
   "scroll",
   "screenshot",
 ] as const;
-export const INTERNAL = ["tab_info", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref"] as const;
+export const INTERNAL = ["tab_info", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref", "lock_arm", "press_protected"] as const;
 export const ERR = {
   BAD_REQUEST: "bad_request",
   UNKNOWN_METHOD: "unknown_method",
@@ -39,6 +39,7 @@ export const ERR = {
   NO_TAB: "no_tab",
   NO_ELEMENT: "no_element",
   PAYMENT_FIELD: "payment_field",
+  LOCKED: "locked",
   TIMEOUT: "timeout",
   NOT_CONNECTED: "not_connected",
   INTERNAL: "internal",
