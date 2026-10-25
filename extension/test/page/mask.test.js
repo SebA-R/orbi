@@ -54,9 +54,10 @@ test("maskCardRuns finds a card glued to other digits: a CVC, an expiry, a short
   assert.equal(maskCardRuns("Card 5555-5555-5555-4444-12 ok"), `Card ${M} ok`);
   assert.equal(hasCardNumber("pay 4111 1111 1111 1111 123"), true);
   assert.equal(hasCardNumber("order 12345 qty 2, ending in 1111"), false);
-  // A long number that is not a card may be masked too: too much is safe.
-  const order = maskCardRuns("Order 123456789012345678");
-  assert.ok(order === "Order 123456789012345678" || order === `Order ${M}`);
+  // Order and tracking numbers are not cards.
+  for (const n of ["Order 112-4829105-7730216", "Tracking 9400111202555842736455", "Tracking 9400 1112 0255 5842 7364 55", "Order 123456789012345678"]) {
+    assert.equal(maskCardRuns(n), n, n);
+  }
   assert.equal(maskCardRuns("x".repeat(10) + "1".repeat(5000)), "x".repeat(10) + M);
 });
 
@@ -67,14 +68,14 @@ test("order and tracking numbers mostly stay readable", () => {
   let seed = 7;
   const digit = () => ((seed = (seed * 1103515245 + 12345) % 2147483648), String(seed % 10));
   const digits = (n) => Array.from({ length: n }, digit).join("");
-  let orders = 0;
-  let tracking = 0;
+  const masked = { orders: 0, spaced: 0, plain: 0 };
   for (let i = 0; i < 500; i++) {
     const o = `112-${digits(7)}-${digits(7)}`;
-    if (maskCardRuns(o) !== o) orders++;
+    if (maskCardRuns(o) !== o) masked.orders++;
     const t = `9400 ${digits(4)} ${digits(4)} ${digits(4)} ${digits(4)} ${digits(2)}`;
-    if (maskCardRuns(t) !== t) tracking++;
+    if (maskCardRuns(t) !== t) masked.spaced++;
+    const u = `9400${digits(18)}`;
+    if (maskCardRuns(u) !== u) masked.plain++;
   }
-  assert.ok(orders < 150, `${orders} of 500 order ids masked`);
-  assert.ok(tracking < 200, `${tracking} of 500 tracking numbers masked`);
+  assert.ok(masked.orders < 50 && masked.spaced < 75 && masked.plain === 0, JSON.stringify(masked));
 });

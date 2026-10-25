@@ -534,27 +534,52 @@ test("Space in a hidden text field types, and a hold talks with nothing recorded
   d.onKeyDown(down);
   assert.equal(down.prevented, false, "the space is typed");
   assert.deepEqual(sent, [], "no silent start while typing");
-  assert.equal(timers[0].ms, load().HIDDEN_CONFIRM_MS, "longer than a resting thumb");
+  assert.equal(timers[0].ms, load().HIDDEN_HOLD_MS, "longer than a resting thumb");
   // The key's first auto-repeat: a finger is holding it.
   const first = key("Space", {}, { target: DOCS_BOX, repeat: true });
   d.onKeyDown(first);
   assert.equal(first.prevented, true);
-  fire();
   assert.deepEqual(sent, ["ptt.start"]);
-  assert.equal(extras[0], undefined, "a confirmed start, with the listen sound");
+  assert.equal(extras[0].silent, true);
+  fire();
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm"]);
   const rep = key("Space", {}, { target: DOCS_BOX, repeat: true });
   d.onKeyDown(rep);
   assert.equal(rep.prevented, true, "no run of spaces while talking");
   const up = key("Space", {}, { target: DOCS_BOX });
   d.onKeyUp(up);
   assert.equal(up.prevented, true);
-  assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
-  // Key repeat turned off: the hold talks after HIDDEN_CONFIRM_MS.
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+  // Key repeat turned off: a hold after HIDDEN_HOLD_MS.
   const b = detector("Space", { isHidden: () => true });
   b.d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
   b.fire();
   b.d.onKeyUp(key("Space", {}, { target: DOCS_BOX }));
-  assert.deepEqual(b.sent, ["ptt.start", "ptt.stop"]);
+  assert.deepEqual(b.sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+});
+
+test("a hidden-field hold let go right after it started is dropped, not sent", () => {
+  const { d, sent } = detector("Space", { isHidden: () => true });
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX, repeat: true }));
+  const up = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyUp(up);
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel"]);
+  // A letter during the hold: typing, dropped too.
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX, repeat: true }));
+  d.onKeyDown(key("KeyA", {}, { target: DOCS_BOX }));
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel", "ptt.start", "ptt.cancel"]);
+});
+
+test("a CDP-style Space (down, a slow check, up) in a hidden field never talks", () => {
+  const { d, sent, timers } = detector("Space", { isHidden: () => true });
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  // 300 ms pass (the router's checks): the hold timer has not fired.
+  assert.ok(timers[0].ms > 300);
+  d.onKeyUp(key("Space", {}, { target: DOCS_BOX }));
+  assert.ok(timers[0].cleared);
+  assert.deepEqual(sent, []);
 });
 
 test("a tap, or Space then another key, in a hidden text field is just typing", () => {

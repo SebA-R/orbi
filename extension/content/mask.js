@@ -71,19 +71,21 @@
   // or dashes.
   var RUN = /\d(?:[ -]?\d){12,}/g;
 
-  // Card numbers are 13 to 19 digits and start with 1 to 6.
+  // Card numbers are 13, 14, 15, 16 or 19 digits, start with 2 to 6, and
+  // pass Luhn.
+  var CARD_LENGTHS = [13, 14, 15, 16, 19];
   function cardLike(d) {
-    return /^[1-6]/.test(d) && luhn(d);
+    return CARD_LENGTHS.indexOf(d.length) !== -1 && /^[2-6]/.test(d) && luhn(d);
   }
 
-  // True when the run holds a card number, also next to other digits:
-  // every span of whole groups (the digits between spaces or dashes) of 13
-  // to 19 digits is checked ("4111 1111 1111 1111 123", "Order 12
-  // 4111111111111111", "4111 1111 1111 1111 05/27"), and a group longer
-  // than 16 digits is checked for a card at its start or end, glued to more
-  // digits ("4111111111111111123"). Aligned spans keep order and tracking
-  // numbers mostly readable; a few are masked, which is safe.
-  var CARD_LENGTHS = [13, 14, 15, 16, 19];
+  // True when the run holds a card number, also next to other digits. Each
+  // window starts at the run's start or a separator and ends at the run's
+  // end or a separator: a span of whole groups (the digits between spaces
+  // or dashes), as in "4111 1111 1111 1111 123", "Order 12
+  // 4111111111111111" or "4111 1111 1111 1111 05/27". A group of 17 to 19
+  // digits is also checked for a 16-digit card at its start or end, with a
+  // few digits glued on ("4111111111111111123"). Order ids and tracking
+  // numbers stay readable.
   function hasCardWindow(run) {
     var groups = String(run).split(/[\s-]+/);
     // Too long to be anything a person reads as a number: mask it.
@@ -93,15 +95,10 @@
       for (var j = i; j < groups.length; j++) {
         span += groups[j];
         if (span.length > 19) break;
-        if (span.length >= 13 && cardLike(span)) return true;
+        if (cardLike(span)) return true;
       }
       var g = groups[i];
-      if (g.length > 16) {
-        for (var k = 0; k < CARD_LENGTHS.length && CARD_LENGTHS[k] < g.length; k++) {
-          var n = CARD_LENGTHS[k];
-          if (cardLike(g.slice(0, n)) || cardLike(g.slice(g.length - n))) return true;
-        }
-      }
+      if (g.length > 16 && g.length <= 19 && (cardLike(g.slice(0, 16)) || cardLike(g.slice(-16)))) return true;
     }
     return false;
   }
