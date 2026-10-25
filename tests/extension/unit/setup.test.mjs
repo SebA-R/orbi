@@ -91,3 +91,42 @@ test("talk key help has no em dashes and mentions text fields", () => {
   }
   assert.match(talkKeyHelp("Space"), /^Hold Space, wait for the chime/);
 });
+
+test("update opens setup in the background, once per version", async () => {
+  const f = fakeChrome({ site: false });
+  const stored = {};
+  const created = [];
+  f.chromeApi.storage = { local: { get: async (k) => ({ [k]: stored[k] }), set: async (o) => { Object.assign(stored, o); } } };
+  f.chromeApi.runtime.getManifest = () => ({ version: f.version });
+  f.chromeApi.tabs.create = async (o) => { created.push(o); };
+  const apis = { chromeApi: f.chromeApi, permissions: { query: async () => ({ state: "granted" }) } };
+
+  f.version = "1.0.0";
+  assert.equal(await onInstalledSetup("update", apis), true);
+  assert.equal(created[0].active, false);
+  assert.equal(await onInstalledSetup("update", apis), false); // reload, same version
+  f.version = "1.0.1";
+  assert.equal(await onInstalledSetup("update", apis), true);
+  assert.equal(created.length, 2);
+  assert.equal(created[1].active, false);
+  assert.equal(await onInstalledSetup("install", apis), true);
+  assert.equal(created[2].active, true);
+});
+
+test("setup and popup buttons keep 4.5:1 text contrast in light and dark", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("../../../extension/setup/setup.css", import.meta.url), "utf8");
+  const lum = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const blocks = css.match(/:root \{[^}]*\}/g);
+  assert.equal(blocks.length, 2);
+  for (const block of blocks) {
+    const v = (name) => block.match(new RegExp(`--${name}: (#[0-9a-f]{6})`, "i"))[1];
+    assert.ok(ratio(v("on-accent"), v("accent")) >= 4.5, block);
+  }
+  assert.match(css, /button \{[^}]*color: var\(--on-accent\)/);
+});

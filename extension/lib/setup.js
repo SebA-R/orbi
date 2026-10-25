@@ -80,13 +80,23 @@ export async function refreshBadge(apis = {}) {
   return missing;
 }
 
+export const PROMPTED_KEY = "setupPromptedVersion";
+
 // onInstalled: badge first, then the setup page on install, and on update
-// only if something is still missing.
+// only if something is still missing. An update opens it in the background,
+// and at most once per extension version (unpacked reloads count as updates).
 export async function onInstalledSetup(reason, apis = {}) {
   const chromeApi = apis.chromeApi ?? globalThis.chrome;
   const missing = await refreshBadge({ ...apis, chromeApi });
   if (!shouldOpenSetup(reason, missing)) return false;
-  await chromeApi.tabs.create({ url: chromeApi.runtime.getURL(SETUP_PATH) });
+  const store = chromeApi.storage?.local;
+  const version = chromeApi.runtime.getManifest?.().version ?? "";
+  if (reason === "update" && store) {
+    const got = await store.get(PROMPTED_KEY).catch(() => ({}));
+    if (got?.[PROMPTED_KEY] === version) return false;
+  }
+  await chromeApi.tabs.create({ url: chromeApi.runtime.getURL(SETUP_PATH), active: reason !== "update" });
+  if (store) await store.set({ [PROMPTED_KEY]: version }).catch(() => {});
   return true;
 }
 
