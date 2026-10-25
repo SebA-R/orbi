@@ -20,6 +20,11 @@ import { WordClock } from './karaoke.js';
 // using the word timestamps Sonic sends (add_timestamps) mapped onto the
 // AudioContext clock (karaoke.js). A line that produced no audio is still
 // shown, plainly, once the lines before it have been heard.
+//
+// warm() opens the socket ahead of the first line (the controller calls it
+// when the user starts talking), so a reply does not wait on the token and
+// the connect. Opening it generates nothing. onFirstAudio(at) gets the
+// Date.now() time each line's first audio will be heard (turn timing).
 export const DUCK_LEVEL = 0.03;
 export const DUCK_SECONDS = 0.02;
 export const UNDUCK_SECONDS = 0.08;
@@ -29,7 +34,7 @@ export const NO_TIMESTAMPS_AFTER_S = 1;
 
 export class Speaker {
   constructor({
-    ctx, getToken, getSpeed, voiceId, log, onSpeakingChange, onCaption,
+    ctx, getToken, getSpeed, voiceId, log, onSpeakingChange, onCaption, onFirstAudio,
     // unref: the caption clock never holds node (tests) open.
     setInterval: every = (fn, ms) => { const t = setInterval(fn, ms); t?.unref?.(); return t; }, clearInterval: unevery = (t) => clearInterval(t),
   }) {
@@ -40,6 +45,7 @@ export class Speaker {
     this.log = log;
     this.onSpeakingChange = onSpeakingChange || (() => {});
     this.onCaption = onCaption || (() => {});
+    this.onFirstAudio = onFirstAudio || (() => {});
     this.captions = true; // the controller leaves agent captions to us
     this.every = every;
     this.unevery = unevery;
@@ -141,6 +147,11 @@ export class Speaker {
     this.#setSpeaking(false);
   }
 
+  // Connect now if not connected; a failure is only logged (speak() retries).
+  warm() {
+    this.#socket().catch((err) => this.log(`TTS warm-up failed: ${err.message}`));
+  }
+
   #socket() {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve(this.ws);
     if (this.connecting) return this.connecting;
@@ -224,6 +235,10 @@ export class Speaker {
     src.connect(this.out);
     const start = Math.max(this.playHead, this.ctx.currentTime + 0.05);
     src.start(start);
+    if (!utt.clock.chunks.length) {
+      const lag = (Number(this.ctx.baseLatency) || 0) + (Number(this.ctx.outputLatency) || 0);
+      try { this.onFirstAudio(Date.now() + (start - this.ctx.currentTime + lag) * 1000); } catch {}
+    }
     utt.clock.addChunk(samples.length, start, rate);
     this.playHead = start + buf.duration / rate;
     this.sources.add(src);
