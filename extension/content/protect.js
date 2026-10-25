@@ -34,7 +34,7 @@
       "complete order", "complete my order", "complete purchase", "complete my purchase", "complete payment",
       "finish order", "order now", "buy", "buy now", "buy it now", "buy again", "purchase",
       "pay", "pay now", "make payment", "make a payment", "send payment", "authorize payment", "donate",
-      "checkout", "secure checkout", "proceed to checkout", "continue to checkout", "go to checkout",
+      "checkout", "check out", "secure checkout", "proceed to checkout", "continue to checkout", "go to checkout",
       "continue to payment", "proceed to payment", "continue to billing",
     ],
     // One-tap wallets and buy-now-pay-later: never pressed by anyone but the user.
@@ -82,7 +82,6 @@
   var MAX_WORDS_CHECKABLE = 20;
   // "check out" is also everyday English; only a short label counts.
   var SHORT_ONLY = { "check out": 3 };
-  PHRASES.order.push("check out");
 
   // Kinds the internal pay flow may press once unlocked. Wallets,
   // subscriptions, saved cards, accounts and frames never unlock.
@@ -167,10 +166,7 @@
   }
 
   function isSubmit(el) {
-    if (el.tagName === "BUTTON") {
-      var bt = String(el.getAttribute("type") || "submit").toLowerCase();
-      return bt === "submit";
-    }
+    if (el.tagName === "BUTTON") return String(el.getAttribute("type") || "submit").toLowerCase() === "submit";
     var t = inputType(el);
     return t === "submit" || t === "image";
   }
@@ -262,10 +258,8 @@
     if (!control && !marked) return null;
     var label = control ? labelOf(el) : labelOf(marked);
     var checkable = control && isCheckable(el);
-    if (marked) {
-      var mk = { kind: "marked", label: clip(label || "this control"), optin: checkable, checked: checkable && checkedOf(el) };
-      return mk;
-    }
+    var checked = checkable && checkedOf(el);
+    if (marked) return { kind: "marked", label: clip(label || "this control"), optin: checkable, checked: checked };
     var kind = classifyLabel(label, { checkable: checkable });
     if (!kind && !checkable) {
       var idk = classifyLabel(idWords(el), { checkable: false });
@@ -275,7 +269,7 @@
     }
     if (!kind && isSubmit(el)) kind = formKind(el.form);
     if (!kind) return null;
-    return { kind: kind, label: clip(label || kind), optin: checkable, checked: checkable && checkedOf(el) };
+    return { kind: kind, label: clip(label || kind), optin: checkable, checked: checked };
   }
 
   // Does activating this lock's element do something the AI may not do?
@@ -308,6 +302,11 @@
   var FRAME_TAGS = { IFRAME: 1, FRAME: 1, OBJECT: 1, EMBED: 1, FENCEDFRAME: 1 };
   var FRAME_LOCK = { kind: "frame", label: "embedded frame", optin: false, checked: false };
 
+  // The frame's document, or null when it is cross-origin.
+  function frameDoc(el) {
+    try { return el.contentDocument || null; } catch (_) { return null; }
+  }
+
   // Blocking lock under viewport point (x, y), or null. Descends open shadow
   // roots and same-origin frames; a cross-origin frame (hosted payment
   // fields, wallet buttons) cannot be inspected, so it is locked.
@@ -322,8 +321,7 @@
     }
     if (!el) return null;
     if (FRAME_TAGS[el.tagName]) {
-      var sub = null;
-      try { sub = el.contentDocument; } catch (_) { sub = null; }
+      var sub = frameDoc(el);
       if (!sub) return FRAME_LOCK;
       var r = el.getBoundingClientRect();
       return lockAt(sub, x - r.left, y - r.top) || lockInChain(el);
@@ -364,8 +362,7 @@
     var el = doc && deepActive(doc);
     if (!el || el === doc.body || el === doc.documentElement) return null;
     if (FRAME_TAGS[el.tagName]) {
-      var sub = null;
-      try { sub = el.contentDocument; } catch (_) { sub = null; }
+      var sub = frameDoc(el);
       return sub ? lockForKey(sub, spec) : FRAME_LOCK;
     }
     var chain = lockInChain(el);
@@ -375,9 +372,8 @@
       if (t === "submit" || t === "button" || t === "reset" || t === "image") return null;
       var fk = formKind(el.form);
       if (fk) return { kind: fk, label: clip(formLabel(el.form) || "this form"), optin: false, checked: false };
-      var subs = el.form.querySelectorAll("button,input[type=submit],input[type=image]");
+      var subs = submitsOf(el.form);
       for (var i = 0; i < subs.length; i++) {
-        if (!isSubmit(subs[i])) continue;
         var l = lockOf(subs[i]);
         if (l && blocks(l)) return l;
       }
@@ -385,10 +381,13 @@
     return null;
   }
 
+  function submitsOf(form) {
+    return Array.prototype.filter.call(form.querySelectorAll("button,input[type=submit],input[type=image]"), isSubmit);
+  }
+
   function formLabel(form) {
-    var subs = form.querySelectorAll("button,input[type=submit],input[type=image]");
-    for (var i = 0; i < subs.length; i++) if (isSubmit(subs[i])) return labelOf(subs[i]);
-    return form.getAttribute("aria-label") || "";
+    var subs = submitsOf(form);
+    return subs.length ? labelOf(subs[0]) : form.getAttribute("aria-label") || "";
   }
 
   // The error Claude gets back. Never includes field values.
