@@ -110,7 +110,7 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
 // CLEARCART_BROWSER=ext: Claude's browser tools are the Orbi extension's
 // TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
 // key and scroll stand in for "computer" in the card-live block list.
-const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
+export const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
   ["screenshot", "click", "type", "key", "scroll", "dismiss_overlay", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
@@ -420,6 +420,17 @@ const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: nu
 type ToolText = { content: Array<{ type: "text"; text: string }> };
 const said = (text: string): ToolText => ({ content: [{ type: "text", text }] });
 
+// The browser's fail-closed state, handed from a session the hub replaces
+// to the next one (hub.ts switchBackend): card values that may still be in
+// a checkout form, and a tab sweep that has not worked since it failed.
+export type SessionCarry = { cardFieldsLive: boolean; sweepBroken: boolean };
+
+// The cancel signal of a tool call (the MCP request's, or the local loop's).
+const signalOf = (extra: unknown): AbortSignal | undefined => {
+  const s = (extra as { signal?: unknown } | null)?.signal;
+  return s instanceof AbortSignal ? s : undefined;
+};
+
 // What Claude is told when a question got no answer at all: the window that
 // asked it went away or the user moved to another one (handOff, close).
 const NO_ANSWER = "No answer came: the user moved to another Orbi window, or it closed, before answering.";
@@ -444,6 +455,8 @@ export class Session {
   // Set when a tab sweep could not run or could not move a stray tab. Every
   // browser call is refused until a sweep succeeds (fail closed).
   private sweepBroken = false;
+  // pay_now is running (hub.ts waits for it before replacing the session).
+  private paying = false;
   // DNS for localDnsReason; tests replace it.
   lookup: Lookup = systemLookup;
   // What the user is looking at, attached to each user turn (ext mode).
@@ -480,7 +493,11 @@ export class Session {
   // The remember or forget question waiting for an answer, if any.
   private memoryAsk: ((text: string | null) => void) | null = null;
 
-  constructor(private send: (m: ServerMessage) => void, opts: { memory?: MemoryStore | null; log?: Transcript | null } = {}) {
+  constructor(private send: (m: ServerMessage) => void, opts: { memory?: MemoryStore | null; log?: Transcript | null; carry?: SessionCarry | null } = {}) {
+    if (opts.carry) {
+      this.state.cardFieldsLive = opts.carry.cardFieldsLive;
+      this.sweepBroken = opts.carry.sweepBroken;
+    }
     this.mem = opts.memory ?? null;
     this.log = opts.log ?? null;
     this.restore = this.log?.recent() ?? null;
@@ -644,6 +661,34 @@ export class Session {
     this.handOff(why);
     if (readBack) this.send({ type: "confirm_done", outcome: "declined" });
     this.close();
+  }
+
+  // A payment is under way: its card may be in the form and its receipt is
+  // still to come, so the hub does not replace the session yet.
+  busy(): boolean {
+    return this.paying;
+  }
+
+  // What the next session must start with (SessionCarry).
+  carry(): SessionCarry {
+    return { cardFieldsLive: this.state.cardFieldsLive, sweepBroken: this.sweepBroken };
+  }
+
+  // The answer slot for a question a tool call asks: the user's next words,
+  // or null as soon as that call is cancelled (it timed out, or the agent
+  // stopped), so a question nobody waits on never takes their next words.
+  private answerSlot(signal: AbortSignal | undefined, resolve: (t: string | null) => void): (t: string | null) => void {
+    const done = (t: string | null) => {
+      signal?.removeEventListener("abort", cancel);
+      resolve(t);
+    };
+    const cancel = () => {
+      if (this.awaitingAnswer === done) this.awaitingAnswer = null;
+      done(null);
+    };
+    if (signal?.aborted) queueMicrotask(cancel);
+    else signal?.addEventListener("abort", cancel, { once: true });
+    return done;
   }
 
   close() {
@@ -856,7 +901,7 @@ export class Session {
   };
 
   // The request_checkout tool body: read the order back and wait for the answer.
-  async requestCheckout({ item, quantity, total, changes }: { item: string; quantity: number; total: string; changes?: string }) {
+  async requestCheckout({ item, quantity, total, changes }: { item: string; quantity: number; total: string; changes?: string }, signal?: AbortSignal) {
     // The user cut this turn off: they never heard a read-back, so no yes can count.
     if (this.muted) {
       this.status("checkout not read back: the user interrupted");
@@ -894,7 +939,7 @@ export class Session {
     this.send({ type: "confirm", item, quantity, total, changes: changed });
     this.say(`You're buying ${quantity} ${item} for ${total}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
     const answer = await new Promise<string | null>((resolve) => {
-      this.awaitingAnswer = resolve;
+      this.awaitingAnswer = this.answerSlot(signal, resolve);
     });
     Object.assign(conf, await snap);
     if (answer !== null && isExplicitYes(answer) && this.state.confirmation === conf) {
@@ -947,7 +992,7 @@ export class Session {
 
   // The request_unlock tool body. The direct-ask match reads only the
   // user's own last words (this.lastUser), never anything Claude passes.
-  async requestUnlock(args: { tabId?: number; ref?: string; label: string; action: string; reason?: string }): Promise<ToolText> {
+  async requestUnlock(args: { tabId?: number; ref?: string; label: string; action: string; reason?: string }, signal?: AbortSignal): Promise<ToolText> {
     const tabId = args.tabId ?? this.state.lastTabId;
     if (tabId == null) return said("No tab is open yet. Open the page first, then call request_unlock with its tabId.");
     const href = await this.tabUrl(tabId);
@@ -989,7 +1034,7 @@ export class Session {
       this.cancelMemoryAsk();
       this.say(d.question);
       const answer = await new Promise<string | null>((resolve) => {
-        this.awaitingAnswer = resolve;
+        this.awaitingAnswer = this.answerSlot(signal, resolve);
       });
       // A yes that says more ("yes, that's what I just said") counts here,
       // never for paying (request_checkout keeps isExplicitYes).
@@ -1041,7 +1086,13 @@ export class Session {
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "Danger mode was turned off. Call request_checkout again; the user now says yes first." }) }] };
     }
     this.status("paying");
-    const r = await payNow(this.state);
+    this.paying = true;
+    let r: Awaited<ReturnType<typeof payNow>>;
+    try {
+      r = await payNow(this.state);
+    } finally {
+      this.paying = false;
+    }
     if (r.ok) {
       this.send({ type: "receipt", ...r.receipt });
       this.send({ type: "confirm_done", outcome: "paid" });
@@ -1063,15 +1114,15 @@ export class Session {
   // request_unlock: a muted turn's question is never asked.
   // Never while another question (a checkout read-back, an unlock) waits,
   // and a yes that names paying or ordering is not a yes to remembering.
-  private async askYes(question: string): Promise<{ yes: boolean; why: string }> {
+  private async askYes(question: string, signal?: AbortSignal): Promise<{ yes: boolean; why: string }> {
     if (this.muted) return { yes: false, why: "The user interrupted before the question was asked." };
     if (this.awaitingAnswer || this.state.confirmation?.state === "pending") return { yes: false, why: "Another question is waiting for the user's answer. Ask again later." };
     this.say(question);
     const answer = await new Promise<string | null>((resolve) => {
-      const done = (t: string | null) => {
+      const done = this.answerSlot(signal, (t) => {
         if (this.memoryAsk === done) this.memoryAsk = null;
         resolve(t);
-      };
+      });
       this.awaitingAnswer = done;
       this.memoryAsk = done;
     });
@@ -1092,7 +1143,7 @@ export class Session {
   // remember it and the fact is made of what they said; anything else (the
   // model's idea, or a page's) is asked out loud first and saved only on an
   // explicit yes. The filter (memory.ts) refuses secrets either way.
-  async remember({ fact }: { fact: string }): Promise<ToolText> {
+  async remember({ fact }: { fact: string }, signal?: AbortSignal): Promise<ToolText> {
     if (!this.mem) return said("Memory is not available here.");
     if (!memoryOn()) return said("Memory is off in the user's Orbi settings, so nothing was saved. They can turn it on there.");
     const text = String(fact ?? "").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
@@ -1108,7 +1159,7 @@ export class Session {
     if (words && isRememberAsk(words) && factFromUserWords(text, words) && !this.lastUser.spent.has("remember")) {
       this.lastUser.spent.add("remember");
     } else {
-      const a = await this.askYes(`Want me to remember that ${text}?`);
+      const a = await this.askYes(`Want me to remember that ${text}?`, signal);
       if (!a.yes) {
         this.status("memory: not saved (no yes)");
         return said(`Not saved. ${a.why}`.trim());
@@ -1124,14 +1175,14 @@ export class Session {
 
   // The forget tool: one fact, or everything. Direct when the user's last
   // words asked to forget, otherwise asked out loud first.
-  async forget({ fact, all }: { fact?: string; all?: boolean }): Promise<ToolText> {
+  async forget({ fact, all }: { fact?: string; all?: boolean }, signal?: AbortSignal): Promise<ToolText> {
     if (!this.mem) return said("Memory is not available here.");
     const words = this.freshWords();
     const asked = !!words && isForgetAsk(words) && !this.lastUser.spent.has("forget");
     if (all) {
       if (asked && isForgetAllAsk(words)) this.lastUser.spent.add("forget");
       else {
-        const a = await this.askYes("Want me to forget everything I remember about you?");
+        const a = await this.askYes("Want me to forget everything I remember about you?", signal);
         if (!a.yes) return said(`Nothing was forgotten. ${a.why}`.trim());
       }
       const n = this.mem.clear();
@@ -1146,7 +1197,7 @@ export class Session {
     const hit = hits[0];
     if (asked && factNamedBy(hit.text, words)) this.lastUser.spent.add("forget");
     else {
-      const a = await this.askYes(`Want me to forget that ${hit.text}?`);
+      const a = await this.askYes(`Want me to forget that ${hit.text}?`, signal);
       if (!a.yes) return said(`Nothing was forgotten. ${a.why}`.trim());
     }
     this.mem.remove(hit.id);
@@ -1181,7 +1232,7 @@ export class Session {
           .optional()
           .describe("One short sentence on anything you changed for the user, e.g. \"I removed a pre-checked Subscribe and Save membership that would have added $4.99.\" Omit if nothing changed."),
       },
-      (args) => this.requestCheckout(args)
+      (args, extra) => this.requestCheckout(args, signalOf(extra))
     );
 
     // Progress notes go through this tool. Free text written alongside tool
@@ -1213,14 +1264,14 @@ export class Session {
         action: z.string().describe("What pressing it does for the user, in a few words, e.g. \"go to checkout\""),
         reason: z.string().optional().describe("Why, in a few words, e.g. \"the user asked to check out\""),
       },
-      (args) => this.requestUnlock(args)
+      (args, extra) => this.requestUnlock(args, signalOf(extra))
     );
 
     const rememberTool = tool(
       "remember",
       "Save one fact about the user for later sessions, when they ask you to remember it or after they agree. If their own words did not just ask for it, this tool asks them one short question itself and saves only on a yes, so do not ask first. Refuses card, password, ID and bank details.",
       { fact: z.string().max(200).describe("The fact in a few words, addressed to the user, e.g. \"you wear size medium\" or \"you like to be called Seb\"") },
-      (args) => this.remember(args)
+      (args, extra) => this.remember(args, signalOf(extra))
     );
     const forgetTool = tool(
       "forget",
@@ -1229,7 +1280,7 @@ export class Session {
         fact: z.string().max(200).optional().describe("A few words of the saved fact, or its id"),
         all: z.boolean().optional().describe("Forget every saved fact and the recent conversation"),
       },
-      (args) => this.forget(args)
+      (args, extra) => this.forget(args, signalOf(extra))
     );
     const recallTool = tool("recall", "List the facts saved about the user. Call it when they ask what you remember.", {}, async () => this.recall());
 
@@ -1308,7 +1359,11 @@ export class Session {
               model: p.localModel,
               vision: p.localVision,
               contextTokens: localContext(),
-              systemPrompt: this.systemPrompt(ext),
+              // Rebuilt for every request: the local loop drops old turns
+              // when the conversation gets long, and with them the one-time
+              // notes about Guided mode or Memory changing, so the system
+              // prompt must say the current settings itself.
+              systemPrompt: () => this.systemPrompt(ext),
               cwd: HERE,
               servers: {
                 browser: ext

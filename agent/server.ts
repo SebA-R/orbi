@@ -15,7 +15,7 @@ import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
 import { backendKey, describeBackend, envLocalContext, envProviderSettings, parseLocalBaseUrl } from "./local/config.ts";
 import { listModels, LocalModelError } from "./local/openai.ts";
 import { conversationLog, memoryStore } from "./memory.ts";
-import { currentProvider, memoryOn, Session } from "./session.ts";
+import { currentProvider, memoryOn, Session, type SessionCarry } from "./session.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -196,9 +196,11 @@ if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localUpgrade);
 // One voice session for all /session sockets (hub.ts). Echo mode goes
 // through the same hub, so it follows the same one-owner rules.
 const hub = new SessionHub(
-  (send, ended) => {
+  (send, ended, carry) => {
     if (ECHO) return echoSession(send);
-    const session = new Session(send, { memory: memoryStore(), log: conversationLog() });
+    // carry: the fail-closed browser state of the session this one replaces
+    // (a provider switch), so a card left in a form stays guarded.
+    const session = new Session(send, { memory: memoryStore(), log: conversationLog(), carry: carry as SessionCarry | undefined });
     void session.run().finally(() => {
       console.log("session agent stopped");
       ended();
