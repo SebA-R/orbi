@@ -1,5 +1,5 @@
-// The Clearcart new tab page (chrome_url_overrides): it loads, hotkey.js and
-// subtitles.js run on it unchanged, the worker reaches it like any tab, and
+// The Clearcart new tab page (chrome_url_overrides): it loads, hotkey.js runs
+// on it unchanged, the hero orb is the face, the worker reaches it like any tab, and
 // broadcasts meant for the offscreen document never reach those scripts.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -29,14 +29,42 @@ const tabIdOf = () => ext.worker.evaluate(async () => {
   return t && t.id;
 });
 
-test("chrome://newtab opens Clearcart's page with the hotkey and subtitles installed", async () => {
+test("chrome://newtab opens Clearcart's page with the hotkey and no subtitle card", async () => {
   const page = await openNewTab();
   assert.equal(page.url(), NEWTAB);
   assert.equal(await page.title(), "New Tab");
-  assert.equal(await page.evaluate(() => !!window.__clearcartHotkey && globalThis.__clearcartSubtitles === true), true);
+  assert.equal(await page.evaluate(() => !!window.__clearcartHotkey && globalThis.__clearcartSubtitles !== true), true);
   assert.equal(await page.locator("h1").textContent(), "Clearcart");
   assert.equal(await page.getByRole("heading", { level: 2, name: "Hold Space to talk" }).count(), 1);
   assert.equal(await page.getByLabel("Search the web").count(), 1);
+  assert.equal(await page.getByRole("search").getByRole("button", { name: "Search" }).count(), 1, "one capsule with its submit button");
+  await page.close();
+});
+
+test("the hero orb is the face: it smiles at rest, faceless while active, no mini orb", async () => {
+  const page = await openNewTab();
+  assert.equal(await page.locator("#mini-orb, .brand .ccf").count(), 0, "no mini orb beside the name");
+  const face = page.locator("#orb > .ccf");
+  assert.equal(await face.count(), 1);
+  assert.equal(await face.getAttribute("aria-hidden"), "true");
+  assert.equal(await page.locator("#orb").getAttribute("aria-hidden"), "true");
+  const box = await page.locator("#orb").evaluate((o) => {
+    const r = o.querySelector(".ccf").getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height), bg: getComputedStyle(o).backgroundImage };
+  });
+  // The face breathes, so allow its scale.
+  assert.ok(box.w >= 126 && box.w <= 136 && box.h >= 126 && box.h <= 136, JSON.stringify(box));
+  assert.equal(box.bg, "none", "the face paints the orb");
+  assert.equal(await face.evaluate((f) => f.classList.contains("ccf-noface")), false, "idle smiles");
+  assert.equal(await page.locator("#orb .ccf-eye").count(), 2);
+  const id = await tabIdOf();
+  for (const state of ["listening", "thinking", "speaking"]) {
+    await ext.worker.evaluate(([tabId, s]) => chrome.tabs.sendMessage(tabId, { type: "voice.state", state: s }), [id, state]);
+    await page.waitForFunction((s) => document.querySelector("#orb > .ccf").dataset.state === s, state);
+    assert.equal(await face.evaluate((f) => f.classList.contains("ccf-noface")), true, state);
+  }
+  await ext.worker.evaluate((tabId) => chrome.tabs.sendMessage(tabId, { type: "voice.state", state: "idle" }), id);
+  await page.waitForFunction(() => !document.querySelector("#orb > .ccf").classList.contains("ccf-noface"));
   await page.close();
 });
 
@@ -51,12 +79,13 @@ test("the worker's VOICE_STATE reaches the page; offscreen broadcasts do not", a
   await other.evaluate(() => chrome.runtime.sendMessage({ type: "voice.state", state: "speaking" }).catch(() => {}));
   await page.waitForTimeout(200);
   assert.equal(await page.locator("#orb").getAttribute("data-state"), "idle");
-  // What the relay sends the talking tab is heard by all three scripts.
+  // What the relay sends the talking tab reaches the page and the hotkey.
   await ext.worker.evaluate((tabId) => chrome.tabs.sendMessage(tabId, { type: "voice.state", state: "listening", latched: true }), id);
   await page.waitForFunction(() => document.getElementById("orb").dataset.state === "listening");
   assert.equal(await page.evaluate(() => window.__clearcartHotkey.latched), true);
   await ext.worker.evaluate((tabId) => chrome.tabs.sendMessage(tabId, { type: "subtitle", speaker: "agent", text: "Opening Etsy.", final: true }), id);
-  await page.waitForFunction(() => !!document.querySelector("clearcart-subtitles"));
+  await page.waitForTimeout(200);
+  assert.equal(await page.evaluate(() => !!document.querySelector("clearcart-subtitles")), false, "no subtitle card on the new tab page");
   await ext.worker.evaluate((tabId) => chrome.tabs.sendMessage(tabId, { type: "voice.state", state: "idle" }), id);
   await other.close();
   await page.close();
