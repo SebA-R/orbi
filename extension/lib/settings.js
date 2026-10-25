@@ -20,10 +20,21 @@ export const HOTKEYS = Object.freeze({
 // arm an unlock; open browsing never widens that.
 export const BROWSE_MODES = Object.freeze(["open", "allowlist"]);
 
+// Where Orbi searches the web when the user names no site (agent/prompt.ts
+// searchLine) and where the new tab page's search box goes. "default" is
+// Chrome's own default engine (chrome.search); the agent uses Google then.
+export const SEARCH_ENGINES = Object.freeze({
+  google: "https://www.google.com/search?q=",
+  bing: "https://www.bing.com/search?q=",
+  duckduckgo: "https://duckduckgo.com/?q=",
+  default: null,
+});
+
 export const DEFAULTS = Object.freeze({
   agentUrl: "ws://localhost:5050",
   allowlist: Object.freeze([]),
   browseMode: "open",
+  searchEngine: "google",
   blocklist: SUGGESTED_BLOCKLIST,
   hotkey: "Space",
   speed: 1,
@@ -148,10 +159,10 @@ export function normalizeLocalModel(value) {
 
 // The agent settings message (worker to server), and the storage keys that
 // re-send it when they change.
-export const AGENT_SETTING_KEYS = Object.freeze(["guidedMode", "memory", "provider", "localBaseUrl", "localModel"]);
+export const AGENT_SETTING_KEYS = Object.freeze(["guidedMode", "memory", "provider", "localBaseUrl", "localModel", "searchEngine"]);
 export function agentSettingsMessage(s) {
-  const { guidedMode, memory, provider, localBaseUrl, localModel } = normalize(s);
-  return { type: MSG.SETTINGS, guidedMode, memory, provider, localBaseUrl, localModel };
+  const { guidedMode, memory, provider, localBaseUrl, localModel, searchEngine } = normalize(s);
+  return { type: MSG.SETTINGS, guidedMode, memory, provider, localBaseUrl, localModel, searchEngine };
 }
 
 export function normalizeOrigin(value) {
@@ -171,6 +182,7 @@ export function normalize(raw = {}) {
   if (url) out.agentUrl = url;
   if (Array.isArray(raw.allowlist)) out.allowlist = [...new Set(raw.allowlist.map(normalizeOrigin).filter(Boolean))];
   if (BROWSE_MODES.includes(raw.browseMode)) out.browseMode = raw.browseMode;
+  if (typeof raw.searchEngine === "string" && Object.hasOwn(SEARCH_ENGINES, raw.searchEngine)) out.searchEngine = raw.searchEngine;
   if (Array.isArray(raw.blocklist)) out.blocklist = parseBlockLines(raw.blocklist).lines;
   if (typeof raw.hotkey === "string" && Object.hasOwn(HOTKEYS, raw.hotkey)) out.hotkey = raw.hotkey;
   const speed = Number(raw.speed);

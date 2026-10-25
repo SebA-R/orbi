@@ -695,3 +695,39 @@ test("send on release: pressing again before the send joins the turn, no cut", a
   assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs and milk" }]);
   assert.equal(r.agent.sent.slice(before).filter((m) => m.type === "user_text").length, 1);
 });
+
+test("turn timing: with a wallClock, user_text carries the release and final times, and the first audio is reported once", async () => {
+  const r = rig();
+  let t = 1_700_000_000_000;
+  r.c.wallClock = () => t;
+  await r.c.start();
+  r.stt.h.onPartial("milk");
+  t += 10;
+  r.c.onPageKey(RT.PTT_STOP); // the page's own key-up, ahead of the worker's copy
+  t += 20;
+  r.c.stop();
+  r.timers[0].fn();
+  t += 300;
+  r.stt.h.onFinal("milk");
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "milk", timing: { releasedAt: 1_700_000_000_010, stopAt: 1_700_000_000_030, finalAt: 1_700_000_000_330 } }]);
+  r.c.onFirstAudio(1_700_000_001_000.4);
+  r.c.onFirstAudio(1_700_000_002_000);
+  assert.deepEqual(r.agent.sent.filter((m) => m.type === "timing"), [{ type: "timing", event: "first_audio", at: 1_700_000_001_000 }]);
+});
+
+test("turn timing: without a wallClock nothing extra is sent; a held key warms the speaker", async () => {
+  const r = rig();
+  let warmed = 0;
+  r.c.speaker.warm = () => warmed++;
+  await r.c.start();
+  assert.equal(warmed, 1);
+  r.stt.h.onPartial("eggs");
+  r.c.stop();
+  r.timers[0].fn();
+  r.stt.h.onFinal("eggs");
+  r.c.onFirstAudio(Date.now());
+  assert.deepEqual(r.agent.sent, [{ type: "interrupt" }, { type: "user_text", text: "eggs" }]);
+  r.c.speakReplies = () => false;
+  await r.c.start();
+  assert.equal(warmed, 1, "Speak replies off: no Cartesia socket");
+});

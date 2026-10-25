@@ -113,6 +113,13 @@
               <label>Only allowed sites<input type="radio" name="browseMode" value="allowlist" id="mode-allowlist" data-setting="browseMode"></label>
             </div>
           </div>
+          <div class="row"><label for="search-engine">Search engine</label>
+            <select id="search-engine" name="searchEngine" class="sel" data-setting="searchEngine">
+              <option value="google">Google</option>
+              <option value="bing">Bing</option>
+              <option value="duckduckgo">DuckDuckGo</option>
+              <option value="default">Chrome's default</option>
+            </select></div>
           <label class="row" for="follow-tab">
             <span class="row-text"><span id="follow-tab-label">Follow Orbi to its tab</span>
               <span class="hint" id="follow-tab-hint">When Orbi opens a tab, or navigates, clicks, types or scrolls in one, you are brought to that tab. Reading a tab never moves you. If you switch away yourself, it stops until you talk again.</span></span>

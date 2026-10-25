@@ -14,37 +14,47 @@
     </a>
   </header>
 
-  <main id="main">
+  <main id="main" tabindex="-1">
     <h1 class="visually-hidden">Orbi</h1>
 
-    <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
-
-    <section class="search" aria-labelledby="search-title">
-      <h2 class="visually-hidden" id="search-title">Search</h2>
-      <form class="cap" id="search-form" role="search">
-        <label class="visually-hidden" for="q">Search the web</label>
-        <input id="q" name="q" type="search" placeholder="Search the web or type a URL" autocomplete="off" spellcheck="false" enterkeyhint="search">
-        <button class="go" type="submit" aria-label="Search">
-          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="M16 16l4.5 4.5"></path></svg>
-        </button>
-      </form>
-      <p class="error" id="error" role="alert" hidden></p>
-    </section>
-
-    <section class="voice" aria-labelledby="voice-title">
-      <h2 class="voice-title" id="voice-title">Hold <kbd>Space</kbd> to talk</h2>
-      <p class="voice-sub" id="voice-sub">Option + Space keeps listening until you press Space.</p>
-      <p class="focus-hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
-    </section>
-
-    <form class="type-box" id="type-form" hidden>
-      <p class="type-note" id="type-note">Basic voice (no Cartesia key). If talking doesn't work, type to Orbi here.</p>
-      <div class="type-row">
-        <label class="visually-hidden" for="type-text">Type to Orbi</label>
-        <input id="type-text" type="text" placeholder="Type to Orbi" autocomplete="off" spellcheck="true" maxlength="2000" enterkeyhint="send">
-        <button type="submit">Send</button>
+    <div class="convo" id="convo">
+      <div class="row1">
+        <span class="orb" id="orb" data-state="idle" aria-hidden="true"></span>
+        <div class="obub" id="obub">
+          <p class="rep"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="txt" id="rep"></span></p>
+        </div>
       </div>
-    </form>
+      <div class="row2"><p class="ububble" id="you"></p></div>
+    </div>
+
+    <div class="dock" id="dock">
+      <section class="search" aria-labelledby="search-title">
+        <h2 class="visually-hidden" id="search-title">Search</h2>
+        <form class="cap" id="search-form" role="search">
+          <label class="visually-hidden" for="q">Search the web</label>
+          <input id="q" name="q" type="search" placeholder="Search the web or type a URL" autocomplete="off" spellcheck="false" enterkeyhint="search">
+          <button class="go" type="submit" aria-label="Search">
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"></circle><path d="M16 16l4.5 4.5"></path></svg>
+          </button>
+        </form>
+        <p class="error" id="error" role="alert" hidden></p>
+      </section>
+
+      <section class="voice" aria-labelledby="voice-title">
+        <h2 class="voice-title" id="voice-title">Hold <kbd>Space</kbd> to talk</h2>
+        <p class="voice-sub" id="voice-sub">Option + Space keeps listening until you press Space.</p>
+        <p class="focus-hint" id="focus-hint" hidden>The address bar has the keyboard now. Press F6 or click this page first.</p>
+      </section>
+
+      <form class="type-box" id="type-form" hidden>
+        <p class="type-note" id="type-note">Basic voice (no Cartesia key). If talking doesn't work, type to Orbi here.</p>
+        <div class="type-row">
+          <label class="visually-hidden" for="type-text">Type to Orbi</label>
+          <input id="type-text" type="text" placeholder="Type to Orbi" autocomplete="off" spellcheck="true" maxlength="2000" enterkeyhint="send">
+          <button type="submit">Send</button>
+        </div>
+      </form>
+    </div>
 
     <p class="visually-hidden" id="voice-live" role="status" aria-live="polite"></p>
 

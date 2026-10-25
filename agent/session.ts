@@ -27,15 +27,16 @@ import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
 import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
 import { localQuery, sdkToolServer, stdioToolServer } from "./local/query.ts";
 import { withContext, type PageContext } from "./context.ts";
+import * as timing from "./timing.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, isStripeCheckoutUrl, originOf, siteBlockReason, sitePolicy, type SitePolicy } from "./origins.ts";
 import { cardPhrase, checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
 import { cardVault } from "./cards.ts";
 import type { CardVault } from "../vault/index.ts";
-import { buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
+import { ACK_PROMPT, buildSystemPrompt, dangerNote, searchNote, type SearchEngine, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
-import { factFromUserWords, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
+import { factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
   decideUnlock,
   isDirectAsk,
@@ -147,6 +148,12 @@ export function currentGuided(): boolean {
   return extMode() ? (extBridge.guidedMode() ?? false) : /^(1|true|on|yes)$/i.test(process.env.CLEARCART_GUIDED?.trim() || "");
 }
 
+// The user's Search engine setting: the extension's in ext mode, Google
+// until it says otherwise and elsewhere.
+export function currentSearchEngine(): SearchEngine {
+  return (extMode() && extBridge.searchEngine()) || "google";
+}
+
 // The user's Memory setting: the extension's in ext mode, off until the
 // extension has said it is on (so a session that starts before the
 // setting arrives never uses memory the user turned off). Elsewhere
@@ -186,6 +193,18 @@ function localContext(): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+// The spoken acknowledgement at the start of tool work (ACK_PROMPT): on
+// unless ORBI_ACK=0.
+export function ackOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !/^(0|false|off|no)$/i.test(env.ORBI_ACK?.trim() || "");
+}
+
+// ORBI_EFFORT, or undefined when unset or not a level.
+export function agentEffort(env: NodeJS.ProcessEnv = process.env): "low" | "medium" | "high" | undefined {
+  const v = env.ORBI_EFFORT?.trim().toLowerCase();
+  return v === "low" || v === "medium" || v === "high" ? v : undefined;
 }
 
 // What Session.run() reads from either backend: the SDK's Query, or the
@@ -430,9 +449,15 @@ type UserWords = {
   tabId: number | null;
   origin: Promise<string | null>;
   passwordYes: { tabId: number; label: string; origin: string } | null;
+  // Facts the remember tool saved from these words without a question.
+  saves: number;
 };
 
-const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null });
+const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, saves: 0 });
+
+// How many facts one utterance can save without a question ("I'm vegan and
+// I wear a medium" is two).
+export const SILENT_SAVES_PER_UTTERANCE = 3;
 
 type ToolText = { content: Array<{ type: "text"; text: string }> };
 const said = (text: string): ToolText => ({ content: [{ type: "text", text }] });
@@ -490,6 +515,9 @@ export class Session {
   backend?: string;
   // The user's most recent words, for request_unlock's direct-ask match.
   private lastUser: UserWords = noWords();
+  // The utterance before it, so a fact said just before a short answer
+  // ("I wear a medium." then "yes, that one") still counts as theirs.
+  private prevUser: UserWords = noWords();
   // A sign in the user asked for before typing their own password. Lives
   // only until the next utterance, which becomes passwordYes if it is an
   // explicit yes.
@@ -516,9 +544,13 @@ export class Session {
   private muted = false;
   // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
   private held: string[] = [];
+  // ORBI_TIMING: the current model step has shown its first output.
+  private stepOutput = false;
   // Guided mode as the model last heard it: the system prompt's at the
   // start, then the last note sent with a user turn (see withGuidedNote).
   guided = currentGuided();
+  // The search engine as the model last heard it, like guided.
+  search = currentSearchEngine();
 
   // "Danger mode is on." was spoken in this session.
   private dangerSaid = false;
@@ -562,6 +594,7 @@ export class Session {
     const tabId = this.state.lastTabId;
     const pw = this.passwordAsk;
     this.passwordAsk = null;
+    this.prevUser = this.lastUser;
     this.lastUser = {
       text,
       spent: new Set(),
@@ -569,6 +602,7 @@ export class Session {
       tabId,
       origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
       passwordYes: pw && isExplicitYes(text) ? pw : null,
+      saves: 0,
     };
     // New words after a yes that has not paid yet: the conversation moved
     // on ("wait, no"), so that yes no longer counts, and a payment under
@@ -591,13 +625,17 @@ export class Session {
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
     const fetch = this.pageContext;
-    if (!fetch) return this.input.push(this.withMemoryNote(this.withSettingNotes(text)));
+    if (!fetch) {
+      timing.mark("to_model");
+      return this.input.push(this.withMemoryNote(this.withSettingNotes(text)));
+    }
     const ctx = Promise.race([
       fetch().catch(() => null),
       new Promise<null>((r) => setTimeout(() => r(null), CONTEXT_TIMEOUT_MS + 200).unref?.()),
     ]);
     this.turns = this.turns.then(async () => {
       const c = await ctx;
+      timing.mark("to_model", { detail: c ? "with context" : "no context" });
       if (!this.closed) this.input.push(withContext(this.withMemoryNote(this.withSettingNotes(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
     });
     return this.turns;
@@ -618,7 +656,12 @@ export class Session {
   // CLEARCART_DANGER_MODE on the Open Claude in Chrome path), never from
   // anything Claude or a page sends.
   private withSettingNotes(turn: string): string {
-    const withGuided = this.withGuidedNote(turn);
+    let withGuided = this.withGuidedNote(turn);
+    const engine = currentSearchEngine();
+    if (engine !== this.search) {
+      this.search = engine;
+      withGuided = `${searchNote(engine)}\n\n${withGuided}`;
+    }
     const on = dangerModeOn();
     if (on === this.dangerTold) return withGuided;
     this.dangerTold = on;
@@ -659,7 +702,7 @@ export class Session {
   // search: whether the model has WebSearch (Claude does, a local model
   // does not).
   systemPrompt(ext = extMode(), search = currentProvider().provider !== "local"): string {
-    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined }) + (search ? SEARCH_PROMPT : "");
+    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined, search: this.search }) + (search ? SEARCH_PROMPT : "") + (ackOn() ? ACK_PROMPT : "");
     this.memSeen = this.memKey();
     if (!this.mem) return base;
     if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
@@ -703,6 +746,7 @@ export class Session {
     this.awaitingAnswer = null;
     this.passwordAsk = null;
     this.lastUser = noWords();
+    this.prevUser = noWords();
     pending?.(null);
     // Dropped rather than marked, so a read-back whose yes is still being
     // pinned to its tab (request_checkout awaiting the snapshot) can't turn
@@ -776,8 +820,9 @@ export class Session {
     extBridge.call("actions_stop", {}, 5_000).catch(() => {});
   }
 
-  private say(text: string) {
+  private say(text: string, kind = "line") {
     if (this.muted) return this.unspoken(text);
+    timing.mark("first_speech", { once: true, detail: kind });
     if (memoryOn()) this.log?.add("assistant", text);
     this.send({ type: "agent_text", text });
   }
@@ -1349,10 +1394,14 @@ export class Session {
     ask(null);
   }
 
-  // The remember tool. Saves only when the user's own last words asked to
-  // remember it and the fact is made of what they said; anything else (the
-  // model's idea, or a page's) is asked out loud first and saved only on an
-  // explicit yes. The filter (memory.ts) refuses secrets either way.
+  // The remember tool. Saves without a question only when one of the
+  // user's last two utterances (within USER_WORDS_TTL_MS) asked to
+  // remember it or states a lasting fact about themselves of this kind
+  // (memory.ts statesFact: a size, name, diet, accessibility need,
+  // favorite store or brand, language), and the fact is made of the words
+  // in that utterance. Anything else (the model's idea, or a page's or a
+  // search result's) is asked out loud first and saved only on an explicit
+  // yes. The filter (memory.ts) refuses secrets either way.
   async remember({ fact }: { fact: string }, signal?: AbortSignal): Promise<ToolText> {
     if (!this.mem) return said("Memory is not available here.");
     if (!memoryOn()) return said("Memory is off in the user's Orbi settings, so nothing was saved. They can turn it on there.");
@@ -1362,25 +1411,40 @@ export class Session {
       this.status("memory: refused a fact");
       return said(`Not saved: ${why}. Orbi never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
     }
-    // One save per utterance without a question, of a fact made only of
-    // the words in it.
-    const words = this.freshWords();
-    let how = "the user asked";
-    if (words && isRememberAsk(words) && factFromUserWords(text, words) && !this.lastUser.spent.has("remember")) {
-      this.lastUser.spent.add("remember");
+    const fresh = (w: UserWords) => !!w.text && Date.now() - w.at <= USER_WORDS_TTL_MS;
+    // The utterance before counts only while the latest one takes nothing
+    // back: not a forget, a no, or a "don't remember".
+    const last = this.lastUser.text;
+    const prevOk = !!last && !isForgetAsk(last) && !/\b(no|nope|nah|don'?t|do not|never|stop|cancel|wrong|not|undo)\b/i.test(fold(last));
+    const from = (prevOk ? [this.lastUser, this.prevUser] : [this.lastUser]).find(
+      (w) => fresh(w) && w.saves < SILENT_SAVES_PER_UTTERANCE && factGroundedIn(text, w.text) && (isRememberAsk(w.text) || statesFact(text, w.text))
+    );
+    let how: "asked" | "told" | "confirmed";
+    if (from) {
+      from.saves++;
+      how = isRememberAsk(from.text) ? "asked" : "told";
     } else {
-      const a = await this.askYes(`Want me to remember that ${text}?`, signal);
+      // A fact it would replace is named in the question.
+      const old = this.mem.replacing(text);
+      const a = await this.askYes(`Want me to remember that ${text}${old ? `, instead of ${old.text}` : ""}?`, signal);
       if (!a.yes) {
         this.status("memory: not saved (no yes)");
         return said(`Not saved. ${a.why}`.trim());
       }
-      how = "the user confirmed";
+      how = "confirmed";
     }
     const r = this.mem.add(text);
-    if (!r.ok) return said(r.reason);
+    if (!r.ok) {
+      // A silent save that could not happen undoes its count.
+      if (from) from.saves--;
+      return said(r.reason);
+    }
     this.memSeen = this.memKey();
-    this.status(`memory: saved a fact (${how})`);
-    return said(r.existed ? `Already saved: ${r.fact.text}` : `Saved: ${r.fact.text}.${how === "the user confirmed" ? " The question was already spoken; do not ask again." : ""}`);
+    this.status(`memory: ${r.replaced ? "updated" : "saved"} a fact (${how === "told" ? "the user said it" : how === "asked" ? "the user asked" : "the user confirmed"})`);
+    if (r.existed) return said(`Already saved: ${r.fact.text}.${how === "told" ? " Do not mention it." : ""}`);
+    const what = r.replaced ? `Updated: ${r.fact.text} (replaces "${r.replaced.text}").` : `Saved: ${r.fact.text}.`;
+    if (how === "told") return said(`${what} Saved quietly: do not announce it or ask about it; at most say "Got it" and carry on with what they asked.`);
+    return said(`${what}${how === "confirmed" ? " The question was already spoken; do not ask again." : ""}`);
   }
 
   // The forget tool: one fact, or everything. Direct when the user's last
@@ -1489,7 +1553,7 @@ export class Session {
       "Speak a few words to the user right now, while you work. Never for reasoning, ids or URLs.",
       { text: z.string().max(160) },
       async ({ text }) => {
-        this.say(text.trim());
+        this.say(text.trim(), "say");
         return { content: [{ type: "text", text: "spoken" }] };
       }
     );
@@ -1518,8 +1582,8 @@ export class Session {
 
     const rememberTool = tool(
       "remember",
-      "Save one fact about the user for later sessions, when they ask you to remember it or after they agree. If their own words did not just ask for it, this tool asks them one short question itself and saves only on a yes, so do not ask first. Refuses card, password, ID and bank details.",
-      { fact: z.string().max(200).describe("The fact in a few words, addressed to the user, e.g. \"you wear size medium\" or \"you like to be called Seb\"") },
+      "Save one lasting fact about the user, kept for good. Call it every time the user states one about themselves (a size, their name or what to call them, a favorite store or brand, a dietary need or allergy, an accessibility need, their language), and when they ask you to remember something. Saves quietly when their own words said it; a newer fact on the same topic replaces the old one. Otherwise it asks them one short question itself, so never ask first. Refuses card, password, ID and bank details.",
+      { fact: z.string().max(200).describe("The fact in a few of the user's own words, addressed to them, e.g. \"you wear a medium\", \"call you Seb\", \"you are vegan\"") },
       (args, extra) => this.remember(args, signalOf(extra))
     );
     const forgetTool = tool(
@@ -1586,10 +1650,28 @@ export class Session {
         if (block.type === "text" && block.text?.trim()) {
           if (working || this.muted) this.unspoken(block.text.trim());
           else this.held.push(block.text.trim());
-        } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
+        } else if (block.type === "tool_use") {
+          this.status(toolLabel(block.name, block.input));
+          timing.toolStart(block.id, toolLabel(block.name, block.input));
+        }
+      }
+    } else if (m.type === "user" && timing.timingOn() && Array.isArray((m as any).message?.content)) {
+      for (const b of (m as any).message.content) if (b?.type === "tool_result") timing.toolEnd(b.tool_use_id);
+    } else if (m.type === "stream_event" && timing.timingOn()) {
+      const e = (m as any).event;
+      if (e?.type === "message_start") {
+        this.stepOutput = false;
+        timing.mark("model_step");
+      } else if (e?.type === "content_block_start" && !this.stepOutput) {
+        this.stepOutput = true;
+        timing.mark("first_output", { detail: e.content_block?.type ?? "" });
       }
     } else if (m.type === "result") {
-      if (this.held.length) this.say(this.held.join(" "));
+      if (timing.timingOn()) {
+        const u = (m as any).usage || {};
+        timing.mark("turn_end", { detail: `${(m as any).num_turns ?? "?"} steps, in ${u.input_tokens ?? 0} + cache read ${u.cache_read_input_tokens ?? 0} + cache write ${u.cache_creation_input_tokens ?? 0}, out ${u.output_tokens ?? 0}` });
+      }
+      if (this.held.length) this.say(this.held.join(" "), "reply");
       this.held = [];
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
       // Nothing paced (a click on its way, typing) outlives its turn.
@@ -1653,6 +1735,11 @@ export class Session {
               settingSources: [],
               strictMcpConfig: true,
               persistSession: false,
+              // ORBI_TIMING: stream events, for the time to first output of each step.
+              includePartialMessages: timing.timingOn(),
+              // ORBI_EFFORT=low|medium|high: how hard the model thinks each
+              // step (faster turns at low). Unset: the SDK's default.
+              ...(agentEffort() ? { effort: agentEffort() } : {}),
               abortController: this.abort,
               mcpServers: {
                 browser: ext

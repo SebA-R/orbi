@@ -1,8 +1,10 @@
+<p align="center"><img src="extension/icons/icon128.png" width="128" height="128" alt="Orbi's icon: a smiling orb face inside a spectrum ring"></p>
+
 # Orbi
 
-**Talk to the web.** Orbi is a voice-controlled web agent for anyone. Hold Space and say what you want. It navigates, searches, reads pages to you, fills in forms, clicks, and shops when you ask, in your own Chrome.
+**Talk to the web.** Orbi is a voice agent for Chrome, built for blind and low-vision people and older adults, and anyone can use it. Hold Space and say what you want. It navigates, searches, reads pages to you, fills in forms, clicks, and shops when you ask, in your own Chrome.
 
-**Guided mode** (off by default) makes it work well for blind and low-vision users: Orbi describes each page, reads out the top choices and lets you pick.
+**Guided mode** is made for blind and low-vision users. Turn it on in the popup or options page and Orbi describes each page as it lands, reads out the top choices, and lets you pick one by voice, so you never have to tab through unlabeled buttons. It is off by default for sighted users, who mostly want Orbi to just get on with it.
 
 Orbi started with a sound screen reader users know too well: tabbing through a page and hearing "button, button, button", because nothing on it is labeled. Instead of waiting for every site to fix that, you say what you want and Orbi does the clicking.
 
@@ -27,7 +29,7 @@ You need Node 20 or newer, Chrome 116 or newer and git, plus an Anthropic API ke
 - **Anthropic API key** (from [console.anthropic.com](https://console.anthropic.com/settings/keys)): Claude runs the agent. A Claude Code or Claude.ai login can't be used instead, because Anthropic only allows API keys for apps like Orbi.
 - **Cartesia API key** (optional, from [play.cartesia.ai](https://play.cartesia.ai/keys)): Cartesia's natural voice and speech recognition, with subtitles timed word by word. Without it Orbi uses **basic voice**: Chrome's built-in voice reads replies, and Chrome's speech recognition hears you. Where Chrome's recognition doesn't work, type to Orbi in the toolbar popup or on the new tab page.
 
-**No Claude key? Use a local model.** Install [Ollama](https://ollama.com) (or LM Studio), run `ollama pull llama3.1:8b`, choose option 2 in setup, then set **Model provider** to **Local** in Orbi's settings. The agent then runs on your computer. Small models are slower and make more mistakes than Claude, and speech recognition still uses Cartesia or Chrome's speech service unless you type.
+**No Claude key? Use a local model.** Install [Ollama](https://ollama.com), run `ollama pull llama3.1:8b`, choose option 2 in setup, then set **Model provider** to **Local** in Orbi's settings. With [LM Studio](https://lmstudio.ai), start its local server and set the local model address to `http://localhost:1234/v1`. The agent then runs on your computer, behind the same safety checks as Claude, and only talks to a model on `localhost`. Small models are slower and make more mistakes than Claude, and speech recognition still uses Cartesia or Chrome's speech service unless you type.
 
 **Manage Orbi.** `./orbi status` shows what is set up and running (keys show only as set or not set). `./orbi start` runs the server in the background, and `./orbi stop` stops it. `./orbi uninstall` stops Orbi, turns off start on login and offers to delete your saved keys. Logs go to `~/Library/Logs/Orbi` on macOS. On Linux and Windows, start the server with `npm start` in the Orbi folder (on Windows use `node scripts/orbi.mjs <command>` for the other commands).
 
@@ -53,6 +55,8 @@ Why `npx` clones the repo: npx keeps its copy in a cache folder that npm can cle
 
 - **Karaoke subtitles:** each reply shows at the bottom of the tab, and each word lights up as you hear it, timed from Cartesia Sonic's word timestamps.
 - **Orb face:** a small orb shows the voice state with a face: resting, listening, thinking and speaking. While it speaks, the mouth follows the words, timed from Sonic's phoneme timestamps.
+- **R1 ring:** the orb wears a thin spectrum ring. It turns slowly at rest, splits into eight arcs and grows while Orbi thinks, and pulses with your voice while it listens. With reduced motion turned on, it stays still.
+- **Extension icon:** the toolbar icon is the same orb face in its ring, readable on light and dark toolbars.
 - **Active-tab ring:** an 8px rotating spectrum ring with rounded corners frames the tab Orbi is working in.
 - **Humanized cursor and typing:** Orbi's own pointer moves along curved paths at a pace you can follow, with a ripple on each click. Typing goes key by key at a typist's cadence. Your own mouse never moves.
 - **Follows you to its tab:** when it opens, clicks, types or scrolls in a tab, that tab comes to the front. If you switch away yourself, it stops following until your next turn.
@@ -63,7 +67,12 @@ Why `npx` clones the repo: npx keeps its copy in a cache folder that npm can cle
 
 - **Remember and forget:** say "remember that I wear a medium" and it keeps that fact on this computer. Ask what it remembers, or tell it to forget. The options page lists saved facts and has Forget everything.
 - **Survives restarts:** the last two hours of the conversation (your words and its spoken replies only) come back after a restart.
-- Memory refuses card numbers, passwords, IDs, bank details and other secrets, and can be turned off.
+- **Past purchases:** orders Orbi places are saved on this computer (item, store, size, price and date, up to 100). Say "I bought running shoes from Nike" and it adds that too. Orbi uses them for advice like "you got a medium last time". Ask what it remembers to hear them, or tell it to forget them.
+- Memory refuses card numbers, passwords, IDs, bank details and other secrets, and can be turned off. With Memory off, no purchases are recorded or used.
+
+### Shopping help
+
+- **Web search (Claude only):** Orbi can search the web for loyalty perks, promo codes, prices at other stores, return policies and reviews before you buy. Searches never include your personal details and are paused while a card form is open. Results are treated as untrusted data. The local model has no web search.
 
 ### Trust and safety
 
@@ -81,6 +90,8 @@ Why `npx` clones the repo: npx keeps its copy in a cache folder that npm can cle
 ### Pay
 
 Save a card in Orbi's settings under **Payment cards**. Orbi encrypts it on this computer (AES-256-GCM, with the key in your macOS Keychain), and the AI never sees it. Paying runs through the read-back and your spoken yes. Right after the yes, Orbi's own code (not the AI) checks the total on the page again, fills the saved card in, including card fields inside a payment provider's frame, and presses Place order once. This works on any checkout page Orbi may use; blocked sites stay blocked. With no card saved, Orbi stops at checkout, reads you the order and lets you finish it yourself.
+
+**Stripe test checkout demo.** Orbi can pay on Stripe's hosted checkout in test mode only (`buy.stripe.com/test_` links and `cs_test_` sessions; live Stripe pages never count). It checks the total, presses Pay exactly once and confirms Stripe's thank-you page. The setup takes about three minutes: see [`docs/demo/STRIPE.md`](docs/demo/STRIPE.md).
 
 ## How it works
 
@@ -104,9 +115,20 @@ Save a card in Orbi's settings under **Payment cards**. Orbi encrypts it on this
  └──────────────────────────────────────────────────────────────────────┘
 ```
 
-- **The extension** (Manifest V3, `extension/`) does everything in the browser. Content scripts catch the talk key and draw the subtitles, orb, ring and cursor. An offscreen document owns the mic, streams your speech to Cartesia Ink 2 speech-to-text, and plays replies from Cartesia Sonic text-to-speech with word timestamps for the karaoke subtitles. The service worker connects to the agent server and runs its browser tools: tabs, navigation, page reading, form input, and clicks and keys over the Chrome debugger.
-- **The agent server** (`agent/`) runs Claude through the Claude Agent SDK with model `claude-sonnet-5-5` (override with `CLEARCART_MODEL`). It keeps one global session, the memory, and the checkout and pay tools.
+- **The extension** (Manifest V3, `extension/`) does everything in the browser. Content scripts catch the talk key and draw the subtitles, orb, ring and cursor. An offscreen document owns the mic, streams your speech to Cartesia Ink 2 speech-to-text, and plays replies from Cartesia Sonic text-to-speech with word timestamps for the karaoke subtitles. Without a Cartesia key it switches to basic voice: Chrome's speech recognition and Chrome's built-in voice. The service worker connects to the agent server and runs its browser tools: tabs, navigation, page reading, form input, and clicks and keys over the Chrome debugger.
+- **The agent server** (`agent/`) runs Claude through the Claude Agent SDK with model `claude-sonnet-5-5` (override with `CLEARCART_MODEL`), or a local model through Ollama or LM Studio with the same tools, guard and hooks. It keeps one global session, the memory and past purchases, web search (Claude only), and the checkout and pay tools.
 - **Safety sits between the model and the page in layers.** The prompt sets the rules. The agent server checks every tool call before it runs (blocked sites, checkout URLs, the card guard while a card is in the form) and sweeps tabs after. The extension checks every click, key and form change against the live page and refuses locked controls, so a model mistake or a page trying to trick it still can't press Place order. Only `pay_with_saved_card` can, through a single-use unlock that needs your spoken yes.
+
+## Honest limits
+
+- **Small local models are weaker.** They are slower, make more mistakes than Claude and have no web search.
+- **Basic voice is basic.** Chrome's speech recognition isn't documented to work in an extension's offscreen page, so on some setups it won't hear you, and then you type to Orbi instead. Chrome's own voice sounds flatter than Sonic, and some voices send no word timing, so subtitles show the whole line at once.
+- **Paying is narrow on purpose.** Orbi's own code pays only on pay sites you list and on Stripe's test checkout. It reads only the top frame, so card forms inside iframes (such as `checkout.stripe.dev`) aren't supported. Everywhere else it stops at checkout and you finish.
+- **Card storage is macOS only.** The card lives in the macOS Keychain. Autostart is macOS only too.
+- **Some rules are only instructions to the model.** The button lock, masking and blocklist are code. Not typing your address or other personal details unless asked is a prompt rule, and a model can get it wrong.
+- **CAPTCHAs stop it.** It hands over to you rather than solving them.
+- **It can misunderstand.** A misheard word or a misleading page can send it the wrong way. That is why risky buttons need your spoken yes, and why Danger mode stays off unless you turn it on.
+- **Built in a weekend.** It has tests, not real-world mileage. Treat it as a prototype.
 
 ## Manual setup
 

@@ -94,6 +94,30 @@ test("the worker's VOICE_STATE reaches the page; offscreen broadcasts do not", a
   await page.close();
 });
 
+test("talking glides the orb left into a conversation, then back to the centre", async () => {
+  const page = await openNewTab();
+  const id = await tabIdOf();
+  const send = (m) => ext.worker.evaluate(([t, msg]) => chrome.tabs.sendMessage(t, msg), [id, m]);
+  const orbX = () => page.evaluate(() => document.getElementById("orb").getBoundingClientRect().left);
+  const centred = await orbX();
+  await send({ type: "voice.state", state: "listening" });
+  await send({ type: "subtitle", speaker: "user", text: "Read me the news", final: false });
+  await page.waitForFunction(() => document.getElementById("main").dataset.you === "on");
+  assert.equal(await page.locator("#you").textContent(), "Read me the news");
+  await page.waitForTimeout(600); // the glide
+  assert.ok(await orbX() < centred - 100, "the orb moved left");
+  await send({ type: "voice.state", state: "speaking" });
+  await send({ type: "subtitle", speaker: "agent", text: "Here is the news.", final: true, utteranceId: "u1", karaoke: true });
+  await send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 200, elapsed: 0 });
+  await page.waitForFunction(() => document.querySelectorAll("#rep .w.kc").length === 1);
+  assert.deepEqual(await page.locator("#rep .w").evaluateAll((ws) => ws.map((w) => w.classList[1])), ["ks", "kc", "kp", "kp"]);
+  await send({ type: "voice.state", state: "idle" });
+  await page.waitForFunction(() => document.getElementById("main").dataset.layout === "idle", null, { timeout: 5000 });
+  await page.waitForTimeout(600);
+  assert.ok(Math.abs(await orbX() - centred) < 1, "back in the centre");
+  await page.close();
+});
+
 test("the relay treats the page as a tab: it answers the page's state query on load", async () => {
   const page = await openNewTab();
   const id = await tabIdOf();
@@ -114,6 +138,8 @@ test("the relay treats the page as a tab: it answers the page's state query on l
 
 test("Space talks on the page and types a space in the search box", async () => {
   const page = await openNewTab();
+  // The page holds focus on load, not the search box.
+  assert.notEqual(await page.evaluate(() => document.activeElement?.id), "q");
   // Record what the page sends the worker.
   await page.evaluate(() => {
     window.__sent = [];
