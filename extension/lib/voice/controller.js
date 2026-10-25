@@ -31,7 +31,12 @@
 //            start, hard-stop the speech like a barge-in (the cut cue).
 //            Never listens or sends user_text (can't answer a read-back).
 //   each STT turn.end -> {type:"user_text"} to the agent + VOICE_FINAL + SUBTITLE
-//   agent_text -> Sonic + SUBTITLE(agent); status/receipt -> STATUS
+//   agent_text -> Sonic; status/receipt -> STATUS
+//   onCaption (from the speaker, as the audio plays) -> SUBTITLE(agent) with
+//            its utteranceId when a line starts to be heard, then
+//            SUBTITLE_WORD {utteranceId, index, done?, frozen?, fallback?}
+//            as each word is heard. A speaker without captions (a test fake)
+//            gets SUBTITLE(agent) as soon as agent_text arrives.
 //   confirm_done -> the placed cue (paid) or the failed cue (failed)
 //   standby  the agent server gave the conversation to another Clearcart
 //            window (agent/hub.ts): stop speaking and stop waiting for a
@@ -389,6 +394,17 @@ export class VoiceController {
     this.speaker.stop();
   }
 
+  // The speaker's caption events (tts.js), as the words are heard.
+  onCaption(c) {
+    if (!c || !c.utteranceId) return;
+    if (c.kind === "line") {
+      this.emit({ type: RT.SUBTITLE, speaker: "agent", text: c.text, final: true, utteranceId: c.utteranceId, karaoke: c.karaoke === true });
+    } else if (c.kind === "word") {
+      const { kind, ...word } = c;
+      this.emit({ type: RT.SUBTITLE_WORD, ...word });
+    }
+  }
+
   // {type:"standby"} from the agent server: another Clearcart window (the
   // voice console, another browser profile) owns the conversation now.
   // reason "moved": it just took it, so a turn still listening here (a hold
@@ -440,7 +456,8 @@ export class VoiceController {
         }
         // agent_text arrives whole (not streamed), so its subtitle is final at once.
         // Stay "thinking" until the speaker reports it started (onSpeakingChange clears it).
-        this.emit({ type: RT.SUBTITLE, speaker: "agent", text: m.text, final: true });
+        // The real speaker captions the line itself, when it starts to be heard.
+        if (!this.speaker.captions) this.emit({ type: RT.SUBTITLE, speaker: "agent", text: m.text, final: true });
         this.speaker.speak(m.text);
         break;
       case "status":

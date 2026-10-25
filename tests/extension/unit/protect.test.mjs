@@ -134,11 +134,11 @@ test("only order commits are pressable by the internal pay flow", () => {
 });
 
 test("messages name the control and never offer a way around", () => {
-  assert.equal(P.message({ kind: "order", label: "Place order" }), "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
-  assert.match(P.message({ kind: "account", label: "Sign in" }), /never logs in or creates accounts/);
+  assert.equal(P.message({ kind: "order", label: "Place order" }), "Locked: 'Place order' places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now on the demo store. Elsewhere, tell the user they can finish it themselves.");
+  assert.match(P.message({ kind: "account", label: "Sign in" }), /signs in or creates an account, so it needs the user's permission/);
   assert.match(P.message({ kind: "subscription", label: "Subscribe", optin: true }), /can only be unchecked/);
   assert.match(P.message({ kind: "frame", label: "embedded frame" }), /embedded frame/);
-  assert.match(P.message({ kind: "express", label: "Apple Pay" }), /only the user can press it/);
+  assert.match(P.message({ kind: "express", label: "Apple Pay" }), /only the user can press it/i);
 });
 
 test("unlockClass: checkout, account, subscription and saved card unlock on request; paying never does", () => {
