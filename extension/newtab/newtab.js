@@ -8,7 +8,7 @@
 // voice.js adds the orb face and the voice state. This file adds the search
 // box and the setting: with "Use the Orbi new tab page" off it forwards
 // to Chrome's own new tab page.
-import { loadSettings } from "../lib/settings.js";
+import { SEARCH_ENGINES, loadSettings } from "../lib/settings.js";
 import { agentHealth, basicVoice } from "../lib/setup.js";
 import { mountTypeBox } from "../lib/typebox.js";
 import { startVoice } from "./voice.js";
@@ -46,13 +46,15 @@ if (!settings.newTabPage) {
 function start() {
   startVoice(settings);
 
-  // Search with the default search engine. Space in the box types a space
+  // Search with the engine from Orbi settings, or Chrome's default. Space in the box types a space
   // (hotkey.js leaves text fields alone).
   $("search-form").addEventListener("submit", (e) => {
     e.preventDefault();
     const text = $("q").value.trim();
     if (!text) { $("q").focus(); return; }
     $("error").hidden = true;
+    const base = SEARCH_ENGINES[settings.searchEngine];
+    if (base) { location.href = base + encodeURIComponent(text); return; }
     chrome.search.query({ text, disposition: "CURRENT_TAB" }).catch(() => {
       $("error").textContent = "The search did not start. Try again, or type it in the address bar.";
       $("error").hidden = false;

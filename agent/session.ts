@@ -31,7 +31,7 @@ import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } fro
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, paySite, SITE_POLICY, siteBlockReason, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
-import { buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
+import { buildSystemPrompt, dangerNote, searchNote, type SearchEngine, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
 import { factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
@@ -135,6 +135,12 @@ function extPrompt(prompt: string): string {
 // CLEARCART_GUIDED=1 turns it on.
 export function currentGuided(): boolean {
   return extMode() ? (extBridge.guidedMode() ?? false) : /^(1|true|on|yes)$/i.test(process.env.CLEARCART_GUIDED?.trim() || "");
+}
+
+// The user's Search engine setting: the extension's in ext mode, Google
+// until it says otherwise and elsewhere.
+export function currentSearchEngine(): SearchEngine {
+  return (extMode() && extBridge.searchEngine()) || "google";
 }
 
 // The user's Memory setting: the extension's in ext mode, off until the
@@ -513,6 +519,8 @@ export class Session {
   // Guided mode as the model last heard it: the system prompt's at the
   // start, then the last note sent with a user turn (see withGuidedNote).
   guided = currentGuided();
+  // The search engine as the model last heard it, like guided.
+  search = currentSearchEngine();
 
   // "Danger mode is on." was spoken in this session.
   private dangerSaid = false;
@@ -605,7 +613,12 @@ export class Session {
   // CLEARCART_DANGER_MODE on the Open Claude in Chrome path), never from
   // anything Claude or a page sends.
   private withSettingNotes(turn: string): string {
-    const withGuided = this.withGuidedNote(turn);
+    let withGuided = this.withGuidedNote(turn);
+    const engine = currentSearchEngine();
+    if (engine !== this.search) {
+      this.search = engine;
+      withGuided = `${searchNote(engine)}\n\n${withGuided}`;
+    }
     const on = dangerModeOn();
     if (on === this.dangerTold) return withGuided;
     this.dangerTold = on;
@@ -646,7 +659,7 @@ export class Session {
   // search: whether the model has WebSearch (Claude does, a local model
   // does not).
   systemPrompt(ext = extMode(), search = currentProvider().provider !== "local"): string {
-    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined }) + (search ? SEARCH_PROMPT : "");
+    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined, search: this.search }) + (search ? SEARCH_PROMPT : "");
     this.memSeen = this.memKey();
     if (!this.mem) return base;
     if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
