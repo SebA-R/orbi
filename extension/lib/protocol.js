@@ -31,6 +31,8 @@ export const MSG = Object.freeze({
 export const TOOLS = Object.freeze([
   "tabs_context",
   "tabs_create",
+  "tabs_close",
+  "tabs_activate",
   "navigate",
   "read_page",
   "find",
@@ -46,9 +48,13 @@ export const TOOLS = Object.freeze([
 // Methods only the agent server's own code calls (pay_now, the store guard).
 // Never exposed to Claude as tools. lock_arm and press_protected are the
 // button lock's unlock: a single-use nonce, then one press of an order
-// button (see background/router.js).
+// button (see background/router.js). agent_tabs feeds the server's tab
+// sweep; page_context is what the user is looking at, attached to their
+// words.
 export const INTERNAL = Object.freeze([
   "tab_info",
+  "agent_tabs",
+  "page_context",
   "read_fields",
   "fill_payment",
   "clear_payment",

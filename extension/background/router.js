@@ -1,8 +1,10 @@
 // Routes one bridge request from the agent server to module A (tabs, CDP) or
 // module B (the on-demand page script). Every call that touches a page first
-// resolves its tab with tabs.resolveAllowedTab, so it must be a tab in the
-// Clearcart group whose current page is allowed (see allowlist.js: the
-// allowlist, or in open mode any site off the blocklist).
+// resolves its tab with tabs.resolveAllowedTab, which checks that tab's
+// current page again (see allowlist.js: the allowlist, or in open mode any
+// site off the blocklist, and netguard.js), so a tab that moved to a blocked
+// site since tabs_context is refused. The tab being acted on shows a small
+// "Clearcart is using this tab" pill (content/indicator.js).
 //
 // Button lock: every click, key press and typed newline is checked by the
 // page script (content/protect.js) before it reaches CDP, and is refused
@@ -19,6 +21,18 @@ import { BridgeError, ERR, RT } from "../lib/protocol.js";
 import { luhnValid } from "../lib/log.js";
 
 export const PAGE_FILES = ["content/mask.js", "content/protect.js", "content/page.js"];
+// page_context also loads the pointer tracker, for tabs that were open
+// before the extension (it is a declared content script for new pages).
+export const CONTEXT_FILES = ["content/context.js", ...PAGE_FILES];
+export const INDICATOR_FILES = ["content/indicator.js"];
+
+// A context snapshot taken when the user starts talking is used for the
+// user_text that follows, if it comes within this long.
+export const CONTEXT_TTL_MS = 60_000;
+const CONTEXT_PAGE_TIMEOUT_MS = 1_500;
+// Calls that can move or change a page: the tab counts as driven by
+// Clearcart, so the agent server's tab sweep watches it.
+const DRIVING = new Set(["click", "type", "key", "form_input"]);
 
 // How long a lock_arm nonce stays good. The pay flow arms right before it
 // presses, so this only needs to cover one round trip.
@@ -106,29 +120,87 @@ export function createRouter({
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
 
-  async function inject(tabId) {
+  async function inject(tabId, files = PAGE_FILES) {
     try {
-      await chromeApi.scripting.executeScript({ target: { tabId }, files: PAGE_FILES });
+      await chromeApi.scripting.executeScript({ target: { tabId }, files });
     } catch (e) {
       throw new BridgeError(ERR.INTERNAL, `could not load the page script: ${msgOf(e)}`);
     }
+  }
+
+  // Shows the "Clearcart is using this tab" pill. Best effort, at most once
+  // a second per tab (each injection keeps it up a little longer).
+  const shown = new Map();
+  function indicate(tabId) {
+    const t = now();
+    if (t - (shown.get(tabId) || 0) < 1_000) return;
+    shown.set(tabId, t);
+    Promise.resolve()
+      .then(() => chromeApi.scripting.executeScript({ target: { tabId }, files: INDICATOR_FILES }))
+      .catch(() => {});
+  }
+
+  // What the user is looking at (bridge method page_context): the active
+  // tab's id, title and origin+path, their selection and what they point
+  // at (content/page.js page_context). A blocked active tab gives only
+  // { active: { blocked: true } }; nothing is read from it.
+  async function collectContext() {
+    const tab = typeof tabs.activeTab === "function" ? await tabs.activeTab() : null;
+    if (!tab) return { active: null };
+    try {
+      await tabs.resolveAllowedTab(tab.id, { peek: true });
+    } catch {
+      return { active: { blocked: true } };
+    }
+    const active = { tabId: tab.id, title: String(tab.title || "").slice(0, 120), url: tabs.originPath(tab.url || "") };
+    const page = await Promise.race([
+      (async () => {
+        const { tabId: _t, ...rest } = await pageCallWith(tab.id, "page_context", {}, CONTEXT_FILES);
+        return rest;
+      })().catch(() => ({})),
+      new Promise((r) => setTimeout(() => r({}), CONTEXT_PAGE_TIMEOUT_MS)),
+    ]);
+    return { active, ...page };
+  }
+
+  // PTT_START: take the snapshot now, while the user is still pointing.
+  let talkContext = null;
+  function noteTalkStart() {
+    const at = now();
+    const p = collectContext().catch(() => null);
+    talkContext = { at, p };
+    return p;
+  }
+
+  async function pageContext() {
+    const snap = talkContext;
+    talkContext = null;
+    if (snap && now() - snap.at < CONTEXT_TTL_MS) {
+      const v = await snap.p;
+      if (v) return v;
+    }
+    return collectContext();
   }
 
   async function send(tabId, msg) {
     return chromeApi.tabs.sendMessage(tabId, msg, { frameId: 0 });
   }
 
-  async function pageCall(tabId, method, params = {}) {
+  function pageCall(tabId, method, params = {}) {
+    return pageCallWith(tabId, method, params, PAGE_FILES);
+  }
+
+  async function pageCallWith(tabId, method, params, files) {
     const { tabId: _drop, ...rest } = params || {};
     const msg = { type: RT.PAGE_CALL, method, params: rest };
-    await inject(tabId);
+    await inject(tabId, files);
     let reply;
     try {
       reply = await send(tabId, msg);
     } catch (e) {
       if (!NO_RECEIVER.test(msgOf(e))) throw new BridgeError(ERR.INTERNAL, `page call failed: ${msgOf(e)}`);
       // The document changed between inject and send: inject again, once.
-      await inject(tabId);
+      await inject(tabId, files);
       try {
         reply = await send(tabId, msg);
       } catch (e2) {
@@ -218,14 +290,30 @@ export function createRouter({
     switch (method) {
       case "tabs_context":
         return tabs.tabsContext();
-      case "tabs_create":
-        return tabs.tabsCreate({ url: params.url });
-      case "navigate":
-        return tabs.navigate({ tabId: params.tabId, url: params.url });
+      case "tabs_create": {
+        const r = await tabs.tabsCreate({ url: params.url });
+        if (params.url != null) indicate(r.tabId);
+        return r;
+      }
+      case "navigate": {
+        const r = await tabs.navigate({ tabId: params.tabId, url: params.url });
+        indicate(r.tabId);
+        return r;
+      }
+      case "tabs_close":
+        return tabs.tabsClose({ tabId: params.tabId });
+      case "tabs_activate":
+        return tabs.tabsActivate({ tabId: params.tabId });
       case "tab_info":
         return tabs.tabInfo({ tabId: params.tabId });
+      case "agent_tabs":
+        return tabs.agentTabs();
+      case "page_context":
+        return pageContext();
     }
     const tabId = await tabs.resolveAllowedTab(params.tabId);
+    indicate(tabId);
+    if (DRIVING.has(method) && typeof tabs.markDriven === "function") await tabs.markDriven(tabId);
     switch (method) {
       case "click":
         return clickAt(tabId, params);
@@ -259,5 +347,5 @@ export function createRouter({
     throw new BridgeError(ERR.UNKNOWN_METHOD, `unknown method: ${method}`);
   }
 
-  return { route, pageCall, inject };
+  return { route, pageCall, inject, noteTalkStart };
 }

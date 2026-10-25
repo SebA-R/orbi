@@ -11,7 +11,7 @@ import { createRouter } from "./router.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
 import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
-import { MSG } from "../lib/protocol.js";
+import { MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -20,6 +20,9 @@ const log = createLogger("worker");
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   console.info(`[clearcart] installed (${reason}), version ${VERSION}`);
   seedBlocklist().catch((e) => log.warn(`blocklist seed failed: ${e.message}`));
+  // Earlier versions kept agent tabs in a "Clearcart" tab group: take them
+  // out of it, closing nothing.
+  tabs.ungroupLegacy().then((n) => n && log.info(`ungrouped ${n} tab(s) from the old Clearcart group`)).catch(() => {});
   // The offscreen document cannot ask for the microphone, so the first run
   // opens the options page where the user grants it.
   if (reason === "install") chrome.runtime.openOptionsPage().catch(() => {});
@@ -30,13 +33,15 @@ chrome.runtime.onStartup.addListener(() => {
   bridge?.ensureConnected();
 });
 
-// Module A lifecycle: forget debugger sessions and the tab group with them.
+// Module A lifecycle: forget debugger sessions and which tabs Clearcart
+// opened or drove.
 chrome.tabs.onRemoved.addListener((tabId) => cdp.onTabRemoved(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => void tabs.onTabRemoved(tabId).catch(() => {}));
 chrome.debugger.onDetach.addListener((source) => cdp.onDetach(source));
-chrome.tabGroups.onRemoved.addListener((group) => tabs.onGroupRemoved(group));
 
-// Connected-address check (netguard.js): a Clearcart tab whose page came
-// from a local address it may not use is closed. Other tabs are the user's.
+// Connected-address check (netguard.js): a tab Clearcart opened whose page
+// came from a local address it may not use is closed. The user's own tabs
+// are never closed; every call on a flagged tab is refused instead.
 chrome.tabs.onRemoved.addListener((tabId) => netguard.forget(tabId));
 chrome.webRequest.onResponseStarted.addListener((d) => {
   const flag = netguard.noteResponse(d);
@@ -45,8 +50,7 @@ chrome.webRequest.onResponseStarted.addListener((d) => {
 
 async function closeIfAgentTab(tabId, flag) {
   try {
-    const [tab, gid] = await Promise.all([chrome.tabs.get(tabId), tabs.groupId()]);
-    if (gid == null || tab.groupId !== gid || netguard.flagOf(tabId) !== flag) return;
+    if (!(await tabs.isCreated(tabId)) || netguard.flagOf(tabId) !== flag) return;
     log.info(`closing agent tab: ${flag.origin} is served from a local address`);
     await chrome.tabs.remove(tabId);
   } catch {}
@@ -63,6 +67,13 @@ const voice = installVoiceRelay();
 // Bridge to the agent server: each request is routed to tabs/CDP or the page
 // script. Results never include card values (fill_payment answers last4).
 const router = createRouter();
+
+// The user started talking: snapshot what they are looking at and pointing
+// at now, for the page_context call that comes with their words.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.type === RT.PTT_START && msg.target !== "offscreen") void router.noteTalkStart();
+});
+chrome.commands?.onCommand.addListener(() => void router.noteTalkStart());
 
 async function onRequest(method, params) {
   const t0 = Date.now();
