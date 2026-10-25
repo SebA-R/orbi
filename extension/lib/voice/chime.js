@@ -1,4 +1,5 @@
-// Two-note earcons, ported from chimeNote/earcon in voice/public/js/app.js.
+// Earcons made with WebAudio (no audio files). start/stop are ported from
+// chimeNote/earcon in voice/public/js/app.js.
 
 // One bell-like note: a sine plus a quiet octave, near-instant attack, soft exponential decay.
 export function chimeNote(ctx, freq, at, peak = 0.32) {
@@ -22,12 +23,33 @@ export function chimeNote(ctx, freq, at, peak = 0.32) {
   }
 }
 
-// Rising (E5 -> B5) when the mic opens, falling when it closes.
+// A soft "boop": one sine whose pitch falls (A4 -> D4) over about 120 ms, quiet.
+export function boop(ctx, at, peak = 0.12) {
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(peak, at + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.12);
+  g.connect(ctx.destination);
+  const osc = ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(440, at);
+  osc.frequency.exponentialRampToValueAtTime(293.66, at + 0.12);
+  osc.connect(g);
+  osc.start(at);
+  osc.stop(at + 0.13);
+}
+
+// Each earcon by name, played at time t. Add new sounds here.
+export const EARCONS = {
+  // Rising (E5 -> B5) when the mic opens, falling when it closes.
+  start: (ctx, t) => { chimeNote(ctx, 659.25, t); chimeNote(ctx, 987.77, t + 0.07); },
+  stop: (ctx, t) => { chimeNote(ctx, 987.77, t); chimeNote(ctx, 659.25, t + 0.07); },
+  // Double-tap Space while speaking: speech is off.
+  boop: (ctx, t) => boop(ctx, t),
+};
+
 export function earcon(ctx, kind) {
   if (ctx.state !== "running") return false;
-  const t = ctx.currentTime + 0.005;
-  const [first, second] = kind === "start" ? [659.25, 987.77] : [987.77, 659.25];
-  chimeNote(ctx, first, t);
-  chimeNote(ctx, second, t + 0.07);
+  (EARCONS[kind] || EARCONS.stop)(ctx, ctx.currentTime + 0.005);
   return true;
 }
