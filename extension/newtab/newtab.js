@@ -5,7 +5,7 @@
 // shows the voice state. The worker sees it as any other tab:
 // hold-to-talk, the latch, double-tap, replay on tab switch.
 //
-// This file adds the orb, the search box and the setting: with "Use the
+// This file adds the orb face, the search box and the setting: with "Use the
 // Clearcart new tab page" off it forwards to Chrome's own new tab page.
 import { RT } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
@@ -60,7 +60,9 @@ function start() {
     thinking: () => ["Thinking", "Working on your request."],
     speaking: (k) => ["Speaking", `Hold ${k} to interrupt${k === "Space" ? ", or tap it twice to stop" : ""}.`],
   };
-  // The popup's mini orb face beside the name. Decorative: the heading says the state.
+  // The hero orb is the face (content/orb-face.js): it smiles at rest and
+  // goes faceless while listening, thinking or speaking. Decorative: the
+  // heading and the live region say the state.
   let face = null;
   const FACE = globalThis.__clearcartOrbFace;
   if (FACE) {
@@ -68,8 +70,8 @@ function start() {
       const sheet = new CSSStyleSheet();
       sheet.replaceSync(FACE.CSS);
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-      face = FACE.create(document);
-      $("mini-orb").append(face.el);
+      face = FACE.create(document, { canPlay: () => !document.hidden });
+      $("orb").append(face.el);
     } catch {}
   }
   const show = (next = state) => {
