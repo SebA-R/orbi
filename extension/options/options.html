@@ -49,6 +49,12 @@
             <label for="speed">Speaking speed</label>
             <span class="speed"><input id="speed" name="speed" type="range" step="0.1" data-setting="speed"><output id="speed-out" for="speed"></output></span>
           </div>
+          <label class="row" for="speak-replies">
+            <span class="row-text"><span id="speak-replies-label">Speak replies</span>
+              <span class="hint" id="speak-replies-hint">Turn off to read Clearcart's answers in the subtitles without hearing them.</span></span>
+            <input id="speak-replies" name="speakReplies" class="sw" type="checkbox" role="switch" data-setting="speakReplies" aria-labelledby="speak-replies-label" aria-describedby="speak-replies-hint speak-replies-note">
+          </label>
+          <p class="hint warn" id="speak-replies-note" role="status" hidden></p>
           <label class="row" for="guided-mode">
             <span class="row-text"><span id="guided-mode-label">Guided mode</span>
               <span class="hint" id="guided-mode-hint">Clearcart describes each page and lets you choose. Turn off to let it pick and act on its own.</span></span>
