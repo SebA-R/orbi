@@ -191,21 +191,25 @@ test("the wait is capped at 60 s", () => {
 
 test("the stale cap is extended for long text", () => {
   const t = setup();
-  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(100), final: false });
-  t.send({ type: "voice.state", state: "speaking" }); // never returns to idle
+  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(100), final: false }); // never final
   t.tick(44_999); // 100 words: 35.5 s wait, so the cap is 45.5 s
   assert.ok(t.visible(), "not cut at 30 s");
   t.tick(501);
   assert.equal(t.visible(), false);
 });
 
-test("hides 30 s after the last update even if the voice state never returns to idle", () => {
+test("never fades on a timer while thinking; fades the usual delay after idle", () => {
   const t = setup();
+  t.send({ type: "subtitle", speaker: "user", text: "buy eggs", final: true });
   t.send({ type: "voice.state", state: "thinking" });
-  t.tick(29_999);
+  t.window.__clearcartCaption.set("Searching");
+  t.tick(120_000);
+  assert.ok(t.visible(), "still up after 2 min of thinking");
+  t.send({ type: "voice.state", state: "idle" });
+  t.tick(9_999);
   assert.ok(t.visible());
   t.tick(1);
-  assert.equal(t.visible(), false);
+  assert.equal(t.visible(), false, "10 s after idle");
 });
 
 test("a partial line cancels a pending hide", () => {
@@ -728,11 +732,14 @@ test("the action line: a small secondary line under the words, never replacing t
   caption.set("");
   assert.equal(t.$(".act").textContent, "");
   assert.match(t.$(".agent").textContent, /linen/);
-  // On a hidden card it shows the card, and the usual timer hides it.
+  // On a hidden card it shows the card, and the usual timer hides it at idle.
   const u = setup();
   u.send({ type: "voice.state", state: "thinking" });
   u.window.__clearcartCaption.set("Scrolling");
   assert.ok(u.visible());
+  u.tick(11000);
+  assert.ok(u.visible(), "no fade while thinking");
+  u.send({ type: "voice.state", state: "idle" });
   u.tick(11000);
   assert.equal(u.visible(), false);
   u.tick(1000);

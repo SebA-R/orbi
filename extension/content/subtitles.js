@@ -33,7 +33,7 @@
   const HIDE_MAX_MS = 60000;  // longest wait, however much text is on the card
   const MS_PER_EXTRA_WORD = 300; // about 200 words per minute of extra reading time
   const FREE_WORDS = 15;      // lines up to this many words get the minimum wait
-  const STALE_MIN_MS = 30000; // hard cap after the last update, even if a state never returns to idle
+  const STALE_MIN_MS = 30000; // hard cap after the last update; like every timer, it only fades at idle
   const STALE_LATCHED_MS = 70000; // a latched session stops itself after 60 s without speech
   const LATCH_HINT = "Listening. Press Space to send.";
   const FADE_MS = 700;        // matches the .wrap fade-out transition
@@ -328,10 +328,11 @@
     return Math.min(HIDE_MAX_MS, HIDE_MIN_MS + Math.max(0, n - FREE_WORDS) * MS_PER_EXTRA_WORD);
   }
 
-  // The stale cap never cuts a long caption short.
+  // The stale cap never cuts a long caption short, and never fades the card
+  // while Orbi is listening, thinking or speaking: it waits for idle.
   function armStale() {
     clearTimeout(ui.staleTimer);
-    ui.staleTimer = setTimeout(hide, Math.max(ui.latched ? STALE_LATCHED_MS : STALE_MIN_MS, hideDelayMs() + 10000));
+    ui.staleTimer = setTimeout(() => (ui.state === "idle" ? hide() : armStale()), Math.max(ui.latched ? STALE_LATCHED_MS : STALE_MIN_MS, hideDelayMs() + 10000));
   }
 
   function show() {
@@ -373,8 +374,11 @@
     }, FADE_MS);
   }
 
+  // Timed fades run only at idle; onState starts the countdown on idle.
   function scheduleHide() {
     clearTimeout(ui.hideTimer);
+    ui.hideTimer = 0;
+    if (ui.state !== "idle") return;
     ui.hideTimer = setTimeout(hide, hideDelayMs());
   }
 
@@ -566,7 +570,7 @@
     flushPendingClear();
     ui.act.textContent = text;
     show();
-    if (!ui.hideTimer && (ui.state === "idle" || ui.state === "thinking")) scheduleHide();
+    if (!ui.hideTimer) scheduleHide();
   }
   globalThis.__clearcartCaption = Object.freeze({ set: setAction });
 
