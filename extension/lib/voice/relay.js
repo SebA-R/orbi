@@ -91,12 +91,14 @@ export function createVoiceRelay({
     return tab && tab.id != null ? tab.id : lastTabId;
   }
 
-  // Same tab toTab picks. Synchronous when it is already known, so states
-  // reach onVoiceState in the order they came.
+  // Same tab toTab picks. One chain, so states reach onVoiceState in the
+  // order they came even when the tab has to be looked up.
+  let stateChain = Promise.resolve();
   function noteState(state) {
     const call = (id) => { try { onVoiceState(state, id ?? null); } catch {} };
-    if (lastTabId != null) return call(lastTabId);
-    activeTabId().then(call, () => call(null));
+    stateChain = stateChain
+      .then(() => (lastTabId != null ? lastTabId : activeTabId()))
+      .then(call, () => call(null));
   }
 
   async function toTab(msg) {
@@ -223,7 +225,7 @@ export function createVoiceRelay({
     if (tab && tab.id != null) await onTabActivated({ tabId: tab.id });
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, ducker, idle: () => chain };
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, ducker, idle: () => chain, statesIdle: () => stateChain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.

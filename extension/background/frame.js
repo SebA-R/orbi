@@ -14,6 +14,10 @@ import { RT } from "../lib/protocol.js";
 export const FRAME_FILES = ["content/frame.js"];
 // Matches the "Clearcart is using this tab" pill (content/indicator.js).
 export const HOLD_MS = 10_000;
+// Voice states that mean a turn is in progress; anything else counts as idle.
+const ACTIVE = new Set(["listening", "thinking", "speaking"]);
+// The framed tab, kept across worker restarts so a lost "off" can be sent.
+export const SHOWN_KEY = "clearcartFrameTab";
 
 export function createFrame({
   chromeApi = globalThis.chrome,
@@ -34,20 +38,46 @@ export function createFrame({
     return null;
   }
 
-  async function send(tabId, on) {
-    const msg = { type: RT.FRAME, on };
+  // frame.js answers { frame: true }; another content script answering, or
+  // none, means it is not there.
+  async function deliver(tabId, on) {
     try {
-      await chromeApi.tabs.sendMessage(tabId, msg, { frameId: 0 });
+      const r = await chromeApi.tabs.sendMessage(tabId, { type: RT.FRAME, on }, { frameId: 0 });
+      return !!(r && r.frame === true);
     } catch {
-      if (!on) return; // nothing there to hide
-      // No frame script yet (a tab open since before install): add it once.
-      try {
-        await chromeApi.scripting.executeScript({ target: { tabId }, files: FRAME_FILES });
-        await chromeApi.tabs.sendMessage(tabId, msg, { frameId: 0 });
-      } catch {
-        // chrome:// page, error page, closed tab: nothing to show.
-      }
+      return false;
     }
+  }
+
+  async function send(tabId, on) {
+    if (await deliver(tabId, on) || !on) return; // nothing there to hide
+    // No frame script yet (a tab open since before install): add it once.
+    try {
+      await chromeApi.scripting.executeScript({ target: { tabId }, files: FRAME_FILES });
+    } catch {
+      return; // chrome:// page, error page, closed tab: nothing to show.
+    }
+    // The frame may have moved on while the script loaded: send what is true now.
+    await deliver(tabId, shown === tabId);
+  }
+
+  function persist() {
+    try {
+      const area = chromeApi.storage && chromeApi.storage.session;
+      if (!area) return;
+      const p = shown == null ? area.remove(SHOWN_KEY) : area.set({ [SHOWN_KEY]: shown });
+      Promise.resolve(p).catch(() => {});
+    } catch {}
+  }
+
+  // A restarted worker forgets the frame: turn off the one it left on.
+  async function recover() {
+    const area = chromeApi.storage && chromeApi.storage.session;
+    if (!area) return;
+    const { [SHOWN_KEY]: tabId } = (await area.get(SHOWN_KEY)) || {};
+    if (tabId == null || tabId === shown) return;
+    await area.remove(SHOWN_KEY);
+    await deliver(tabId, false);
   }
 
   function sync() {
@@ -55,13 +85,15 @@ export function createFrame({
     if (next === shown) return;
     const prev = shown;
     shown = next;
+    persist();
     if (prev != null) void send(prev, false);
     if (next != null) void send(next, true);
   }
 
   // Every VOICE_STATE the relay forwards, with the tab it went to.
   function onVoiceState(state, tabId) {
-    const active = typeof state === "string" && state !== "idle";
+    const active = ACTIVE.has(state);
+    const wasTurn = turn;
     if (active && !turn) {
       // A new turn starts on the tab the user is talking in.
       agentTab = null;
@@ -69,7 +101,7 @@ export function createFrame({
     }
     turn = active;
     if (active && tabId != null) turnTab = tabId;
-    if (!active) {
+    if (!active && wasTurn) {
       // The turn is over: no frame, even if the agent acted just now.
       agentTab = null;
       release();
@@ -104,13 +136,13 @@ export function createFrame({
   }
 
   function onTabRemoved(tabId) {
-    if (tabId === shown) shown = null;
+    if (tabId === shown) { shown = null; persist(); }
     if (tabId === agentTab) { agentTab = null; release(); }
     if (tabId === turnTab) turnTab = null;
     sync();
   }
 
-  return { onVoiceState, onAgentTab, onTabUpdated, onTabRemoved, shownTab: () => shown };
+  return { onVoiceState, onAgentTab, onTabUpdated, onTabRemoved, recover, shownTab: () => shown };
 }
 
 // Registers the tab listeners synchronously so Chrome can wake the worker.
@@ -119,5 +151,6 @@ export function installFrame(opts = {}) {
   const frame = createFrame({ ...opts, chromeApi });
   chromeApi.tabs.onUpdated?.addListener((id, change) => frame.onTabUpdated(id, change));
   chromeApi.tabs.onRemoved?.addListener((id) => frame.onTabRemoved(id));
+  frame.recover().catch(() => {});
   return frame;
 }
