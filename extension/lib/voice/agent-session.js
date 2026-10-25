@@ -5,7 +5,7 @@
 import { Backoff } from "../backoff.js";
 
 export class AgentSession {
-  constructor({ url, onMessage, onState = () => {}, log = () => {}, WebSocketImpl = globalThis.WebSocket, backoff = new Backoff({ min: 500, max: 5000 }), setTimer = setTimeout }) {
+  constructor({ url, onMessage, onState = () => {}, log = () => {}, WebSocketImpl = globalThis.WebSocket, backoff = new Backoff({ min: 500, max: 5000 }), setTimer = (fn, ms) => setTimeout(fn, ms) }) {
     Object.assign(this, { url, onMessage, onState, log, WebSocketImpl, backoff, setTimer });
     this.ws = null;
     this.outbox = [];
