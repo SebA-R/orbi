@@ -1,0 +1,14 @@
+{
+  "name": "clearcart-extension-tests",
+  "private": true,
+  "type": "module",
+  "description": "Unit tests (node:test) and browser tests (Playwright Chromium with the unpacked extension) for extension/.",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:browser",
+    "test:unit": "node --test unit/",
+    "test:browser": "node --test --test-concurrency=1 browser/"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
