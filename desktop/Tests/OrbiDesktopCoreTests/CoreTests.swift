@@ -26,11 +26,18 @@ final class LuhnRedactionTests: XCTestCase {
   }
 
   func testNonCardsAreLeftAlone() {
-    XCTAssertTrue(hitText([line("Order 4111111111111112")]).isEmpty) // fails Luhn
+    XCTAssertTrue(hitText([line("Order 1234567890123")]).isEmpty) // 13 digits, fails Luhn
     XCTAssertTrue(hitText([line("Call 555 123 4567")]).isEmpty) // 10 digits
     XCTAssertTrue(hitText([line("Total 1,234,567.89")]).isEmpty)
     // Three separators in a row split runs: neither half is a card.
     XCTAssertTrue(hitText([line("41111111 - 11111111")]).isEmpty)
+  }
+
+  func testCardJoinedToNeighbours() {
+    // An expiry, CVC or other digits a space joined onto the card.
+    XCTAssertEqual(hitText([line("5555 5555 5555 4444 05/27")]), ["5555 5555 5555 4444 05"])
+    XCTAssertEqual(hitText([line("4242 4242 4242 4242 123")]), ["4242 4242 4242 4242 123"])
+    XCTAssertEqual(hitText([line("4111111111111111 12")]), ["4111111111111111 12"])
   }
 
   func testLongRunCoveredIfAnyWindowPasses() {
@@ -45,6 +52,8 @@ final class LuhnRedactionTests: XCTestCase {
     XCTAssertEqual(hitText([line("Enter OTP 482 913")]), ["482 913"])
     // On a nearby line.
     XCTAssertEqual(hitText([line("Verification", y: 0), line("482913", y: 25)]), ["482913"])
+    // Next to other digits.
+    XCTAssertEqual(hitText([line("Your code: 123456 2024")]), ["123456"])
   }
 
   func testSixDigitsWithoutContextOrNotStandalone() {
@@ -94,7 +103,9 @@ final class KeyComboTests: XCTestCase {
 
 final class ProtocolTests: XCTestCase {
   func testHelloAndEvents() throws {
-    let hello = try JSON.decode(Outbound.hello(Permissions(accessibility: true, screen: false, mic: true)))
+    let hello = try JSON.decode(Outbound.hello(Permissions(accessibility: true, screen: false, mic: true), token: "abc"))
+    XCTAssertEqual(hello["token"], "abc")
+    XCTAssertEqual(hello["features"], ["element", "focused", "expectRef", "exclude"])
     XCTAssertEqual(hello["type"], "hello")
     XCTAssertEqual(hello["name"], "orbi-desktop")
     XCTAssertEqual(hello["version"], 1)

@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import OrbiDesktopCore
 
 // The mic, open only while talking: AVAudioEngine converted to PCM s16le
@@ -13,6 +13,7 @@ final class Mic {
   private var pendingBytes = 0
   private var streaming = false
   private let maxPendingBytes = Int(Proto.micSampleRate) * 2 * 10
+  private var change: NSObjectProtocol?
 
   var isOpen: Bool { engine != nil }
 
@@ -46,6 +47,17 @@ final class Mic {
     do {
       try e.start()
       engine = e
+      // A device change (headphones in or out) stops the engine: reopen on
+      // the new device, keeping the stream going.
+      change = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: .main) { [weak self] _ in
+        Task { @MainActor in
+          guard let self, self.engine === e else { return }
+          let wasStreaming = self.streaming
+          self.close()
+          self.open()
+          if wasStreaming { self.stream() }
+        }
+      }
     } catch {
       input.removeTap(onBus: 0)
       log("mic: could not start (\(error.localizedDescription))")
@@ -60,6 +72,8 @@ final class Mic {
   }
 
   func close() {
+    if let change { NotificationCenter.default.removeObserver(change) }
+    change = nil
     engine?.inputNode.removeTap(onBus: 0)
     engine?.stop()
     engine = nil
@@ -78,22 +92,35 @@ final class Mic {
 }
 
 // TTS playback: PCM s16le 24 kHz mono frames from the server, queued on an
-// AVAudioPlayerNode. stop() cuts it at once (barge-in).
+// AVAudioPlayerNode. stop() cuts it at once (barge-in). After a local stop
+// (the user pressed the talk key) frames still in flight are dropped until
+// the server's audio_stop arrives, or for 3 s at most, so the cut-off reply
+// does not start again.
 @MainActor
 final class Player {
   private let engine = AVAudioEngine()
   private let node = AVAudioPlayerNode()
   private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Proto.ttsSampleRate, channels: 1, interleaved: false)!
   private var carry: UInt8?
-  private var ready = false
+  private var wired = false
+  private var mutedUntil: Date?
 
-  init() {
+  private func wire() {
+    guard !wired else { return }
+    wired = true
     engine.attach(node)
     engine.connect(node, to: engine.mainMixerNode, format: format)
+    NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+      Task { @MainActor in self?.node.stop() } // started again on the next frame
+    }
   }
 
   func play(_ pcm: Data) {
     var bytes = [UInt8](pcm)
+    if let until = mutedUntil {
+      if Date() < until { return }
+      mutedUntil = nil
+    }
     if let c = carry { bytes.insert(c, at: 0); carry = nil }
     if bytes.count % 2 == 1 { carry = bytes.removeLast() }
     let frames = bytes.count / 2
@@ -104,8 +131,9 @@ final class Player {
       let s = Int16(bitPattern: UInt16(bytes[2 * i]) | (UInt16(bytes[2 * i + 1]) << 8))
       out[i] = Float(s) / 32768
     }
-    if !ready {
-      do { try engine.start(); ready = true } catch {
+    wire()
+    if !engine.isRunning {
+      do { try engine.start() } catch {
         log("player: could not start (\(error.localizedDescription))")
         return
       }
@@ -114,9 +142,10 @@ final class Player {
     if !node.isPlaying { node.play() }
   }
 
-  func stop() {
+  // local: the user barged in; the server's audio_stop is still to come.
+  func stop(local: Bool) {
     carry = nil
-    guard ready else { return }
-    node.stop()
+    mutedUntil = local ? Date().addingTimeInterval(3) : nil
+    if wired { node.stop() }
   }
 }

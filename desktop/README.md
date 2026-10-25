@@ -2,7 +2,7 @@
 
 A native macOS menu-bar helper that lets Orbi see and act on the whole Mac,
 not just Chrome. It connects to the Orbi server at
-`ws://localhost:5050/desktop` (the server side lives in `agent/desktop/`)
+`ws://127.0.0.1:5050/desktop` (the server side lives in `agent/desktop/`)
 and answers its requests: read the frontmost app and its Accessibility tree,
 click, type, press keys, scroll, take redacted screenshots, and draw Orbi's
 overlay. Hold Right Option to talk; double-tap it to keep listening.
@@ -52,8 +52,21 @@ again after rebuilding (or remove the old entry first).
   "code" or "verification" are blacked out. If redaction fails the request
   fails; the unredacted image is never sent.
 - Nothing acts while the screen is locked (`locked`).
+- It dials 127.0.0.1 only, and only when a process of the same user listens
+  on the port, so another account cannot pose as the server. hello carries
+  the token from `~/Library/Application Support/Orbi/desktop.token` (made by
+  the server), so nothing else can pose as the helper.
 
 ## Protocol notes (v1)
+
+hello carries `token` and `features: ["element","focused","expectRef","exclude"]`.
+`element {ref}`, `focused {}` and `element_at {x,y}` return
+`{bundleId, appName, windowTitle, element|null, defaultButton?}`.
+`click {x,y,expectRef}` and `click {ref}` hit-test again right before the
+press (`target_changed`). `type {text, ref}` only types into that text field
+while it has the focus. `key` in a password field allows only Return, Tab
+and Escape (`secure_field`). `screenshot {maxWidth, exclude}` returns
+`excluded` and `redacted: true`. Refs are never reused (`stale_ref`).
 
 Coordinates are global screen points, top-left origin of the main display.
 `screenshot` returns `scale` as PNG pixels per point. `welcome` and `config`

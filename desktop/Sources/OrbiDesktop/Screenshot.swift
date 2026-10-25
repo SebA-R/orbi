@@ -21,13 +21,14 @@ enum Screenshot {
     let width: Int
     let height: Int
     let scale: Double
+    let excluded: [String] // bundle ids left out of the capture
   }
 
   // OCR and redaction run at up to this width, before scaling down.
   static let workWidth = 3072
 
   @MainActor
-  static func capture(maxWidth: Int, blocklist: Blocklist) async throws -> Shot {
+  static func capture(maxWidth: Int, blocklist: Blocklist, exclude: [String]) async throws -> Shot {
     let content: SCShareableContent
     do {
       content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -39,7 +40,11 @@ enum Screenshot {
       throw ProtoError(.internalError, "no display")
     }
     let me = getpid()
-    let excluded = content.applications.filter { $0.processID == me || blocklist.isBlocked($0.bundleIdentifier) }
+    var extra = Blocklist()
+    extra.setServerEntries(exclude)
+    let excluded = content.applications.filter {
+      $0.processID == me || blocklist.isBlocked($0.bundleIdentifier) || extra.isBlocked($0.bundleIdentifier)
+    }
     let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
     let points = CGDisplayBounds(display.displayID)
     let native = CGDisplayCopyDisplayMode(display.displayID).map { Double($0.pixelWidth) } ?? 0
@@ -51,6 +56,12 @@ enum Screenshot {
     config.showsCursor = false
     config.capturesAudio = false
 
+    // Secure fields are found before and after the capture and both are
+    // covered, so a window that moved in between is still covered where
+    // the image shows it.
+    let excludedPids = Set(excluded.map(\.processID))
+    let before = secureRegions(display: points, skip: excludedPids)
+
     let raw: CGImage
     do {
       raw = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
@@ -58,9 +69,7 @@ enum Screenshot {
       throw ProtoError(.internalError, "capture failed: \(error.localizedDescription)")
     }
 
-    // Secure fields, in points, from every on-screen app that is in the image.
-    let excludedPids = Set(excluded.map(\.processID))
-    let secure = secureRegions(display: points, skip: excludedPids)
+    let secure = before + secureRegions(display: points, skip: excludedPids)
 
     let px = Double(raw.width) / points.width
     let redacted = try await Task.detached(priority: .userInitiated) {
@@ -72,7 +81,10 @@ enum Screenshot {
     guard let out = scaled(redacted, width: outW, height: outH), let png = encodePNG(out) else {
       throw ProtoError(.internalError, "encoding failed")
     }
-    return Shot(png: png, width: outW, height: outH, scale: Double(outW) / points.width)
+    // Every id asked for counts as excluded (one that is not running has no
+    // windows to show), plus the running apps actually left out.
+    let ids = Set(exclude + excluded.compactMap(\.bundleIdentifier).filter { $0 != Bundle.main.bundleIdentifier })
+    return Shot(png: png, width: outW, height: outH, scale: Double(outW) / points.width, excluded: ids.sorted())
   }
 
   // Frames (global points) to black out for secure fields: each field, or
@@ -133,6 +145,7 @@ enum Screenshot {
     let req = VNRecognizeTextRequest()
     req.recognitionLevel = .accurate
     req.usesLanguageCorrection = false
+    req.minimumTextHeight = 0.006 // small print too, relative to the image height
     do {
       try VNImageRequestHandler(cgImage: img, options: [:]).perform([req])
     } catch {

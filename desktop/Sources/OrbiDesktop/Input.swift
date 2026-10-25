@@ -88,8 +88,9 @@ final class Input {
     return f
   }
 
-  func key(_ combo: KeyCombo) async throws {
+  func key(_ combo: KeyCombo, allowed: () throws -> Void) async throws {
     let started = epoch
+    try allowed()
     let f = flags(combo.modifiers)
     let d = CGEvent(keyboardEventSource: source, virtualKey: combo.keyCode, keyDown: true)
     d?.flags = f
@@ -133,6 +134,7 @@ final class Input {
       let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
                       wheel1: Int32(clamping: -step.dy), wheel2: Int32(clamping: -step.dx), wheel3: 0)
       e?.flags = []
+      e?.location = p // the checked point, wherever the user's hand moved the pointer
       post(e)
     }
   }

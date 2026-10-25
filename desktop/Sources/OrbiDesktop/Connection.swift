@@ -13,7 +13,6 @@ final class Connection {
   var onMessage: (Inbound) -> Void = { _ in }
   var onBinary: (Data) -> Void = { _ in }
   var onDisconnect: () -> Void = {}
-  var makeHello: () -> String = { Outbound.hello(Perms.current) }
 
   private let url: URL
   private let session = URLSession(configuration: .ephemeral)
@@ -23,6 +22,7 @@ final class Connection {
   private var welcomed = false
   private var pingTimer: Timer?
   private var retryTimer: Timer?
+  private var pongTimer: Timer?
 
   init(url: URL) { self.url = url }
 
@@ -56,12 +56,22 @@ final class Connection {
     generation += 1
     welcomed = false
     onStatus(.connecting)
+    // No token yet (the server has not started) or a port held by another
+    // user's process: do not dial, try again later.
+    guard let token = Env.token() else {
+      log("no token at \(Env.tokenFile.path); is the Orbi server running?")
+      return retry()
+    }
+    if let port = url.port, !PortOwner.listenerIsOurs(port: port) {
+      log("nothing of this user listens on port \(port)")
+      return retry()
+    }
     let t = session.webSocketTask(with: url)
     t.maximumMessageSize = 16 << 20
     task = t
     t.resume()
     log("connecting to \(url.absoluteString)")
-    send(text: makeHello())
+    send(text: Outbound.hello(Perms.current, token: token))
     receive(t, generation)
     pingTimer?.invalidate()
     pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
@@ -71,8 +81,18 @@ final class Connection {
 
   private func ping() {
     guard let t = task else { return }
+    // A half-open socket never answers: no pong in 10 s counts as dropped.
+    pongTimer?.invalidate()
+    pongTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+      Task { @MainActor in self?.failed(t, nil) }
+    }
     t.sendPing { [weak self] err in
-      if let err { Task { @MainActor in self?.failed(t, err) } }
+      Task { @MainActor in
+        guard let self, t === self.task else { return }
+        self.pongTimer?.invalidate()
+        self.pongTimer = nil
+        if let err { self.failed(t, err) }
+      }
     }
   }
 
@@ -125,6 +145,11 @@ final class Connection {
     let wasWelcomed = welcomed
     drop()
     if wasWelcomed { onStatus(.connecting) }
+    retry()
+  }
+
+  private func retry() {
+    retryTimer?.invalidate()
     let delay = min(10, 0.5 * pow(2, Double(attempt))) * Double.random(in: 0.8...1.2)
     attempt = min(attempt + 1, 8)
     retryTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
@@ -136,6 +161,8 @@ final class Connection {
     generation += 1
     pingTimer?.invalidate()
     pingTimer = nil
+    pongTimer?.invalidate()
+    pongTimer = nil
     task?.cancel(with: .goingAway, reason: nil)
     task = nil
     if welcomed {

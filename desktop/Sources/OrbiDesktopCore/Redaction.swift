@@ -4,10 +4,10 @@ import Foundation
 // runs Vision text recognition and hands every line here as a TextLine;
 // this returns the character ranges to cover. It errs toward covering:
 //
-// - Card numbers: a digit run of 13 to 19 digits (one or two spaces or
-//   dashes allowed between digits, since OCR doubles spaces) that passes Luhn. A run longer than 19 digits is
-//   covered whole if any 13 to 19 digit window of it passes, since OCR can
-//   glue a card number to its neighbours.
+// - Card numbers: a digit run (one or two spaces or dashes allowed between
+//   digits, since OCR doubles spaces) is covered whole when any 13 to 19
+//   digit window of it passes Luhn, since a space can join a card number to
+//   its expiry, CVC or other neighbours.
 // - One-time codes: a standalone run of exactly 6 digits ("123456",
 //   "123 456", "123-456") when "code", "verification", "otp" or "passcode"
 //   appears on the same line or on a line close to it.
@@ -65,6 +65,9 @@ public enum Luhn {
 struct DigitRun {
   let range: Range<String.Index>
   let digits: [Int]
+  // The separator-free pieces of the run ("4111", "1111", ...), each with
+  // its digit count.
+  let groups: [(range: Range<String.Index>, count: Int)]
 }
 
 func digitRuns(in s: String) -> [DigitRun] {
@@ -77,10 +80,19 @@ func digitRuns(in s: String) -> [DigitRun] {
     let start = i
     var end = s.index(after: i)
     var digits = [s[i].wholeNumberValue!]
+    var groups: [(range: Range<String.Index>, count: Int)] = []
+    var groupStart = start
+    var groupCount = 1
     var j = end
     while j < s.endIndex {
       if isDigit(s[j]) {
+        if j != end { // a separator came before this digit
+          groups.append((groupStart..<end, groupCount))
+          groupStart = j
+          groupCount = 0
+        }
         digits.append(s[j].wholeNumberValue!)
+        groupCount += 1
         j = s.index(after: j)
         end = j
       } else if isSep(s[j]) {
@@ -93,7 +105,8 @@ func digitRuns(in s: String) -> [DigitRun] {
         break
       }
     }
-    runs.append(DigitRun(range: start..<end, digits: digits))
+    groups.append((groupStart..<end, groupCount))
+    runs.append(DigitRun(range: start..<end, digits: digits, groups: groups))
     i = end
   }
   return runs
@@ -102,11 +115,12 @@ func digitRuns(in s: String) -> [DigitRun] {
 public enum Redaction {
   public static let codeWords = ["code", "verification", "otp", "passcode"]
 
+  // Any 13 to 19 digit window of the run passing Luhn: a card may sit next
+  // to an expiry, a CVC or other digits that a space joined onto it.
   static func isCard(_ digits: [Int]) -> Bool {
     let n = digits.count
-    if (13...19).contains(n) { return Luhn.valid(digits) }
-    guard n > 19 else { return false }
-    for len in 13...19 {
+    guard n >= 13 else { return false }
+    for len in 13...min(19, n) {
       for start in 0...(n - len) where Luhn.valid(digits[start..<(start + len)]) {
         return true
       }
@@ -148,11 +162,24 @@ public enum Redaction {
       for run in digitRuns(in: line.text) {
         if isCard(run.digits) {
           out.append(RedactHit(line: li, range: run.range, kind: .card))
-        } else if run.digits.count == 6, standalone(line.text, run.range) {
+        } else {
+          // Six digits made of whole groups ("123456", "123 456"), even
+          // inside a longer run ("123456 2024").
+          var codes: [Range<String.Index>] = []
+          for a in run.groups.indices {
+            var total = 0
+            for b in a..<run.groups.count {
+              total += run.groups[b].count
+              if total > 6 { break }
+              let r = run.groups[a].range.lowerBound..<run.groups[b].range.upperBound
+              if total == 6, standalone(line.text, r) { codes.append(r) }
+            }
+          }
+          guard !codes.isEmpty else { continue }
           let context = mentions[li] || lines.indices.contains { j in
             j != li && mentions[j] && near(line.box, lines[j].box)
           }
-          if context { out.append(RedactHit(line: li, range: run.range, kind: .code)) }
+          if context { out += codes.map { RedactHit(line: li, range: $0, kind: .code) } }
         }
       }
     }

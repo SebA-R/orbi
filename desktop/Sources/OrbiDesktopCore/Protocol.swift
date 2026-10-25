@@ -9,7 +9,9 @@ import Foundation
 public enum Proto {
   public static let version = 1
   public static let name = "orbi-desktop"
-  public static let defaultURL = "ws://localhost:5050/desktop"
+  // 127.0.0.1, never "localhost": no IPv6 ::1 listener can stand in.
+  public static let defaultURL = "ws://127.0.0.1:5050/desktop"
+  public static let features = ["element", "focused", "expectRef", "exclude"]
   public static let micSampleRate = 16_000.0
   public static let ttsSampleRate = 24_000.0
 }
@@ -21,6 +23,9 @@ public enum ErrorCode: String, Sendable, CaseIterable {
   case noElement = "no_element"
   case blockedApp = "blocked_app"
   case locked = "locked"
+  case staleRef = "stale_ref"           // a ref that is unknown, from an old snapshot, or gone
+  case targetChanged = "target_changed" // what is under the point or focused is not what was checked
+  case secureField = "secure_field"     // typing would go to a password field
   case internalError = "internal"
 }
 
@@ -35,7 +40,7 @@ public struct ProtoError: Error, Equatable, Sendable {
 }
 
 public enum ProtoMethod: String, Sendable, CaseIterable {
-  case frontmost, apps_list, app_activate, ax_tree, element_at
+  case frontmost, apps_list, app_activate, ax_tree, element, element_at, focused
   case click, type, key, scroll, screenshot, overlay
 }
 
@@ -68,9 +73,10 @@ public enum Inbound: Equatable, Sendable {
 }
 
 public enum Outbound {
-  public static func hello(_ p: Permissions) -> String {
+  public static func hello(_ p: Permissions, token: String) -> String {
     JSON.object([
-      "type": "hello", "name": .string(Proto.name), "version": JSON(Proto.version),
+      "type": "hello", "name": .string(Proto.name), "version": JSON(Proto.version), "token": .string(token),
+      "features": .array(Proto.features.map { .string($0) }),
       "permissions": ["accessibility": .bool(p.accessibility), "screen": .bool(p.screen), "mic": .bool(p.mic)],
     ]).encoded()
   }

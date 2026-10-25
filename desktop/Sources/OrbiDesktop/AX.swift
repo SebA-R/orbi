@@ -108,9 +108,12 @@ enum AX {
   // One element's facts. The value is only read once the element is known
   // not to be secure.
   static func node(_ el: AXUIElement, pid: pid_t) -> AXNode {
-    let role = string(el, kAXRoleAttribute) ?? "AXUnknown"
+    let roleRead = string(el, kAXRoleAttribute)
+    let role = roleRead ?? "AXUnknown"
     let subrole = string(el, kAXSubroleAttribute)
-    let secure = isSecure(role: role, subrole: subrole)
+    // An element whose role cannot be read is treated as secure: its value
+    // is never read.
+    let secure = roleRead == nil || isSecure(role: role, subrole: subrole)
     let label = string(el, kAXDescriptionAttribute) ?? string(el, "AXPlaceholderValue") ?? string(el, kAXHelpAttribute)
     let value = secure ? nil : string(el, kAXValueAttribute)
     let enabled = (attr(el, kAXEnabledAttribute) as? Bool) ?? true
@@ -164,12 +167,59 @@ enum AX {
     return kept
   }
 
-  static func hitTest(x: Double, y: Double) -> AXNode? {
-    let sys = AXUIElementCreateSystemWide()
+  // Hit test inside one app (pid given) or system wide. The per-app form
+  // can never land on the helper's own overlay window.
+  static func hitTest(x: Double, y: Double, pid inApp: pid_t? = nil) -> AXNode? {
+    let sys = inApp.map(app) ?? AXUIElementCreateSystemWide()
     AXUIElementSetMessagingTimeout(sys, timeout)
     var el: AXUIElement?
     guard AXUIElementCopyElementAtPosition(sys, Float(x), Float(y), &el) == .success, let el, let pid = pid(el) else { return nil }
     return node(el, pid: pid)
+  }
+
+  // The element still exists (its app has not destroyed it).
+  static func alive(_ el: AXUIElement) -> Bool {
+    var v: CFTypeRef?
+    let err = AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v)
+    return err != .invalidUIElement && err != .cannotComplete
+  }
+
+  // a is b, or sits inside b (a button's label text, a field's inner editor).
+  static func same(_ a: AXUIElement, orInside b: AXUIElement, depth: Int = 8) -> Bool {
+    var cur: AXUIElement? = a
+    for _ in 0...depth {
+      guard let c = cur else { return false }
+      if CFEqual(c, b) { return true }
+      cur = element(attr(c, kAXParentAttribute))
+    }
+    return false
+  }
+
+  // The app that gets the keys, which can differ from the frontmost app
+  // (a non-activating panel such as Spotlight).
+  static func focusedAppPid() -> pid_t? {
+    let sys = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(sys, timeout)
+    return element(attr(sys, kAXFocusedApplicationAttribute)).flatMap(pid)
+  }
+
+  static let textRolesForTyping: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+
+  static func focusedElement() -> AXUIElement? {
+    let sys = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(sys, timeout)
+    return element(attr(sys, kAXFocusedUIElementAttribute))
+  }
+
+  // The window an element is in, else the app's focused window.
+  static func window(of el: AXUIElement?, pid: pid_t) -> AXUIElement? {
+    if let el, let w = element(attr(el, kAXWindowAttribute)) { return w }
+    return element(attr(app(pid), kAXFocusedWindowAttribute))
+  }
+
+  static func defaultButton(in window: AXUIElement?) -> AXUIElement? {
+    guard let window else { return nil }
+    return element(attr(window, kAXDefaultButtonAttribute))
   }
 
   static func focusedWindowTitle(pid: pid_t) -> String? {
@@ -224,24 +274,38 @@ enum AX {
     case failed // the app's tree could not be read; cover its windows
   }
 
-  // Frames of the secure fields in one app's windows.
-  static func secureFrames(pid: pid_t, visitCap: Int = 4000, deadline: Date) -> ScanResult {
+  // Frames of the secure fields in one app's windows. Fails (so the
+  // caller covers the app's windows) on any AX error, on an element whose
+  // role cannot be read, at the deadline, and when the visit cap is reached
+  // with elements still unread: a field the scan did not reach is not
+  // known to be safe.
+  static func secureFrames(pid: pid_t, visitCap: Int = 8000, deadline: Date) -> ScanResult {
     let a = app(pid)
     var v: CFTypeRef?
-    let err = AXUIElementCopyAttributeValue(a, kAXWindowsAttribute as CFString, &v)
-    if err == .cannotComplete || err == .apiDisabled { return .failed }
-    var queue = (v as? [AnyObject] ?? []).compactMap { element($0) }
+    guard AXUIElementCopyAttributeValue(a, kAXWindowsAttribute as CFString, &v) == .success,
+          let list = v as? [AnyObject] else { return .failed }
+    var queue = list.compactMap { element($0) }
     var head = 0
     var out: [CGRect] = []
-    while head < queue.count, head < visitCap {
-      if Date() > deadline { return .failed }
+    while head < queue.count {
+      if head >= visitCap || Date() > deadline { return .failed }
       let el = queue[head]
       head += 1
-      if isSecure(role: string(el, kAXRoleAttribute), subrole: string(el, kAXSubroleAttribute)) {
-        if let f = frame(el) { out.append(f) }
+      var r: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &r) == .success, let role = r as? String else {
+        return .failed
+      }
+      if isSecure(role: role, subrole: string(el, kAXSubroleAttribute)) {
+        guard let f = frame(el) else { return .failed }
+        out.append(f)
         continue
       }
-      queue += children(el)
+      var c: CFTypeRef?
+      switch AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &c) {
+      case .success: queue += (c as? [AnyObject] ?? []).compactMap { element($0) }
+      case .noValue, .attributeUnsupported: break // a leaf
+      default: return .failed
+      }
     }
     return .ok(out)
   }

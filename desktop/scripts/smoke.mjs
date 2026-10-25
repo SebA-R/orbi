@@ -7,7 +7,9 @@
 //   swift build && node scripts/smoke.mjs [path/to/OrbiDesktop]
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -88,8 +90,13 @@ async function call(method, params) {
   return next((m) => m.type === "res" && m.id === id);
 }
 
+// A token file of our own, like the server's (it is read on every connect).
+const tokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "orbi-smoke-"));
+const tokenFile = path.join(tokenDir, "desktop.token");
+const token = "ab".repeat(32);
+
 const child = spawn(bin, [], {
-  env: { ...process.env, ORBI_DESKTOP_DRY_RUN: "1", ORBI_DESKTOP_URL: `ws://127.0.0.1:${port}/desktop` },
+  env: { ...process.env, ORBI_DESKTOP_DRY_RUN: "1", ORBI_DESKTOP_URL: `ws://127.0.0.1:${port}/desktop`, ORBI_DESKTOP_TOKEN_FILE: tokenFile },
   stdio: ["ignore", "ignore", "pipe"],
 });
 let stderr = "";
@@ -103,7 +110,12 @@ function check(name, ok, detail = "") {
 const code = (r) => r.error && r.error.code;
 
 try {
-  const hello = await next((m) => m.type === "hello");
+  await new Promise((r) => setTimeout(r, 1200));
+  check("no dial without a token", sockets.length === 0);
+  fs.writeFileSync(tokenFile, token + "\n", { mode: 0o600 });
+  const hello = await next((m) => m.type === "hello", 15000);
+  check("hello carries the token", hello.token === token);
+  check("hello features", JSON.stringify(hello.features) === JSON.stringify(["element", "focused", "expectRef", "exclude"]));
   check("hello", hello.name === "orbi-desktop" && hello.version === 1, JSON.stringify(hello));
   check("dry run reports no permissions", !hello.permissions.accessibility && !hello.permissions.screen && !hello.permissions.mic);
 
@@ -120,6 +132,10 @@ try {
   check("bad combo", code(await call("key", { combo: "cmd+nope" })) === "bad_request");
   check("missing text", code(await call("type", {})) === "bad_request");
   check("bad maxNodes", code(await call("ax_tree", { maxNodes: 0 })) === "bad_request");
+  check("maxNodes over 1500", code(await call("ax_tree", { maxNodes: 1501 })) === "bad_request");
+  check("element needs a ref", code(await call("element", {})) === "bad_request");
+  check("focused without Accessibility", code(await call("focused", {})) === "no_permission");
+  check("element without Accessibility", code(await call("element", { ref: "e1" })) === "no_permission");
   check("built-in blocked app", code(await call("app_activate", { bundleId: "com.apple.Terminal" })) === "blocked_app");
   check("Chrome is blocked", code(await call("app_activate", { bundleId: "com.google.Chrome" })) === "blocked_app");
   check("server-blocked app", code(await call("app_activate", { bundleId: "com.example.blocked" })) === "blocked_app");
@@ -130,7 +146,10 @@ try {
   check("click refused without input", ["no_permission", "blocked_app"].includes(code(click)), JSON.stringify(click));
   check("scroll refused without input", ["no_permission", "blocked_app"].includes(code(await call("scroll", { x: 5, y: 5, dy: 100 }))));
   check("screenshot refused without screen", code(await call("screenshot", {})) === "no_permission");
+  check("screenshot bad exclude", code(await call("screenshot", { exclude: "com.x" })) === "bad_request");
   check("overlay bad state", code(await call("overlay", { state: "dancing" })) === "bad_request");
+  check("overlay ring frame", (await call("overlay", { state: "thinking", ring: { x: 1, y: 2, w: 30, h: 20 } })).result?.ok === true);
+  check("overlay empty ring frame", code(await call("overlay", { state: "thinking", ring: { x: 1, y: 2, w: 0, h: 20 } })) === "bad_request");
   check("overlay ok", (await call("overlay", { state: "thinking", subtitle: "Hi", ring: true, cursor: { x: 10, y: 10 } })).result?.ok === true);
   send({ type: "req", id: "m", params: {} });
   check("request without method", code(await next((m) => m.type === "res" && m.id === "m")) === "bad_request");
@@ -146,6 +165,7 @@ try {
 } finally {
   child.kill();
   server.close();
+  fs.rmSync(tokenDir, { recursive: true, force: true });
   for (const s of sockets) s.destroy();
 }
 if (failures) { console.error(stderr); process.exit(1); }

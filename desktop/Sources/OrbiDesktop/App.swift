@@ -38,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     connection.onDisconnect = { [weak self] in
       guard let self else { return }
       self.dispatcher.reset()
-      self.player.stop()
+      self.player.stop(local: false)
       self.overlay.apply(state: .idle, subtitle: "", cursor: nil, ring: false)
     }
     connection.onBinary = { [weak self] in if !Env.dryRun { self?.player.play($0) } }
@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     case .badRequest(let id, let message):
       connection.send(text: Outbound.error(id: id, ProtoError(.badRequest, message)))
     case .audioStop:
-      player.stop()
+      player.stop(local: false)
     case .unknown(let t):
       log("ignored message type \(t)")
     }
@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       case .micOpen: mic.open()
       case .micStream: mic.stream()
       case .micClose: mic.close()
-      case .stopPlayback: player.stop()
+      case .stopPlayback: player.stop(local: true)
       case .send(let e):
         if connection.isConnected { connection.send(text: Outbound.event(e)) }
       }

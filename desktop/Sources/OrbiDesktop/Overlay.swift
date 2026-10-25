@@ -158,6 +158,31 @@ private final class CursorView: FlippedLayerView {
     }
   }
 
+  // The extension's .hl: a 2 pt spectrum outline 5 pt around the target,
+  // held, then faded (1.4 s in all).
+  func highlight(_ r: CGRect) {
+    let box = r.insetBy(dx: -5, dy: -5)
+    let g = CAGradientLayer()
+    g.frame = box
+    g.startPoint = CGPoint(x: 0, y: 0.5)
+    g.endPoint = CGPoint(x: 1, y: 0.5)
+    g.colors = spectrum.map(\.cgColor)
+    let m = CAShapeLayer()
+    m.path = CGPath(roundedRect: CGRect(origin: .zero, size: box.size).insetBy(dx: 1, dy: 1), cornerWidth: 14, cornerHeight: 14, transform: nil)
+    m.fillColor = nil
+    m.strokeColor = NSColor.black.cgColor
+    m.lineWidth = 2
+    g.mask = m
+    g.opacity = 0
+    root.insertSublayer(g, below: arrow)
+    let fade = CAKeyframeAnimation(keyPath: "opacity")
+    fade.values = [1, 1, 0]
+    fade.keyTimes = [0, 0.7, 1]
+    fade.duration = 1.4
+    g.add(fade, forKey: "hl")
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.45) { g.removeFromSuperlayer() }
+  }
+
   func press(at p: CGPoint) {
     move(to: p)
     let squeeze = CAKeyframeAnimation(keyPath: "transform.scale")
@@ -438,6 +463,8 @@ final class Overlay {
   }
 
   func press(_ p: CGPoint) { cursor?.press(at: p) }
+
+  func highlight(_ r: CGRect) { cursor?.highlight(r) }
 
   // Only the drawn cursor, not the real pointer (that is input's job).
   private func glide(to p: CGPoint) {
