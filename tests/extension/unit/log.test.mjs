@@ -20,18 +20,19 @@ test("maskCardNumbers hides Luhn-valid runs, grouped or not, and keeps other num
 
 test("redact removes secret keys at any depth and masks strings", () => {
   const out = redact({
-    method: "fill_payment",
-    params: { tabId: 3, values: { number: "4111111111111111", csc: "123" } },
+    method: "fill_card",
+    params: { tabId: 3, card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/30", csc: "123", zip: "94704" }, values: { number: "4111111111111111", csc: "123" } },
     note: "paid with 4111 1111 1111 1111",
     url: "wss://api.cartesia.ai/stt?access_token=abc123&model=ink-2",
     csc: "",
   });
+  assert.equal(out.params.card, "[redacted]", "fill_card's card, whole");
   assert.equal(out.params.values, "[redacted]");
   assert.equal(out.params.tabId, 3);
   assert.equal(out.note, "paid with [card number]");
   assert.match(out.url, /access_token=\[redacted\]&model=ink-2/);
   assert.equal(out.csc, "");
-  assert.doesNotMatch(JSON.stringify(out), /4111|abc123|"123"/);
+  assert.doesNotMatch(JSON.stringify(out), /4111|abc123|"123"|Ada|12\/30|94704/);
 });
 
 test("redact truncates long strings and handles errors and cycles of depth", () => {

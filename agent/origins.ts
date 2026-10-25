@@ -1,6 +1,7 @@
-// Which sites Orbi may drive, and the much smaller set where it may
-// pay. Shared by the session guard, the tab sweep, pay_now and the button
-// lock's unlock gate.
+// Which sites Orbi may drive. Shared by the session guard, the tab
+// sweep, pay_with_saved_card and the button lock's unlock gate, which arms
+// only on a page Orbi may use, and only after the user's spoken yes to
+// the exact total (unlock.ts).
 //
 // CLEARCART_BROWSE_MODE:
 //   open (default)  any http(s) site except the blocked sites
@@ -9,13 +10,12 @@
 //                   list otherwise) and CLEARCART_BLOCKED_ORIGINS.
 //                   Best effort.
 //   allowlist       only CLEARCART_ALLOWED_ORIGINS.
-// Pay sites never follow the browse mode: CLEARCART_PAY_ORIGINS (default
-// none) is the only place the unlock gate issues grants.
 //
 // These are read at import, so set them on the command line rather than in
 // .env.
 
 import { blocklistReason, SUGGESTED_ENTRIES, type BlockEntry } from "./blocklist.ts";
+import { extBridge, extMode } from "./extbridge.ts";
 
 export function parseOrigins(list: string): string[] {
   return list
@@ -45,10 +45,6 @@ export const BROWSE_MODE: BrowseMode = process.env.CLEARCART_BROWSE_MODE?.trim()
 // either mode (exact origins, so list www. and other hosts separately).
 export const BLOCKED_ORIGINS: ReadonlySet<string> = new Set(parseOrigins(process.env.CLEARCART_BLOCKED_ORIGINS || ""));
 
-// CLEARCART_PAY_ORIGINS: comma-separated origins where pay flows may get an
-// unlock grant. Default: none.
-export const PAY_ORIGINS: ReadonlySet<string> = new Set(parseOrigins(process.env.CLEARCART_PAY_ORIGINS || ""));
-
 export type SitePolicy = {
   mode: BrowseMode;
   allowed: ReadonlySet<string>;
@@ -70,6 +66,13 @@ export function siteBlockReason(href: string | null | undefined, policy: SitePol
 
 export const SITE_POLICY: SitePolicy = { mode: BROWSE_MODE, allowed: ALLOWED_ORIGINS, blocked: BLOCKED_ORIGINS, entries: SUGGESTED_ENTRIES };
 
+// The policy in force: in ext mode the extension's blocked sites list
+// replaces the suggested one once it has sent it.
+export function sitePolicy(): SitePolicy {
+  const entries = extMode() ? extBridge.blocklist() : null;
+  return entries ? { ...SITE_POLICY, entries } : SITE_POLICY;
+}
+
 export function originOf(href: string | null | undefined): string | null {
   if (!href) return null;
   try {
@@ -88,10 +91,14 @@ export function allowedSite(href: string | null | undefined): boolean {
   return !browseBlockReason(href);
 }
 
-// The unlock gate's check. Independent of the browse mode.
-export function paySite(href: string | null | undefined): boolean {
-  const o = originOf(href);
-  return !!o && PAY_ORIGINS.has(o);
+// Where the unlock gate may arm and pay_with_saved_card may pay: a web page
+// on a site the policy in force lets Orbi use. The blocked sites stay
+// blocked, and CLEARCART_ALLOW_ANY_SITE does not widen it. On Stripe's
+// checkout hosts only a test-mode checkout counts (isStripeCheckoutUrl), so
+// a live Stripe page is never paid on.
+export function usableSite(href: string | null | undefined): boolean {
+  if (onStripeCheckoutHost(href) && !isStripeCheckoutUrl(href)) return false;
+  return !!originOf(href) && !siteBlockReason(href, sitePolicy());
 }
 
 // Checkout and payment pages by path. Used to keep Claude from navigating

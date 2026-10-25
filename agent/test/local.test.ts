@@ -482,7 +482,7 @@ test("switching the provider retires the session like a hand-off: a waiting read
   peer.userText("yes");
   assert.equal((made[1] as any).state.confirmation, null, "the yes reaches the new session, which has nothing to confirm");
 
-  // A yes already given but not used by pay_now is withdrawn too.
+  // A yes already given but not used by pay_with_saved_card is withdrawn too.
   made[1].backend = "local x";
   const s = made[1];
   const paid = s.requestCheckout({ item: "Advil 50 count", quantity: 1, total: "$14.27" });
@@ -491,7 +491,7 @@ test("switching the provider retires the session like a hand-off: a waiting read
   assert.match((await paid).content[0].text, /^confirmed/);
   assert.equal((s as any).state.confirmation.state, "confirmed");
   hub.switchBackend("claude", "Claude");
-  assert.equal(claimConfirmation((s as any).state).ok, false, "pay_now has nothing to use");
+  assert.equal(claimConfirmation((s as any).state).ok, false, "pay_with_saved_card has nothing to use");
   assert.equal(made.length, 3);
   peer.leave();
 });
@@ -522,7 +522,7 @@ test("a switch waits for a payment under way; the next session keeps the card gu
   const peer = hub.join((m) => got.push(m));
   peer.userText("pay for it");
   made[0].paying = true;
-  assert.equal(hub.switchBackend("local x", "your local model x"), false, "not while pay_now runs");
+  assert.equal(hub.switchBackend("local x", "your local model x"), false, "not while pay_with_saved_card runs");
   made[0].send({ type: "receipt", item: "Mug", total: "$9.00", last4: "1111" });
   assert.ok(got.some((m) => m.type === "receipt"), "its receipt reaches the window");
   assert.equal(made.length, 1);

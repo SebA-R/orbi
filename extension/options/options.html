@@ -165,18 +165,53 @@
         <div class="card">
           <div class="row">
             <span class="row-text"><span>Checkout lock</span>
-              <span class="hint">Checkout, pay and sign in buttons stay locked everywhere except the allowed sites, where only Orbi's pay flow can press them after you say yes.</span></span>
+              <span class="hint">Checkout, pay and sign in buttons stay locked for the AI. Place order is pressed only by Orbi's own pay flow, once, right after you say yes.</span></span>
             <span class="tag" data-state="ok">Always on</span>
           </div>
           <div id="danger">
             <label class="row" for="danger-mode">
-              <span class="row-text" id="danger-label">Danger mode. Orbi acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.</span>
+              <span class="row-text" id="danger-label">Danger mode. Orbi acts on its own with no locks, including placing orders with your saved card without asking. It still never sees your card or passwords, and blocked sites stay blocked.</span>
               <input id="danger-mode" class="sw" type="checkbox" role="switch" aria-labelledby="danger-label" aria-describedby="danger-hint">
             </label>
             <p id="danger-confirm" class="row confirm" hidden><button type="button" class="btn amber" id="danger-yes">Turn on Danger mode</button> <button type="button" class="btn" id="danger-no">Cancel</button></p>
           </div>
         </div>
         <p class="foot" id="danger-hint">Danger mode is off by default. It saves as soon as you confirm. Orbi still never sees or types card numbers or passwords, and blocked sites stay blocked.</p>
+      </section>
+
+      <section class="group" id="cards" aria-labelledby="cards-h">
+        <h2 id="cards-h">Payment cards</h2>
+        <div class="card">
+          <div class="row stack">
+            <h3 class="row-title" id="cards-list-label" tabindex="-1">Saved cards</h3>
+            <p class="hint" id="cards-state" role="status" aria-live="polite"></p>
+            <ul id="cards-list" class="facts" aria-labelledby="cards-list-label"></ul>
+          </div>
+          <!-- The add-card fields belong to #card-form (after the settings
+               form), not to it: they have no data-setting, are never saved
+               in extension storage, and are sent once to the agent server,
+               then cleared. -->
+          <div class="row stack" role="group" aria-labelledby="card-add-label">
+            <h3 class="row-title" id="card-add-label">Add a card</h3>
+            <div class="card-fields">
+              <label class="field-label" for="card-nickname">Nickname (optional)
+                <input id="card-nickname" form="card-form" class="field" type="text" maxlength="40" autocomplete="off" spellcheck="false" placeholder="Work Visa"></label>
+              <label class="field-label" for="card-name">Name on card
+                <input id="card-name" form="card-form" class="field" type="text" maxlength="100" autocomplete="off" spellcheck="false"></label>
+              <label class="field-label wide" for="card-number">Card number
+                <input id="card-number" form="card-form" class="field mono" type="text" inputmode="numeric" maxlength="23" autocomplete="off" spellcheck="false"></label>
+              <label class="field-label" for="card-exp">Expiry (MM/YY)
+                <input id="card-exp" form="card-form" class="field mono" type="text" inputmode="numeric" maxlength="7" autocomplete="off" spellcheck="false" placeholder="MM/YY"></label>
+              <label class="field-label" for="card-csc">Security code
+                <input id="card-csc" form="card-form" class="field mono" type="text" inputmode="numeric" maxlength="4" autocomplete="off" spellcheck="false"></label>
+              <label class="field-label" for="card-zip">Billing ZIP or postal code (optional)
+                <input id="card-zip" form="card-form" class="field mono" type="text" maxlength="10" autocomplete="off" spellcheck="false"></label>
+            </div>
+            <p class="error" id="card-error" role="alert" hidden></p>
+            <span class="row-end"><button type="submit" form="card-form" class="btn primary" id="card-add">Add card</button></span>
+          </div>
+        </div>
+        <p class="foot" id="cards-notice">Cards are encrypted on this computer. Orbi's AI never sees them; only Orbi's own code fills them in at checkout.</p>
       </section>
 
       <section class="group" id="memory" aria-labelledby="memory-h">
@@ -281,6 +316,7 @@
         <button type="submit" class="btn primary">Save</button>
       </div>
     </form>
+    <form id="card-form" autocomplete="off" novalidate hidden></form>
   </main>
   <script type="module" src="options.js"></script>
 </body>

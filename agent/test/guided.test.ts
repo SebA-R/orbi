@@ -1,6 +1,6 @@
 // Guided mode, the blind and low-vision mode (off by default): the prompt
 // per mode, the note when it changes mid-session, and the spoken yes before
-// pay_now in both modes.
+// pay_with_saved_card in both modes.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -23,8 +23,9 @@ const KEPT = [
   "Never type, paste, read out or ask for card details",
   "Short, plain sentences. One to three sentences per reply. No markdown",
   "call request_checkout with the item, quantity, that exact total",
-  "Only if request_checkout returns confirmed, call pay_now right away.",
-  "Never call pay_now without a fresh confirmation",
+  "Only if request_checkout returns confirmed, call pay_with_saved_card right away",
+  "Never call pay_with_saved_card without a fresh confirmation",
+  "Never ask the user for card details.",
   "stop once the item is in the cart and the cart page is open",
   "Never call request_unlock for Place order, Buy now, Pay or wallet buttons.",
   "Some controls are locked for your click tools",
@@ -91,7 +92,7 @@ test("a setting note goes after the context block, before the user's words", asy
 
 test("the base prompt is for anyone: a voice web agent, no mention of blind or low-vision users", () => {
   const base = SYSTEM_PROMPT + SITES_PROMPT + EXT_TABS_PROMPT;
-  assert.ok(SYSTEM_PROMPT.startsWith("You are Orbi, a voice-controlled web agent for anyone."));
+  assert.ok(SYSTEM_PROMPT.startsWith("You are Orbi, a voice assistant that helps people use the web in their own Chrome browser."));
   assert.match(SYSTEM_PROMPT, /you navigate, search, read and summarize pages, fill in forms when they ask, click, and shop when they ask/);
   assert.doesNotMatch(base, /blind|low[- ]vision|screen reader|visually impaired|localhost/i);
   assert.match(SYSTEM_PROMPT, /\nShopping \(only when the user wants to buy something\)\n/);
@@ -168,13 +169,13 @@ test("a mid-session change goes in front of the next user turn, once", async () 
 });
 
 for (const guided of [true, false]) {
-  test(`Guided mode ${guided ? "on" : "off"}: pay_now still needs the spoken yes`, async () => {
+  test(`Guided mode ${guided ? "on" : "off"}: pay_with_saved_card still needs the spoken yes`, async () => {
     const sent: ServerMessage[] = [];
     const s = new Session((m) => sent.push(m));
     s.guided = guided;
     const prompt = buildSystemPrompt({ guided });
     assert.ok(prompt.includes("That tool speaks the read-back and waits for the user's answer"));
-    assert.ok(prompt.includes("Only if request_checkout returns confirmed, call pay_now right away."));
+    assert.ok(prompt.includes("Only if request_checkout returns confirmed, call pay_with_saved_card right away, with no other step in between."));
     const state = (s as any).state;
     assert.equal((await payNow(state)).ok, false, "no read-back yet");
 
@@ -191,7 +192,7 @@ for (const guided of [true, false]) {
     await new Promise((r) => setImmediate(r));
     s.userText("yes");
     assert.equal((await yes).content[0].text, "confirmed");
-    assert.equal(state.confirmation.state, "confirmed", "only an explicit yes arms pay_now");
+    assert.equal(state.confirmation.state, "confirmed", "only an explicit yes arms pay_with_saved_card");
     s.close();
   });
 }

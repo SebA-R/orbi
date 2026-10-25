@@ -90,7 +90,7 @@ export const DEFAULTS = Object.freeze({
 
 export const PROVIDERS = Object.freeze(["claude", "local"]);
 
-export const DANGER_MODE_COPY = "Danger mode. Orbi acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
+export const DANGER_MODE_COPY = "Danger mode. Orbi acts on its own with no locks, including placing orders with your saved card without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
 
 export const SPEAK_REPLIES_COPY = "Speak replies. Turn off to read Orbi's answers in the subtitles without hearing them.";
 export const VOICE_OFF_ON_SERVER = "Voice is off on the server";
@@ -114,8 +114,8 @@ export const SPEED_MAX = 2;
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-// The bridge drives the user's tabs and carries card values for pay_now,
-// so it may only point at this machine.
+// The bridge drives the user's tabs and carries saved card values for
+// pay_with_saved_card, so it may only point at this machine.
 export function normalizeAgentUrl(value) {
   try {
     const u = new URL(String(value).trim());

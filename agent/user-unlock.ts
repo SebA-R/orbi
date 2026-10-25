@@ -8,7 +8,7 @@
 // controls never unlock this way.
 //
 // What never unlocks here: placing an order, buy now, pay, wallets, marked
-// controls, and the submit of a card form. Those go only through request_checkout and pay_now
+// controls, and the submit of a card form. Those go only through request_checkout and pay_with_saved_card
 // (unlock.ts). Passwords and card numbers are never typed by Claude: fields
 // stay masked and refused, and a sign in is pressed only after the user has
 // filled the password themselves.
@@ -416,7 +416,7 @@ export function decideUnlock(
       default:
         return {
           kind: "refuse",
-          message: `'${label}' places the order or pays. Only request_checkout and pay_now can do that, after the user's yes, and only on an Orbi pay site. Elsewhere, tell the user they can finish it themselves.`,
+          message: `'${label}' places the order or pays. Only request_checkout and pay_with_saved_card can do that, after the user's yes.`,
         };
     }
   }

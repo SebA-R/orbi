@@ -24,11 +24,13 @@
 
 import { BridgeError, ERR } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
-import { assertAllowed, blockReason, isAllowed, isPaySite } from "./allowlist.js";
+import { assertAllowed, blockReason, frameAllowed, isAllowed } from "./allowlist.js";
 import { assertNetSafe, flagOf } from "./netguard.js";
 import { ERROR_URL, isErrorPage, recordFor } from "./errpage.js";
 
-export { isPaySite };
+// The router's lock_arm checks the site again with isAllowed, and saved-card
+// fill checks payment frames with frameAllowed.
+export { frameAllowed, isAllowed };
 
 // The tab group earlier versions made. Only used to undo it (ungroupLegacy).
 export const LEGACY_GROUP_TITLE = "Clearcart";

@@ -1,6 +1,7 @@
 // Real-layout check in Playwright's isolated Chromium (never the user's
 // Chrome): mask.js + page.js injected in worker order into the test shop's
-// live pages (tests/fixtures/shop.mjs).
+// live pages (tests/fixtures/shop.mjs), and the saved-card fill's frame
+// script (content/cardfill.js) filling the published Visa test card.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -31,7 +32,15 @@ async function open(path) {
   return { page, call };
 }
 
-test("checkout: fill_payment, masked read_page, rect hits #place-order", async () => {
+// What fill_card does in each frame, here in the page itself (the worker
+// runs it in the extension's isolated world). Answers which kinds went in.
+async function fillCard(page) {
+  await page.addScriptTag({ path: file("../../content/cardfill.js") });
+  const values = { "cc-number": "4111111111111111", "cc-name": "Ada Lovelace", "cc-exp": { mm: "12", yy: "29", yyyy: "2029" }, "cc-csc": "737" };
+  return page.evaluate((v) => globalThis.__clearcartCardFill.fill(v), values);
+}
+
+test("checkout: saved-card fill, masked read_page, rect hits #place-order", async () => {
   await fetch(shop.base + "/reset", { method: "POST", redirect: "manual" });
   await fetch(shop.base + "/cart/add", {
     method: "POST",
@@ -40,8 +49,9 @@ test("checkout: fill_payment, masked read_page, rect hits #place-order", async (
     redirect: "manual",
   });
   const { page, call } = await open("/checkout");
-  const fill = await call("fill_payment", { card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/29", csc: "737" }, address: "1 Main St" });
-  assert.deepEqual([fill.ok, fill.result], [true, { ok: true, last4: "1111" }]);
+  const fill = await fillCard(page);
+  assert.deepEqual(fill, { ok: true, filled: { "cc-number": true, "cc-name": true, "cc-exp": true, "cc-csc": true } });
+  assert.equal(await page.inputValue('[name="cc-exp"]'), "12/29");
   const tree = (await call("read_page", { filter: "all" })).result.tree;
   for (const s of ["4111111111111111", "Ada Lovelace", "12/29", "737"]) assert.ok(!tree.includes(s), "leaked " + s);
   const ref = (await call("find", { query: "place order" })).result.matches[0].ref;
@@ -117,7 +127,7 @@ test("button lock: real hit-testing, label clicks, the badge never blocks a pers
   for (const l of look) assert.deepEqual(l, { marked: true, opacity: "0.45", filter: "grayscale(1)", disabled: false, pe: "auto" });
 
   // The lock is for the agent only: a person's own click places the order.
-  await call("fill_payment", { card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/29", csc: "737" }, address: "1 Main St" });
+  assert.equal((await fillCard(page)).ok, true);
   await page.mouse.click(cx, cy);
   await page.waitForURL(/\/order\//);
   await page.close();

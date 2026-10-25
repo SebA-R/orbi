@@ -4,8 +4,8 @@
 // talks to a live agent on :5050. The fake agent drives the test shop
 // (tests/fixtures/shop.mjs), the only allowed site, over the real bridge and
 // checks every agent input path is refused on the protected Place order
-// button, then that press_protected with a lock_arm nonce (the pay flow's
-// path) places the order.
+// button, then that fill_card and press_protected with a lock_arm nonce
+// (the pay flow's path) place the order.
 
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -178,9 +178,14 @@ test("every agent input path is locked on Place order; press_protected with a no
   });
   assert.deepEqual(look, { marked: true, opacity: "0.45", disabled: false });
 
-  // The pay flow's path: fill, arm, press once.
-  const filled = await call("fill_payment", { tabId, card: CARD });
-  assert.equal(filled.last4, "1111");
+  // The pay flow's path: fill the card (every frame; here the page's own
+  // fields), arm, press once.
+  assert.deepEqual((await call("card_state", { tabId })).kinds, { "cc-name": 1, "cc-number": 1, "cc-exp": 1, "cc-csc": 1 });
+  const filled = await call("fill_card", { tabId, origin: new URL(SHOP).origin, card: CARD });
+  assert.deepEqual(filled, { ok: true, last4: "1111", name: true, zip: false, frames: 1 });
+  assert.equal(await page.inputValue('[name="cc-number"]'), CARD.number);
+  const tree2 = JSON.stringify(await call("read_page", { tabId, filter: "all" }));
+  for (const s of [CARD.number, CARD.name, CARD.exp, `"${CARD.csc}"`]) assert.ok(!tree2.includes(s), `read_page showed ${s}`);
   const { nonce } = await call("lock_arm", { tabId });
   const pressed = await call("press_protected", { tabId, ref: place, nonce });
   assert.equal(pressed.ok, true);

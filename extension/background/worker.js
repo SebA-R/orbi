@@ -117,7 +117,7 @@ const voice = installVoiceRelay({
 });
 
 // Bridge to the agent server: each request is routed to tabs/CDP or the page
-// script. Results never include card values (fill_payment answers last4).
+// script. Results never include card values (fill_card answers last4).
 // Danger mode, cached from chrome.storage.local and kept current by
 // onChanged below. Starts off, so a page call before the first load is
 // locked as usual.
@@ -171,7 +171,7 @@ async function onRequest(method, params) {
     log.debug(`${method} ok in ${Date.now() - t0} ms`);
     return result;
   } catch (e) {
-    // Params are never logged: fill_payment carries the card.
+    // Params are never logged: fill_card carries the card.
     log.info(`${method} failed: ${e.code || "internal"} ${e.message}`);
     throw e;
   }

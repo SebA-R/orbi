@@ -8,6 +8,12 @@
 //   import { pages, startShop } from "tests/fixtures/shop.mjs";
 //   pages()            HTML strings with one mug in the cart (no server)
 //   await startShop()  { base, port, stop } on 127.0.0.1, a free port
+//
+// startShop({ cardFrame }) takes the card number, expiry and security code
+// in frames from another origin instead (tests/fixtures/card-frame.mjs),
+// the way hosted card fields work: one frame with every field, or with
+// cardLayout "split" one frame per field. The name on the card stays on
+// the shop's own page.
 
 import http from "node:http";
 import { randomBytes } from "node:crypto";
@@ -139,10 +145,53 @@ box.addEventListener("change", () => {
   );
 }
 
+// The card fields in frames from frame.origin (card-frame.mjs), and the
+// script that collects them on submit: each frame posts its fields to its
+// own server, and the form then goes out with the session id only.
+function cardFramesHtml(frame) {
+  const src = (kinds) => `${frame.origin}/fields?kinds=${kinds}&parent=${encodeURIComponent(frame.parent)}`;
+  const frames = frame.layout === "split"
+    ? [["number", "Card number", 58], ["exp", "Expiry date", 58], ["cvc", "Security code", 58]]
+    : [["number,exp,cvc,postal", "Card details", 230]];
+  return `${frames.map(([kinds, title, h]) => `<iframe data-card-frame src="${esc(src(kinds))}" title="${esc(`Secure ${title.toLowerCase()} input frame`)}" style="border:0;width:100%;height:${h}px"></iframe>`).join("\n  ")}
+  <input type="hidden" name="card_session" value="">
+  <script>
+  (() => {
+    const form = document.querySelector("form.checkout");
+    const FRAME = ${JSON.stringify(frame.origin)};
+    let busy = false;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (busy) return;
+      busy = true;
+      const session = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const frames = [...document.querySelectorAll("iframe[data-card-frame]")];
+      let left = frames.length;
+      const onMessage = (m) => {
+        if (m.origin !== FRAME || !m.data || m.data.type !== "collected" || m.data.session !== session) return;
+        if (--left > 0) return;
+        removeEventListener("message", onMessage);
+        form.elements.card_session.value = session;
+        form.submit();
+      };
+      addEventListener("message", onMessage);
+      for (const f of frames) f.contentWindow.postMessage({ type: "collect", session }, FRAME);
+    });
+  })();
+  </script>`;
+}
+
 // values: what a failed submit shows again. Never the card number or code.
-export function checkoutHtml(cart = newCart(), { error = "", values = {} } = {}) {
+// frame: { origin, parent, layout } for card fields in frames (startShop
+// cardFrame).
+export function checkoutHtml(cart = newCart(), { error = "", values = {}, frame = null } = {}) {
   const t = totals(cart);
   if (!t.lines.length) return layout("Checkout", `<h1>Checkout</h1><p>Your cart is empty.</p>`, { cart });
+  const card = frame
+    ? cardFramesHtml(frame)
+    : `<label>Card number <input type="text" name="cc-number" autocomplete="cc-number" inputmode="numeric"></label>
+  <label>Expiration (MM/YY) <input type="text" name="cc-exp" autocomplete="cc-exp" placeholder="MM/YY" value="${esc(values["cc-exp"])}"></label>
+  <label>Security code <input type="text" name="cc-csc" autocomplete="cc-csc" inputmode="numeric"></label>`;
   return layout(
     "Checkout",
     `<h1>Checkout</h1>
@@ -150,9 +199,7 @@ ${error ? `<div role="alert" id="checkout-error">${esc(error)}</div>` : ""}
 <form class="checkout" action="/checkout" method="post" autocomplete="on">
   <label>Shipping address <textarea name="address" rows="2" autocomplete="street-address">${esc(values.address)}</textarea></label>
   <label>Name on card <input type="text" name="cc-name" autocomplete="cc-name" value="${esc(values["cc-name"])}"></label>
-  <label>Card number <input type="text" name="cc-number" autocomplete="cc-number" inputmode="numeric"></label>
-  <label>Expiration (MM/YY) <input type="text" name="cc-exp" autocomplete="cc-exp" placeholder="MM/YY" value="${esc(values["cc-exp"])}"></label>
-  <label>Security code <input type="text" name="cc-csc" autocomplete="cc-csc" inputmode="numeric"></label>
+  ${card}
   <button type="submit" id="place-order">Place order &middot; ${money(t.total)}</button>
 </form>
 <h2>Order summary</h2>
@@ -220,10 +267,13 @@ function readBody(req) {
 }
 
 // Starts the shop on 127.0.0.1 (a free port unless one is given). One cart
-// per server; POST /reset empties it.
-export async function startShop({ port = 0 } = {}) {
+// per server; POST /reset empties it. cardFrame: a startCardFrame() server
+// whose frames take the card (cardLayout "one" or "split").
+export async function startShop({ port = 0, cardFrame = null, cardLayout = "one" } = {}) {
   let cart = newCart();
   const orders = new Map();
+  let base = "";
+  const frame = () => (cardFrame ? { origin: cardFrame.origin, parent: base, layout: cardLayout } : null);
   const send = (res, status, html) => {
     res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     res.end(html);
@@ -244,7 +294,7 @@ export async function startShop({ port = 0 } = {}) {
         return html ? send(res, 200, html) : send(res, 404, "<h1>Not found</h1>");
       }
       if (req.method === "GET" && path === "/cart") return send(res, 200, cartHtml(cart));
-      if (req.method === "GET" && path === "/checkout") return send(res, 200, checkoutHtml(cart));
+      if (req.method === "GET" && path === "/checkout") return send(res, 200, checkoutHtml(cart, { frame: frame() }));
       if (req.method === "GET" && (m = /^\/order\/([\w-]+)$/.exec(path)) && orders.has(m[1])) return send(res, 200, orderHtml(orders.get(m[1]), cart));
       if (req.method !== "POST") return send(res, 404, "<h1>Not found</h1>");
       const body = await readBody(req);
@@ -271,15 +321,18 @@ export async function startShop({ port = 0 } = {}) {
         return redirect(res, "/checkout");
       }
       if (path === "/checkout") {
-        const number = String(body["cc-number"] || "").replace(/[\s-]/g, "");
-        const kept = { address: body.address, "cc-name": body["cc-name"], "cc-exp": body["cc-exp"] };
+        // Card fields in frames: the card comes from the frame server, by session.
+        const framed = cardFrame ? cardFrame.redeem(body.card_session) || {} : null;
+        const number = String((framed ? framed.number : body["cc-number"]) || "").replace(/[\s-]/g, "");
+        const csc = String((framed ? framed.cvc : body["cc-csc"]) || "");
+        const kept = { address: body.address, "cc-name": body["cc-name"], "cc-exp": framed ? "" : body["cc-exp"] };
         const t = totals(cart);
         const error = !t.lines.length ? "Your cart is empty."
           : !/^\d{13,19}$/.test(number) || !luhn(number) ? "That card number is not valid."
           : number !== "4111111111111111" ? "Test pages take the published test card only."
-          : !/^\d{3,4}$/.test(String(body["cc-csc"] || "")) ? "Enter the security code."
+          : !/^\d{3,4}$/.test(csc) ? "Enter the security code."
           : "";
-        if (error) return send(res, 400, checkoutHtml(cart, { error, values: kept }));
+        if (error) return send(res, 400, checkoutHtml(cart, { error, values: kept, frame: frame() }));
         const id = `T-${randomBytes(4).toString("hex").toUpperCase()}`;
         orders.set(id, { id, items: t.lines.map((l) => ({ name: l.product.name, qty: l.qty, lineTotal: l.lineTotal })), total: t.total, last4: number.slice(-4) });
         cart = newCart();
@@ -295,9 +348,10 @@ export async function startShop({ port = 0 } = {}) {
     server.listen(port, "127.0.0.1", resolve);
   });
   const actual = server.address().port;
+  base = `http://localhost:${actual}`;
   return {
     port: actual,
-    base: `http://localhost:${actual}`,
+    base,
     stop: () => {
       server.closeAllConnections?.();
       return new Promise((r) => server.close(() => r()));

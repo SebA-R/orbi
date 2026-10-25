@@ -7,7 +7,8 @@
     "start": "tsx server.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "test:e2e:ext": "tsx --test --test-timeout=150000 test/e2e/ext-flow.e2e.ts"
+    "test:e2e:ext": "tsx --test --test-timeout=150000 test/e2e/ext-flow.e2e.ts",
+    "add-test-card": "tsx add-test-card.ts"
   },
   "engines": {
     "node": ">=20"
