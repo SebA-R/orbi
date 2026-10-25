@@ -193,3 +193,77 @@ test("gray marks come off when the extension goes away", () => {
   assert.equal(document.getElementById("clearcart-lock-style"), null);
   assert.equal(document.getElementById(P.BADGE_HOST_ID), null);
 });
+
+// Regressions from the security review of the button lock.
+
+test("a Place order button outside its form with form=id locks Enter in the form's fields", () => {
+  const { P, $ } = load(`<form id="f" action="/order"><input id="addr" name="address"><input id="note" name="note"></form>
+    <button form="f" id="po">Place order</button>
+    <form id="g"><input id="q" name="q"></form><button form="g">Search</button>`);
+  assert.equal(P.lockOf($("#po")).kind, "order");
+  $("#addr").focus();
+  assert.equal(P.lockForKey($("#addr").ownerDocument, "Enter").kind, "order", "Enter in a non-card field submits through Place order");
+  $("#note").focus();
+  assert.equal(P.lockForKey($("#note").ownerDocument, "Enter").kind, "order");
+  assert.equal(P.lockForSubmit($("#f")).kind, "order");
+  $("#q").focus();
+  assert.equal(P.lockForKey($("#q").ownerDocument, "Enter"), null, "an outside Search button stays usable");
+});
+
+test("lockAt reads closed shadow roots through chrome.dom and fails closed without it", () => {
+  const { P, document, window } = load(`<pay-button id="host"></pay-button><p id="plain">hello</p>`);
+  const host = document.getElementById("host");
+  const sr = host.attachShadow({ mode: "closed" });
+  sr.innerHTML = `<button id="inner">Place order</button>`;
+  const inner = sr.getElementById("inner");
+  sr.elementFromPoint = () => inner;
+  document.elementFromPoint = () => host;
+  assert.equal(host.shadowRoot, null);
+  // No chrome.dom (the page main world): an unreadable host is locked.
+  assert.equal(P.lockAt(document, 5, 5).kind, "shadow");
+  // The content script: chrome.dom.openOrClosedShadowRoot opens it.
+  window.chrome = { dom: { openOrClosedShadowRoot: (el) => (el === host ? sr : null) } };
+  const l = P.lockAt(document, 5, 5);
+  assert.equal(l.kind, "order");
+  assert.equal(l.label, "Place order");
+  sr.innerHTML = `<button id="inner">Add to cart</button>`;
+  const add = sr.getElementById("inner");
+  sr.elementFromPoint = () => add;
+  assert.equal(P.lockAt(document, 5, 5), null, "a harmless button in a closed root still works");
+  document.elementFromPoint = () => document.getElementById("plain");
+  assert.equal(P.lockAt(document, 5, 5), null);
+});
+
+test("focus inside a closed shadow root: Enter is read through chrome.dom, else fails closed", () => {
+  const { P, document, window } = load(`<pay-button id="host"></pay-button>`);
+  const host = document.getElementById("host");
+  const sr = host.attachShadow({ mode: "closed" });
+  sr.innerHTML = `<button id="inner">Buy now</button>`;
+  sr.getElementById("inner").focus();
+  assert.equal(P.lockForKey(document, "Enter").kind, "shadow");
+  window.chrome = { dom: { openOrClosedShadowRoot: (el) => (el === host ? sr : null) } };
+  assert.equal(P.lockForKey(document, "Enter").kind, "order");
+});
+
+test("a <div onclick> or pointer-cursor div with no role that says Place order is locked", () => {
+  const { P, $, document } = load(`<style>.btn{cursor:pointer}</style>
+    <div id="d1" onclick="go()">Place order</div>
+    <div id="d2" class="btn"><span id="d2s">Place order</span></div>
+    <div id="card" class="btn"><span id="cs">Place order</span> <span>for delivery to your home address by Tuesday next week</span></div>
+    <div id="d3" tabindex="0">Buy now</div>
+    <div id="ok" class="btn">Add to cart</div>
+    <div id="plain">Place order</div>
+    <label class="btn" id="lab"><input type="checkbox" id="sub" checked> <span id="labs">Subscribe &amp; Save</span></label>`);
+  assert.equal(P.lockOf($("#d1")).kind, "order");
+  assert.equal(P.lockInChain($("#d1")).kind, "order");
+  assert.equal(P.lockInChain($("#d2s")).kind, "order", "inherited pointer: the span under the click names it");
+  assert.equal(P.lockOf($("#d2")).kind, "order");
+  assert.equal(P.lockInChain($("#cs")).kind, "order", "the hit text counts even inside a long clickable card");
+  assert.equal(P.lockOf($("#d3")).kind, "order");
+  assert.equal(P.lockInChain($("#ok")), null);
+  assert.equal(P.lockOf($("#plain")), null, "plain text that is not clickable is not a control");
+  assert.equal(P.lockInChain($("#labs")), null, "unchecking through a pointer label still works");
+  document.elementFromPoint = () => $("#d2s");
+  assert.equal(P.lockAt(document, 1, 1).kind, "order");
+  assert.ok(P.listLocks(document).some((x) => x.el.id === "d1"), "listLocks lists the onclick div");
+});

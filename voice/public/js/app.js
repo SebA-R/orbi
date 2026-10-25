@@ -11,6 +11,10 @@ const els = {
   receipt: $('receipt'), receiptItem: $('receipt-item'), receiptTotal: $('receipt-total'),
   receiptCard: $('receipt-card'), srAgent: $('sr-agent'), srAlert: $('sr-alert'),
   statusLine: $('status-line'), agentCaption: $('agent-caption'), hintText: $('hint-text'), orb: $('orb'),
+  statusDetail: $('status-detail'), receiptSavedRow: $('receipt-saved-row'), receiptSaved: $('receipt-saved'),
+  confirm: $('confirm'), confirmItem: $('confirm-item'), confirmTotal: $('confirm-total'),
+  confirmChangeRow: $('confirm-change-row'), confirmChange: $('confirm-change'), confirmNote: $('confirm-note'),
+  confirmTalk: $('confirm-talk'),
 };
 const params = new URLSearchParams(location.search);
 
@@ -29,15 +33,34 @@ function logEvent(text) {
   els.events.append(li);
   while (els.events.children.length > 200) els.events.firstChild.remove();
 }
+// Split text into word spans that fade in one after another (decorative; the text reads normally).
+function appendWords(el, text) {
+  let i = 0;
+  for (const part of text.split(/(\s+)/)) {
+    if (!part) continue;
+    if (/^\s+$/.test(part)) { el.append(' '); continue; }
+    const w = document.createElement('span');
+    w.className = 'w';
+    w.style.setProperty('--i', String(Math.min(i++, 60)));
+    w.textContent = part;
+    el.append(w);
+  }
+}
+const splitLayout = matchMedia('(min-width: 900px)');
 function addTurn(who, text) {
   const li = document.createElement('li');
   li.className = who === 'You' ? 'user' : 'agent';
   const name = document.createElement('span');
   name.className = 'who';
   name.textContent = `${who}: `;
-  li.append(name, document.createTextNode(text));
+  li.append(name);
+  if (who === 'You') li.append(document.createTextNode(text));
+  else appendWords(li, text);
   els.conversation.append(li);
-  els.conversation.scrollTop = els.conversation.scrollHeight;
+  // Desktop: keep the newest turn in view. Phones: the reply already shows under the orb; don't scroll away.
+  if (splitLayout.matches && li.getBoundingClientRect().bottom > innerHeight) {
+    li.scrollIntoView({ behavior: reducedMotion.matches ? 'auto' : 'smooth', block: 'nearest' });
+  }
 }
 function announce(region, text) {
   // Clear then set so repeated identical text is still announced.
@@ -49,7 +72,11 @@ const alertUser = (text) => { logEvent(text); announce(els.srAlert, text); };
 // ---------- on-screen state (orb, status line, captions) ----------
 // Visual only: everything here is also available as text, the conversation list, or a live region.
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-const ui = { listening: false, speaking: false, thinking: false, awaitingYes: false, status: '', forced: null };
+const ui = {
+  listening: false, speaking: false, thinking: false, awaitingYes: false, status: '', detail: '', forced: null,
+  confirm: null,   // the read-back being answered: { item, total, change, note, state }
+  receipt: false,  // an order was just placed
+};
 let thinkingTimer = 0;
 
 function uiState() {
@@ -59,18 +86,30 @@ function uiState() {
   if (ui.thinking) return 'thinking';
   return 'idle';
 }
+const HINT_TALK = '<span class="hint-key">Hold <kbd class="keycap">space</kbd> to talk</span><span class="hint-touch">Tap the circle to talk</span>';
+const HINT_SEND = '<span class="hint-key">Let go of <kbd class="keycap">space</kbd> to send</span><span class="hint-touch">Tap again to send</span>';
+function setText(el, text) {
+  if (el.textContent === text) return;
+  el.textContent = text;
+  el.classList.remove('fresh');
+  void el.offsetWidth; // restart the fade
+  el.classList.add('fresh');
+}
 function renderUi() {
   const state = uiState();
   document.body.dataset.ui = state;
+  document.body.dataset.phase = ui.confirm ? 'confirm' : ui.receipt ? 'receipt' : '';
   let line;
   if (state === 'listening') line = 'Listening';
   else if (state === 'speaking') line = 'Speaking';
   else if (state === 'thinking') line = ui.status || 'Thinking';
+  else if (ui.receipt) line = 'Order placed';
   else line = ui.awaitingYes ? 'Waiting for your yes' : 'Ready when you are';
-  if (els.statusLine.textContent !== line) els.statusLine.textContent = line;
-  els.hintText.innerHTML = state === 'listening'
-    ? '<span class="hint-word">Let go of</span> <kbd class="keycap">space</kbd> <span class="hint-word">to send</span>'
-    : '<span class="hint-word">Hold</span> <kbd class="keycap">space</kbd> <span class="hint-word">to talk</span>';
+  setText(els.statusLine, line);
+  setText(els.statusDetail, state === 'thinking' ? ui.detail : '');
+  const hint = state === 'listening' ? HINT_SEND : HINT_TALK;
+  if (els.hintText.innerHTML !== hint) els.hintText.innerHTML = hint;
+  els.confirmTalk.setAttribute('aria-pressed', String(state === 'listening'));
   clearTimeout(thinkingTimer);
   if (ui.thinking) thinkingTimer = setTimeout(() => { ui.thinking = false; renderUi(); }, 90000);
 }
@@ -93,12 +132,68 @@ function friendlyStatus(text) {
   if (/^(computer|find|read_page|get_page_text|form_input)/.test(t)) return 'Reading the page';
   return '';
 }
+// A second, quieter line under the status, for example what is being searched for.
+function statusDetail(text) {
+  const m = /^navigate\s+(\S+)/i.exec(text);
+  if (!m) return '';
+  try {
+    const u = new URL(m[1], location.href);
+    const q = (u.searchParams.get('q') || '').trim();
+    if (q) return `Looking for "${q.slice(0, 60)}"`;
+  } catch {}
+  return '';
+}
 function onStatus(text) {
+  const t = text.toLowerCase();
+  if (t === 'checkout declined') { ui.confirm = null; hideConfirm(); }
+  if (t === 'checkout confirmed' && ui.confirm) {
+    ui.confirm.state = 'confirmed';
+    els.confirm.dataset.state = 'confirmed';
+  }
   const nice = friendlyStatus(text);
-  if (!nice) return;
+  if (!nice) { renderUi(); return; }
   if (nice === 'Waiting for your yes') ui.awaitingYes = true;
   ui.status = nice;
+  ui.detail = statusDetail(text);
   renderUi();
+}
+
+// ---------- read-back (say yes to pay) ----------
+// The agent's request_checkout tool always speaks: "You're buying {qty} {item} for {total}.{changes}
+// Say yes to pay, or no to change it." We show that as a card. If the wording ever changes, nothing
+// breaks: the reply still reads in the conversation and is spoken.
+function parseReadBack(text) {
+  const m = /^You[’']re buying (\d+) (.+?) for (\$?[\d,]+(?:\.\d{1,2})?)\.\s*(.*?)\s*Say yes to pay/s.exec(text.trim());
+  if (!m) return null;
+  const [, qty, item, total, changes] = m;
+  let change = null;
+  const c = /removed (?:an? |the )?(?:pre-?checked |pre-?selected )?(.+?) (?:that|which) would have (?:added|cost) (\$[\d,]+(?:\.\d{1,2})?)/i.exec(changes);
+  if (c) change = { what: c[1].replace(/^\w/, (x) => x.toUpperCase()), amount: c[2] };
+  const name = item.replace(/^\w/, (x) => x.toUpperCase());
+  return { item: qty === '1' ? name : `${qty} × ${name}`, total, change, note: change ? '' : changes.trim(), state: 'pending' };
+}
+function showConfirm(rb) {
+  ui.confirm = rb;
+  ui.awaitingYes = true;
+  ui.receipt = false;
+  els.receipt.hidden = true;
+  els.confirmItem.textContent = rb.item;
+  els.confirmTotal.textContent = rb.total;
+  els.confirmChangeRow.hidden = !rb.change;
+  els.confirmChange.textContent = rb.change ? `${rb.change.what} ${rb.change.amount}` : '';
+  els.confirmNote.hidden = !rb.note;
+  els.confirmNote.textContent = rb.note;
+  els.confirm.dataset.state = rb.state;
+  els.confirm.hidden = false;
+  els.confirm.classList.remove('enter');
+  void els.confirm.offsetWidth;
+  els.confirm.classList.add('enter');
+  els.confirm.scrollIntoView({ behavior: reducedMotion.matches ? 'auto' : 'smooth', block: 'nearest' });
+  renderUi();
+}
+function hideConfirm() {
+  els.confirm.hidden = true;
+  els.confirm.classList.remove('enter');
 }
 
 function setUserCaption(text) {
@@ -116,17 +211,7 @@ function showAgentCaption(text) {
   const el = els.agentCaption;
   el.textContent = '';
   el.classList.toggle('long', text.length > 140);
-  const words = text.split(/(\s+)/);
-  let i = 0;
-  for (const part of words) {
-    if (!part) continue;
-    if (/^\s+$/.test(part)) { el.append(' '); continue; }
-    const w = document.createElement('span');
-    w.className = 'w';
-    w.style.setProperty('--i', String(Math.min(i++, 60)));
-    w.textContent = part;
-    el.append(w);
-  }
+  appendWords(el, text);
 }
 
 // ---------- settings ----------
@@ -238,9 +323,23 @@ const orbParts = {
   ring: els.orb.querySelector('.orb-ring'),
   sheen: els.orb.querySelector('.orb-sheen'),
 };
-const SPIN = { idle: 6, listening: 40, thinking: 110, speaking: 26 }; // degrees per second
+// Degrees per second for the conic ring; thinking is one turn every 1.6 s. The halo turns at half speed.
+const SPIN = { idle: 14, listening: 52, thinking: 225, speaking: 30 };
 let level = 0, angle = 0, spin = SPIN.idle, lastFrame = performance.now();
 let demoLevel = null; // set by the debug hook to fake audio
+// Only touch the DOM when a value actually changes, so an idle page does no style work per frame.
+const written = new Map();
+function put(el, prop, value) {
+  if (written.get(el)?.[prop] === value) return;
+  const w = written.get(el) || {};
+  w[prop] = value;
+  written.set(el, w);
+  if (prop === '--level') el.style.setProperty(prop, value);
+  else el.style[prop] = value;
+}
+// --level lives on the orb: writing a custom property inline on <body> makes Chrome lay out the whole
+// page every frame. The ambient look glows from body::before, so it alone keeps it on <body>.
+const levelHost = document.documentElement.dataset.look === 'ambient' ? document.body : els.orb;
 function frame(now) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
@@ -253,17 +352,19 @@ function frame(now) {
   // Fast attack, slower release, like a VU meter.
   level += (target - level) * (target > level ? 0.35 : 0.08);
   spin += (SPIN[state] - spin) * 0.04;
-  document.body.style.setProperty('--level', reducedMotion.matches ? '0' : level.toFixed(3));
+  if (level < 0.002) level = 0;
+  put(levelHost, '--level', reducedMotion.matches ? '0' : level.toFixed(2));
   if (reducedMotion.matches) {
-    orbParts.aura.style.transform = orbParts.ring.style.transform = orbParts.sheen.style.transform = '';
-    els.orb.style.transform = '';
+    put(orbParts.aura, 'transform', '');
+    put(orbParts.ring, 'transform', '');
+    put(orbParts.sheen, 'transform', '');
+    put(els.orb, 'transform', '');
   } else {
-    angle = (angle + spin * dt) % 360;
-    els.orb.style.transform = `scale(${(1 + level * 0.12).toFixed(4)})`;
-    orbParts.aura.style.transform = `rotate(${angle.toFixed(2)}deg) scale(${(1 + level * 0.18).toFixed(4)})`;
-    orbParts.ring.style.transform = `rotate(${(-angle * 1.5).toFixed(2)}deg)`;
-    if (state !== 'thinking') orbParts.sheen.style.transform = `rotate(${(angle * 0.7).toFixed(2)}deg)`;
-    else orbParts.sheen.style.transform = '';
+    angle = (angle + spin * dt) % 720;
+    put(els.orb, 'transform', `scale(${(1 + level * 0.1).toFixed(3)})`);
+    put(orbParts.aura, 'transform', `rotate(${(angle * 0.5).toFixed(1)}deg) scale(${(1 + level * 0.22).toFixed(3)})`);
+    put(orbParts.ring, 'transform', `rotate(${angle.toFixed(1)}deg)`);
+    put(orbParts.sheen, 'transform', state === 'thinking' ? '' : `rotate(${(angle * 0.35).toFixed(1)}deg)`);
   }
   requestAnimationFrame(frame);
 }
@@ -275,13 +376,21 @@ window.__clearcartDemoState = (state, opts = {}) => {
   ui.forced = state || null;
   demoLevel = typeof opts.level === 'number' ? opts.level : (state === 'listening' || state === 'speaking' ? 0.6 : null);
   if (opts.status !== undefined) ui.status = opts.status;
+  if (opts.detail !== undefined) ui.detail = opts.detail;
   if (opts.awaitingYes !== undefined) ui.awaitingYes = opts.awaitingYes;
   if (opts.user !== undefined) setUserCaption(opts.user);
   if (opts.agent !== undefined) showAgentCaption(opts.agent);
   renderUi();
   return uiState();
 };
-window.__clearcartDemoReceipt = (r = { item: 'Store brand cetirizine 10mg, 90 count', total: '$18.49', last4: '1111' }) => showReceipt(r);
+window.__clearcartDemoReceipt = (r = { item: 'Store brand cetirizine 10mg, 30 count', total: '$9.64', last4: '1111' }) => showReceipt(r);
+// Same hooks grouped, plus conversation turns and the read-back card (used by index.html ?demo=).
+window.__clearcartDemo = {
+  state: window.__clearcartDemoState,
+  receipt: window.__clearcartDemoReceipt,
+  turn: (who, text) => addTurn(who, text),
+  confirm: (text) => { const rb = parseReadBack(text); if (rb) showConfirm(rb); return !!rb; },
+};
 
 // ---------- agent session ----------
 let agent = null;
@@ -335,6 +444,7 @@ function handleAgentMessage(m) {
       addTurn('Clearcart', m.text);
       showAgentCaption(m.text);
       ui.thinking = false;
+      { const rb = parseReadBack(m.text); if (rb) showConfirm(rb); }
       renderUi();
       if (els.announce.checked) announce(els.srAgent, m.text);
       lastReply = m.text;
@@ -357,6 +467,12 @@ function showReceipt(r) {
   els.receiptItem.textContent = r.item || '';
   els.receiptTotal.textContent = r.total || '';
   els.receiptCard.textContent = r.last4 ? `Visa ending in ${r.last4}` : '';
+  const change = ui.confirm?.change;
+  els.receiptSavedRow.hidden = !change;
+  els.receiptSaved.textContent = change ? `Saved ${change.amount}` : '';
+  ui.confirm = null;
+  ui.receipt = true;
+  hideConfirm();
   els.receipt.hidden = false;
   els.receipt.classList.remove('enter');
   void els.receipt.offsetWidth; // restart the entrance animation
@@ -380,6 +496,7 @@ let sinkOwner = null;
 function setListeningUi(on) {
   els.talk.setAttribute('aria-pressed', String(on));
   els.talkLabel.textContent = on ? 'Listening… let go to send' : 'Hold Space to talk';
+  $('confirm-talk-label').textContent = on ? 'Listening. Say yes or no' : 'Say yes to pay';
   if (on) { setUserCaption('…'); els.agentCaption.textContent = ''; }
   ui.listening = on;
   renderUi();
@@ -406,6 +523,7 @@ async function startTalking() {
         sendToAgent({ type: 'user_text', text });
         ui.thinking = true;
         ui.awaitingYes = false;
+        ui.receipt = false;
         ui.status = '';
         renderUi();
       },
@@ -449,7 +567,7 @@ function stopTalking() {
 }
 
 // Space held anywhere except on other controls (where Space has its own meaning).
-const OTHER_CONTROLS = 'input, textarea, select, a, summary, [contenteditable], button:not(#talk)';
+const OTHER_CONTROLS = 'input, textarea, select, a, summary, [contenteditable], button:not(#talk):not(#confirm-talk)';
 let spaceHeld = false;
 let lastSpaceUp = 0;
 document.addEventListener('keydown', (e) => {
@@ -474,12 +592,15 @@ addEventListener('blur', () => {
   if (spaceHeld) { spaceHeld = false; stopTalking(); }
 });
 
-// Click, Enter, or a screen reader's activate gesture toggles listening.
-els.talk.addEventListener('click', () => {
+// Click, Enter, or a screen reader's activate gesture toggles listening. The read-back card's
+// "Say yes to pay" button is a second, bigger talk button: it opens the mic, it never pays by itself.
+function toggleTalk() {
   if (performance.now() - lastSpaceUp < 400) return; // the click a Space release on the button generates
   if (listening) stopTalking();
   else startTalking();
-});
+}
+els.talk.addEventListener('click', toggleTalk);
+els.confirmTalk.addEventListener('click', toggleTalk);
 
 els.stop.addEventListener('click', () => speaker.stop());
 els.replay.addEventListener('click', () => {
