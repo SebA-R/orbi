@@ -2,13 +2,37 @@
 // module B (the on-demand page script). Every call that touches a page first
 // resolves its tab with tabs.resolveAllowedTab, so it must be a tab in the
 // Clearcart group whose current page is on the allowlist.
+//
+// Button lock: every click, key press and typed newline is checked by the
+// page script (content/protect.js) before it reaches CDP, and is refused
+// with ERR.LOCKED when it would press a protected control (place order,
+// checkout, pay, wallets, subscribe, sign in...). Fails closed: if the check
+// cannot run, the input is not sent. The only way to press a protected
+// control is press_protected with a single-use nonce from lock_arm, two
+// INTERNAL methods the agent server's pay flow calls and Claude never sees.
 
 import * as tabsModule from "./tabs.js";
 import * as cdpModule from "./cdp.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
 import { luhnValid } from "../lib/log.js";
 
-export const PAGE_FILES = ["content/mask.js", "content/page.js"];
+export const PAGE_FILES = ["content/mask.js", "content/protect.js", "content/page.js"];
+
+// How long a lock_arm nonce stays good. The pay flow arms right before it
+// presses, so this only needs to cover one round trip.
+export const UNLOCK_TTL_MS = 30_000;
+
+const ENTER_KEY = /^(enter|return|numpadenter|kp_enter)$/i;
+const SPACE_KEY = /^( |space|spacebar)$/i;
+
+// True for keys that activate the focused control: Enter, Space, with or
+// without modifiers ("ctrl+Enter").
+export function isActivationKey(spec) {
+  const s = String(spec ?? "");
+  if (s === " ") return true;
+  const k = s.split("+").pop().trim();
+  return ENTER_KEY.test(k) || SPACE_KEY.test(k);
+}
 
 // Page-script methods the bridge may call. focused_field is used by the type
 // guard below and is not a bridge method.
@@ -44,7 +68,25 @@ export function containsCardNumber(text) {
 
 const msgOf = (e) => String((e && e.message) || e || "failed");
 
-export function createRouter({ chromeApi = globalThis.chrome, tabs = tabsModule, cdp = cdpModule } = {}) {
+function originOf(url) {
+  try {
+    const o = new URL(String(url)).origin;
+    return o === "null" ? null : o;
+  } catch {
+    return null;
+  }
+}
+
+export function createRouter({
+  chromeApi = globalThis.chrome,
+  tabs = tabsModule,
+  cdp = cdpModule,
+  now = () => Date.now(),
+  newNonce = () => globalThis.crypto.randomUUID(),
+} = {}) {
+  // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
+  const armed = new Map();
+
   async function inject(tabId) {
     try {
       await chromeApi.scripting.executeScript({ target: { tabId }, files: PAGE_FILES });
@@ -91,9 +133,16 @@ export function createRouter({ chromeApi = globalThis.chrome, tabs = tabsModule,
     }
   }
 
+  // Fails closed: any error from the page check stops the input.
+  async function guard(tabId, method, params) {
+    await pageCall(tabId, method, params);
+  }
+
   async function clickAt(tabId, params) {
     if (params.ref != null && (params.x == null || params.y == null)) {
-      const r = await pageCall(tabId, "rect", { ref: params.ref });
+      // guard_ref checks the element and whatever covers its centre, and
+      // answers its rect like "rect" does.
+      const r = await pageCall(tabId, "guard_ref", { ref: params.ref });
       if (!r || !(r.width > 0) || !(r.height > 0)) throw new BridgeError(ERR.NO_ELEMENT, `${params.ref} is not visible`);
       try {
         await cdp.click({ tabId, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
@@ -103,8 +152,46 @@ export function createRouter({ chromeApi = globalThis.chrome, tabs = tabsModule,
         return { ok: true, via: "dom" };
       }
     }
+    await guard(tabId, "guard_point", { x: params.x, y: params.y });
     await cdp.click({ tabId, x: params.x, y: params.y });
     return { ok: true, via: "cdp" };
+  }
+
+  async function tabOrigin(tabId) {
+    const info = await tabs.tabInfo({ tabId });
+    return originOf(info && info.url);
+  }
+
+  // The pay flow's half of the unlock: a nonce bound to this tab and its
+  // current (allowlisted) origin.
+  async function lockArm(tabId) {
+    const origin = await tabOrigin(tabId);
+    if (!origin) throw new BridgeError(ERR.NOT_ALLOWED, "tab has no origin to unlock");
+    for (const [n, a] of armed) if (a.expires <= now()) armed.delete(n);
+    const nonce = newNonce();
+    armed.set(nonce, { tabId, origin, expires: now() + UNLOCK_TTL_MS });
+    return { nonce, expiresInMs: UNLOCK_TTL_MS };
+  }
+
+  // Presses one order button. The nonce is spent before anything else, so
+  // a failed press cannot be retried with it.
+  async function pressProtected(tabId, params) {
+    const a = typeof params.nonce === "string" ? armed.get(params.nonce) : undefined;
+    if (a) armed.delete(params.nonce);
+    if (!a || a.tabId !== tabId || a.expires <= now()) {
+      throw new BridgeError(ERR.LOCKED, "Locked: no valid unlock for this press");
+    }
+    if ((await tabOrigin(tabId)) !== a.origin) {
+      throw new BridgeError(ERR.LOCKED, "Locked: the page changed origin after the unlock");
+    }
+    const r = await pageCall(tabId, "press_check", { ref: params.ref });
+    try {
+      await cdp.click({ tabId, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
+      return { ok: true, via: "cdp" };
+    } catch {
+      await pageCall(tabId, "press_ref", { ref: params.ref });
+      return { ok: true, via: "dom" };
+    }
   }
 
   async function route(method, params = {}) {
@@ -125,13 +212,20 @@ export function createRouter({ chromeApi = globalThis.chrome, tabs = tabsModule,
         return clickAt(tabId, params);
       case "type":
         await guardType(tabId, params.text);
+        // A typed newline can submit the focused field's form.
+        if (/[\r\n]/.test(String(params.text ?? ""))) await guard(tabId, "guard_key", { key: "Enter" });
         await cdp.type({ tabId, text: params.text });
         return { ok: true };
       case "key":
         // A single printable key is typing too.
         if (typeof params.key === "string" && params.key.length === 1) await guardType(tabId, params.key);
+        if (isActivationKey(params.key)) await guard(tabId, "guard_key", { key: params.key });
         await cdp.key({ tabId, key: params.key });
         return { ok: true };
+      case "lock_arm":
+        return lockArm(tabId);
+      case "press_protected":
+        return pressProtected(tabId, params);
       case "scroll":
         await cdp.scroll({ tabId, x: params.x, y: params.y, dx: params.dx, dy: params.dy });
         return { ok: true };
