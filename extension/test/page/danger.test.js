@@ -1,4 +1,4 @@
-// Danger mode inside page.js (jsdom, inline HTML, no store): with it on,
+// Danger mode inside page.js (jsdom, inline HTML, no server): with it on,
 // the button lock is off (no [locked] markers, no ERR.LOCKED, Place order
 // and wallets included), while the masking of card and password fields
 // and the refusal to type into them stay. Off, every lock is as before.

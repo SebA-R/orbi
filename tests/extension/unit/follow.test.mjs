@@ -29,7 +29,7 @@ function setup({ followTab = true, session } = {}) {
         switches.push(["tab", id]);
         const t = tabState.get(id);
         if (props.active) for (const o of tabState.values()) if (o.windowId === t.windowId) o.active = o.id === id;
-        // Chrome fires onActivated for Clearcart's own switch too.
+        // Chrome fires onActivated for Orbi's own switch too.
         follow.onActivated({ tabId: id, windowId: t.windowId });
         return { ...t };
       },
@@ -73,7 +73,7 @@ function setup({ followTab = true, session } = {}) {
   };
   const cdp = { click: async () => {}, type: async () => {}, key: async () => {}, scroll: async () => {}, screenshot: async () => ({ data: "" }), send: async () => {} };
   const router = createRouter({ chromeApi, tabs, cdp, follow });
-  // The user picks a tab themselves, a moment after Clearcart's last switch.
+  // The user picks a tab themselves, a moment after Orbi's last switch.
   const userSwitch = (id) => {
     clock.t += 1000;
     const t = tabState.get(id);
@@ -131,7 +131,7 @@ test("a manual switch away stops following for the rest of the turn, the next tu
   const { router, follow, switches, userSwitch } = setup();
   await router.route("click", { tabId: 2, x: 5, y: 5 });
   assert.deepEqual(switches, [["tab", 2]]);
-  // Clearcart's own switch did not count as the user's.
+  // Orbi's own switch did not count as the user's.
   assert.equal(follow.paused, false);
 
   userSwitch(1);
@@ -160,7 +160,7 @@ test("the user focusing another window also stops following; leaving Chrome does
   assert.equal(follow.paused, false, "starting to talk is a new turn");
 });
 
-test("switching tabs before Clearcart acts this turn is not a switch away", async () => {
+test("switching tabs before Orbi acts this turn is not a switch away", async () => {
   const { router, follow, switches, userSwitch } = setup();
   userSwitch(2);
   assert.equal(follow.paused, false);
@@ -168,7 +168,7 @@ test("switching tabs before Clearcart acts this turn is not a switch away", asyn
   assert.deepEqual(switches, [["tab", 1]]);
 });
 
-test("Clearcart closing the front tab is not the user switching away", async () => {
+test("Orbi closing the front tab is not the user switching away", async () => {
   const { router, follow, switches } = setup();
   await router.route("tabs_create", { url: "https://shop.test/" });
   await router.route("tabs_close", { tabId: 9 });

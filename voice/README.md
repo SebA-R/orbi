@@ -1,6 +1,6 @@
 # voice
 
-The Clearcart voice console: Ink 2 speech-to-text over `/stt/turns/websocket` and Sonic text-to-speech over
+The Orbi voice console: Ink 2 speech-to-text over `/stt/turns/websocket` and Sonic text-to-speech over
 `/tts/websocket`, talking to the agent over `ws://<host>/session`. Plain static files in `public/`, no build step.
 The agent server serves `public/` at http://localhost:5050/ and provides `GET /cartesia-token`
 (snippet in [cartesia-token.md](cartesia-token.md)).
@@ -11,7 +11,7 @@ The agent server serves `public/` at http://localhost:5050/ and provides `GET /c
   (Space keeps its normal meaning on the other controls).
 - **Enter / click / screen reader activate** on the Talk button toggles listening on and off
   (screen readers in browse mode swallow Space-hold, so this is the fallback).
-- **Escape** stops Clearcart talking. Starting to talk also stops it (barge-in), as does Ink's `turn.start`.
+- **Escape** stops Orbi talking. Starting to talk also stops it (barge-in), as does Ink's `turn.start`.
 - Short rising tone = listening, falling tone = sent. Nothing is announced to the screen reader while you
   talk, because the screen reader's own speech would get picked up by the mic.
 - Speaking speed slider (0.6 to 2.0, saved in localStorage as `clearcart.speed`). Sonic's own range is

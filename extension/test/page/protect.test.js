@@ -13,7 +13,7 @@ const MASK = src("../../content/mask.js");
 const PROTECT = src("../../content/protect.js");
 
 function load(html) {
-  const dom = new JSDOM(html, { url: "http://localhost:4000/", runScripts: "outside-only", pretendToBeVisual: true });
+  const dom = new JSDOM(html, { url: "https://shop.example/", runScripts: "outside-only", pretendToBeVisual: true });
   dom.window.eval(MASK);
   dom.window.eval(PROTECT);
   const P = dom.window.ClearcartProtect;
@@ -117,7 +117,7 @@ test("keys: Enter and Space on a locked control, Enter in a payment or login for
   assert.equal(at("#qty", "Enter").kind, "order");
 });
 
-test("listLocks finds every locked control, and the store's shopping controls are not among them", () => {
+test("listLocks finds every locked control, and a cart's shopping controls are not among them", () => {
   const { P, document } = load(`<form action="/cart/add"><input name="quantity" value="1"><button id="add-to-cart">Add to cart</button></form>
     <form action="/cart/remove"><button>Remove</button></form>
     <form id="cart-form"><label><input type="checkbox" name="addon_subscription" checked> Subscribe &amp; Save: auto-deliver every 30 days (+$4.99 membership)</label>

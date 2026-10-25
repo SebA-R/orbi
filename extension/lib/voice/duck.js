@@ -1,4 +1,4 @@
-// Quiets other tabs while the user talks to Clearcart and while it answers.
+// Quiets other tabs while the user talks to Orbi and while it answers.
 //
 //   duck()          any non-idle voice state (listening, thinking, speaking): every
 //                   audible tab the user hasn't muted gets its <video> and
@@ -14,7 +14,7 @@
 //                   volumes back in (FADE_IN_MS).
 //
 // The ducked tab ids live in chrome.storage.session, so a worker restart can
-// still restore them. Clearcart's own audio plays in the offscreen document,
+// still restore them. Orbi's own audio plays in the offscreen document,
 // which is not a tab, so it is never touched. A quick tap never reaches here.
 import { loadSettings } from "../settings.js";
 

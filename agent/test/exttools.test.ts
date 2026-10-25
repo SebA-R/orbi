@@ -28,7 +28,7 @@ test("exposes exactly the TOOLS, none of the INTERNAL methods", () => {
 
 test("schemas validate the documented params", () => {
   const defs = Object.fromEntries(extToolDefinitions(fakeBridge(() => null) as any).map((d) => [d.name, z.object(d.inputSchema)]));
-  assert.ok(defs.navigate.safeParse({ url: "http://localhost:4000/" }).success);
+  assert.ok(defs.navigate.safeParse({ url: "https://shop.example/" }).success);
   assert.ok(!defs.navigate.safeParse({}).success);
   assert.ok(defs.click.safeParse({ ref: "ref_3" }).success);
   assert.ok(defs.click.safeParse({ tabId: 5, x: 10, y: 20 }).success);
@@ -98,4 +98,25 @@ test("tool descriptions tell Claude locked means request_unlock, not give up", (
   assert.match(defs.read_page, /never for Place order, Buy now, Pay or wallets/);
   assert.match(defs.get_page_text, /locked/);
   assert.match(defs.click, /names the control and its ref/);
+});
+
+test("screenshot says its CSS size, and the scale when the image is not 1:1", async () => {
+  let answer: any = { data: "AAAA", mimeType: "image/jpeg", width: 1440, height: 900, scale: 1 };
+  const defs = Object.fromEntries(extToolDefinitions(fakeBridge(() => answer) as any).map((d) => [d.name, d]));
+  let shot: any = await defs.screenshot.handler({}, {});
+  assert.equal(shot.content[0].type, "image");
+  assert.match(shot.content[1].text, /Viewport 1440x900 CSS px; image pixels are click coordinates/);
+  answer = { ...answer, scale: 2 };
+  shot = await defs.screenshot.handler({}, {});
+  assert.match(shot.content[1].text, /divide image coordinates by 2/);
+  assert.match(defs.click.description, /CSS pixels/);
+});
+
+test("dismiss_overlay passes through to the extension", async () => {
+  const b = fakeBridge((m) => (m === "dismiss_overlay" ? { dismissed: true, via: "close button", name: "Get 10% off" } : null));
+  const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
+  const r: any = await defs.dismiss_overlay.handler({ tabId: 4 }, {});
+  assert.deepEqual(JSON.parse(r.content[0].text), { dismissed: true, via: "close button", name: "Get 10% off" });
+  assert.deepEqual(b.calls, [{ method: "dismiss_overlay", params: { tabId: 4 } }]);
+  assert.match(defs.dismiss_overlay.description, /Sign-in, checkout, payment/);
 });

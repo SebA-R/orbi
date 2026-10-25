@@ -1,4 +1,4 @@
-// Clearcart's cursor: shows where the agent's pointer is and what it is
+// Orbi's cursor: shows where the agent's pointer is and what it is
 // doing, design "7. Orb tag arrow" from the Agent-Cursor board. A white
 // arrow with a spectrum outline, only the pointer; an I-beam while typing;
 // the mouse wheel from design 8 while scrolling. A press plays a ripple at the point, a ring pulse around the
@@ -202,8 +202,8 @@
   }
 
   // The shared re-append rule (content/frame.js, content/subtitles.js): every
-  // Clearcart overlay host carries OVERLAY_ATTR with its rank; a host only
-  // moves when a non-Clearcart element follows it, and a valve stops
+  // Orbi overlay host carries OVERLAY_ATTR with its rank; a host only
+  // moves when a non-Orbi element follows it, and a valve stops
   // re-appending for a while against a page that also keeps itself last.
   // Rank 1.5: above the frame (1), under the subtitles (2).
   const OVERLAY_ATTR = "data-clearcart-overlay";

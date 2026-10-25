@@ -1,4 +1,4 @@
-// Server side of the Clearcart extension bridge (ws://localhost:5050/ext).
+// Server side of the Orbi extension bridge (ws://localhost:5050/ext).
 //
 // The extension is the client: it connects, sends hello, and we reply
 // welcome. After that we send requests and it answers. One extension at a
@@ -36,6 +36,7 @@ export const TOOLS = [
   "key",
   "scroll",
   "screenshot",
+  "dismiss_overlay",
 ] as const;
 export const INTERNAL = ["tab_info", "agent_tabs", "page_context", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref", "lock_arm", "press_protected", "press_unlocked", "lock_info", "actions_stop"] as const;
 export const ERR = {
@@ -79,7 +80,7 @@ export interface ExtBridgeEvents {
   provider: [ExtProviderSettings];
 }
 
-// The Origin of an /ext upgrade: none (not a browser) or Clearcart's own
+// The Origin of an /ext upgrade: none (not a browser) or Orbi's own
 // extension (hostcheck.ts extensionOrigins).
 export function extOriginAllowed(origin: string | string[] | undefined, origins: ReadonlySet<string> = extensionOrigins()): boolean {
   if (origin === undefined) return true;
@@ -152,7 +153,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.off("connect", on);
-        reject(new ExtError(ERR.NOT_CONNECTED, "The Clearcart extension is not connected."));
+        reject(new ExtError(ERR.NOT_CONNECTED, "The Orbi extension is not connected."));
       }, timeoutMs);
       const on = () => {
         clearTimeout(timer);
@@ -165,7 +166,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   call<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
     const ws = this.current;
     if (!ws || ws.readyState !== ws.OPEN) {
-      return Promise.reject(new ExtError(ERR.NOT_CONNECTED, "The Clearcart extension is not connected. Open Chrome with the extension enabled."));
+      return Promise.reject(new ExtError(ERR.NOT_CONNECTED, "The Orbi extension is not connected. Open Chrome with the extension enabled."));
     }
     const id = `s${++this.counter}`;
     return new Promise<T>((resolve, reject) => {

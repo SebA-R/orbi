@@ -82,7 +82,7 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "tabs_create",
-      "Open a new tab next to the user's tab, optionally at a URL. Clearcart brings the user to it unless they turned that off. Prefer this over navigating away from a page the user had open. Returns { tabId }.",
+      "Open a new tab next to the user's tab, optionally at a URL. Orbi brings the user to it unless they turned that off. Prefer this over navigating away from a page the user had open. Returns { tabId }.",
       { url: z.string().optional() },
       pass("tabs_create")
     ),
@@ -130,7 +130,7 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "click",
-      "Click an element by ref (preferred), or at viewport coordinates x, y. A click that would press a locked control is refused with a message starting Locked: that names the control and its ref and says the next step (usually request_unlock with that ref if the user wants it). Nothing is pressed then; do not retry it.",
+      "Click an element by ref (preferred), or at viewport coordinates x, y in CSS pixels, the same space as the screenshot image (its size is given with it). A point outside the viewport is refused. A click that would press a locked control is refused with a message starting Locked: that names the control and its ref and says the next step (usually request_unlock with that ref if the user wants it). Nothing is pressed then; do not retry it.",
       {
         tabId,
         ref: z.string().optional().describe("Element ref from read_page or find, e.g. ref_12"),
@@ -162,15 +162,32 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "scroll",
-      "Scroll by dx, dy pixels at viewport point x, y (default: the centre).",
+      "Scroll by dx, dy pixels at viewport point x, y in CSS pixels, as in the screenshot (default: the centre).",
       { tabId, x: z.number().optional(), y: z.number().optional(), dx: z.number().optional(), dy: z.number().optional() },
       pass("scroll")
     ),
-    tool("screenshot", "JPEG screenshot of the tab's viewport.", { tabId }, async (args) => {
+    tool(
+      "dismiss_overlay",
+      "Close the marketing pop-up covering the page (email or SMS sign-up, discount offer, newsletter, app promo). It tries the pop-up's close or no thanks button, Escape, and a click on the backdrop, then hides it. Returns { dismissed, via, name }. Sign-in, checkout, payment, verification and cookie dialogs are refused; for a cookie banner, choose reject or necessary only in it.",
+      { tabId },
+      pass("dismiss_overlay")
+    ),
+    tool("screenshot", "JPEG screenshot of the tab's viewport, sized in CSS pixels: a point read off the image is the x, y to click or scroll at.", { tabId }, async (args) => {
       try {
-        const r = await bridge.call<{ data: string; mimeType?: string }>("screenshot", clean(args));
+        const r = await bridge.call<{ data: string; mimeType?: string; width?: number; height?: number; scale?: number }>("screenshot", clean(args));
         if (!r || typeof r.data !== "string") return failure(new ExtError(ERR.INTERNAL, "no screenshot data"));
-        return { content: [{ type: "image", data: r.data, mimeType: r.mimeType || "image/jpeg" }] };
+        const content: ToolResult["content"] = [{ type: "image", data: r.data, mimeType: r.mimeType || "image/jpeg" }];
+        if (r.width && r.height) {
+          const scale = r.scale && r.scale !== 1 ? r.scale : 1;
+          content.push({
+            type: "text",
+            text:
+              scale === 1
+                ? `Viewport ${r.width}x${r.height} CSS px; image pixels are click coordinates.`
+                : `Viewport ${r.width}x${r.height} CSS px; this image is ${scale}x larger, so divide image coordinates by ${scale} before clicking.`,
+          });
+        }
+        return { content };
       } catch (e) {
         return failure(e);
       }

@@ -1,4 +1,4 @@
-// Follow Clearcart to its tab. When Clearcart acts on a tab (opens it,
+// Follow Orbi to its tab. When Orbi acts on a tab (opens it,
 // navigates, clicks, types, presses a key, scrolls), that tab is made active
 // and its window focused, so the user sees what it is doing. Reading a tab
 // (read_page, find, get_page_text, screenshot...) never switches.
@@ -20,6 +20,7 @@ export const ACT_METHODS = new Set([
   "type",
   "key",
   "scroll",
+  "dismiss_overlay",
   "form_input",
   "click_ref",
   "press_protected",
@@ -28,7 +29,7 @@ export const ACT_METHODS = new Set([
   "clear_payment",
 ]);
 
-// After Clearcart itself activates or closes a tab, Chrome's events for that
+// After Orbi itself activates or closes a tab, Chrome's events for that
 // change can arrive a little later. They are not the user switching away.
 const OWN_SWITCH_GRACE_MS = 500;
 
@@ -41,7 +42,7 @@ export function createFollower({
   getSettings = () => loadSettings(chromeApi.storage.local),
   now = () => Date.now(),
 } = {}) {
-  // The tab (and its window) Clearcart is working in this turn, once it has
+  // The tab (and its window) Orbi is working in this turn, once it has
   // acted somewhere. A switch to anything else is the user's.
   let target = null;
   let targetWindow = null;
@@ -80,7 +81,7 @@ export function createFollower({
     save();
   }
 
-  // Runs one of Clearcart's own tab changes (its switches, tabs_activate,
+  // Runs one of Orbi's own tab changes (its switches, tabs_activate,
   // tabs_close) without reading the events it causes as the user switching
   // away.
   async function own(fn) {
@@ -128,7 +129,7 @@ export function createFollower({
     }
   }
 
-  // Clearcart showed this tab on purpose (tabs_activate): it is the tab now.
+  // Orbi showed this tab on purpose (tabs_activate): it is the tab now.
   function claim(tabId, windowId = null) {
     if (!Number.isInteger(tabId)) return;
     target = tabId;

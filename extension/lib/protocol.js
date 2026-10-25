@@ -27,7 +27,8 @@ export const MSG = Object.freeze({
   PING: "ping",
   PONG: "pong",
   BLOCKLIST: "blocklist",
-  // { type: "settings", guidedMode, memory }: agent behavior settings, worker to agent.
+  // { type: "settings", guidedMode, memory, provider, localBaseUrl, localModel }:
+  // agent behavior settings, worker to agent (lib/settings.js agentSettingsMessage).
   SETTINGS: "settings",
   DANGER_MODE: "danger_mode",
 });
@@ -48,9 +49,10 @@ export const TOOLS = Object.freeze([
   "key",
   "scroll",
   "screenshot",
+  "dismiss_overlay",
 ]);
 
-// Methods only the agent server's own code calls (pay_now, the store guard).
+// Methods only the agent server's own code calls (pay_now, the tab sweep).
 // Never exposed to Claude as tools. lock_arm and press_protected are the
 // button lock's unlock: a single-use nonce, then one press of an order
 // button (see background/router.js). press_unlocked is the same for a
@@ -134,7 +136,7 @@ export const RT = Object.freeze({
   CURSOR: "cursor",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
-  // Clearcart's "Can't reach this site" page: the user pressed Retry.
+  // Orbi's "Can't reach this site" page: the user pressed Retry.
   ERROR_PAGE_RETRY: "errorpage.retry",
   // worker -> offscreen: say your VOICE_STATE again (a restarted worker asks).
   VOICE_SYNC: "voice.sync",

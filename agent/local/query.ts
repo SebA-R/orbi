@@ -429,15 +429,15 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       try {
         out = await cb(input, id, { signal });
       } catch {
-        return "Blocked: Clearcart could not check this call. Try again in a moment.";
+        return "Blocked: Orbi could not check this call. Try again in a moment.";
       }
       const h = out?.hookSpecificOutput;
       const decision = h?.hookEventName === "PreToolUse" ? h.permissionDecision : undefined;
-      if (decision === "deny" || decision === "ask") return String(h.permissionDecisionReason || "Blocked by Clearcart.");
-      if (out?.decision === "block" || out?.continue === false) return String(out.reason || out.stopReason || "Blocked by Clearcart.");
+      if (decision === "deny" || decision === "ask") return String(h.permissionDecisionReason || "Blocked by Orbi.");
+      if (out?.decision === "block" || out?.continue === false) return String(out.reason || out.stopReason || "Blocked by Orbi.");
       // A hook that rewrites the input is not something this loop does:
       // refuse rather than run the call unchanged.
-      if (h?.updatedInput) return "Blocked: Clearcart could not check this call. Try again in a moment.";
+      if (h?.updatedInput) return "Blocked: Orbi could not check this call. Try again in a moment.";
     }
     return null;
   }

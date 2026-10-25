@@ -122,11 +122,11 @@ function friendlyStatus(text) {
   if (t === 'checkout confirmed') return 'Confirmed';
   if (t === 'checkout declined') return 'Okay, not paying';
   if (t.startsWith('navigate')) {
-    if (t.includes('/search') || t.includes('?q=')) return 'Searching the store';
+    if (t.includes('/search') || t.includes('?q=')) return 'Searching';
     if (t.includes('/product')) return 'Looking at a product';
     if (t.includes('/cart')) return 'Checking your cart';
     if (t.includes('/checkout')) return 'Opening checkout';
-    return 'Opening the store';
+    return 'Opening a page';
   }
   if (/^(computer|find|read_page|get_page_text|form_input)/.test(t)) return 'Reading the page';
   return '';
@@ -385,7 +385,7 @@ window.__clearcartDemoState = (state, opts = {}) => {
   renderUi();
   return uiState();
 };
-window.__clearcartDemoReceipt = (r = { item: 'Store brand cetirizine 10mg, 30 count', total: '$9.64', last4: '1111' }) => showReceipt(r);
+window.__clearcartDemoReceipt = (r = { item: 'Blue ceramic mug, 12 oz', total: '$12.96', last4: '1111' }) => showReceipt(r);
 // Same hooks grouped, plus conversation turns and the read-back card (used by index.html ?demo=).
 window.__clearcartDemo = {
   state: window.__clearcartDemoState,
@@ -415,7 +415,7 @@ function connectAgent() {
     opened = true;
     retryMs = 500;
     setConnection('open', 'Connected to your shopping assistant.');
-    if (everConnected) alertUser('Reconnected to Clearcart.');
+    if (everConnected) alertUser('Reconnected to Orbi.');
     everConnected = true;
     for (const msg of outbox) ws.send(msg);
     outbox = [];
@@ -431,7 +431,7 @@ function connectAgent() {
     // A lost session can't finish the checkout, so drop its card. (A socket that never opened,
     // as in the ?demo= previews, had no card from the agent.)
     if (opened) endConfirm();
-    if (everConnected && els.connection.dataset.state === 'open') alertUser('Lost connection to Clearcart. Trying again.');
+    if (everConnected && els.connection.dataset.state === 'open') alertUser('Lost connection to Orbi. Trying again.');
     setConnection('closed', 'Not connected to the shopping assistant. Retrying…');
     setTimeout(connectAgent, retryMs);
     retryMs = Math.min(retryMs * 2, 5000);
@@ -456,7 +456,7 @@ function handleAgentMessage(m) {
         logEvent(`Agent (not spoken): ${m.text}`);
         return;
       }
-      addTurn('Clearcart', m.text);
+      addTurn('Orbi', m.text);
       showAgentCaption(m.text);
       ui.thinking = false;
       renderUi();
@@ -487,7 +487,7 @@ function handleAgentMessage(m) {
   }
 }
 
-// The agent server keeps one conversation for every Clearcart window and the
+// The agent server keeps one conversation for every Orbi window and the
 // one the user last talked into owns it. "moved": another window (or the
 // extension) just took it, so stop talking and listening here, unsent.
 // "stale": what we just sent was dropped; a newer press here is left alone.
@@ -506,7 +506,7 @@ function standby(m) {
   endConfirm();
   ui.thinking = false;
   renderUi();
-  const text = m.text || 'Clearcart is in use in another window. Talk here to use it here.';
+  const text = m.text || 'Orbi is in use in another window. Talk here to use it here.';
   setConnection('standby', text);
   alertUser(text);
 }

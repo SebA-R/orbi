@@ -37,7 +37,7 @@ globalThis.chrome = {
 
 const tabs = await import("../../../extension/background/tabs.js");
 
-test("isNewTabPage: Chrome's new tab pages and Clearcart's own, nothing else", () => {
+test("isNewTabPage: Chrome's new tab pages and Orbi's own, nothing else", () => {
   for (const u of ["chrome://newtab/", "chrome://newtab", "chrome://new-tab-page/", "chrome://new-tab-page-third-party/", own, `${own}?x#y`]) {
     assert.ok(tabs.isNewTabPage(u), u);
   }
@@ -46,7 +46,7 @@ test("isNewTabPage: Chrome's new tab pages and Clearcart's own, nothing else", (
   }
 });
 
-test("a user's new tab is listed and can be navigated to a store, but never read or acted on", async () => {
+test("a user's new tab is listed and can be navigated to a site, but never read or acted on", async () => {
   tabList = [
     { id: 1, active: true, url: "chrome://newtab/", title: "New Tab" },
     { id: 2, active: false, url: "https://www.chase.com/", title: "Chase" },

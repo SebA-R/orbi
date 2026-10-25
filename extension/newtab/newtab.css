@@ -1,4 +1,4 @@
-/* Clearcart new tab page and "Can't reach this site" page: the popup's orb and colors on a calm, full page.
+/* Orbi new tab page and "Can't reach this site" page: the popup's orb and colors on a calm, full page.
    System fonts only: the extension loads nothing remote. */
 :root {
   color-scheme: light dark;
@@ -121,7 +121,7 @@ main {
 }
 .go:hover { background: var(--hover); color: var(--fg); }
 .go:focus-visible { outline-offset: 0; }
-/* While Clearcart is listening, thinking or speaking the capsule takes the
+/* While Orbi is listening, thinking or speaking the capsule takes the
    orb's turning spectrum. */
 body:not([data-state="idle"]) .cap:not(:focus-within) {
   border: 2px solid transparent;

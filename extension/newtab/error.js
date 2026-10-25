@@ -1,4 +1,4 @@
-// Clearcart's "Can't reach this site" page. The worker sends a tab here when
+// Orbi's "Can't reach this site" page. The worker sends a tab here when
 // its main frame fails with a network error (background/errpage.js), since
 // Chrome's own error page runs no content scripts. Like the new tab page it
 // loads content/hotkey.js and content/orb-face.js (guard.js first), and
@@ -46,7 +46,7 @@ if (addr) {
   $("failed-code").hidden = !rec.error;
   $("retry").hidden = false;
 } else {
-  $("failed-text").textContent = "Chrome could not load the page, and Clearcart no longer has its address. Type it again in the address bar, or ask Clearcart to go somewhere.";
+  $("failed-text").textContent = "Chrome could not load the page, and Orbi no longer has its address. Type it again in the address bar, or ask Orbi to go somewhere.";
 }
 
 $("retry").addEventListener("click", async () => {

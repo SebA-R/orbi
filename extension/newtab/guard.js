@@ -1,4 +1,4 @@
-// Clearcart new tab page: runs before content/hotkey.js,
+// Orbi new tab page: runs before content/hotkey.js,
 // which this page loads unchanged.
 //
 // On a website those two only hear chrome.tabs.sendMessage from the worker.

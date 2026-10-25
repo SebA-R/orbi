@@ -1,4 +1,4 @@
-// Clearcart subtitles: a quiet caption card at the bottom of every tab that
+// Orbi subtitles: a quiet caption card at the bottom of every tab that
 // shows what the user said and what the agent is saying.
 //
 // Declared in the manifest as a classic content script (no ES imports), so
@@ -248,9 +248,9 @@
   }
 
   // Pages that append their own overlay after us, or rewrite our inline style.
-  // Every Clearcart overlay host carries OVERLAY_ATTR, whose value is its rank
+  // Every Orbi overlay host carries OVERLAY_ATTR, whose value is its rank
   // (higher sits later, so the subtitles stay above the frame). A host only
-  // moves when a non-Clearcart element follows it, so two Clearcart overlays
+  // moves when a non-Orbi element follows it, so two Orbi overlays
   // never chase each other. A valve stops re-appending for a while if a page
   // keeps itself last too, so the two can't spin forever.
   const OVERLAY_ATTR = "data-clearcart-overlay";
@@ -269,7 +269,7 @@
     }
     return false;
   }
-  // Last, but before any trailing Clearcart overlay that ranks above us.
+  // Last, but before any trailing Orbi overlay that ranks above us.
   function place(root, host) {
     let before = null;
     for (let el = root.lastElementChild; el && el !== host; el = el.previousElementSibling) {
@@ -605,8 +605,11 @@
   if (chromeApi && chromeApi.runtime && chromeApi.runtime.onMessage) {
     chromeApi.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg !== "object") return;
-      if (msg.type === RT.SUBTITLE) onSubtitle(msg);
-      else if (msg.type === RT.SUBTITLE_WORD) onWord(msg);
+      if (msg.type === RT.SUBTITLE || msg.type === RT.SUBTITLE_WORD) {
+        if (msg.type === RT.SUBTITLE) onSubtitle(msg);
+        else onWord(msg);
+        if (ui.face) ui.face.caption(msg); // lip-sync on the heard words
+      }
       else if (msg.type === RT.VOICE_STATE) onState(msg.state, msg.latched);
       else if (msg.type === RT.VOICE_LEVEL) { if (ui.face) ui.face.setLevel(msg.level); }
       else if (msg.type === RT.SETTINGS_CHANGED && msg.settings && "subtitles" in msg.settings) {

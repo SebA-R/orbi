@@ -47,12 +47,12 @@ export function hasCardNumber(text: string): boolean {
   return Mask.maskCardRuns(String(text)) !== String(text);
 }
 
-export const CARD = "Not sent: that looks like a card number, or the focus is in a card field. Clearcart never types card details; pay_now fills them on the store, and elsewhere the user types them.";
+export const CARD = "Not sent: that looks like a card number, or the focus is in a card field. Orbi never types card details; pay_now fills them on an Orbi pay site, and elsewhere the user types them.";
 
 const MASK_SRC = fs.readFileSync(path.join(EXT, "mask.js"), "utf8");
 const PROTECT_SRC = fs.readFileSync(path.join(EXT, "protect.js"), "utf8");
 
-// Danger mode on this path. Open Claude in Chrome has no Clearcart
+// Danger mode on this path. Open Claude in Chrome has no Orbi
 // settings, so it comes from the server's own config, like
 // CLEARCART_BROWSE_MODE: CLEARCART_DANGER_MODE=1. Off unless set. While on,
 // the button lock is off (every click, key and form_input goes through);
@@ -93,7 +93,7 @@ const LOCK_JSON = "function J(l){ return l ? { kind: l.kind, label: l.label, opt
 
 const CLICKS = new Set(["left_click", "right_click", "double_click", "triple_click", "left_click_drag", "left_mouse_down", "left_mouse_up", "diag_input"]);
 
-export const PASSWORD = "Not sent: that is a password field. Clearcart never types passwords; ask the user to type it themselves.";
+export const PASSWORD = "Not sent: that is a password field. Orbi never types passwords; ask the user to type it themselves.";
 
 // True when the focused element (through open shadow roots) is a password input.
 const FOCUS_PASSWORD = `(function () { var el = document.activeElement; while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
@@ -114,7 +114,7 @@ if (!el || el.nodeType !== 1) return null;
 var ac = String(el.getAttribute("autocomplete") || "").toLowerCase();
 return (M && M.isPaymentField(el)) || /(^|\\s)cc-/.test(ac) ? "card" : null;`;
 
-const UNCHECKED = "Locked: Clearcart could not check what this action would press, so it was not sent.";
+const UNCHECKED = "Locked: Orbi could not check what this action would press, so it was not sent.";
 
 // OCIC clicks a ref at the centre of its rect, after scrolling it into view,
 // in its own isolated world. Our check runs in the main world and cannot
@@ -122,7 +122,7 @@ const UNCHECKED = "Locked: Clearcart could not check what this action would pres
 // miss a locked control under or inside it ("Continue" wrapping Place
 // order, an overlay over the centre). Ref-only clicks are refused; a click
 // at coordinates gets the full hit test.
-export const REF_CLICK = "Not sent: on this browser Clearcart checks clicks only at coordinates, not by ref. Click the same element by its coordinate instead (find reports where it is).";
+export const REF_CLICK = "Not sent: on this browser Orbi checks clicks only at coordinates, not by ref. Click the same element by its coordinate instead (find reports where it is).";
 
 function xy(v: unknown): [number, number] | null {
   return Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === "number" && Number.isFinite(n)) ? [v[0], v[1]] : null;
@@ -233,7 +233,7 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
         return null;
       }
       if (action === "type" && String(args.text || "")) {
-        // Passwords are typed by the user, never by Clearcart.
+        // Passwords are typed by the user, never by Orbi.
         if (!Number.isFinite(tabId)) return UNCHECKED;
         if ((await deps.evalInTab<boolean>(tabId, FOCUS_PASSWORD)) === true) return PASSWORD;
         // Card details are never typed, in either mode.

@@ -10,7 +10,7 @@ function session() {
 test("request_checkout sends a structured confirm before speaking the read-back", async () => {
   const { s, sent } = session();
   const done = s.requestCheckout({
-    item: "Advil 50 count",
+    item: "Blue mug",
     quantity: 1,
     total: "$14.27 CAD",
     changes: "I removed a Subscribe and Save membership ($4.99) and a gift wrap add-on ($2.50)",
@@ -18,7 +18,7 @@ test("request_checkout sends a structured confirm before speaking the read-back"
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(sent[0], {
     type: "confirm",
-    item: "Advil 50 count",
+    item: "Blue mug",
     quantity: 1,
     total: "$14.27 CAD",
     changes: "I removed a Subscribe and Save membership ($4.99) and a gift wrap add-on ($2.50).",
@@ -33,7 +33,7 @@ test("request_checkout sends a structured confirm before speaking the read-back"
 
 test("a declined read-back sends confirm_done declined", async () => {
   const { s, sent } = session();
-  const done = s.requestCheckout({ item: "Advil", quantity: 2, total: "$9.00" });
+  const done = s.requestCheckout({ item: "Blue mug", quantity: 2, total: "$9.00" });
   await new Promise((r) => setImmediate(r));
   assert.equal((sent[0] as any).changes, "");
   s.userText("no, wait");

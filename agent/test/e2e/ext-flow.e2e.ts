@@ -1,6 +1,7 @@
 // End-to-end: the real agent server (CLEARCART_BROWSER=ext) and the unpacked
 // extension in an isolated Playwright Chromium (never the user's Chrome),
-// against a private demo store on a spare port. Drives the shopping flow over
+// against the test shop (tests/fixtures/shop.mjs) on a spare port, which is
+// the only allowed site and pay site. Drives the shopping flow over
 // the bridge the way Claude's tools would, without Claude, then runs the ext
 // pay_now with a stand-in vault card (never the Keychain) and checks the card
 // number never shows up in a tool result or a log.
@@ -8,12 +9,11 @@
 //   npm --prefix agent run test:e2e:ext
 //   (needs `npm install` in tests/extension for Playwright)
 //
-// Ports: store 4300, agent 5300 (override with E2E_STORE_PORT / E2E_AGENT_PORT).
+// Ports: shop 4300, agent 5300 (override with E2E_SHOP_PORT / E2E_AGENT_PORT).
 // The browser loads a temp copy of extension/ whose default agent URL is the
 // test's agent, so the test extension never connects to a live agent on :5050.
 
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,14 +21,16 @@ import { after, before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import WebSocket from "ws";
 
+import { startShop } from "../../../tests/fixtures/shop.mjs";
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..", "..");
 const EXT_DIR = path.join(REPO, "extension");
 const PW = path.join(REPO, "tests", "extension", "node_modules", "playwright", "index.mjs");
 
-const STORE_PORT = Number(process.env.E2E_STORE_PORT || 4300);
+const SHOP_PORT = Number(process.env.E2E_SHOP_PORT || 4300);
 const AGENT_PORT = Number(process.env.E2E_AGENT_PORT || 5300);
-const STORE = `http://localhost:${STORE_PORT}`;
+const SHOP = `http://localhost:${SHOP_PORT}`;
 
 // Visa test number; the stand-in vault hands it to pay_now.
 const CARD = { name: "Test Shopper", number: "4111111111111111", exp: "12/30", csc: "737" };
@@ -39,14 +41,14 @@ process.env.CLEARCART_BROWSER = "ext";
 process.env.AGENT_PORT = String(AGENT_PORT);
 process.env.AGENT_MODE = "echo"; // /session without Claude; the bridge is unaffected
 process.env.CLEARCART_VOICE = "false"; // never spend Cartesia credits in tests
-process.env.CLEARCART_STORE_ORIGIN = STORE;
-process.env.CLEARCART_ALLOWED_ORIGINS = STORE;
+process.env.CLEARCART_ALLOWED_ORIGINS = SHOP;
+process.env.CLEARCART_PAY_ORIGINS = SHOP;
 
 const skip = !fs.existsSync(PW) && "playwright not installed in tests/extension";
 
 const logs: string[] = [];
 const results: string[] = [];
-let store: ChildProcess | null = null;
+let shop: Awaited<ReturnType<typeof startShop>> | null = null;
 let ctx: any;
 let profile = "";
 let extCopy = "";
@@ -107,19 +109,13 @@ async function findOne(tabId: number, query: string, pred: (m: { ref: string; ro
 
 before(async () => {
   if (skip) return;
-  store = spawn(process.execPath, [path.join(REPO, "store", "server.js")], {
-    env: { ...process.env, STORE_PORT: String(STORE_PORT) },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  store.stdout!.on("data", (d) => logs.push(`[store] ${d}`));
-  store.stderr!.on("data", (d) => logs.push(`[store] ${d}`));
-  await waitFor(() => fetch(STORE + "/").then((r) => r.ok), "the store");
+  shop = await startShop({ port: SHOP_PORT });
 
   await import("../../server.ts");
   ({ extBridge: bridge } = await import("../../extbridge.ts"));
   pay = await import("../../pay.ts");
   tools = await import("../../exttools.ts");
-  assert.equal(pay.STORE_ORIGIN, STORE);
+  assert.equal(pay.onPayCheckout(SHOP + "/checkout"), true, "the shop is the pay site");
   // Record every bridge reply, including pay_now's own calls.
   const raw = bridge.call.bind(bridge);
   (bridge as any).call = async (method: string, params?: any, ms?: number) => {
@@ -156,7 +152,7 @@ before(async () => {
   if (!ctx.pages().length) await ctx.newPage();
   await worker.evaluate(
     ([agentUrl, origin]: string[]) => chrome.storage.local.set({ agentUrl, allowlist: [origin] }),
-    [`ws://localhost:${AGENT_PORT}`, STORE]
+    [`ws://localhost:${AGENT_PORT}`, SHOP]
   );
   await waitFor(async () => bridge.connected(), "the extension to connect to /ext", 20_000);
 });
@@ -165,14 +161,14 @@ after(async () => {
   await ctx?.close().catch(() => {});
   if (profile) fs.rmSync(profile, { recursive: true, force: true });
   if (extCopy) fs.rmSync(extCopy, { recursive: true, force: true });
-  store?.kill();
+  await shop?.stop();
   // The in-process agent server keeps the event loop alive.
   setTimeout(() => process.exit(process.exitCode ?? 0), 200).unref();
 });
 
 test("full shopping flow over the extension bridge, card never leaks", { skip }, async () => {
-  // tabs_create store
-  const { tabId } = await call<{ tabId: number }>("tabs_create", { url: STORE + "/" });
+  // tabs_create on the shop
+  const { tabId } = await call<{ tabId: number }>("tabs_create", { url: SHOP + "/" });
   assert.equal(typeof tabId, "number");
   const ctxInfo = await call<{ tabs: Array<{ tabId: number; url: string }> }>("tabs_context");
   assert.ok(ctxInfo.tabs.some((t) => t.tabId === tabId));
@@ -182,14 +178,14 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   for (const url of ["https://mail.google.com/", "https://www.chase.com/", `http://localhost:${AGENT_PORT}/`, "http://localhost:4301/", "chrome://settings"]) {
     assert.equal((await callErr("navigate", { tabId, url })).code, "not_allowed", url);
   }
-  assert.equal(await urlOf(tabId), STORE + "/");
+  assert.equal(await urlOf(tabId), SHOP + "/");
 
   // The extension seeded the suggested blocked sites and sent them over the
   // bridge; an edit on its side reaches the agent's guard too.
   const { SUGGESTED_ENTRIES } = await import("../../blocklist.ts");
   await waitFor(async () => bridge.blocklist()?.length === SUGGESTED_ENTRIES.length, "the seeded blocklist on the agent");
-  await worker.evaluate(() => chrome.storage.local.set({ blocklist: ["# test", "*cetirizine-shop*", "etsy.com"] }));
-  await waitFor(async () => bridge.blocklist()?.map((e) => e.text).join() === "*cetirizine-shop*,etsy.com", "the edited blocklist on the agent");
+  await worker.evaluate(() => chrome.storage.local.set({ blocklist: ["# test", "*mug-shop*", "etsy.com"] }));
+  await waitFor(async () => bridge.blocklist()?.map((e) => e.text).join() === "*mug-shop*,etsy.com", "the edited blocklist on the agent");
   assert.equal((await callErr("navigate", { tabId, url: "https://www.etsy.com/" })).code, "not_allowed");
   const { browseDenyReason } = await import("../../session.ts");
   assert.match(browseDenyReason("https://www.etsy.com/") || "", /etsy\.com/);
@@ -202,12 +198,12 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   assert.match(page.tree, /searchbox|textbox/);
   const box = await findOne(tabId, "Search products", (m) => /search|text/.test(m.role));
   await tools.clickRef(bridge, box.ref, tabId);
-  await call("type", { tabId, text: "cetirizine" });
+  await call("type", { tabId, text: "mug" });
   await call("key", { tabId, key: "Enter" });
-  await waitFor(async () => (await urlOf(tabId)).includes("/search?q=cetirizine"), "search results");
+  await waitFor(async () => (await urlOf(tabId)).includes("/search?q=mug"), "search results");
 
   // Open a product.
-  const link = await findOne(tabId, "Cetirizine", (m) => m.role === "link" && /Cetirizine/i.test(m.name));
+  const link = await findOne(tabId, "Blue mug", (m) => m.role === "link" && /Blue mug/i.test(m.name));
   await tools.clickRef(bridge, link.ref, tabId);
   await waitFor(async () => (await urlOf(tabId)).includes("/product/"), "the product page");
 
@@ -228,7 +224,7 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   assert.match(after.split("\n").find((l) => l.includes(`[${addonRef}]`))!, /unchecked/);
 
   // Checkout.
-  await call("navigate", { tabId, url: STORE + "/checkout" });
+  await call("navigate", { tabId, url: SHOP + "/checkout" });
   const text = (await call<{ text: string }>("get_page_text", { tabId })).text;
   const total = /Order total\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i.exec(text)?.[1];
   assert.ok(total, `no Order total in: ${text.slice(0, 600)}`);
@@ -272,7 +268,7 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   assert.match(snap.cart, /Order total/);
   const state = {
     lastTabId: tabId,
-    confirmation: { item: "Cetirizine 30 tablets", quantity: 1, total: `$${total}`, state: "confirmed" as const, confirmedAt: Date.now(), tabId, cart: snap.cart },
+    confirmation: { item: "Blue mug, 12 oz", quantity: 1, total: `$${total}`, state: "confirmed" as const, confirmedAt: Date.now(), tabId, cart: snap.cart },
     cardFieldsLive: false,
   };
   const r = await pay.payNowExt(state as any, { getCard: async () => ({ ...CARD }) });
@@ -303,20 +299,20 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   if (process.env.E2E_VERBOSE) process.stderr.write(results.map((l) => l.slice(0, 300)).join("\n") + "\n");
 });
 
-test("a store rejection comes back as the alert text and the card fields are cleared", { skip }, async () => {
-  const { tabId } = await call<{ tabId: number }>("tabs_create", { url: STORE + "/product/cetirizine-30" });
+test("a rejected payment comes back as the alert text and the card fields are cleared", { skip }, async () => {
+  const { tabId } = await call<{ tabId: number }>("tabs_create", { url: SHOP + "/product/mug" });
   const add = await findOne(tabId, "Add to cart", (m) => m.role === "button");
   await tools.clickRef(bridge, add.ref, tabId);
   await waitFor(async () => (await urlOf(tabId)).includes("/cart"), "the cart");
-  await call("navigate", { tabId, url: STORE + "/checkout" });
+  await call("navigate", { tabId, url: SHOP + "/checkout" });
   const text = (await call<{ text: string }>("get_page_text", { tabId })).text;
   const total = /Order total\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i.exec(text)![1];
   const state = {
     lastTabId: tabId,
-    confirmation: { item: "Cetirizine", quantity: 1, total: `$${total}`, state: "confirmed" as const, confirmedAt: Date.now(), tabId },
+    confirmation: { item: "Blue mug", quantity: 1, total: `$${total}`, state: "confirmed" as const, confirmedAt: Date.now(), tabId },
     cardFieldsLive: false,
   };
-  const bad = { ...CARD, number: "4111111111111112" }; // fails Luhn at the store
+  const bad = { ...CARD, number: "4111111111111112" }; // fails Luhn at the shop
   const r = await pay.payNowExt(state as any, { getCard: async () => ({ ...bad }), orderTimeoutMs: 8_000 });
   results.push(`pay_now ${JSON.stringify(r)}`);
   assert.equal(r.ok, false);

@@ -62,6 +62,44 @@ export class WordClock {
     this.ends = []; // and ends
     this.targets = []; // display index for each timestamp word
     this.spoken = [];
+    this.phonemes = []; // [ipa, start, end] in audio seconds, when Sonic sends them
+  }
+
+  // Sonic's phoneme timestamps ({ phonemes, start, end }), for the orb's lips.
+  addPhonemes(ts) {
+    if (!ts || !Array.isArray(ts.phonemes) || !Array.isArray(ts.start)) return;
+    const n = Math.min(ts.phonemes.length, ts.start.length);
+    for (let i = 0; i < n; i++) {
+      const s = Number(ts.start[i]);
+      if (!Number.isFinite(s)) continue;
+      const e = Number(ts.end && ts.end[i]);
+      this.phonemes.push([String(ts.phonemes[i]), s, Number.isFinite(e) && e > s ? e : s]);
+    }
+  }
+
+  // The phonemes heard in display word d, as [ipa, startMs, endMs] of
+  // playback from the word's start (the clock the caption sweep uses).
+  // Empty without phoneme timestamps; the face then guesses from the letters.
+  phonemesOf(d) {
+    let a = Infinity;
+    let b = -Infinity;
+    this.targets.forEach((t, i) => {
+      if (t !== d) return;
+      a = Math.min(a, this.starts[i]);
+      b = Math.max(b, this.ends[i]);
+    });
+    if (a === Infinity || !this.phonemes.length) return [];
+    const base = this.ctxTimeOf(a);
+    if (!Number.isFinite(base)) return [];
+    const ms = (x) => Math.max(0, Math.round((this.ctxTimeOf(x) - base) * 1000));
+    const out = [];
+    for (const [p, s, e] of this.phonemes) {
+      if (s < a - 1e-6 || s >= b - 1e-6) continue;
+      const at = ms(s);
+      const end = ms(Math.min(e, b));
+      if (Number.isFinite(at) && Number.isFinite(end)) out.push([p, at, end]);
+    }
+    return out;
   }
 
   get timed() { return this.starts.length > 0; }

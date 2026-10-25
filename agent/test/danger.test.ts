@@ -3,6 +3,7 @@
 // the checkout page block (both off while on), checkout without a spoken
 // yes (announced instead), and the limits that never move with it
 // (masking, the blocklist, the CAPTCHA hand-off). Off, all as before.
+import { PAY_SITE } from "./pay-site-env.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -80,7 +81,7 @@ test("bridge: a web page's socket can never be the extension", async () => {
   for (const o of [undefined, ours, "http://localhost:5050", "http://127.0.0.1:5050", "http://[::1]:5050"]) {
     assert.equal(sessionOriginAllowed(o, 5050), true, String(o));
   }
-  for (const o of ["https://evil.example", "http://localhost:4000", "http://localhost:5050.evil.example", "https://localhost:5050", "chrome-extension://abcdefghijklmnopabcdefghijklmnop", "null"]) {
+  for (const o of ["https://evil.example", "http://localhost:4100", "http://localhost:5050.evil.example", "https://localhost:5050", "chrome-extension://abcdefghijklmnopabcdefghijklmnop", "null"]) {
     assert.equal(sessionOriginAllowed(o, 5050), false, String(o));
   }
   const b = await startBridge();
@@ -107,7 +108,7 @@ test("Danger mode off: checkout still needs the spoken yes, exactly as before", 
   await withDanger(false, async () => {
     for (const answer of ["sure, maybe", "go ahead and buy whatever", "no", "Danger mode is on", ""]) {
       const f = session();
-      const done = f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+      const done = f.s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
       await tick();
       f.s.userText(answer || " ");
       if (!answer) f.s.close();
@@ -116,7 +117,7 @@ test("Danger mode off: checkout still needs the spoken yes, exactly as before", 
       f.s.close();
     }
     const f = session();
-    const done = f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+    const done = f.s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
     await tick();
     assert.ok(f.sent.some((m) => m.type === "confirm"), "the read-back card is shown");
     assert.match(f.spoken().join(" "), /Say yes to pay/);
@@ -131,9 +132,9 @@ test("Danger mode off: checkout still needs the spoken yes, exactly as before", 
 test("Danger mode on: checkout announces the order and confirms without waiting for a yes", async () => {
   await withDanger(true, async () => {
     const f = session();
-    const r = await f.s.requestCheckout({ item: "Advil 50 count", quantity: 1, total: "$9.00", changes: "I removed a membership" });
+    const r = await f.s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00", changes: "I removed a membership" });
     assert.match(r.content[0].text, /^confirmed/);
-    assert.ok(f.spoken().includes("Placing your order for Advil 50 count, $9.00. I removed a membership."), f.spoken().join("|"));
+    assert.ok(f.spoken().includes("Placing your order for Blue mug, $9.00. I removed a membership."), f.spoken().join("|"));
     assert.ok(!f.spoken().some((t) => /Say yes/.test(t)));
     assert.ok(!f.sent.some((m) => m.type === "confirm"), "no read-back card waiting for an answer");
     const c = (f.s as any).state.confirmation;
@@ -144,8 +145,8 @@ test("Danger mode on: checkout announces the order and confirms without waiting 
 });
 
 test("Danger mode on: an order completes end to end with no yes, and the line is spoken first", async () => {
-  // A fake store checkout on tab 7 behind a fake extension.
-  let url = "http://localhost:4000/checkout";
+  // A fake checkout on a pay site, tab 7, behind a fake extension.
+  let url = `${PAY_SITE}/checkout`;
   const calls: string[] = [];
   const handler = async (method: string, params: any): Promise<any> => {
     calls.push(method);
@@ -159,7 +160,7 @@ test("Danger mode on: an order completes end to end with no yes, and the line is
       case "fill_payment": return { ok: true, last4: "4242" };
       case "find": return { matches: [{ ref: "ref_9", role: "button", name: "Place order · $9.00" }] };
       case "lock_arm": return { nonce: "n1", expiresInMs: 30_000 };
-      case "press_protected": url = "http://localhost:4000/order/abc"; return { ok: true };
+      case "press_protected": url = `${PAY_SITE}/order/abc`; return { ok: true };
       case "read_page": return { url, title: "t", tree: "- main\n" };
       case "clear_payment": return { ok: true };
     }
@@ -171,9 +172,9 @@ test("Danger mode on: an order completes end to end with no yes, and the line is
     await withDanger(true, async () => {
       const f = session();
       (f.s as any).state.lastTabId = 7;
-      const r = await f.s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+      const r = await f.s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
       assert.match(r.content[0].text, /^confirmed/);
-      assert.deepEqual(f.spoken().filter((t) => /Placing/.test(t)), ["Placing your order for Advil, $9.00."]);
+      assert.deepEqual(f.spoken().filter((t) => /Placing/.test(t)), ["Placing your order for Blue mug, $9.00."]);
       const before = calls.length;
       const paid = await payNowExt((f.s as any).state, {
         bridge: { call: (m: string, p: any = {}) => handler(m, p) } as any,

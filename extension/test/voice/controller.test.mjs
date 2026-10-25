@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { RT } from "../../lib/protocol.js";
-import { VoiceController, TAIL_MS, LATCH_IDLE_MS } from "../../lib/voice/controller.js";
+import { VoiceController, TAIL_MS, LATCH_IDLE_MS, FINAL_WAIT_MS } from "../../lib/voice/controller.js";
 import { cueLength } from "../../lib/voice/chime.js";
 import { AgentSession } from "../../lib/voice/agent-session.js";
 import { createTokenSource } from "../../lib/voice/token.js";
@@ -73,7 +73,7 @@ test("stop: stop chime now, finish after the tail; a final becomes user_text + s
     { type: RT.SUBTITLE, speaker: "user", text: "cheapest allergy pills", final: true },
   ]);
   assert.ok(r.emitted.some((m) => m.type === RT.VOICE_FINAL && m.text === "cheapest allergy pills"));
-  assert.deepEqual(states(r.emitted), ["listening", "idle", "thinking"]);
+  assert.deepEqual(states(r.emitted), ["listening", "thinking"], "a partial was heard: thinking at once, no idle blip");
 });
 
 test("agent_text speaks, subtitles, and the state follows the speaker", async () => {
@@ -103,11 +103,11 @@ test("pressing again while it speaks barges in", async () => {
 
 test("status and receipt are forwarded as STATUS; empty agent_text is ignored", () => {
   const r = rig();
-  r.c.onAgentMessage({ type: "status", text: "navigate http://localhost:4000/search" });
+  r.c.onAgentMessage({ type: "status", text: "navigate https://shop.example/search" });
   r.c.onAgentMessage({ type: "receipt", item: "Cetirizine", total: "$18.49", last4: "1111" });
   r.c.onAgentMessage({ type: "agent_text", text: "" });
   assert.deepEqual(r.emitted.filter((m) => m.type === RT.STATUS), [
-    { type: RT.STATUS, kind: "status", text: "navigate http://localhost:4000/search" },
+    { type: RT.STATUS, kind: "status", text: "navigate https://shop.example/search" },
     { type: RT.STATUS, kind: "receipt", receipt: { item: "Cetirizine", total: "$18.49", last4: "1111" } },
   ]);
   assert.equal(r.log.length, 0);
@@ -524,4 +524,174 @@ test("cues: a late mic failure from a dropped tap makes no sound for the next pr
   await first;
   r.c.confirm();
   assert.deepEqual(cues(r.log), [], "no error buzz for the new press");
+});
+
+// Send on release: Ink ends a turn on every pause, so its finals mid-hold are
+// segments of one user turn, sent once when the key comes up.
+const userTexts = (r) => r.agent.sent.filter((m) => m.type === "user_text");
+const fire = (r, ms) => { for (const t of live(r.timers)) if (t.ms === ms && !t.fired) { t.fired = true; t.fn(); } };
+
+test("send on release: finals mid-hold send nothing; partials still subtitle", async () => {
+  const r = rig();
+  await r.c.start();
+  r.stt.h.onFinal("two bags");
+  r.stt.h.onPartial("of chi");
+  r.stt.h.onFinal("of chips");
+  assert.deepEqual(userTexts(r), []);
+  assert.equal(r.c.state, "listening");
+  const subs = r.emitted.filter((m) => m.type === RT.SUBTITLE);
+  assert.ok(subs.some((m) => m.text === "two bags of chi" && m.final === false));
+  assert.ok(!subs.some((m) => m.final === true));
+});
+
+test("send on release: release sends the segments as one user_text, once", async () => {
+  const r = rig();
+  await r.c.start();
+  r.stt.h.onFinal("two bags");
+  r.stt.h.onFinal("of chips");
+  r.c.stop();
+  assert.equal(r.log.at(-1), "chime:sent");
+  assert.deepEqual(userTexts(r), [], "nothing before the tail");
+  fire(r, TAIL_MS);
+  assert.equal(r.stt.finished, true);
+  r.stt.h.onFinal("please");
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "two bags of chips please" }]);
+  r.stt.h.onClosed();
+  fire(r, FINAL_WAIT_MS);
+  assert.equal(userTexts(r).length, 1, "sent once");
+});
+
+test("send on release: a late final within the wait window is included; after it, dropped", async () => {
+  const r = rig();
+  await r.c.start();
+  r.stt.h.onFinal("milk");
+  r.stt.h.onPartial("and eg");
+  r.c.stop();
+  fire(r, TAIL_MS);
+  assert.deepEqual(userTexts(r), [], "waits for the trailing final");
+  r.stt.h.onFinal("and eggs");
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "milk and eggs" }]);
+
+  // No trailing final in time: the open partial goes with it, and a later final is dropped.
+  const q = rig();
+  await q.c.start();
+  q.stt.h.onFinal("milk");
+  q.stt.h.onPartial("and bread");
+  q.c.stop();
+  fire(q, TAIL_MS);
+  fire(q, FINAL_WAIT_MS);
+  assert.deepEqual(userTexts(q), [{ type: "user_text", text: "milk and bread" }]);
+  q.stt.h.onFinal("and bread too");
+  q.stt.h.onClosed();
+  assert.equal(userTexts(q).length, 1);
+});
+
+test("send on release: closing a latch sends one turn (Space, idle stop)", async () => {
+  const r = rig();
+  await r.c.start({ latch: true });
+  r.stt.h.onFinal("eggs");
+  r.stt.h.onFinal("and milk");
+  assert.deepEqual(userTexts(r), []);
+  r.c.stop(); // the closing Space
+  fire(r, TAIL_MS);
+  fire(r, FINAL_WAIT_MS);
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs and milk" }]);
+
+  const q = rig();
+  await q.c.start({ latch: true });
+  q.stt.h.onFinal("bread");
+  fire(q, LATCH_IDLE_MS);
+  fire(q, TAIL_MS);
+  q.stt.h.onClosed();
+  assert.deepEqual(userTexts(q), [{ type: "user_text", text: "bread" }]);
+});
+
+test("send on release: a tap, a cancel or a mic error discards the buffer", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  r.stt.h.onFinal("hm");
+  r.c.cancel();
+  r.stt.h.onFinal("hm more");
+  r.stt.h.onClosed();
+  for (const t of live(r.timers)) t.fn();
+  assert.deepEqual(userTexts(r), []);
+
+  const m = rig({ micFails: "NotFoundError" });
+  await m.c.start();
+  m.stt.h.onFinal("lost");
+  m.stt.h.onClosed();
+  m.c.stop();
+  for (const t of live(m.timers)) t.fn();
+  assert.deepEqual(userTexts(m), []);
+});
+
+test("send on release: nothing said sends nothing and settles idle", async () => {
+  const r = rig();
+  await r.c.start();
+  r.c.stop();
+  fire(r, TAIL_MS);
+  fire(r, FINAL_WAIT_MS);
+  r.stt.h.onClosed();
+  assert.deepEqual(userTexts(r), []);
+  assert.equal(r.c.state, "idle");
+});
+
+test("send on release: the STT closing mid-hold keeps the words for the release", async () => {
+  const r = rig();
+  await r.c.start();
+  r.stt.h.onFinal("oat milk");
+  r.stt.h.onClosed();
+  assert.deepEqual(userTexts(r), []);
+  r.c.stop();
+  fire(r, TAIL_MS);
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "oat milk" }]);
+});
+
+test("send on release: a final in the tail still finishes the STT socket", async () => {
+  const r = rig();
+  await r.c.start();
+  r.c.stop();
+  r.stt.h.onFinal("milk");
+  assert.equal(userTexts(r).length, 1);
+  fire(r, TAIL_MS);
+  assert.equal(r.stt.finished, true);
+});
+
+test("send on release: nothing heard yet (slow connect) waits for the close, not the window", async () => {
+  const r = rig();
+  await r.c.start();
+  r.c.stop();
+  fire(r, TAIL_MS);
+  fire(r, FINAL_WAIT_MS);
+  r.stt.h.onFinal("eggs");
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs" }]);
+});
+
+test("send on release: standby moved after release drops the unsent turn", async () => {
+  const r = rig();
+  await r.c.start();
+  r.stt.h.onFinal("eggs");
+  r.c.stop();
+  r.c.onAgentMessage({ type: "standby", reason: "moved" });
+  fire(r, TAIL_MS);
+  r.stt.h.onFinal("and milk");
+  fire(r, FINAL_WAIT_MS);
+  assert.deepEqual(userTexts(r), []);
+  assert.ok(r.log.includes("chime:error"));
+});
+
+test("send on release: pressing again before the send joins the turn, no cut", async () => {
+  const r = rig();
+  await r.c.start();
+  r.stt.h.onFinal("eggs");
+  r.c.stop();
+  const before = r.agent.sent.length;
+  await r.c.start();
+  assert.ok(!r.log.slice(-2).includes("chime:cut"), "no cut for our own pending turn");
+  r.stt.h.onFinal("and milk");
+  r.c.stop();
+  fire(r, TAIL_MS);
+  fire(r, FINAL_WAIT_MS);
+  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs and milk" }]);
+  assert.equal(r.agent.sent.slice(before).filter((m) => m.type === "user_text").length, 1);
 });

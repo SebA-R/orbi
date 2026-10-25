@@ -10,7 +10,7 @@
 // The next turn speaks again. An interrupt during a checkout read-back only
 // stops the speech: the read-back keeps waiting for a spoken answer.
 //
-// Every Clearcart window shares this one session (hub.ts). When the user
+// Every Orbi window shares this one session (hub.ts). When the user
 // moves to another window, handOff() declines a read-back or unlock question
 // still waiting (it was asked in the old window, so no yes from the new one
 // may answer it) and mutes the turn in progress like a barge-in.
@@ -29,13 +29,14 @@ import { localQuery, sdkToolServer, stdioToolServer } from "./local/query.ts";
 import { withContext, type PageContext } from "./context.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
-import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
+import { isCheckoutUrl, originOf, paySite, SITE_POLICY, siteBlockReason, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
 import { buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, MEMORY_OFF_PROMPT, MEMORY_PROMPT } from "./prompt.ts";
 import { factFromUserWords, factNamedBy, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
   decideUnlock,
   isDirectAsk,
+  isUnlockYes,
   lockInfoExt,
   ocicLockInfoScript,
   ocicPressScript,
@@ -51,8 +52,8 @@ const BROWSER_SERVER =
   process.env.OCIC_SERVER || "/Users/sebastianarellano-rubach/code/open-claude-in-chrome/host/mcp-server.js";
 
 // Which sites may be browsed comes from origins.ts (CLEARCART_BROWSE_MODE:
-// open web minus a blocklist, or the allowlist). pay_now stays store-only
-// and the unlock gate only serves CLEARCART_PAY_ORIGINS.
+// open web minus a blocklist, or the allowlist). pay_now and the unlock gate
+// only serve CLEARCART_PAY_ORIGINS.
 
 const B = "mcp__browser__";
 const C = "mcp__clearcart__";
@@ -60,8 +61,8 @@ const C = "mcp__clearcart__";
 // Tools Claude never gets. execute_code is the big one: its sandbox can call
 // every browser tool from inside one call, which would step around the
 // per-tool guard below. javascript_tool would let page script press a
-// locked button (button lock); pay_now still uses it over our own bridge
-// client, which Claude cannot reach.
+// locked button (button lock); our own lock checks still use it over our
+// own bridge client, which Claude cannot reach.
 export const DISALLOWED_BROWSER = [
   "execute_code",
   "javascript_tool",
@@ -106,26 +107,26 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
   ["computer", "read_page", "get_page_text", "find", "form_input", "javascript_tool", "read_console_messages"].map((t) => B + t)
 );
 
-// CLEARCART_BROWSER=ext: Claude's browser tools are the Clearcart extension's
+// CLEARCART_BROWSER=ext: Claude's browser tools are the Orbi extension's
 // TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
 // key and scroll stand in for "computer" in the card-live block list.
 const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
-  ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
+  ["screenshot", "click", "type", "key", "scroll", "dismiss_overlay", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
 
 function extPrompt(prompt: string): string {
   return prompt.replace(
     "calling tabs_context_mcp with createIfEmpty true, then use a tab in the MCP group.",
-    "calling tabs_context. Use a tab already on the store, or open one with tabs_create."
+    "calling tabs_context. Use a tab already on the site you need, or open one with tabs_create."
   ) + EXT_TABS_PROMPT;
 }
 
-// The user's Guided mode setting: the extension's in ext mode, on until it
-// says otherwise (Clearcart is built for blind and low-vision users).
-// Elsewhere CLEARCART_GUIDED=0 turns it off.
+// The user's Guided mode setting, the mode for blind and low-vision users:
+// the extension's in ext mode, off until it says otherwise. Elsewhere
+// CLEARCART_GUIDED=1 turns it on.
 export function currentGuided(): boolean {
-  return extMode() ? (extBridge.guidedMode() ?? true) : process.env.CLEARCART_GUIDED !== "0";
+  return extMode() ? (extBridge.guidedMode() ?? false) : /^(1|true|on|yes)$/i.test(process.env.CLEARCART_GUIDED?.trim() || "");
 }
 
 // The user's Memory setting: the extension's in ext mode, off until the
@@ -189,8 +190,8 @@ export function browseDenyReason(url: string, policy: SitePolicy = sitePolicy())
   if (url === "back" || url === "forward") return null;
   const why = siteBlockReason(url, policy);
   if (!why) return null;
-  if (policy.mode === "allowlist") return `Blocked: Clearcart only browses ${[...policy.allowed].join(", ")}.`;
-  return `Blocked: Clearcart does not open ${originOf(url) || "that page"} (${why}). Tell the user if they asked for it.`;
+  if (policy.mode === "allowlist") return `Blocked: Orbi only browses ${[...policy.allowed].join(", ")}.`;
+  return `Blocked: Orbi does not open ${originOf(url) || "that page"} (${why}). Tell the user if they asked for it.`;
 }
 
 const BLANK = /^(about:blank|chrome:\/\/newtab)/;
@@ -219,8 +220,8 @@ const systemLookup: Lookup = (host) => dns.promises.lookup(host, { all: true });
 
 // Why `url` may not be opened because its host name resolves to this
 // computer or the local network (localtest.me, a DNS rebinding domain), or
-// null. Allowed origins (the store) and IP literals (blocklist.ts judges
-// those) are skipped. A name that does not resolve here passes: the browser
+// null. Allowed origins (CLEARCART_ALLOWED_ORIGINS) and IP literals
+// (blocklist.ts judges those) are skipped. A name that does not resolve here passes: the browser
 // uses the same resolver, so it cannot load it either.
 export async function localDnsReason(url: string, policy: SitePolicy = sitePolicy(), lookup: Lookup = systemLookup): Promise<string | null> {
   const o = originOf(url);
@@ -235,7 +236,7 @@ export async function localDnsReason(url: string, policy: SitePolicy = sitePolic
     local = addrs.some((a) => isLocalIp(a.address));
     dnsCache.set(host, { local, at: Date.now() });
   }
-  return local ? `Blocked: Clearcart does not open ${o} (it points to this computer or the local network). Tell the user if they asked for it.` : null;
+  return local ? `Blocked: Orbi does not open ${o} (it points to this computer or the local network). Tell the user if they asked for it.` : null;
 }
 
 function tabIdOf(args: Record<string, unknown>): number | null {
@@ -244,11 +245,14 @@ function tabIdOf(args: Record<string, unknown>): number | null {
   return null;
 }
 
-// Tab sweep: any Clearcart-group tab whose page is not allowed (a clicked
-// link, a redirect, history) is sent away from it. Allowlist mode: to the
-// store home page. Open mode: back to the page before, or to the store home
-// page when going back does not land somewhere allowed. `nav` loads a URL
-// (or "back") in a tab and returns where the tab ended up, or null.
+// Where the sweep sends a stray tab when going back does not help.
+export const STRAY_PAGE = "about:blank";
+
+// Tab sweep: any Orbi-group tab whose page is not allowed (a clicked
+// link, a redirect, history) is sent away from it. Allowlist mode: to a
+// blank page. Open mode: back to the page before, or to a blank page when
+// going back does not land somewhere allowed. `nav` loads a URL (or "back")
+// in a tab and returns where the tab ended up, or null.
 export async function returnStrays(
   tabs: Array<{ tabId: number; url?: string }>,
   nav: (tabId: number, url: string) => Promise<string | null>,
@@ -260,27 +264,28 @@ export async function returnStrays(
       const at = await nav(t.tabId, "back").catch(() => null);
       if (at && (SWEEP_BLANK.test(at) || !strayReason(at, policy))) continue;
     }
-    await nav(t.tabId, STORE_ORIGIN + "/").catch(() => null);
+    await nav(t.tabId, STRAY_PAGE).catch(() => null);
   }
   return strays.length;
 }
 
 export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string {
+  const allowed = [...policy.allowed];
   return policy.mode === "open"
     ? `A tab opened a blocked site or a checkout page and was sent back${n > 1 ? " (" + n + " tabs)" : ""}. Never open sites on the user's blocked list; tell the user instead.`
-    : `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...policy.allowed].join(", ")}.`;
+    : `A tab left the allowed sites and was sent to a blank page. ${allowed.length ? `Only browse ${allowed.join(", ")}.` : "No sites are allowed yet; tell the user."}`;
 }
 
 // Button lock for navigation: checkout and payment pages are off limits on
-// every site except the store, where pay_now runs. Both browser paths, for
-// navigate and for tabs_create / tabs_create_mcp with a url. passed: true
-// when the user asked to go to checkout on this tab and origin
+// every site except the pay sites, where pay_now runs. Both browser paths,
+// for navigate and for tabs_create / tabs_create_mcp with a url. passed:
+// true when the user asked to go to checkout on this tab and origin
 // (request_unlock's checkout pass), which lifts the block for that visit.
 // Off in Danger mode, like the rest of the button lock.
 export function navigateLockReason(url: string, passed?: (url: string) => boolean, danger: boolean = dangerModeOn()): string | null {
   if (danger || url === "back" || url === "forward") return null;
-  if (isCheckoutUrl(url) && originOf(url) !== STORE_ORIGIN && !passed?.(url)) {
-    return "Locked: Clearcart does not open checkout or payment pages on this site. Stop at the cart and tell the user.";
+  if (isCheckoutUrl(url) && !paySite(url) && !passed?.(url)) {
+    return "Locked: checkout pages open only by pressing the cart's checkout button. If the user asked to check out, call request_unlock with that button's ref and label; otherwise stop at the cart and tell the user what is in it. Never tell the user it is locked.";
   }
   return null;
 }
@@ -397,7 +402,7 @@ export function passCovers(pass: CheckoutPass | null, tabId: number | null, url:
 // How long the user's last words count for request_unlock's direct match.
 export const USER_WORDS_TTL_MS = 60_000;
 
-// The user's most recent words, bound to the tab Clearcart was on when they
+// The user's most recent words, bound to the tab Orbi was on when they
 // spoke and that tab's origin then. spent: unlock classes already pressed
 // for these words. passwordYes: these words are an explicit yes to an
 // earlier "type your password, then tell me" for that sign in.
@@ -417,7 +422,7 @@ const said = (text: string): ToolText => ({ content: [{ type: "text", text }] })
 
 // What Claude is told when a question got no answer at all: the window that
 // asked it went away or the user moved to another one (handOff, close).
-const NO_ANSWER = "No answer came: the user moved to another Clearcart window, or it closed, before answering.";
+const NO_ANSWER = "No answer came: the user moved to another Orbi window, or it closed, before answering.";
 
 export class Session {
   private input = new InputQueue();
@@ -567,9 +572,9 @@ export class Session {
     if (key === "off") {
       // Off means nothing is kept: the recent conversation goes now.
       this.log?.clear();
-      note = `[Setting changed, from the user's Clearcart settings] ${MEMORY_OFF_PROMPT.trim().split("\n").slice(1).join(" ").replace(/^- /, "")}`;
+      note = `[Setting changed, from the user's Orbi settings] ${MEMORY_OFF_PROMPT.trim().split("\n").slice(1).join(" ").replace(/^- /, "")}`;
     } else {
-      note = `[${wasOff ? "Setting changed" : "Memory changed"}, from the user's Clearcart settings]${wasOff ? MEMORY_PROMPT : ""}${memoryBlock(this.mem!.list())}`;
+      note = `[${wasOff ? "Setting changed" : "Memory changed"}, from the user's Orbi settings]${wasOff ? MEMORY_PROMPT : ""}${memoryBlock(this.mem!.list())}`;
     }
     return `${note}\n\n${turn}`;
   }
@@ -598,7 +603,7 @@ export class Session {
     this.q?.interrupt().catch((e) => this.status(`interrupt failed: ${(e as Error).message}`));
   }
 
-  // The user moved to another Clearcart window, or the one they used went
+  // The user moved to another Orbi window, or the one they used went
   // away (hub.ts). A read-back or unlock question still waiting was asked
   // there, so it is declined, never confirmed. A yes given there that
   // pay_now has not used yet is withdrawn too: paying needs a read-back the
@@ -606,7 +611,7 @@ export class Session {
   // is left to finish; its receipt goes to the new window.) The words said
   // there stop counting for request_unlock, and the turn in progress is
   // muted.
-  handOff(why = "the user moved to another Clearcart window") {
+  handOff(why = "the user moved to another Orbi window") {
     if (this.closed) return;
     const pending = this.awaitingAnswer;
     this.awaitingAnswer = null;
@@ -682,7 +687,7 @@ export class Session {
       const checkSites = !process.env.CLEARCART_ALLOW_ANY_SITE;
       if (checkSites && this.sweepBroken) {
         const ok = await this.runSweep().then(() => true, () => false);
-        if (!ok) return deny("Blocked: Clearcart could not check which sites its tabs are on, so browser tools are paused. Try again in a moment, and tell the user if it keeps failing.");
+        if (!ok) return deny("Blocked: Orbi could not check which sites its tabs are on, so browser tools are paused. Try again in a moment, and tell the user if it keeps failing.");
       }
       if (this.state.cardFieldsLive && (extMode() ? EXT_BLOCKED_WHILE_CARD_LIVE : BLOCKED_WHILE_CARD_LIVE).has(name)) {
         return deny("Blocked: card details are in the checkout form. Wait for pay_now to finish.");
@@ -731,7 +736,7 @@ export class Session {
   };
 
   // The browser's agent tabs: the MCP group, or on our extension the tabs
-  // Clearcart opened (agent_tabs; the user's own tabs are never
+  // Orbi opened (agent_tabs; the user's own tabs are never
   // swept). Throws when the list cannot be read.
   async listTabs(): Promise<Tab[]> {
     if (extMode()) return (await extBridge.call<{ tabs?: Tab[] }>("agent_tabs", {}, 10_000))?.tabs || [];
@@ -806,14 +811,14 @@ export class Session {
     try {
       tabs = await this.listTabs();
     } catch {
-      return "Blocked: Clearcart could not check which page that tab is on. Try again in a moment.";
+      return "Blocked: Orbi could not check which page that tab is on. Try again in a moment.";
     }
     const targets = tabId == null ? tabs : tabs.filter((t) => t.tabId === tabId);
-    if (tabId != null && !targets.length) return `Blocked: tab ${tabId} is not one of Clearcart's tabs. Call tabs_context_mcp for the current tabs.`;
+    if (tabId != null && !targets.length) return `Blocked: tab ${tabId} is not one of Orbi's tabs. Call tabs_context_mcp for the current tabs.`;
     const policy = sitePolicy();
     const bad: Tab[] = [];
     for (const t of targets) {
-      if (!t.url) return "Blocked: Clearcart could not check which page that tab is on. Try again in a moment.";
+      if (!t.url) return "Blocked: Orbi could not check which page that tab is on. Try again in a moment.";
       if (BLANK.test(t.url)) continue;
       if (siteBlockReason(t.url, policy) || (await localDnsReason(t.url, policy, this.lookup))) bad.push(t);
     }
@@ -823,7 +828,7 @@ export class Session {
       return -1;
     });
     if (n > 0) this.status(`returned ${n} tab(s) from blocked sites`);
-    return `Blocked: that tab is on a site Clearcart does not use (${originOf(bad[0].url) || "unknown"}). ${n >= 0 ? sweepNote(Math.max(n, 1)) : "Browser tools are paused until Clearcart can send it back."}`;
+    return `Blocked: that tab is on a site Orbi does not use (${originOf(bad[0].url) || "unknown"}). ${n >= 0 ? sweepNote(Math.max(n, 1)) : "Browser tools are paused until Orbi can send it back."}`;
   }
 
   // After every browser call, send back any agent tab that landed on a site
@@ -841,7 +846,7 @@ export class Session {
       return {
         hookSpecificOutput: {
           hookEventName: "PostToolUse" as const,
-          additionalContext: "Clearcart could not check which sites its tabs are on after that call. Browser tools are paused until the check works again; do not rely on what that page showed.",
+          additionalContext: "Orbi could not check which sites its tabs are on after that call. Browser tools are paused until the check works again; do not rely on what that page showed.",
         },
       };
     }
@@ -884,7 +889,7 @@ export class Session {
       conf.state = "confirmed";
       conf.confirmedAt = Date.now();
       this.status("checkout announced: Danger mode, no yes needed");
-      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. On the demo store call pay_now now; on another store press its Place order button yourself now." }] };
+      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. On an Orbi pay site call pay_now now; on another site press its Place order button yourself now." }] };
     }
     this.send({ type: "confirm", item, quantity, total, changes: changed });
     this.say(`You're buying ${quantity} ${item} for ${total}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
@@ -904,7 +909,7 @@ export class Session {
     const why = answer === null
       ? NO_ANSWER
       : this.state.confirmation === null && isExplicitYes(answer)
-        ? "The user moved to another Clearcart window before their yes could count."
+        ? "The user moved to another Orbi window before their yes could count."
         : `The user said: ${JSON.stringify(answer)}`;
     return { content: [{ type: "text" as const, text: `declined. ${why}` }] };
   }
@@ -948,7 +953,7 @@ export class Session {
     const href = await this.tabUrl(tabId);
     if (!href) return said("Could not check which page that tab is on. Try again in a moment.");
     if (!process.env.CLEARCART_ALLOW_ANY_SITE && siteBlockReason(href, sitePolicy())) {
-      return said("Blocked: that tab is on a site Clearcart does not use, so nothing there unlocks.");
+      return said("Blocked: that tab is on a site Orbi does not use, so nothing there unlocks.");
     }
     let info: LockInfo;
     try {
@@ -986,9 +991,13 @@ export class Session {
       const answer = await new Promise<string | null>((resolve) => {
         this.awaitingAnswer = resolve;
       });
-      if (answer === null || !isExplicitYes(answer)) {
+      // A yes that says more ("yes, that's what I just said") counts here,
+      // never for paying (request_checkout keeps isExplicitYes).
+      if (answer === null || !(isExplicitYes(answer) || isUnlockYes(answer, d.cls, label))) {
         this.status(`unlock declined: ${d.cls}`);
-        return said(`declined, nothing was pressed. ${answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}`}`);
+        return said(
+          `declined, nothing was pressed. ${answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}. If that was not a no, ask them what they want; never tell them it is locked.`}`
+        );
       }
       how = "user confirmed";
     } else {
@@ -1013,7 +1022,7 @@ export class Session {
     this.status(`unlocked once: ${d.cls} "${label}" (${how})`);
     const next =
       d.cls === "checkout"
-        ? origin === STORE_ORIGIN
+        ? paySite(href)
           ? " Continue as usual; paying still goes through request_checkout and pay_now."
           : " Read the checkout page for the user. Never enter an address, card or other details there, and never press Place order; tell the user they can finish it themselves."
         : d.cls === "account"
@@ -1085,12 +1094,12 @@ export class Session {
   // explicit yes. The filter (memory.ts) refuses secrets either way.
   async remember({ fact }: { fact: string }): Promise<ToolText> {
     if (!this.mem) return said("Memory is not available here.");
-    if (!memoryOn()) return said("Memory is off in the user's Clearcart settings, so nothing was saved. They can turn it on there.");
+    if (!memoryOn()) return said("Memory is off in the user's Orbi settings, so nothing was saved. They can turn it on there.");
     const text = String(fact ?? "").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
     const why = sensitiveReason(text);
     if (why) {
       this.status("memory: refused a fact");
-      return said(`Not saved: ${why}. Clearcart never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
+      return said(`Not saved: ${why}. Orbi never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
     }
     // One save per utterance without a question, of a fact made only of
     // the words in it.
@@ -1149,7 +1158,7 @@ export class Session {
   // The recall tool: what is saved, freshly read.
   recall(): ToolText {
     if (!this.mem) return said("Memory is not available here.");
-    if (!memoryOn()) return said("Memory is off in the user's Clearcart settings, so nothing saved is used. They can turn it on there.");
+    if (!memoryOn()) return said("Memory is off in the user's Orbi settings, so nothing saved is used. They can turn it on there.");
     const facts = this.mem.list();
     this.memSeen = this.memKey();
     if (!facts.length) return said("Nothing is saved yet.");

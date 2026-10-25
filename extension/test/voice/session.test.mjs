@@ -130,8 +130,8 @@ test("two tabs pressing at once share one turn: one offscreen document, one STT 
   assert.equal(v.controller.state, "listening");
   relay.onMessage({ type: RT.PTT_STOP }, { tab: { id: 1 }, frameId: 0 });
   await relay.idle();
-  v.stts[0].h.onFinal("buy the advil");
-  assert.deepEqual(v.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "buy the advil" }]);
+  v.stts[0].h.onFinal("buy the blue mug");
+  assert.deepEqual(v.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "buy the blue mug" }]);
 });
 
 test("worker restart mid-turn: the new worker asks the open document for its state and keeps other tabs quiet", async () => {
@@ -170,7 +170,7 @@ test("standby moved: speech stops and a turn still listening ends unsent", async
   const emitted = [];
   const v = voice((m) => emitted.push(m));
   await v.controller.start();
-  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Clearcart moved to another window." });
+  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Orbi moved to another window." });
   assert.equal(v.controller.listening, false);
   assert.equal(v.stts[0].aborted, true);
   assert.equal(v.mic.sink, null);
@@ -186,8 +186,8 @@ test("standby moved ends a hands-free latch too, and its held phrases are never 
   const emitted = [];
   const v = voice((m) => emitted.push(m));
   await v.controller.start({ latch: true });
-  v.stts[0].h.onFinal("add the advil"); // held until the latch ends
-  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Clearcart moved to another window." });
+  v.stts[0].h.onFinal("add the blue mug"); // held until the latch ends
+  v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Orbi moved to another window." });
   assert.equal(v.controller.listening, false);
   assert.equal(v.controller.latched, false);
   assert.ok(!v.agent.sent.some((m) => m.type === "user_text"));
@@ -207,7 +207,7 @@ test("standby stale: waiting for a reply ends, but a newer turn already listenin
   const v = voice();
   await v.controller.start();
   v.controller.stop();
-  v.stts[0].h.onFinal("buy the advil"); // sent, but the server dropped it
+  v.stts[0].h.onFinal("buy the blue mug"); // sent, but the server dropped it
   assert.equal(v.controller.state, "thinking");
   v.controller.onAgentMessage({ type: "standby", reason: "stale", text: "Not sent." });
   assert.equal(v.controller.state, "idle", "not stuck thinking, so other tabs are not kept quiet");
@@ -251,7 +251,7 @@ test("hotkey: navigating away or removing the frame mid-hold releases it, so not
   assert.deepEqual(a.sent, [RT.PTT_START, RT.PTT_CANCEL]);
 });
 
-test("hotkey: a press another Clearcart build already took is left to it", () => {
+test("hotkey: a press another Orbi build already took is left to it", () => {
   const p = page();
   for (const alt of [false, true]) {
     p.fire("keydown", key("Space", { altKey: alt, defaultPrevented: true }));

@@ -28,7 +28,7 @@ test("setting: off by default, and only a stored true turns it on", async () => 
 });
 
 test("settings copy: the exact wording, no em dashes", () => {
-  assert.equal(DANGER_MODE_COPY, "Danger mode. Clearcart acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.");
+  assert.equal(DANGER_MODE_COPY, "Danger mode. Orbi acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.");
   assert.doesNotMatch(DANGER_MODE_COPY, /—/);
 });
 
@@ -85,7 +85,7 @@ function routerFakes(dangerMode, url = "https://shop.example/cart") {
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 7,
     tabInfo: async ({ tabId }) => ({ tabId, url, title: "t" }),
-    isPaySite: async (u) => new URL(u).origin === "http://localhost:4000",
+    isPaySite: async (u) => new URL(u).origin === "http://localhost:4100",
     assertPageAllowed: async () => {},
   };
   const cdp = { click: async () => {}, type: async () => {}, key: async () => {}, send: async () => {} };

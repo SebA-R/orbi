@@ -10,8 +10,10 @@ import { WordClock } from './karaoke.js';
 //
 // Captions follow the audio, not the text: onCaption gets
 //   { kind: "line", utteranceId, text, karaoke }   when a line starts to be heard
-//   { kind: "word", utteranceId, index, ms, elapsed } each time the heard word changes:
-//                                                    the word lasts ms, elapsed of it already heard
+//   { kind: "word", utteranceId, index, ms, elapsed, phonemes? } each time the heard word changes:
+//                                                    the word lasts ms, elapsed of it already heard;
+//                                                    phonemes [[ipa, startMs, endMs]] from its start
+//                                                    when Sonic sent phoneme timestamps
 //   { kind: "word", utteranceId, index, done }      the whole line has been heard
 //   { kind: "word", utteranceId, index, ms, elapsed, frozen }  stop() cut it off there
 //   { kind: "word", utteranceId, fallback }         Sonic sent no timestamps: show it plainly
@@ -82,6 +84,7 @@ export class Speaker {
         generation_config: { speed: Math.min(speed, SONIC_MAX_SPEED) },
         add_timestamps: true,
         use_normalized_timestamps: false, // the words as written, to match the caption
+        add_phoneme_timestamps: true, // the orb's lip-sync (content/orb-face.js)
         continue: false,
       }));
     } catch (err) {
@@ -176,6 +179,8 @@ export class Speaker {
       if (samples) utt.pending.push(samples);
     } else if (m.type === 'timestamps') {
       utt.clock.addTimestamps(m.word_timestamps);
+    } else if (m.type === 'phoneme_timestamps') {
+      utt.clock.addPhonemes(m.phoneme_timestamps);
     } else if (m.type === 'error') {
       this.log(`TTS error: ${m.title || ''} ${m.message || m.error || ''}`.trim());
       utt.done = true;
@@ -253,7 +258,8 @@ export class Speaker {
           const i = c.indexAt(now);
           if (i > utt.index) {
             utt.index = i;
-            this.onCaption({ kind: 'word', utteranceId: utt.id, index: i, ...this.#timing(utt, now) });
+            const phonemes = c.phonemesOf(i);
+            this.onCaption({ kind: 'word', utteranceId: utt.id, index: i, ...this.#timing(utt, now), ...(phonemes.length ? { phonemes } : {}) });
           }
         }
       }

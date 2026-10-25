@@ -1,6 +1,6 @@
 // Relays the actor's pointer samples (background/actor.js onPointer) to the
 // top frame of the tab they happen in, where content/cursor.js draws
-// Clearcart's cursor. Each sample is sent right after its input went to CDP,
+// Orbi's cursor. Each sample is sent right after its input went to CDP,
 // so the cursor moves in step with what the page receives.
 //
 // A { phase: "hide" } goes out when the user switches tabs, interrupts (the

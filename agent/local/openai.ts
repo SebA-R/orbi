@@ -7,7 +7,7 @@
 //
 // Ollama is the one exception to plain chat completions: its OpenAI
 // endpoint loads a model with Ollama's default context window (4096 tokens)
-// and ignores a size sent there, while Clearcart's rules and tools alone
+// and ignores a size sent there, while Orbi's rules and tools alone
 // are about 4.5k tokens, so Ollama would quietly cut most of them. When the
 // server answers Ollama's /api/version, its own /api/chat is used instead,
 // with num_ctx (CLEARCART_LOCAL_CONTEXT, default 16384).
@@ -43,7 +43,7 @@ const hostOf = (baseUrl: string) => {
 };
 
 export function unreachable(baseUrl: string, why: string): LocalModelError {
-  return new LocalModelError("unreachable", `cannot reach ${baseUrl}: ${why}`, `I can't reach your local model at ${hostOf(baseUrl)}. Check that it's running, or switch back to Claude in Clearcart settings.`);
+  return new LocalModelError("unreachable", `cannot reach ${baseUrl}: ${why}`, `I can't reach your local model at ${hostOf(baseUrl)}. Check that it's running, or switch back to Claude in Orbi settings.`);
 }
 
 // Sorts a failed HTTP answer into something the user can act on.
@@ -54,10 +54,10 @@ function httpError(status: number, body: string, model: string): LocalModelError
     message = String(j?.error?.message ?? j?.error ?? j?.message ?? message).slice(0, 300);
   } catch {}
   if (/does not support tools|tools? (is|are)? ?not supported|not support(ed)? (for )?tool|tool use is not supported/i.test(message)) {
-    return new LocalModelError("no_tools", `HTTP ${status}: ${message}`, `The model ${model} can't use tools, so it can't work the browser. Pick one with tool support in Clearcart settings.`);
+    return new LocalModelError("no_tools", `HTTP ${status}: ${message}`, `The model ${model} can't use tools, so it can't work the browser. Pick one with tool support in Orbi settings.`);
   }
   if (status === 404 || /model .*not found|not found.*model|no such model|model_not_found|failed to load model/i.test(message)) {
-    return new LocalModelError("model_missing", `HTTP ${status}: ${message}`, `Your local model server doesn't have ${model}. Pick another model in Clearcart settings.`);
+    return new LocalModelError("model_missing", `HTTP ${status}: ${message}`, `Your local model server doesn't have ${model}. Pick another model in Orbi settings.`);
   }
   return new LocalModelError("http", `HTTP ${status}: ${message}`, "Your local model ran into an error. Try again in a moment.");
 }
@@ -208,10 +208,10 @@ export async function chat(r: ChatRequest): Promise<ChatReply> {
   };
 }
 
-const BAD_RESPONSE = "Your local model sent an answer I couldn't read. Try again, or pick another model in Clearcart settings.";
+const BAD_RESPONSE = "Your local model sent an answer I couldn't read. Try again, or pick another model in Orbi settings.";
 
 function timedOut(ms: number): LocalModelError {
-  return new LocalModelError("timeout", `no answer within ${Math.round(ms / 1000)} s`, "Your local model took too long to answer. Try again, or pick a smaller model in Clearcart settings.");
+  return new LocalModelError("timeout", `no answer within ${Math.round(ms / 1000)} s`, "Your local model took too long to answer. Try again, or pick a smaller model in Orbi settings.");
 }
 
 export type LocalModel = { id: string; tools?: boolean };

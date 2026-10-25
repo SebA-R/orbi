@@ -2,10 +2,10 @@
 // settings (chrome.storage.local, writable only by extension pages), so the
 // agent server cannot widen it.
 //
-// browseMode "allowlist": only the allowlist origins.
+// browseMode "allowlist": only the allowlist origins (none by default).
 // browseMode "open": any http(s) site except the fixed rules and the user's
 // blocked sites (lib/blocklist.js). Allowlist origins get past the
-// localhost rule (that is how the local demo store opens), not past the
+// localhost rule (that is how a local test page opens), not past the
 // user's blocked sites.
 //
 // Pay sites (isPaySite) are the allowlist in both modes: open browsing does

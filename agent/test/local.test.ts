@@ -136,7 +136,7 @@ test("a tool call loop: the call runs over the bridge, its result goes back, the
     assert.deepEqual(first.tools.map((t: any) => t.function.name).sort(), [...EXT_ALLOWED_SHORT].sort(), "every allowed tool, by its short name, nothing else");
     assert.equal(first.tools.find((t: any) => t.function.name === "navigate").function.parameters.required.includes("url"), true, "zod schemas become JSON Schema");
     assert.equal(first.messages[0].role, "system");
-    assert.match(first.messages[0].content, /^You are Clearcart/);
+    assert.match(first.messages[0].content, /^You are Orbi/);
     assert.deepEqual(first.messages.at(-1), { role: "user", content: "find me a mug" });
     assert.deepEqual(br.calls.find((c) => c[0] === "navigate"), ["navigate", { tabId: 5, url: "https://www.etsy.com/search?q=mug" }]);
     const [result] = toolMessages(second);
@@ -193,7 +193,7 @@ test("a guard deny: the reason is the tool result and the tool never runs", asyn
     r.s.userText("check my email");
     await until(() => r.spoken().length > 0, "the reply");
     assert.ok(!br.calls.some((c) => c[0] === "navigate"), "nothing reached the browser");
-    assert.match(toolMessages(model.requests[1])[0].content, /^Blocked: Clearcart does not open https:\/\/mail\.google\.com/);
+    assert.match(toolMessages(model.requests[1])[0].content, /^Blocked: Orbi does not open https:\/\/mail\.google\.com/);
   } finally {
     await r.stop();
     br.restore();
@@ -507,7 +507,7 @@ async function startServer(port: number, env: Record<string, string>): Promise<C
   });
   await new Promise<void>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("server did not start")), 15_000);
-    child.stdout!.on("data", (d) => String(d).includes("Clearcart agent on") && (clearTimeout(t), resolve()));
+    child.stdout!.on("data", (d) => String(d).includes("Orbi agent on") && (clearTimeout(t), resolve()));
     child.once("exit", (code) => reject(new Error(`server exited ${code}`)));
   });
   return child;

@@ -52,7 +52,8 @@ before(async () => {
 
   const ext = fs.mkdtempSync(path.join(os.tmpdir(), "clearcart-tabs-cdp-ext-"));
   dirs.push(ext);
-  for (const d of ["background", "lib", "icons", "content", "offscreen", "options"]) fs.cpSync(path.join(EXT_SRC, d), path.join(ext, d), { recursive: true });
+  // Everything the manifest names (newtab, popup...), without the tests.
+  fs.cpSync(EXT_SRC, ext, { recursive: true, filter: (p) => !p.includes("node_modules") && path.relative(EXT_SRC, p).split(path.sep)[0] !== "test" });
   const manifest = JSON.parse(fs.readFileSync(path.join(EXT_SRC, "manifest.json"), "utf8"));
   manifest.permissions = [...new Set([...manifest.permissions, "tabs", "tabGroups", "debugger"])];
   fs.writeFileSync(path.join(ext, "manifest.json"), JSON.stringify(manifest));
@@ -134,6 +135,35 @@ test("CDP click, type, key and screenshot reach the page as trusted input", { sk
   const shot = await run((id) => C.screenshot({ tabId: id }), tabId);
   assert.equal(shot.mimeType, "image/jpeg");
   assert.equal(Buffer.from(shot.data, "base64").subarray(0, 2).toString("hex"), "ffd8");
+});
+
+test("on a 2x screen the screenshot is CSS-pixel sized and off-viewport points are refused", { skip }, async () => {
+  const tabId = await run(() => T.resolveAllowedTab());
+  const page = pageFor(`${origin}/two`);
+  const css = await page.evaluate(() => [innerWidth, innerHeight]);
+  await run((id) => C.send(id, "Emulation.setDeviceMetricsOverride", { width: 0, height: 0, deviceScaleFactor: 2, mobile: false }), tabId);
+  try {
+    const vp = await run((id) => C.viewport(id), tabId);
+    assert.equal(vp.dpr, 2);
+    const shot = await run((id) => C.screenshot({ tabId: id }), tabId);
+    const size = await run((d) => C.jpegSize(d), shot.data);
+    // The image itself is CSS size (give or take a scrollbar), not 2x.
+    assert.ok(Math.abs(size.width - css[0]) <= 20 && Math.abs(size.height - css[1]) <= 20, JSON.stringify({ size, css }));
+    assert.deepEqual([shot.width, shot.height, shot.scale], [size.width, size.height, 1]);
+    // A device-pixel x (twice the CSS width) is outside the viewport.
+    const err = await run(async (id) => {
+      const v = await C.viewport(id);
+      try {
+        C.assertInViewport(v, v.width * 2 - 10, 10);
+        return null;
+      } catch (e) {
+        return e.code;
+      }
+    }, tabId);
+    assert.equal(err, "bad_request");
+  } finally {
+    await run((id) => C.send(id, "Emulation.clearDeviceMetricsOverride"), tabId);
+  }
 });
 
 test("back and forward follow a user-activated link click", { skip }, async () => {

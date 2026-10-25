@@ -1,4 +1,4 @@
-// Which model runs Clearcart's agent: Claude through the Claude Agent SDK
+// Which model runs Orbi's agent: Claude through the Claude Agent SDK
 // (the default), or a model on this computer behind an OpenAI-compatible
 // chat-completions endpoint such as Ollama or LM Studio (local/query.ts).
 //

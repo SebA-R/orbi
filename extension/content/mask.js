@@ -1,4 +1,4 @@
-// Clearcart payment masking helpers.
+// Orbi payment masking helpers.
 //
 // Classic script (no ES module syntax) so chrome.scripting.executeScript can
 // inject it into the page's isolated world before content/page.js. It sets

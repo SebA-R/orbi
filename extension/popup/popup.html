@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Clearcart</title>
+  <title>Orbi</title>
   <link rel="stylesheet" href="../lib/ui.css">
   <link rel="stylesheet" href="popup.css">
   <script src="../content/orb-face.js"></script>
@@ -11,7 +11,7 @@
   <main>
     <header class="top">
       <span class="mini-orb" id="mini-orb"></span>
-      <h1>Clearcart <span id="danger-chip" class="danger-chip" hidden>Danger mode</span></h1>
+      <h1>Orbi <span id="danger-chip" class="danger-chip" hidden>Danger mode</span></h1>
       <a class="icon" id="gear" href="../options/options.html" aria-label="All settings">
         <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"></path></svg>
       </a>
@@ -34,6 +34,17 @@
     <section class="sheet" aria-label="Settings">
       <span class="handle" aria-hidden="true"></span>
       <div class="row">
+        <span id="provider-label">Model</span>
+        <div class="seg" role="radiogroup" aria-labelledby="provider-label">
+          <label>Claude<input type="radio" name="provider" value="claude"></label>
+          <label>Local<input type="radio" name="provider" value="local"></label>
+        </div>
+      </div>
+      <div class="local-line" id="local-line" hidden>
+        <span class="local-chip" id="local-chip" data-state="wait" role="status"></span>
+      </div>
+      <p id="provider-note" class="note info" role="status" hidden></p>
+      <div class="row">
         <span id="mode-label">Browse</span>
         <div class="seg" role="radiogroup" aria-labelledby="mode-label">
           <label>Open web<input type="radio" name="browseMode" value="open"></label>
@@ -45,17 +56,17 @@
         <label for="speed">Speaking speed</label>
         <span class="speed"><input id="speed" type="range" step="0.1"><output id="speed-out" for="speed"></output></span>
       </div>
-      <label class="row" for="guided-mode"><span>Guided mode</span><input id="guided-mode" class="sw" type="checkbox" role="switch"></label>
-      <label class="row speak-row" for="speak-replies"><span id="speak-replies-label">Speak replies. Turn off to read Clearcart's answers in the subtitles without hearing them.</span><input id="speak-replies" class="sw" type="checkbox" role="switch" aria-labelledby="speak-replies-label" aria-describedby="speak-replies-note"></label>
+      <label class="row" for="guided-mode"><span>Guided mode. Made for blind and low-vision users: Orbi describes each page, reads out choices and lets you pick.</span><input id="guided-mode" class="sw" type="checkbox" role="switch"></label>
+      <label class="row speak-row" for="speak-replies"><span id="speak-replies-label">Speak replies. Turn off to read Orbi's answers in the subtitles without hearing them.</span><input id="speak-replies" class="sw" type="checkbox" role="switch" aria-labelledby="speak-replies-label" aria-describedby="speak-replies-note"></label>
       <p id="speak-replies-note" class="note" role="status" hidden></p>
       <label class="row" for="subtitles"><span>Subtitles on the page</span><input id="subtitles" class="sw" type="checkbox" role="switch"></label>
-      <label class="row" for="error-pages"><span>Replace Chrome error pages with Clearcart's page</span><input id="error-pages" class="sw" type="checkbox" role="switch"></label>
+      <label class="row" for="error-pages"><span>Replace Chrome error pages with Orbi's page</span><input id="error-pages" class="sw" type="checkbox" role="switch"></label>
       <label class="row" for="sounds"><span>Sounds</span><input id="sounds" class="sw" type="checkbox" role="switch"></label>
       <label class="row" for="quiet-tabs"><span>Quiet other tabs while talking</span><input id="quiet-tabs" class="sw" type="checkbox" role="switch"></label>
-      <label class="row" for="follow-tab"><span>Follow Clearcart to its tab</span><input id="follow-tab" class="sw" type="checkbox" role="switch"></label>
+      <label class="row" for="follow-tab"><span>Follow Orbi to its tab</span><input id="follow-tab" class="sw" type="checkbox" role="switch"></label>
       <label class="row" for="watchable-pace"><span>Show actions at a watchable pace</span><input id="watchable-pace" class="sw" type="checkbox" role="switch"></label>
-      <label class="row" for="show-cursor"><span>Show Clearcart's cursor</span><input id="show-cursor" class="sw" type="checkbox" role="switch"></label>
-      <label class="row danger-row" for="danger-mode"><span>Danger mode. Clearcart acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.</span><input id="danger-mode" class="sw" type="checkbox" role="switch"></label>
+      <label class="row" for="show-cursor"><span>Show Orbi's cursor</span><input id="show-cursor" class="sw" type="checkbox" role="switch"></label>
+      <label class="row danger-row" for="danger-mode"><span>Danger mode. Orbi acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.</span><input id="danger-mode" class="sw" type="checkbox" role="switch"></label>
       <p id="danger-confirm" class="danger-confirm" hidden><button type="button" id="danger-yes">Turn on Danger mode</button><button type="button" id="danger-no">Cancel</button></p>
       <nav class="links" aria-label="More settings">
         <a id="all-settings" href="../options/options.html">All settings</a>
