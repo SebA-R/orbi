@@ -13,6 +13,7 @@ import { createLogger } from "../lib/log.js";
 import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
 import { MSG } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
+import { onInstalledSetup, refreshBadge } from "../lib/setup.js";
 
 const VERSION = chrome.runtime.getManifest().version;
 const log = createLogger("worker");
@@ -20,15 +21,23 @@ const log = createLogger("worker");
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   console.info(`[clearcart] installed (${reason}), version ${VERSION}`);
   seedBlocklist().catch((e) => log.warn(`blocklist seed failed: ${e.message}`));
-  // The offscreen document cannot ask for the microphone, so the first run
-  // opens the options page where the user grants it.
-  if (reason === "install") chrome.runtime.openOptionsPage().catch(() => {});
+  // Setup page (site access, microphone, agent server): always on install,
+  // on update only when site access or the mic is still missing.
+  onInstalledSetup(reason).catch((e) => log.warn(`setup check failed: ${e.message}`));
 });
 
 chrome.runtime.onStartup.addListener(() => {
   console.info(`[clearcart] browser started, version ${VERSION}`);
   bridge?.ensureConnected();
 });
+
+// "!" on the toolbar icon while site access or the mic is missing. Checked
+// whenever the worker starts and when site access changes; the setup page
+// and popup also update it after their checks.
+const badge = () => refreshBadge().catch(() => {});
+badge();
+chrome.permissions.onAdded.addListener(badge);
+chrome.permissions.onRemoved.addListener(badge);
 
 // Module A lifecycle: forget debugger sessions and the tab group with them.
 chrome.tabs.onRemoved.addListener((tabId) => cdp.onTabRemoved(tabId));
