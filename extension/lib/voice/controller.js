@@ -32,6 +32,13 @@
 //            Never listens or sends user_text (can't answer a read-back).
 //   each STT turn.end -> {type:"user_text"} to the agent + VOICE_FINAL + SUBTITLE
 //   agent_text -> Sonic; status/receipt -> STATUS
+//   speakReplies() false (the Speak replies setting): agent_text is never
+//            sent to Sonic. Its SUBTITLE(agent) goes out whole at once, with
+//            no utteranceId (no karaoke: no word timestamps without TTS), and
+//            the state goes thinking -> idle, never speaking.
+//   releaseSpeech() Speak replies turned off mid-reply: the speech stops and
+//            what was left of it shows in full. Not a barge-in: no cut cue,
+//            no interrupt, the agent's turn goes on.
 //   onCaption (from the speaker, as the audio plays) -> SUBTITLE(agent) with
 //            its utteranceId when a line starts to be heard, then
 //            SUBTITLE_WORD {utteranceId, index, done?, frozen?, fallback?}
@@ -67,9 +74,9 @@ export class VoiceController {
   constructor({
     createStt, speaker, mic, chime, agent, emit,
     setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
-    resumeAudio = () => {}, log = () => {}, now = () => Date.now(),
+    resumeAudio = () => {}, log = () => {}, now = () => Date.now(), speakReplies = () => true,
   }) {
-    Object.assign(this, { createStt, speaker, mic, chime, agent, emit, setTimer, clearTimer, resumeAudio, log, now });
+    Object.assign(this, { createStt, speaker, mic, chime, agent, emit, setTimer, clearTimer, resumeAudio, log, now, speakReplies });
     this.listening = false;
     this.session = null;
     this.awaitingReply = false;
@@ -161,6 +168,7 @@ export class VoiceController {
   #sendUserText(text) {
     this.awaitingReply = true;
     this.muted = false; // a fresh turn: its replies are spoken
+    this.readParts = []; // a fresh turn: nothing read yet
     this.agent.send({ type: "user_text", text });
     this.emit({ type: RT.VOICE_FINAL, text });
     this.emit({ type: RT.SUBTITLE, speaker: "user", text, final: true });
@@ -394,6 +402,12 @@ export class VoiceController {
     this.speaker.stop();
   }
 
+  releaseSpeech() {
+    this.speaker.stop({ release: true });
+    this.speaking = false;
+    this.#settle();
+  }
+
   // The speaker's caption events (tts.js), as the words are heard.
   onCaption(c) {
     if (!c || !c.utteranceId) return;
@@ -453,6 +467,16 @@ export class VoiceController {
           // Sent before the agent saw our interrupt: log it, never speak it.
           this.emit({ type: RT.STATUS, kind: "status", text: `(not spoken) ${m.text.slice(0, 120)}` });
           return;
+        }
+        if (!this.speakReplies()) {
+          // Read, not heard: the whole line at once; subtitles.js gives it
+          // its reading time. Nothing goes to Sonic. Lines of one turn (a
+          // say, then the answer) add up, so the next never wipes one unread.
+          this.readParts = [...(this.readParts || []), m.text];
+          this.emit({ type: RT.SUBTITLE, speaker: "agent", text: join(this.readParts), final: true });
+          this.awaitingReply = false;
+          this.#settle();
+          break;
         }
         // agent_text arrives whole (not streamed), so its subtitle is final at once.
         // Stay "thinking" until the speaker reports it started (onSpeakingChange clears it).

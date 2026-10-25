@@ -1,5 +1,5 @@
 // Options page, grouped like iOS Settings (see options.html): talk key,
-// speech speed, Guided mode, browse mode and site lists, follow tab, Danger mode,
+// speech speed, Speak replies, Guided mode, browse mode and site lists, follow tab, Danger mode,
 // Memory (on or off, saved facts, Forget everything),
 // subtitles, sounds, quiet other tabs, setup status, the agent URL and the one-time
 // microphone grant (getUserMedia here, on an extension page, so the
@@ -14,7 +14,7 @@
 // - Text that has to be checked first (allowed sites, blocked sites, the
 //   agent address) saves only with the Save button, after validation.
 // Danger mode has its own two-press switch (lib/danger-toggle.js).
-import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, normalizeAgentUrl, parseOriginLines } from "../lib/settings.js";
+import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, normalizeAgentUrl, parseOriginLines, speakRepliesNote } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/blocklist.js";
 import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
@@ -65,10 +65,21 @@ const simpleDefaults = () => Object.fromEntries([...simple.keys()].map((k) => [k
 // Saves on its own (not with the Save button), after the confirm press.
 const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no") }, saveSettings);
 
+// The note under Speak replies: subtitles off too, or voice off on the
+// server (the switch is locked then). From the switches as they stand.
+let serverVoice = null;
+function showSpeakNote() {
+  const note = speakRepliesNote({ speakReplies: readSetting("speakReplies"), subtitles: readSetting("subtitles") }, serverVoice);
+  $("speak-replies-note").textContent = note;
+  $("speak-replies-note").hidden = !note;
+  $("speak-replies").disabled = serverVoice === false;
+}
+
 // Leaves Danger mode alone, so an open confirm is not closed by another save.
 function fillSimple(s) {
   for (const key of simple.keys()) writeSetting(key, s[key]);
   showSpeed();
+  showSpeakNote();
 }
 
 function fill(s) {
@@ -273,6 +284,8 @@ async function refreshSetup() {
   const done = setupDone({ site, mic, agent });
   tag(els.setupState, done === SETUP_STEPS ? "ok" : "todo", done === SETUP_STEPS ? "Complete" : `${done} of ${SETUP_STEPS} done`);
   tag(els.agentState, agent.connected ? "ok" : "todo", agent.connected ? "Connected" : "Not reachable");
+  serverVoice = agent.voice;
+  showSpeakNote();
 }
 
 // Switches and menus changed elsewhere (the popup) show up here. Only the
@@ -286,6 +299,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     for (const k of keys) writeSetting(k, s[k]);
     if (changes.dangerMode) danger.fill(s);
     showSpeed();
+    showSpeakNote();
   });
 });
 

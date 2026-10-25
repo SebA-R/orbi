@@ -105,3 +105,10 @@ label.row { cursor: pointer; }
 .danger-confirm button { min-height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill); color: var(--fg); font: inherit; font-size: 13px; cursor: pointer; }
 .danger-confirm #danger-yes { background: var(--amber); border-color: var(--amber); color: var(--on-amber); font-weight: 600; }
 .danger-chip[hidden], .danger-confirm[hidden] { display: none; }
+
+/* Speak replies: a long label like Danger mode's, and its note (both
+   subtitles and speech off, or voice off on the server). */
+.speak-row span { font-size: 13px; line-height: 1.35; padding: 8px 0; }
+.note { margin: 0; padding: 8px 16px; font-size: 13px; line-height: 1.35; background: var(--warn-bg); color: var(--warn-fg); }
+.note[hidden] { display: none; }
+.note + .row { border-top: 1px solid var(--line); }

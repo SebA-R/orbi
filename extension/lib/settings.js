@@ -27,6 +27,10 @@ export const DEFAULTS = Object.freeze({
   hotkey: "Space",
   speed: 1,
   subtitles: true,
+  // Speak Clearcart's replies with Sonic. Off: no speech is requested at
+  // all (no Cartesia speech credits), and the replies show in the subtitles
+  // only. Listening and earcons are unchanged.
+  speakReplies: true,
   // Fade out and mute other tabs' audio while the user talks and while
   // Clearcart answers (lib/voice/duck.js).
   quietTabs: true,
@@ -46,10 +50,11 @@ export const DEFAULTS = Object.freeze({
   // (background/errpage.js), where Space to talk works. Off: Chrome's own
   // error page stays.
   errorPages: true,
-  // Danger mode: Clearcart presses sign in and sign up without asking
-  // (content/protect.js says what it lifts). Off unless the user turns it
-  // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
-  // masking, the blocklist and the CAPTCHA hand-off never change with it.
+  // Danger mode: the button lock is off and orders are placed without a
+  // spoken yes (content/protect.js, agent/session.ts). Off unless the user
+  // turns it on, with a confirm step (lib/danger-toggle.js). Masking of card
+  // and password fields, the blocklist and the CAPTCHA hand-off never
+  // change with it.
   dangerMode: false,
   // Clicks and scrolls go at a pace the user can follow
   // (background/actor.js). Off, they happen at once. Typing is always
@@ -64,7 +69,24 @@ export const DEFAULTS = Object.freeze({
   showCursor: true,
 });
 
-export const DANGER_MODE_COPY = "Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.";
+export const DANGER_MODE_COPY = "Danger mode. Clearcart acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
+
+export const SPEAK_REPLIES_COPY = "Speak replies. Turn off to read Clearcart's answers in the subtitles without hearing them.";
+export const VOICE_OFF_ON_SERVER = "Voice is off on the server";
+
+// With Speak replies and subtitles both off, the user would never learn
+// what Clearcart said: the popup and options page show this. Voice off on
+// the server (serverVoice false) counts as not speaking.
+export function replyWarning(s, serverVoice = null) {
+  if (!s || s.subtitles !== false) return null;
+  if (s.speakReplies !== false && serverVoice !== false) return null;
+  return "Clearcart's replies won't be shown or spoken at all. Turn on Speak replies or subtitles.";
+}
+
+// The note under the Speak replies switch, or "" for none.
+export function speakRepliesNote(s, serverVoice = null) {
+  return [serverVoice === false && `${VOICE_OFF_ON_SERVER}.`, replyWarning(s, serverVoice)].filter(Boolean).join(" ");
+}
 
 export const SPEED_MIN = 0.6;
 export const SPEED_MAX = 2;
@@ -106,6 +128,7 @@ export function normalize(raw = {}) {
   const speed = Number(raw.speed);
   if (raw.speed != null && Number.isFinite(speed)) out.speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, speed));
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
+  if (typeof raw.speakReplies === "boolean") out.speakReplies = raw.speakReplies;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
   if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
   if (typeof raw.sounds === "boolean") out.sounds = raw.sounds;

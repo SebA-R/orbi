@@ -120,7 +120,7 @@ This project was started at Cal Hacks 13.0 (October 24-25, 2026). All of the cod
 
 ## Testing without voice
 
-Set `CLEARCART_VOICE=false` (in `.env` or the environment) to run the agent server without Cartesia: no voice tokens are minted, replies show as text and subtitles only, and no credits are spent. The e2e and server tests set it automatically. Unset or `true` keeps voice on.
+Set `CLEARCART_VOICE=false` (in `.env` or the environment) to run the agent server without Cartesia: no voice tokens are minted, replies show as text and subtitles only, and no credits are spent. The e2e and server tests set it automatically. Unset or `true` keeps voice on. This is a developer flag; users who only want to stop hearing replies turn off Speak replies in the extension, which keeps listening.
 
 ## Secrets
 

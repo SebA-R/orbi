@@ -1,8 +1,7 @@
 // Clearcart's cursor: shows where the agent's pointer is and what it is
 // doing, design "7. Orb tag arrow" from the Agent-Cursor board. A white
-// arrow with a spectrum outline and the small orb face (content/orb-face.js)
-// on its tail; an I-beam while typing; the mouse wheel from design 8 while
-// scrolling. A press plays a ripple at the point, a ring pulse around the
+// arrow with a spectrum outline, only the pointer; an I-beam while typing;
+// the mouse wheel from design 8 while scrolling. A press plays a ripple at the point, a ring pulse around the
 // target and a spectrum highlight on it.
 //
 // There is no text near the cursor. What it is doing ("Clicking Add to
@@ -20,7 +19,10 @@
 // shadow root, a manual popover in the top layer, inline !important host
 // styles. Only transforms and opacity animate; position updates are batched
 // to one style write per animation frame and nothing reads layout per
-// sample. It fades out after 1.5 s without a sample and leaves the page.
+// sample. Once shown on a tab it stays at its last position: no idle fade,
+// and the worker's "hide" (turn end, interrupt, tab switch) only puts it at
+// rest. The position is kept in sessionStorage, so a reload or a return from
+// the back/forward cache redraws it there. Only the setting off removes it.
 // Under reduced motion it jumps to where the pointer settles, plays no
 // ripple or pulse, and the highlight is static.
 
@@ -33,13 +35,11 @@
   globalThis[FLAG] = true;
 
   const RT = { CURSOR: "cursor" };
-  const FACE = globalThis.__clearcartOrbFace || null;
-  const IDLE_MS = 1500;    // no sample for this long: fade out
-  const FADE_MS = 350;     // matches the .cur opacity transition
+  const IDLE_MS = 1500;    // no sample for this long: clear the caption, save the spot
+  const SAVE_KEY = "__clearcartCursor";
   const SETTLE_MS = 120;   // reduced motion: jump once moves stop for this long
   const HL_MS = 1400;      // highlight on the target
   const REDUCE = "(prefers-reduced-motion: reduce)";
-  const STATES = new Set(["idle", "listening", "thinking", "speaking"]);
   const SPECTRUM = "#ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff";
 
   const CSS = `
@@ -62,16 +62,6 @@
 .cur.m-type .arw, .cur.m-scroll .arw { opacity: 0; }
 .cur.m-scroll .whl .chev { animation-play-state: running; }
 @keyframes chev { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(2px); } }
-.otag {
-  position: absolute; left: 0; top: 0; width: 14px; height: 14px; line-height: 0;
-  --ccf-size: 14px; --ccf-glow: 0 0 6px rgba(94,139,255,.45);
-  transform: translate(13px, 17px); transition: transform .12s;
-}
-.cur.m-type .otag { transform: translate(9px, 8px); }
-.cur.m-scroll .otag { transform: translate(12px, 4px); }
-.cur.prs .otag { transform: translate(13px, 17px) scale(.85); }
-.cur.prs .ccf-dots { transform: scaleY(.35); }
-.ccf-dots { transform-box: fill-box; transform-origin: center; transition: transform .1s; }
 .rip {
   position: absolute; left: 0; top: 0; width: 46px; height: 46px; margin: -23px 0 0 -23px;
   border-radius: 50%; border: 2px solid rgba(181,108,255,.9);
@@ -135,9 +125,9 @@
   ];
 
   const ui = {
-    host: null, cur: null, rip: null, pulse: null, hl: null, face: null, watcher: null,
-    enabled: true, x: null, y: null, drawn: "", raf: 0, mode: "", voice: "thinking",
-    idleTimer: 0, goneTimer: 0, settleTimer: 0, pressTimer: 0, hlTimer: 0, goal: null, pending: null,
+    host: null, cur: null, rip: null, pulse: null, hl: null, watcher: null,
+    enabled: true, x: null, y: null, drawn: "", raf: 0, mode: "",
+    idleTimer: 0, settleTimer: 0, pressTimer: 0, hlTimer: 0, goal: null, pending: null,
   };
 
   let mql = null;
@@ -165,17 +155,16 @@
     pinHostStyle(host);
 
     const shadow = host.attachShadow({ mode: "closed" });
-    const css = (FACE ? FACE.CSS : "") + CSS;
     let adopted = false;
     try {
       const sheet = new CSSStyleSheet();
-      sheet.replaceSync(css);
+      sheet.replaceSync(CSS);
       shadow.adoptedStyleSheets = [sheet]; // not subject to page style-src CSP
       adopted = true;
     } catch {}
     if (!adopted) {
       const style = document.createElement("style");
-      style.textContent = css;
+      style.textContent = CSS;
       shadow.append(style);
     }
     const layer = document.createElement("div");
@@ -192,19 +181,10 @@
     whl.className = "whl";
     whl.append(build(WHEEL));
     cur.append(build(ARROW), build(IBEAM), whl);
-    const otag = document.createElement("span");
-    otag.className = "otag";
-    const face = FACE ? FACE.create(document, { canPlay: () => !!ui.cur && !ui.cur.classList.contains("idle") }) : null;
-    if (face) {
-      face.setState(ui.voice);
-      otag.append(face.el);
-    }
-    cur.append(otag);
     layer.append(hl, pulse, rip, cur);
     shadow.append(layer);
     place(root, host);
-    if (ui.face) ui.face.destroy();
-    Object.assign(ui, { host, cur, rip, pulse, hl, face, drawn: "", mode: "" });
+    Object.assign(ui, { host, cur, rip, pulse, hl, drawn: "", mode: "" });
     keepLast(root);
     raise();
     return true;
@@ -319,24 +299,50 @@
   }
 
   function wake() {
-    clearTimeout(ui.goneTimer);
-    ui.goneTimer = 0;
     if (ui.cur && ui.cur.classList.contains("idle") && ui.x != null) ui.cur.classList.remove("idle");
     clearTimeout(ui.idleTimer);
-    ui.idleTimer = setTimeout(fadeOut, IDLE_MS);
+    ui.idleTimer = setTimeout(rest, IDLE_MS);
   }
 
-  function fadeOut() {
+  // Idle, turn end, interrupt: the caption goes, the cursor stays put.
+  function rest() {
+    clearTimeout(ui.idleTimer);
     ui.idleTimer = 0;
     caption("");
-    if (ui.cur) ui.cur.classList.add("idle");
-    clearTimeout(ui.goneTimer);
-    ui.goneTimer = setTimeout(teardown, FADE_MS + 50);
+    settle();
+    release();
+    ui.goal = null;
+    if (ui.pending) moveTo(ui.pending.x, ui.pending.y, true);
+    ui.pending = null;
+    setMode("move");
+    save();
+  }
+
+  // The last position, per tab (sessionStorage is per tab and survives reloads).
+  function save() {
+    if (ui.x == null) return;
+    try { globalThis.sessionStorage.setItem(SAVE_KEY, JSON.stringify({ x: ui.x, y: ui.y })); } catch {}
+  }
+  function saved() {
+    try {
+      const v = JSON.parse(globalThis.sessionStorage.getItem(SAVE_KEY) || "null");
+      return v && Number.isFinite(v.x) && Number.isFinite(v.y) ? v : null;
+    } catch { return null; }
+  }
+
+  // Redraw at the saved spot (load, back/forward cache, setting back on).
+  function restore() {
+    if (!ui.enabled || ui.host) return;
+    const at = saved();
+    if (!at || !mount()) return;
+    setMode("move");
+    moveTo(at.x, at.y, true);
+    if (ui.cur) ui.cur.classList.remove("idle");
   }
 
   // Off the page: no host, no observer, no timers.
   function teardown() {
-    for (const k of ["idleTimer", "goneTimer", "settleTimer", "pressTimer", "hlTimer"]) {
+    for (const k of ["idleTimer", "settleTimer", "pressTimer", "hlTimer"]) {
       clearTimeout(ui[k]);
       ui[k] = 0;
     }
@@ -345,9 +351,8 @@
     if (ui.watcher) ui.watcher.disconnect();
     ui.watcher = null;
     try { if (ui.host && ui.host.matches(":popover-open")) ui.host.hidePopover(); } catch {}
-    if (ui.face) ui.face.destroy();
     if (ui.host) ui.host.remove();
-    ui.host = ui.cur = ui.rip = ui.pulse = ui.hl = ui.face = null;
+    ui.host = ui.cur = ui.rip = ui.pulse = ui.hl = null;
     ui.x = ui.y = null;
     ui.goal = ui.pending = null;
     ui.drawn = ui.mode = "";
@@ -458,13 +463,9 @@
   globalThis.__clearcartAgentPointer = Object.freeze({ busy: () => Date.now() - lastSample < BUSY_MS });
 
   function onSample(msg) {
-    if (msg.phase === "hide") { lastSample = -Infinity; return hideNow(); }
+    if (msg.phase === "hide") { lastSample = -Infinity; return ui.host ? rest() : caption(""); }
     if (msg.phase === "move" || msg.phase === "press" || msg.phase === "release") lastSample = Date.now();
     if (!ui.enabled) return;
-    if (STATES.has(msg.voice) && msg.voice !== ui.voice) {
-      ui.voice = msg.voice;
-      if (ui.face) ui.face.setState(ui.voice);
-    }
     const hasPoint = Number.isFinite(msg.x) && Number.isFinite(msg.y);
     // Typing with no pointer yet in this tab: just the caption.
     if (!hasPoint && !ui.host) {
@@ -550,6 +551,7 @@
   function setEnabled(on) {
     ui.enabled = on !== false;
     if (!ui.enabled) hideNow();
+    else restore();
   }
 
   const chromeApi = globalThis.chrome;
@@ -565,9 +567,11 @@
   if (storage && storage.local) {
     try {
       Promise.resolve(storage.local.get("showCursor"))
-        .then((v) => { if (v && v.showCursor === false) setEnabled(false); })
-        .catch(() => {});
-    } catch {}
+        .then((v) => { if (v && v.showCursor === false) setEnabled(false); else restore(); })
+        .catch(restore);
+    } catch { restore(); }
+  } else {
+    restore();
   }
   if (storage && storage.onChanged) {
     storage.onChanged.addListener((changes, area) => {
@@ -575,7 +579,8 @@
     });
   }
 
-  // Another tab came to the front, or the page is going away.
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") hideNow(); });
-  globalThis.addEventListener?.("pagehide", hideNow);
+  // The page is going away: keep the spot for a reload or the back/forward
+  // cache. A tab switch leaves the cursor where it is, drawn on return.
+  globalThis.addEventListener?.("pagehide", () => { save(); hideNow(); });
+  globalThis.addEventListener?.("pageshow", (e) => { if (e && e.persisted) restore(); });
 })();

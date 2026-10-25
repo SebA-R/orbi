@@ -38,6 +38,8 @@ export type Confirmation = {
   total: string;
   state: "pending" | "confirmed" | "declined" | "used";
   confirmedAt?: number;
+  // Confirmed by Danger mode without a spoken yes (session.ts).
+  auto?: boolean;
   tabId?: number | null;
   cart?: string;
 };
@@ -98,7 +100,17 @@ export type PayState = {
   lastTabId: number | null;
   confirmation: Confirmation | null;
   cardFieldsLive: boolean;
+  // Whether a Danger mode confirmation (auto) still counts: Danger mode is
+  // still on. Read right before the order button is unlocked. Missing: no.
+  autoOk?: () => boolean;
 };
+
+const DANGER_OFF = "Danger mode was turned off. Call request_checkout again; the user now says yes first.";
+
+// A Danger mode confirmation counts only while Danger mode is still on.
+function autoRevoked(state: PayState, c: Confirmation): boolean {
+  return c.auto === true && !(state.autoOk?.() === true);
+}
 
 export type Receipt = { item: string; total: string; last4: string };
 
@@ -257,6 +269,7 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
   // Button lock: issue the grant while the yes is fresh (see unlock.ts).
   // startHref: where the press happens, so only a move to another page
   // counts as the order page.
+  if (autoRevoked(state, c)) return { ok: false, error: DANGER_OFF };
   const startHref = await extTabUrl(bridge, tabId);
   const issued = gate.issue({ confirmation: claimedYes(c), tabId, href: startHref, pageTotal });
   if (!issued.ok) return { ok: false, error: issued.error };

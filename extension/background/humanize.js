@@ -6,8 +6,9 @@
 //
 // Pure: no chrome.*, no CDP, no timers. Every planner takes a seeded random
 // source and returns plain data; background/actor.js plays it. What a plan
-// may change is only how and when, never what: a click lands on exactly the
-// point asked for, typing inserts exactly the text, and the wheel steps add
+// may change is only how and when, never what: a pointer path starts exactly
+// where the pointer is and ends exactly on the point asked for, a click
+// presses there, typing inserts exactly the text, and the wheel steps add
 // up to exactly the scroll asked for.
 
 // --------------------------------------------------------------- random
@@ -101,10 +102,16 @@ export function travelMs(d, size, rng, { min = CLICK.moveMinMs, max = CLICK.move
 }
 
 // The path from `from` to `to`: [{x, y, ms}] where ms is the wait before
-// that point. The last point is always exactly `to`.
+// that point. Humanizing only shapes the middle: the first point is exactly
+// `from` (the pointer where it is now, no wait) and the last is exactly
+// `to`, unrounded and unjittered, so the press lands on the point asked for.
+// A long move may run past the target and come back, but always before the
+// last point.
 export function planPath(from, to, rng, opts = {}) {
+  const start = { x: from.x, y: from.y, ms: 0 };
   const d = dist(from, to);
-  if (d < 2) return [{ x: to.x, y: to.y, ms: CLICK.frameMs }];
+  if (d === 0) return [start];
+  if (d < 2) return [start, { x: to.x, y: to.y, ms: CLICK.frameMs }];
   const total = opts.ms ?? travelMs(d, opts.size, rng, opts);
   const dx = (to.x - from.x) / d, dy = (to.y - from.y) / d;
   // Normal to the line: the curve bows to one side, more for longer moves.
@@ -120,7 +127,7 @@ export function planPath(from, to, rng, opts = {}) {
   const mainMs = overshoot ? total * 0.82 : total;
   const n = Math.max(4, Math.round(mainMs / CLICK.frameMs));
   const frame = Math.max(1, Math.round(mainMs / n));
-  const out = [];
+  const out = [start];
   for (let i = 1; i <= n; i++) {
     const u = i / n;
     const p = bezier(from, c1, c2, end, minJerk(u));
@@ -140,6 +147,7 @@ export function planPath(from, to, rng, opts = {}) {
       });
     }
   }
+  // The end is the target itself, never a rounded or shaken copy of it.
   const last = out[out.length - 1];
   last.x = to.x;
   last.y = to.y;

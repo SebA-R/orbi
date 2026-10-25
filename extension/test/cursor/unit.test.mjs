@@ -15,7 +15,7 @@ const FACE_SRC = read("orb-face.js");
 const SUBS_SRC = read("subtitles.js");
 const FRAME_SRC = read("frame.js");
 
-function setup({ stored = {}, reduce = false, subtitles = false, frame = false } = {}) {
+function setup({ stored = {}, reduce = false, subtitles = false, frame = false, session = null } = {}) {
   const dom = new JSDOM("<!doctype html><html><head></head><body><button id=add style='position:absolute'>Add to cart</button><input id=q placeholder='Search'></body></html>", {
     runScripts: "outside-only",
     url: "https://shop.example/",
@@ -66,6 +66,7 @@ function setup({ stored = {}, reduce = false, subtitles = false, frame = false }
     },
   };
   window.matchMedia = (q) => ({ matches: reduce && q.includes("prefers-reduced-motion: reduce"), media: q });
+  if (session) window.sessionStorage.setItem("__clearcartCursor", JSON.stringify(session));
   window.eval(FACE_SRC);
   if (subtitles) window.eval(SUBS_SRC);
   if (frame) window.eval(FRAME_SRC);
@@ -116,11 +117,10 @@ test("follows the hook's samples with transform-only moves, batched per frame", 
   assert.equal(cur.style.transform, "translate3d(60px, 50px, 0)");
   // Only transform changes on the cursor while it moves.
   assert.deepEqual(Array.from({ length: cur.style.length }, (_, i) => cur.style[i]), ["transform"]);
-  // The orb face rides on the tail, tiny, in the voice state's face.
-  const face = t.$(".otag .ccf");
-  assert.ok(face);
-  assert.equal(face.dataset.state, "thinking");
-  assert.match(SRC, /--ccf-size: 14px/);
+  // Only the pointer: no orb face on the tail.
+  assert.equal(t.$(".otag"), null);
+  assert.equal(t.$(".ccf"), null);
+  assert.doesNotMatch(SRC, /OrbFace|otag|ccf/);
 });
 
 test("the cursor's shape follows the action: arrow, I-beam, wheel", () => {
@@ -192,36 +192,42 @@ test("action captions go to the subtitle card's action line, under the spoken wo
   assert.ok(t.subs$(".wrap").classList.contains("on"));
 });
 
-test("fades out after 1.5 s without a sample, clears the caption, then leaves the page", () => {
+test("stays at its last position: no idle fade, the caption clears after 1.5 s", () => {
   const t = setup({ subtitles: true });
   t.pointAt(t.window.document.getElementById("add"));
   gesture(t, "click", [[5, 5], [120, 90]]);
   const cur = t.$(".cur");
-  t.tick(1400);
-  assert.equal(cur.classList.contains("idle"), false);
-  t.cursor({ phase: "press", action: "click", x: 120, y: 90 });
-  t.tick(1400);
-  assert.equal(cur.classList.contains("idle"), false, "each sample restarts the clock");
-  t.tick(200);
-  assert.ok(cur.classList.contains("idle"));
+  t.tick(1600);
   assert.equal(t.subs$(".act").textContent, "");
+  t.tick(60000);
   assert.ok(t.host());
-  t.tick(500);
-  assert.equal(t.host(), null);
+  assert.equal(cur.classList.contains("idle"), false);
+  assert.equal(cur.style.transform, "translate3d(120px, 90px, 0)");
 });
 
-test("typing keys keep it awake; hide, tab switch and pagehide take it off at once", () => {
+test("hide (turn end, interrupt) and tab switches leave it in place; pagehide saves it for a reload", async () => {
   const t = setup();
   gesture(t, "click", [[5, 5], [50, 50]]);
   t.cursor({ phase: "type", action: "type", x: 50, y: 50, text: "a long query" });
-  for (let i = 0; i < 30; i++) { t.tick(100); t.cursor({ phase: "key", action: "type", x: 50, y: 50 }); }
-  assert.equal(t.$(".cur").classList.contains("idle"), false);
   t.cursor({ phase: "hide" });
-  assert.equal(t.host(), null);
-  gesture(t, "click", [[5, 5]]);
+  assert.ok(t.host());
+  assert.equal(t.$(".cur").classList.contains("idle"), false);
+  assert.equal(t.$(".cur").style.transform, "translate3d(50px, 50px, 0)");
+  t.window.document.dispatchEvent(new t.window.Event("visibilitychange"));
   assert.ok(t.host());
   t.window.dispatchEvent(new t.window.Event("pagehide"));
   assert.equal(t.host(), null);
+  const saved = JSON.parse(t.window.sessionStorage.getItem("__clearcartCursor"));
+  assert.deepEqual(saved, { x: 50, y: 50 });
+
+  const r = setup({ session: saved });
+  await r.flush();
+  assert.ok(r.host(), "redrawn after a reload");
+  assert.equal(r.$(".cur").style.transform, "translate3d(50px, 50px, 0)");
+  assert.equal(r.$(".cur").classList.contains("idle"), false);
+  const off = setup({ session: saved, stored: { showCursor: false } });
+  await off.flush();
+  assert.equal(off.host(), null, "not with the setting off");
 });
 
 test("the setting off: nothing is drawn, and turning it off removes the cursor", async () => {
@@ -288,9 +294,10 @@ test("no re-append loop with the cursor, the subtitles and the frame all mounted
   moves = 0;
   for (let i = 0; i < 10; i++) await t.flush();
   assert.equal(moves, 0);
-  // Remounting the cursor after it faded settles too.
-  t.tick(2500);
+  // Remounting the cursor after the setting went off and on settles too.
+  for (const f of t.changeListeners) f({ showCursor: { newValue: false } }, "local");
   assert.equal(t.host(), null);
+  for (const f of t.changeListeners) f({ showCursor: { newValue: true } }, "local");
   gesture(t, "click", [[9, 9]]);
   for (let i = 0; i < 5; i++) await t.flush();
   moves = 0;

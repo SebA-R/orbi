@@ -13,6 +13,7 @@ import type http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { parseBlockLines, type BlockEntry } from "./blocklist.ts";
+import { extensionOrigins } from "./hostcheck.ts";
 
 // Mirrors extension/lib/protocol.js (the test checks they agree). Kept as a
 // copy because that file is plain JS outside this tsconfig.
@@ -71,6 +72,13 @@ export interface ExtBridgeEvents {
   danger_mode: [boolean];
 }
 
+// The Origin of an /ext upgrade: none (not a browser) or Clearcart's own
+// extension (hostcheck.ts extensionOrigins).
+export function extOriginAllowed(origin: string | string[] | undefined, origins: ReadonlySet<string> = extensionOrigins()): boolean {
+  if (origin === undefined) return true;
+  return typeof origin === "string" && origins.has(origin);
+}
+
 export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
   private current: WebSocket | null = null;
@@ -115,8 +123,9 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   }
 
   // The user's Danger mode setting as the extension last sent it (false
-  // until it does). Informational: the extension enforces the lock itself,
-  // and nothing here can change the setting.
+  // until it does, and again once it disconnects). The extension enforces
+  // the click lock itself; the server reads this to skip the spoken yes
+  // (session.ts), so only the connected extension can set it.
   dangerMode(): boolean {
     return this.danger;
   }
@@ -175,6 +184,14 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       const target = pathname === path ? this.wss : others[pathname];
       if (!target) {
         socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      // Only the extension may be the extension: not a web page, not the
+      // voice console, not another extension. Otherwise it could take over
+      // the bridge and send settings such as Danger mode, or receive the
+      // card pay_now fills. Clients outside a browser send no Origin.
+      if (target === this.wss && !extOriginAllowed(req.headers.origin)) {
+        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
       }
       target.handleUpgrade(req, socket, head, (ws) => target.emit("connection", ws, req));
@@ -254,6 +271,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       if (this.current === ws) {
         this.current = null;
         this.info = null;
+        this.danger = false;
         this.log("ext: extension disconnected");
         this.emit("disconnect", { reason: "closed" });
       }
@@ -265,6 +283,8 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     const old = this.current;
     this.current = ws;
     this.info = { version, connectedAt: Date.now() };
+    // A new connection states Danger mode itself (the worker sends it on connect).
+    this.danger = false;
     if (old && old !== ws) {
       this.dropPending(old, "replaced by a newer extension connection");
       old.close(4002, "replaced");

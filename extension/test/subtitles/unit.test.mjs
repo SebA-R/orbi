@@ -489,6 +489,20 @@ test("clicking the page fades the card out early, then clears it", () => {
   assert.ok(t.visible(), "the next line shows again");
 });
 
+test("a press inside the card's rect keeps it up; the click still goes to the page", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
+  assert.ok(t.visible());
+  t.$(".card").getBoundingClientRect = () => ({ left: 100, top: 500, right: 400, bottom: 580, width: 300, height: 80 });
+  let reached = false;
+  t.window.document.body.addEventListener("pointerdown", () => { reached = true; });
+  t.window.document.body.dispatchEvent(new t.window.MouseEvent("pointerdown", { bubbles: true, clientX: 250, clientY: 540 }));
+  assert.ok(reached, "the page still gets the press");
+  assert.ok(t.visible(), "card stays visible");
+  t.window.document.body.dispatchEvent(new t.window.MouseEvent("pointerdown", { bubbles: true, clientX: 20, clientY: 20 }));
+  assert.equal(t.visible(), false, "a press outside the rect still fades it");
+});
+
 // Karaoke: SUBTITLE {utteranceId, karaoke} then SUBTITLE_WORD as words are heard.
 const LINE = "Found it, nine dollars.";
 const kline = (t, id = "u1", text = LINE) => t.send({ type: "subtitle", speaker: "agent", text, final: true, utteranceId: id, karaoke: true });
@@ -665,6 +679,22 @@ test("karaoke: said and coming inks are 4.5:1 on the card in light and dark, ove
     const L = (h) => parseInt(h.slice(1, 3), 16);
     assert.ok(L(said) > L(next), `${name}: said ${said} lighter than coming ${next}`);
   }
+});
+
+test("Speak replies off: the whole reply shows at once, plainly, and hides after its reading time", () => {
+  const t = setup();
+  const reply = Array.from({ length: 75 }, (_, i) => `w${i}`).join(" ");
+  t.send({ type: "voice.state", state: "thinking" });
+  // No utteranceId and no karaoke: the controller sends it whole, untimed.
+  t.send({ type: "subtitle", speaker: "agent", text: reply, final: true });
+  t.send({ type: "voice.state", state: "idle" });
+  assert.equal(t.$(".agent").textContent.trim(), reply, "every word at once");
+  assert.equal(t.$(".agent").classList.contains("karaoke"), false);
+  assert.equal(t.$(".agent").querySelectorAll(".w").length, 75);
+  t.tick(27_000);
+  assert.ok(t.visible(), "a 75 word reply gets about 28 s");
+  t.tick(2_000);
+  assert.equal(t.visible(), false);
 });
 
 test("the action line: a small secondary line under the words, never replacing them", () => {

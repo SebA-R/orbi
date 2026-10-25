@@ -12,6 +12,26 @@ test("the rng is deterministic per seed", () => {
   assert.notDeepEqual(seq(createRng(7)), seq(c));
 });
 
+test("paths start exactly at the pointer and end exactly on the target", () => {
+  const cases = [
+    [{ x: 0, y: 0 }, { x: 900, y: 100 }], // long: may overshoot mid-path
+    [{ x: 12.25, y: 40.5 }, { x: 610.5, y: 333.75 }], // fractional ends stay unrounded
+    [{ x: 300, y: 300 }, { x: 301, y: 300 }], // tiny move
+    [{ x: 50, y: 60 }, { x: 50, y: 60 }], // no move
+  ];
+  for (const [from, to] of cases) {
+    for (let seed = 1; seed <= 60; seed++) {
+      const path = planPath(from, to, createRng(seed), { size: 30 });
+      const first = path[0], last = path[path.length - 1];
+      assert.deepEqual([first.x, first.y, first.ms], [from.x, from.y, 0], `seed ${seed} starts at the pointer`);
+      assert.deepEqual([last.x, last.y], [to.x, to.y], `seed ${seed} ends on the target`);
+      const c = planClick(from, to, createRng(seed), { size: 30 });
+      assert.deepEqual([c.path[0].x, c.path[0].y], [from.x, from.y]);
+      assert.deepEqual([c.path.at(-1).x, c.path.at(-1).y], [to.x, to.y]);
+    }
+  }
+});
+
 test("paths end exactly on the target and stay near the straight line", () => {
   for (let seed = 1; seed <= 300; seed++) {
     const rng = createRng(seed);
@@ -26,7 +46,7 @@ test("paths end exactly on the target and stay near the straight line", () => {
     for (const p of path) {
       assert.ok(p.x >= Math.min(from.x, to.x) - slack && p.x <= Math.max(from.x, to.x) + slack, `seed ${seed} x in bounds`);
       assert.ok(p.y >= Math.min(from.y, to.y) - slack && p.y <= Math.max(from.y, to.y) + slack, `seed ${seed} y in bounds`);
-      assert.ok(Number.isInteger(p.x) && Number.isInteger(p.y) && p.ms >= 1);
+      assert.ok(Number.isInteger(p.x) && Number.isInteger(p.y) && (p === path[0] || p.ms >= 1));
     }
     if (d > 10) assert.ok(path.length >= 4, "a real move has several samples");
   }

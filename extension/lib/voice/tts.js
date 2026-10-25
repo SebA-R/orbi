@@ -110,8 +110,12 @@ export class Speaker {
   unduck() { this.#rampTo(1, UNDUCK_SECONDS); }
 
   // Barge-in: silence now, cancel anything still generating.
-  stop() {
-    this.#freezeCaption();
+  // release: Speak replies was just turned off. The words are not cut off
+  // but shown in full, plainly: the line being heard stops its karaoke and
+  // lines not yet heard show at once (as one), so nothing said is lost.
+  stop({ release = false } = {}) {
+    if (release) this.#releaseCaptions();
+    else this.#freezeCaption();
     const ws = this.ws;
     for (const utt of this.queue) {
       if (!utt.done && ws && ws.readyState === WebSocket.OPEN) {
@@ -291,6 +295,25 @@ export class Speaker {
     }
     this.lines = [];
     this.#stopTicker();
+  }
+
+  #releaseCaptions() {
+    if (this.lines.length) this.tick(); // a line heard to its end is done
+    const lines = this.lines;
+    this.lines = [];
+    this.#stopTicker();
+    if (!lines.length) return;
+    const head = lines[0];
+    if (lines.length === 1 && head.shown) {
+      // On screen already: drop the karaoke, keep the words.
+      if (!head.plain) this.onCaption({ kind: 'word', utteranceId: head.id, fallback: true });
+      head.plain = true;
+      return;
+    }
+    // The rest of the reply, the line being heard included, as one plain line.
+    for (const utt of lines) { utt.shown = true; utt.plain = true; }
+    const text = lines.map((u) => u.text).join(' ');
+    this.onCaption({ kind: 'line', utteranceId: lines.at(-1).id, text, karaoke: false });
   }
 
   #startTicker() {

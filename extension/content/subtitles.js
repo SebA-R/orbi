@@ -582,13 +582,23 @@
     }
   }
 
-  // A click anywhere on the page (the card itself takes no clicks) fades the
-  // card out early, like dismissing a toast.
+  // A click on the page outside the card fades it out early, like dismissing
+  // a toast. The card takes no clicks, so a press on it reaches the page too;
+  // those are told apart by position and leave the card up.
   // The agent's own clicks (content/cursor.js saw its pointer just now) don't.
-  document.addEventListener("pointerdown", () => {
+  const onCard = (e) => {
+    const card = ui.wrap && ui.wrap.querySelector(".card");
+    if (!card || typeof e.clientX !== "number" || typeof e.clientY !== "number") return false;
+    const r = card.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  };
+  document.addEventListener("pointerdown", (e) => {
     const agent = globalThis.__clearcartAgentPointer;
     if (agent && typeof agent.busy === "function" && agent.busy()) return;
-    if (ui.wrap && ui.wrap.classList.contains("on")) hide();
+    if (!ui.wrap || !ui.wrap.classList.contains("on")) return;
+    if (onCard(e)) return;
+    hide();
   }, { capture: true, passive: true });
 
   const chromeApi = globalThis.chrome;
