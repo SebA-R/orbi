@@ -323,3 +323,14 @@ test("request_unlock: the password ask needs an explicit yes as the very next wo
     assert.equal(f.pressed(), 0, next.join(" / "));
   }
 });
+
+test("request_unlock: an interrupted turn's question is declined unasked, so the next words can't answer it", async () => {
+  const f = session(locked({ kind: "subscription", label: "Subscribe", cls: "subscription" }));
+  f.s.userText("I want the coffee");
+  f.s.interrupt();
+  const r = await f.s.requestUnlock({ ...ask("Subscribe"), action: "subscribe" });
+  assert.match(r.content[0].text, /^declined, nothing was pressed\. The user interrupted/);
+  assert.ok(!f.out.some((m) => m.type === "agent_text"), "never asked");
+  f.s.userText("yes");
+  assert.equal(f.pressed(), 0);
+});
