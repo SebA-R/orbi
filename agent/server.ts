@@ -14,8 +14,11 @@ import { createCardsRoute } from "./cards.ts";
 import { extBridge, extMode } from "./extbridge.ts";
 import { extensionOrigins, hostAllowed, memoryRequestAllowed, upgradeOriginAllowed } from "./hostcheck.ts";
 import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
+import { backendKey, describeBackend, envLocalContext, envProviderSettings, parseLocalBaseUrl } from "./local/config.ts";
+import { listModels, LocalModelError } from "./local/openai.ts";
+import { purchaseHistory } from "./history.ts";
 import { conversationLog, memoryStore } from "./memory.ts";
-import { memoryOn, Session } from "./session.ts";
+import { currentProvider, memoryOn, Session, type SessionCarry } from "./session.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -91,6 +94,13 @@ export function envBool(name: string, fallback: boolean): boolean {
 // the mic reports that voice is off.
 const VOICE_ENABLED: boolean = envBool("CLEARCART_VOICE", true);
 
+// CLEARCART_PROVIDER, CLEARCART_LOCAL_URL, CLEARCART_LOCAL_MODEL,
+// CLEARCART_LOCAL_VISION and CLEARCART_LOCAL_CONTEXT: refuse to start on a
+// value that can't be used (a typo, or a local model URL that is not on
+// this computer).
+envProviderSettings();
+envLocalContext();
+
 async function cartesiaToken(res: http.ServerResponse) {
   if (!VOICE_ENABLED) return json(res, 503, { error: "Voice is off (CLEARCART_VOICE=false)", voice: false });
   const key = process.env.CARTESIA_API_KEY;
@@ -117,9 +127,9 @@ const localHost = (req: http.IncomingMessage) => hostAllowed(req.headers.host, p
 const localUpgrade = (req: http.IncomingMessage) => localHost(req) && upgradeOriginAllowed(req.headers.origin, port(), EXT_ORIGINS);
 
 // Saved facts for the extension's settings page (memory.ts):
-//   GET    /memory       { enabled, facts: [{ id, text, at }] }
-//   DELETE /memory/<id>  forget one fact
-//   DELETE /memory       forget everything, the recent conversation too
+//   GET    /memory       { enabled, facts: [{ id, text, at }], purchases: [...] }
+//   DELETE /memory/<id>  forget one fact (m...) or past purchase (p...)
+//   DELETE /memory       forget everything, past purchases and the recent conversation too
 // Loopback peers with the Orbi extension's Origin only (hostcheck.ts).
 // Nothing here adds a fact: only the remember tool does.
 const EXT_ORIGINS = extensionOrigins();
@@ -127,9 +137,10 @@ function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathna
   if (!memoryRequestAllowed(req, port(), EXT_ORIGINS)) return json(res, 403, { error: "forbidden" });
   const store = memoryStore();
   const id = pathname.slice("/memory/".length);
-  if (req.method === "GET" && pathname === "/memory") return json(res, 200, { enabled: memoryOn(), facts: store.list() });
+  if (req.method === "GET" && pathname === "/memory") return json(res, 200, { enabled: memoryOn(), facts: store.list(), purchases: purchaseHistory().list() });
   if (req.method === "DELETE" && pathname === "/memory") {
     const n = store.clear();
+    purchaseHistory().clear();
     conversationLog().clear();
     console.log("memory: forgot everything (settings page)");
     return json(res, 200, { ok: true, removed: n });
@@ -137,6 +148,11 @@ function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathna
   if (req.method === "DELETE" && /^m[0-9a-f]{8}$/.test(id)) {
     const hit = store.remove(id);
     if (hit) console.log("memory: forgot a fact (settings page)");
+    return json(res, hit ? 200 : 404, hit ? { ok: true } : { error: "not found" });
+  }
+  if (req.method === "DELETE" && /^p[0-9a-f]{8}$/.test(id)) {
+    const hit = purchaseHistory().remove(id);
+    if (hit) console.log("memory: forgot a past purchase (settings page)");
     return json(res, hit ? 200 : 404, hit ? { ok: true } : { error: "not found" });
   }
   json(res, 405, { error: "method not allowed" });
@@ -147,11 +163,34 @@ function memoryRoute(req: http.IncomingMessage, res: http.ServerResponse, pathna
 // expiry or security code.
 const cardsRoute = createCardsRoute({ allowed: (req) => memoryRequestAllowed(req, port(), EXT_ORIGINS) });
 
+// The local model's list for the extension's settings page:
+//   GET /local-models[?baseUrl=<url>]
+//   200 { ok: true, connected: true, baseUrl, models: [{ id, tools? }], current }
+//   502 { ok: false, connected: false, baseUrl, error }  (the endpoint is down)
+// tools is there when the server says (Ollama). baseUrl defaults to the
+// current setting and must pass the same check (http(s) to localhost,
+// 127.0.0.1 or [::1]), so this never fetches anything off this computer.
+// Loopback peers with the Orbi extension's Origin only, like /memory.
+async function localModelsRoute(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+  if (!memoryRequestAllowed(req, port(), EXT_ORIGINS)) return json(res, 403, { error: "forbidden" });
+  if (req.method !== "GET") return json(res, 405, { error: "method not allowed" });
+  const asked = url.searchParams.get("baseUrl");
+  const baseUrl = asked === null ? currentProvider().localBaseUrl : parseLocalBaseUrl(asked);
+  if (!baseUrl) return json(res, 400, { ok: false, error: "baseUrl must be an http(s) URL on this computer (localhost, 127.0.0.1 or [::1])" });
+  try {
+    const models = await listModels(baseUrl);
+    json(res, 200, { ok: true, connected: true, baseUrl, models, current: currentProvider().localModel });
+  } catch (e) {
+    json(res, 502, { ok: false, connected: false, baseUrl, error: e instanceof LocalModelError ? e.spoken : "Could not reach the local model server." });
+  }
+}
+
 const server = http.createServer((req, res) => {
   if (!localHost(req)) return void res.writeHead(403, { "Content-Type": "text/plain" }).end("Forbidden host");
   const url = new URL(req.url || "/", "http://localhost");
   if (url.pathname === "/memory" || url.pathname.startsWith("/memory/")) return memoryRoute(req, res, url.pathname);
   if (url.pathname === "/cards" || url.pathname.startsWith("/cards/")) return void cardsRoute(req, res, url.pathname);
+  if (url.pathname === "/local-models") return void localModelsRoute(req, res, url);
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
   if (req.method === "GET" && url.pathname === "/healthz") {
     if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, browser: "ext", extension: extBridge.connected() });
@@ -172,9 +211,11 @@ if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localUpgrade);
 // One voice session for all /session sockets (hub.ts). Echo mode goes
 // through the same hub, so it follows the same one-owner rules.
 const hub = new SessionHub(
-  (send, ended) => {
+  (send, ended, carry) => {
     if (ECHO) return echoSession(send);
-    const session = new Session(send, { memory: memoryStore(), log: conversationLog() });
+    // carry: the fail-closed browser state of the session this one replaces
+    // (a provider switch), so a card left in a form stays guarded.
+    const session = new Session(send, { memory: memoryStore(), log: conversationLog(), history: purchaseHistory(), carry: carry as SessionCarry | undefined });
     void session.run().finally(() => {
       console.log("session agent stopped");
       ended();
@@ -183,6 +224,16 @@ const hub = new SessionHub(
   },
   (line) => console.log(line)
 );
+
+// The user switched the agent between Claude and a local model (or to
+// another local model): the hub retires the session in use and starts one
+// on the new backend.
+if (EXT) {
+  extBridge.on("provider", () => {
+    const p = currentProvider();
+    if (hub.switchBackend(backendKey(p), describeBackend(p))) console.log(`agent: ${describeBackend(p)}`);
+  });
+}
 
 wss.on("connection", (ws: WebSocket) => {
   const send = (m: HubMessage) => {

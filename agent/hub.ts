@@ -24,6 +24,12 @@
 //   - The Session ends when the last socket closes, or when its agent loop
 //     stops; the next message starts a fresh one. Messages from a Session
 //     that has ended reach nobody.
+//   - When the user switches the agent between Claude and a local model
+//     (switchBackend), the Session is retired the same way as a hand-off
+//     (nothing waiting is confirmed, an unused yes is withdrawn) and a
+//     fresh one starts on the new backend. The window in use keeps it. A
+//     payment under way finishes first, and the browser's fail-closed state
+//     (card values in a form, a failed tab sweep) carries over.
 
 import type { ServerMessage } from "./session.ts";
 
@@ -35,11 +41,24 @@ export interface HubSession {
   interrupt(): void;
   handOff(): void;
   close(): void;
+  // What its agent runs on (local/config.ts backendKey); none in echo mode.
+  backend?: string;
+  // handOff() and close() in one, for a session being replaced.
+  retire?(why: string): void;
+  // Not to be replaced right now (a payment is under way).
+  busy?(): boolean;
+  // What the session that replaces it must start with (session.ts
+  // SessionCarry).
+  carry?(): unknown;
 }
 
 // A new session whose messages go out through send. It calls ended() when
-// its agent loop has stopped for good.
-export type CreateSession = (send: (m: ServerMessage) => void, ended: () => void) => HubSession;
+// its agent loop has stopped for good. carry: what the session it replaces
+// handed over, if it replaces one.
+export type CreateSession = (send: (m: ServerMessage) => void, ended: () => void, carry?: unknown) => HubSession;
+
+// How often a switch waiting for a payment to finish checks again.
+export const SWITCH_RETRY_MS = 250;
 
 export const ELSEWHERE_TEXT = "Orbi is in use in another window. Talk here to use it here.";
 export const MOVED_TEXT = "Orbi moved to another window. Talk here to bring it back.";
@@ -57,6 +76,8 @@ export class SessionHub {
   private peers = new Set<Peer>();
   private owner: Peer | null = null;
   private session: HubSession | null = null;
+  // A backend switch waiting for the session's payment to finish.
+  private pendingSwitch: NodeJS.Timeout | null = null;
 
   constructor(private create: CreateSession, private log: (line: string) => void = () => {}) {}
 
@@ -74,7 +95,7 @@ export class SessionHub {
     };
   }
 
-  private ensure(): HubSession {
+  private ensure(carry?: unknown): HubSession {
     if (this.session) return this.session;
     let s: HubSession | null = null;
     const live = () => s !== null && this.session === s;
@@ -87,7 +108,8 @@ export class SessionHub {
         this.session = null;
         s!.close();
         this.log("voice session ended (agent stopped)");
-      }
+      },
+      carry
     );
     this.session = s;
     this.log("voice session started");
@@ -108,6 +130,43 @@ export class SessionHub {
     s.handOff();
     this.log(prev ? "voice session moved to another window" : "voice session claimed");
     return s;
+  }
+
+  // The agent's provider setting changed. A session on another backend is
+  // retired: a read-back or unlock question still waiting is declined,
+  // never confirmed, a yes pay_with_saved_card has not used is withdrawn, and nothing
+  // it says afterwards reaches anyone. A new session on the new backend
+  // starts if a window is open, with the old one's fail-closed browser
+  // state (carry). While a payment is under way the switch waits for it:
+  // its card may be in the form, and its receipt must reach the window.
+  // Returns whether it switched now.
+  switchBackend(backend: string, label = backend): boolean {
+    return this.trySwitch(backend, label, true);
+  }
+
+  private trySwitch(backend: string, label: string, first: boolean): boolean {
+    if (this.pendingSwitch) clearTimeout(this.pendingSwitch);
+    this.pendingSwitch = null;
+    const s = this.session;
+    if (!s || s.backend === undefined || s.backend === backend) return false;
+    if (s.busy?.()) {
+      if (first) this.log(`voice session switch to ${label} waits for the payment under way`);
+      this.pendingSwitch = setTimeout(() => this.trySwitch(backend, label, false), SWITCH_RETRY_MS);
+      this.pendingSwitch.unref?.();
+      return false;
+    }
+    const why = `switched to ${label}`;
+    const carry = s.carry?.();
+    if (s.retire) s.retire(why);
+    else {
+      s.handOff();
+      s.close();
+    }
+    if (this.session === s) this.session = null;
+    this.log(`voice session restarted (${why})`);
+    if (this.peers.size) this.ensure(carry);
+    this.owner?.send({ type: "status", text: `Switched to ${label}. Starting a new conversation.` });
+    return true;
   }
 
   private interrupt(peer: Peer) {

@@ -231,7 +231,7 @@ test("memory endpoint: the extension lists and deletes, pages and foreign hosts 
   try {
     const ok = await request(port, "GET", "/memory", { Origin: EXT_ORIGIN });
     assert.equal(ok.status, 200);
-    assert.deepEqual(JSON.parse(ok.body), { enabled: true, facts });
+    assert.deepEqual(JSON.parse(ok.body), { enabled: true, facts, purchases: [] });
     for (const h of [{}, { Origin: "https://evil.example" }, { Origin: "null" }, { Origin: EXT_ORIGIN, Host: `evil.example:${port}` }]) {
       assert.equal((await request(port, "GET", "/memory", h)).status, 403, JSON.stringify(h));
       assert.equal((await request(port, "DELETE", "/memory", h)).status, 403, JSON.stringify(h));

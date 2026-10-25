@@ -35,6 +35,8 @@ export type Confirmation = {
   item: string;
   quantity: number;
   total: string;
+  // The size or variant, for the purchase history only (history.ts).
+  variant?: string;
   state: "pending" | "confirmed" | "declined" | "used";
   confirmedAt?: number;
   // Confirmed by Danger mode without a spoken yes (session.ts).
