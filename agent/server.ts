@@ -1,0 +1,129 @@
+// Clearcart agent server: static voice console at /, GET /cartesia-token,
+// and the /session WebSocket (one Claude conversation per socket).
+
+import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+import { WebSocketServer, type WebSocket } from "ws";
+
+import { Session, type ServerMessage } from "./session.ts";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(HERE, "..");
+dotenv.config({ path: path.join(ROOT, ".env"), quiet: true });
+
+const PORT = Number(process.env.AGENT_PORT || 5050);
+const PUBLIC_DIR = path.join(ROOT, "voice", "public");
+// AGENT_MODE=echo answers every user_text with an agent_text echo and never
+// starts Claude. Useful for testing the voice console alone.
+const ECHO = process.env.AGENT_MODE === "echo";
+
+const CARTESIA_VERSION = process.env.CARTESIA_VERSION || "2026-08-14";
+const TOKEN_TTL_S = 300;
+
+const TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".woff2": "font/woff2",
+};
+
+function json(res: http.ServerResponse, status: number, body: unknown) {
+  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(body));
+}
+
+function serveStatic(pathname: string, res: http.ServerResponse) {
+  let rel: string;
+  try {
+    rel = decodeURIComponent(pathname);
+  } catch {
+    res.writeHead(400).end();
+    return;
+  }
+  if (rel.endsWith("/")) rel += "index.html";
+  const file = path.resolve(PUBLIC_DIR, "." + rel);
+  if (!file.startsWith(PUBLIC_DIR + path.sep)) {
+    res.writeHead(403).end();
+    return;
+  }
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) {
+      res.writeHead(404, { "Content-Type": "text/plain" }).end("Not found");
+      return;
+    }
+    res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] || "application/octet-stream", "Cache-Control": "no-cache" });
+    fs.createReadStream(file).pipe(res);
+  });
+}
+
+async function cartesiaToken(res: http.ServerResponse) {
+  const key = process.env.CARTESIA_API_KEY;
+  if (!key) return json(res, 500, { error: "CARTESIA_API_KEY is not set in .env" });
+  try {
+    const r = await fetch("https://api.cartesia.ai/access-token", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Cartesia-Version": CARTESIA_VERSION, "Content-Type": "application/json" },
+      body: JSON.stringify({ grants: { tts: true, stt: true }, expires_in: TOKEN_TTL_S }),
+    });
+    const body = (await r.json().catch(() => ({}))) as { token?: string };
+    if (!r.ok || !body.token) return json(res, 502, { error: `Cartesia token request failed (${r.status})` });
+    json(res, 200, { token: body.token, expires_in: TOKEN_TTL_S });
+  } catch {
+    json(res, 502, { error: "Could not reach Cartesia" });
+  }
+}
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url || "/", "http://localhost");
+  if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
+  if (req.method === "GET" && url.pathname === "/healthz") return json(res, 200, { ok: true, echo: ECHO });
+  if (req.method === "GET" || req.method === "HEAD") return serveStatic(url.pathname, res);
+  res.writeHead(405).end();
+});
+
+const wss = new WebSocketServer({ server, path: "/session" });
+
+wss.on("connection", (ws: WebSocket) => {
+  const send = (m: ServerMessage) => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m));
+  };
+  console.log("session opened");
+
+  const session = ECHO ? null : new Session(send);
+  if (session) void session.run().finally(() => console.log("session agent stopped"));
+  send({ type: "status", text: ECHO ? "connected (echo mode)" : "connected" });
+
+  ws.on("message", (raw) => {
+    let msg: any;
+    try {
+      msg = JSON.parse(String(raw));
+    } catch {
+      return send({ type: "status", text: "ignored a message that was not JSON" });
+    }
+    if (msg?.type !== "user_text" || typeof msg.text !== "string") {
+      return send({ type: "status", text: `ignored message type ${String(msg?.type)}` });
+    }
+    if (ECHO) return send({ type: "agent_text", text: `You said: ${msg.text}` });
+    session!.userText(msg.text);
+  });
+
+  ws.on("close", () => {
+    console.log("session closed");
+    session?.close();
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`Clearcart agent on http://localhost:${PORT} (WebSocket /session${ECHO ? ", echo mode" : ""})`);
+  if (!fs.existsSync(PUBLIC_DIR)) console.log(`note: ${PUBLIC_DIR} does not exist yet`);
+});
