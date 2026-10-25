@@ -31,6 +31,8 @@ export const MSG = Object.freeze({
 export const TOOLS = Object.freeze([
   "tabs_context",
   "tabs_create",
+  "tabs_close",
+  "tabs_activate",
   "navigate",
   "read_page",
   "find",
@@ -48,9 +50,12 @@ export const TOOLS = Object.freeze([
 // button lock's unlock: a single-use nonce, then one press of an order
 // button (see background/router.js). press_unlocked is the same for a
 // control the user asked for (lock_arm scope "user"); lock_info reads what
-// a ref is locked as.
+// a ref is locked as. agent_tabs feeds the server's tab sweep;
+// page_context is what the user is looking at, attached to their words.
 export const INTERNAL = Object.freeze([
   "tab_info",
+  "agent_tabs",
+  "page_context",
   "read_fields",
   "fill_payment",
   "clear_payment",

@@ -286,7 +286,14 @@
     if (document.body) walk(document.body, 0);
     if (dropped) lines.push("- … " + dropped + " more nodes (raise maxNodes or use find)");
     badges();
-    return { url: location.href, title: Mask.maskCardRuns(document.title), tree: lines.join("\n") };
+    return { url: pageUrl(), title: Mask.maskCardRuns(document.title), tree: lines.join("\n") };
+  }
+
+  // Origin and path only: a query string or fragment can carry login codes
+  // and tokens, and this goes to Claude.
+  function pageUrl() {
+    var o = location.origin;
+    return o && o !== "null" ? o + location.pathname : location.protocol;
   }
 
   // ------------------------------------------------------------------ find
@@ -366,7 +373,7 @@
     text = Mask.maskCardRuns(text);
     var truncated = text.length > maxChars;
     if (truncated) text = text.slice(0, maxChars) + "\n… (truncated)";
-    return { url: location.href, title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
+    return { url: pageUrl(), title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
   }
 
   // ------------------------------------------------------------ form_input
@@ -765,8 +772,93 @@
     return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el) };
   }
 
+  // ---------------------------------------------------------- page_context
+  // What the user is looking at: their text selection, and the element under
+  // the mouse or the one they last clicked or focused (content/context.js
+  // remembers those). Never a field value: a selection inside a text field
+  // is dropped, and a payment or password field is named only as masked.
+  var POINT_MAX_AGE_MS = 30000;
+  var SELECTION_MAX = 300;
+  var PRICE = /(?:[$€£¥]\s?\d[\d,]*(?:\.\d{2})?|\d[\d,]*[.,]\d{2}\s?(?:USD|CAD|EUR|GBP|€))/;
+
+  function isSecretField(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.tagName === "INPUT" && (el.type || "").toLowerCase() === "password") return true;
+    var ac = (el.getAttribute("autocomplete") || "").toLowerCase();
+    if (/password|one-time-code/.test(ac)) return true;
+    return !!Mask.isPaymentField(el);
+  }
+
+  function selectionText() {
+    var active = document.activeElement;
+    if (active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return "";
+    var sel = document.getSelection && document.getSelection();
+    if (!sel || sel.isCollapsed) return "";
+    for (var n = sel.anchorNode; n; n = n.parentNode) {
+      if (n.nodeType === 1 && (isSecretField(n) || n.isContentEditable)) return "";
+    }
+    return clean(Mask.maskCardRuns(sel.toString()), SELECTION_MAX);
+  }
+
+  // The nearest meaningful element: a control or link, else a named element.
+  function meaningful(el) {
+    for (var e = el, i = 0; e && e.nodeType === 1 && i < 6; e = e.parentElement, i++) {
+      if (isInteractive(e, roleOf(e))) return e;
+    }
+    return el;
+  }
+
+  // Title and price of the product card around el, when one is cheap to see:
+  // the nearest ancestor (8 levels up) whose short text holds a price.
+  function productOf(el) {
+    for (var e = el, i = 0; e && e !== document.body && i < 8; e = e.parentElement, i++) {
+      var text = clean(textOf(e), 600);
+      if (text.length >= 600) break;
+      var price = PRICE.exec(text);
+      if (!price) continue;
+      var head = e.querySelector("h1,h2,h3,h4,h5,h6,[itemprop=name],a[href]");
+      var title = head ? clean(nameOf(head, roleOf(head) || "heading") || textOf(head), 120) : "";
+      return { title: Mask.maskCardRuns(title), price: price[0].trim() };
+    }
+    return null;
+  }
+
+  function pageContext() {
+    var snap = globalThis.__clearcartContext ? globalThis.__clearcartContext.snapshot() : {};
+    var t = Date.now();
+    var picks = [];
+    if (snap.hover) picks.push({ via: "hover", el: snap.hover.el, at: snap.hover.at });
+    if (snap.click && t - snap.click.at < POINT_MAX_AGE_MS) picks.push({ via: "click", el: snap.click.el, at: snap.click.at });
+    if (snap.focus && t - snap.focus.at < POINT_MAX_AGE_MS) picks.push({ via: "focus", el: snap.focus.el, at: snap.focus.at });
+    var active = document.activeElement;
+    if (!picks.length && active && active !== document.body && active !== document.documentElement) {
+      picks.push({ via: "focus", el: active, at: t });
+    }
+    picks.sort(function (a, b) { return b.at - a.at; });
+    var pointing = null;
+    var pick = picks[0];
+    if (pick && pick.el && pick.el.isConnected && pick.el !== document.body && pick.el !== document.documentElement) {
+      var el = meaningful(pick.el);
+      var role = roleOf(el) || "generic";
+      var secret = isSecretField(el);
+      pointing = {
+        via: pick.via,
+        ref: refFor(el),
+        role: role,
+        name: secret ? "[masked field]" : Mask.maskCardRuns(clean(nameOf(el, role) || textOf(el), 120)),
+      };
+      if (secret) pointing.masked = true;
+      else {
+        var product = productOf(el);
+        if (product) pointing.product = product;
+      }
+    }
+    return { selection: selectionText(), pointing: pointing };
+  }
+
   // ------------------------------------------------------------ dispatcher
   var METHODS = {
+    page_context: pageContext,
     focused_field: focusedField,
     read_page: readPage,
     find: find,
@@ -803,9 +895,11 @@
     return Promise.resolve()
       .then(function () { return call(msg.method, msg.params); })
       .then(
-        function (result) { return { ok: true, result: result === undefined ? null : result }; },
+        // href: which document answered, so the worker can drop a reply
+        // from a page that moved to a blocked site. Never passed to Claude.
+        function (result) { return { ok: true, result: result === undefined ? null : result, href: location.href }; },
         function (e) {
-          return { ok: false, error: { code: (e && e.code) || ERR.INTERNAL, message: String((e && e.message) || "failed") } };
+          return { ok: false, error: { code: (e && e.code) || ERR.INTERNAL, message: String((e && e.message) || "failed") }, href: location.href };
         }
       );
   }

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Clearcart options</title>
   <style>
-    :root { color-scheme: light dark; --fg: #1b1b1f; --muted: #5b5b66; --bg: #ffffff; --line: #d6d6de; --accent: #0b5cff; --error: #b3261e; }
-    @media (prefers-color-scheme: dark) { :root { --fg: #ececf1; --muted: #a3a3b0; --bg: #16161a; --line: #34343c; --accent: #7aa7ff; --error: #ff8a80; } }
+    :root { color-scheme: light dark; --fg: #1b1b1f; --muted: #5b5b66; --bg: #ffffff; --line: #d6d6de; --accent: #0b5cff; --on-accent: #ffffff; --error: #b3261e; }
+    @media (prefers-color-scheme: dark) { :root { --fg: #ececf1; --muted: #a3a3b0; --bg: #16161a; --line: #34343c; --accent: #7aa7ff; --on-accent: #0b1020; --error: #ff8a80; } }
     body { font: 16px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 24px 16px; }
     main { max-width: 560px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin: 0 0 1rem; }
@@ -20,7 +20,7 @@
     .radio { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
     .radio input { margin-top: 0.35em; }
     .row { display: flex; gap: 8px; align-items: center; }
-    button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer; }
+    button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent); cursor: pointer; }
     button.secondary { background: transparent; color: var(--accent); }
     button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
     a { color: var(--accent); }
@@ -53,11 +53,13 @@
         <input id="speed" name="speed" type="range" step="0.1">
 
         <label class="row"><input id="subtitles" name="subtitles" type="checkbox"> Show subtitles on the page</label>
+        <label class="row"><input id="quiet-tabs" name="quietTabs" type="checkbox" aria-describedby="quiet-tabs-hint"> Quiet other tabs while talking</label>
+        <p class="hint" id="quiet-tabs-hint">Fades out and mutes videos and music in other tabs while you talk and while Clearcart answers, then turns them back on. Tabs you muted yourself stay muted.</p>
       </fieldset>
 
       <fieldset id="sites">
         <legend>Sites</legend>
-        <p class="hint">Which sites Clearcart may open. It only ever drives tabs in its own "Clearcart" tab group, never your other tabs. Checkout, pay and sign in buttons stay locked everywhere except the allowed sites, where only Clearcart's pay flow can press them after you say yes.</p>
+        <p class="hint">Which sites Clearcart may open. It can use your open tabs on these sites and opens its own in the background; tabs on blocked sites stay hidden from it, and it only closes tabs it opened. Checkout, pay and sign in buttons stay locked everywhere except the allowed sites, where only Clearcart's pay flow can press them after you say yes.</p>
         <div role="radiogroup" aria-labelledby="mode-label">
           <p id="mode-label" class="hint" style="color: inherit; margin-top: 10px;">Browse mode</p>
           <label class="radio"><input type="radio" name="browseMode" value="open" id="mode-open">

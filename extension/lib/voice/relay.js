@@ -11,14 +11,22 @@
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
 //   offscreen SUBTITLE / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
 //   offscreen VOICE_ERROR code "mic_blocked" -> open the options page once
+//   PTT_CONFIRM and every VOICE_STATE also go to the ducker (duck.js), which
+//   quiets other tabs while listening, thinking and speaking
 import { RT } from "../protocol.js";
 import { loadSettings } from "../settings.js";
+import { createDucker } from "./duck.js";
 
 export const OFFSCREEN_PATH = "offscreen/offscreen.html";
 export const COMMAND_TOGGLE = "toggle-listening";
 const TO_TAB = new Set([RT.SUBTITLE, RT.VOICE_STATE, RT.VOICE_ERROR, RT.STATUS, RT.VOICE_PARTIAL, RT.VOICE_FINAL]);
 
-export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = () => loadSettings(chromeApi.storage.local), log = () => {} } = {}) {
+export function createVoiceRelay({
+  chromeApi = globalThis.chrome,
+  getSettings = () => loadSettings(chromeApi.storage.local),
+  log = () => {},
+  ducker = createDucker({ chromeApi, getSettings, log }),
+} = {}) {
   let creating = null;
   let lastTabId = null;
   let openedOptions = false;
@@ -98,6 +106,8 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
       if (!TO_TAB.has(msg.type)) return false;
       remember(msg);
       toTab(msg);
+      if (msg.type === RT.VOICE_STATE) ducker.onState(msg.state);
+      if (msg.type === RT.VOICE_ERROR) ducker.onError?.();
       if (msg.type === RT.VOICE_ERROR && msg.code === "mic_blocked" && !openedOptions) {
         openedOptions = true;
         chromeApi.runtime.openOptionsPage?.();
@@ -111,6 +121,8 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
         toOffscreen(async () => ({ type: RT.VOICE_START, settings: await getSettings(), ...(msg.silent ? { silent: true } : {}) }));
         return true;
       case RT.PTT_CONFIRM:
+        // Ducking waits for the offscreen doc's "listening" state, so a turn
+        // that never starts (mic blocked or failed) mutes nothing.
         toOffscreen({ type: RT.VOICE_CONFIRM }, { create: false });
         return true;
       case RT.PTT_CANCEL:
@@ -148,13 +160,16 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
   }
 
   // Each saved line keeps the time it arrived; a new turn (idle -> listening)
-  // drops the last turn's lines.
+  // drops the last turn's lines; a barge-in (speaking -> listening) drops the
+  // agent line that was cut off.
   function remember(msg) {
     const { from, target, ...clean } = msg;
     const now = Date.now();
     if (msg.type === RT.VOICE_STATE) {
       const was = replay.state ? replay.state.state : "idle";
       if (clean.state === "listening" && was === "idle") replay.lines = [];
+      // Barge-in: the agent line the user cut off is not carried to other tabs.
+      else if (clean.state === "listening" && was === "speaking") replay.lines = replay.lines.filter((l) => l.msg.speaker !== "agent");
       replay.state = clean;
     } else if (msg.type === RT.SUBTITLE) {
       replay.lines = [...replay.lines.filter((l) => l.msg.speaker !== clean.speaker), { msg: clean, at: now }];
@@ -194,7 +209,7 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
     if (tab && tab.id != null) await onTabActivated({ tabId: tab.id });
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, idle: () => chain };
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, ducker, idle: () => chain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.
@@ -206,5 +221,7 @@ export function installVoiceRelay(opts = {}) {
   chromeApi.storage.onChanged.addListener((changes, area) => relay.onStorageChanged(changes, area));
   chromeApi.tabs.onActivated?.addListener((info) => relay.onTabActivated(info));
   chromeApi.windows?.onFocusChanged?.addListener((id) => relay.onWindowFocused(id));
+  chromeApi.tabs.onUpdated?.addListener((id, change) => relay.ducker.onTabUpdated?.(id, change));
+  relay.ducker.recover?.().catch(() => {});
   return relay;
 }

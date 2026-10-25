@@ -30,6 +30,7 @@ function fill(s) {
   $("hotkey").value = s.hotkey;
   $("speed").value = String(s.speed);
   $("subtitles").checked = s.subtitles;
+  $("quiet-tabs").checked = s.quietTabs;
   showSpeed();
 }
 
@@ -43,6 +44,7 @@ $("hotkey").addEventListener("change", () => save({ hotkey: $("hotkey").value })
 $("speed").addEventListener("input", showSpeed);
 $("speed").addEventListener("change", () => save({ speed: Number($("speed").value) }));
 $("subtitles").addEventListener("change", () => save({ subtitles: $("subtitles").checked }));
+$("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));
 
 $("all-settings").addEventListener("click", (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); window.close(); });
 $("blocked-sites").addEventListener("click", (e) => { e.preventDefault(); openTab("options/options.html#blocked-sites"); });

@@ -1,4 +1,4 @@
-// Integration test: the real chrome.tabs / tabGroups / debugger APIs in an
+// Integration test: the real chrome.tabs / debugger APIs in an
 // isolated Playwright Chromium (never the user's Chrome). The shared
 // manifest does not have this module's permissions yet, so the test copies
 // extension/ to a temp dir, adds them, and swaps in a tiny worker that
@@ -62,7 +62,7 @@ before(async () => {
 import * as cdp from "./cdp.js";
 chrome.tabs.onRemoved.addListener((id) => cdp.onTabRemoved(id));
 chrome.debugger.onDetach.addListener((s) => cdp.onDetach(s));
-chrome.tabGroups.onRemoved.addListener((g) => tabs.onGroupRemoved(g));
+chrome.tabs.onRemoved.addListener((id) => tabs.onTabRemoved(id));
 globalThis.T = tabs;
 globalThis.C = cdp;
 `,
@@ -90,15 +90,17 @@ after(async () => {
 const run = (fn, arg) => worker.evaluate(fn, arg);
 const pageFor = (url) => ctx.pages().find((p) => p.url() === url);
 
-test("tabs_create groups the tab under Clearcart and loads it", { skip }, async () => {
+test("tabs_create opens a background tab, in no group, and loads it", { skip }, async () => {
   const { tabId } = await run((o) => T.tabsCreate({ url: `${o}/one` }), origin);
   const c = await run(() => T.tabsContext());
   assert.equal(c.tabs.length, 1);
   assert.equal(c.tabs[0].tabId, tabId);
   assert.equal(c.tabs[0].url, `${origin}/one`);
   assert.equal(c.tabs[0].title, "Fixture /one");
-  const group = await run((g) => chrome.tabGroups.get(g), c.groupId);
-  assert.equal(group.title, "Clearcart");
+  const tab = await run((id) => chrome.tabs.get(id), tabId);
+  assert.equal(tab.groupId, -1);
+  assert.equal(tab.active, false);
+  assert.equal(c.tabs[0].openedByClearcart, true);
 });
 
 test("navigate waits for load and refuses blocked sites (open mode) and other origins (allowlist mode)", { skip }, async () => {
@@ -145,11 +147,11 @@ test("back and forward follow a user-activated link click", { skip }, async () =
   assert.equal((await run(() => T.navigate({ url: "forward" }))).url, `${origin}/three`);
 });
 
-test("closing the tab clears the debugger session and the group", { skip }, async () => {
+test("closing the tab clears the debugger session", { skip }, async () => {
   const tabId = await run(() => T.resolveTab());
   assert.equal(await run((id) => C.isAttached(id), tabId), true);
   await run((id) => chrome.tabs.remove(id), tabId);
   await new Promise((r) => setTimeout(r, 300));
   assert.equal(await run((id) => C.isAttached(id), tabId), false);
-  assert.deepEqual(await run(() => T.tabsContext()), { tabs: [], groupId: null });
+  assert.deepEqual(await run(() => T.tabsContext()), { tabs: [] });
 });

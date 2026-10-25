@@ -116,13 +116,13 @@ test("allowlist mode sweep sends strays straight to the store", async () => {
   assert.match(sweepNote(1), /blocked site/);
 });
 
-test("the session sweep over the extension bridge uses the group's tabs only", async () => {
+test("the session sweep over the extension bridge only looks at tabs Clearcart opened", async () => {
   const calls: Array<[string, any]> = [];
   let tab10 = "https://mail.google.com/";
   const orig = extBridge.call;
   (extBridge as any).call = async (method: string, params: any) => {
     calls.push([method, params]);
-    if (method === "tabs_context") return { tabs: [{ tabId: 9, url: "https://www.etsy.com/" }, { tabId: 10, url: tab10 }] };
+    if (method === "agent_tabs") return { tabs: [{ tabId: 9, url: "https://www.etsy.com/" }, { tabId: 10, url: tab10 }] };
     if (method === "navigate") return { url: (tab10 = "https://www.etsy.com/") };
     return {};
   };
@@ -132,6 +132,7 @@ test("the session sweep over the extension bridge uses the group's tabs only", a
     const r = await (s as any).sweep({ hook_event_name: "PostToolUse", tool_name: B + "click", tool_input: {} }, undefined, {});
     assert.match(r.hookSpecificOutput.additionalContext, /blocked site/);
     assert.deepEqual(calls.filter((c) => c[0] === "navigate").map((c) => c[1]), [{ url: "back", tabId: 10 }]);
+    assert.ok(!calls.some((c) => c[0] === "tabs_context"), "the user's tabs are not swept");
     assert.ok(statuses.some((t) => /returned 1 tab/.test(t)));
   } finally {
     (extBridge as any).call = orig;

@@ -27,12 +27,13 @@ export async function assertAllowed(url: string): Promise<void> // throws Bridge
 export function blockReason(url, settings): string | null      // browseMode "open": lib/blocklist.js fixed rules + settings.blocklist entries; "allowlist": origin in settings.allowlist
 export async function isPaySite(url: string): Promise<boolean>  // origin in the allowlist, in both modes; lock_arm needs it
 
-// tabs.js  (agent tabs live in one tab group titled "Clearcart"; group id persisted in chrome.storage.session)
-export async function tabsContext(): Promise<{ tabs: {tabId,url,title,active}[], groupId }>
-export async function tabsCreate({ url? }): Promise<{ tabId }>
+// tabs.js  (no tab group: the user's open tabs plus tabs Clearcart opens; which ones it opened is kept in chrome.storage.session)
+export async function tabsContext(): Promise<{ tabs: {tabId,title,url,active,openedByClearcart}[] }> // url = origin+path; tabs on blocked pages left out
+export async function tabsCreate({ url? }): Promise<{ tabId }>                     // background tab (active: false) next to the user's tab
+export async function tabsClose({ tabId }), tabsActivate({ tabId })                // close: only tabs Clearcart opened; activate: when the user asks
 export async function navigate({ tabId, url }): Promise<{ tabId, url, title }>      // "back"/"forward" allowed; waits for status "complete" (timeout 20 s); assertAllowed first
-export async function tabInfo({ tabId }): Promise<{ tabId, url, title }>
-export async function resolveTab(tabId?): Promise<number>                          // given id must be in the group; default = active tab in group
+export async function tabInfo({ tabId }), agentTabs()                               // INTERNAL: full URLs for the pay flow and the tab sweep
+export async function resolveAllowedTab(tabId?): Promise<number>                   // re-checks the tab's page on every call; default = tab used last, else the active tab
 
 // cdp.js  (chrome.debugger, protocol 1.3; attach lazily per tab, detach on tab close)
 export async function click({ tabId, x, y }): Promise<void>         // Input.dispatchMouseEvent moved/pressed/released, button left
@@ -72,7 +73,7 @@ Bridge `INTERNAL` methods for the unlock: `lock_arm { tabId }` → `{ nonce, exp
 ### C. Server bridge (agent, TypeScript)
 
 - `agent/extbridge.ts`: attaches a WebSocket endpoint at `/ext` to the existing HTTP server; accepts one extension at a time (newest wins); handshake per `lib/protocol.js` (reply `welcome`); `call(method, params, timeoutMs?)` → result or throws; `connected()`; events for connect/disconnect.
-- `agent/exttools.ts`: in-process MCP server (Agent SDK `createSdkMcpServer` + `tool`) named `browser` exposing the 12 TOOLS with zod schemas; `click` takes `{ tabId?, ref }` (server calls `rect` then `click`) or `{ tabId?, x, y }`.
+- `agent/exttools.ts`: in-process MCP server (Agent SDK `createSdkMcpServer` + `tool`) named `browser` exposing the TOOLS with zod schemas; `click` takes `{ tabId?, ref }` (server calls `rect` then `click`) or `{ tabId?, x, y }`.
 - `CLEARCART_BROWSER=ext` makes `session.ts` use `exttools` instead of the open-claude-in-chrome stdio MCP server, and `pay.ts` use `call("fill_payment")` + `click_ref`/`click` on `#place-order`; default (unset) keeps today's path untouched. Guard/sweep use `call("tab_info")` and `tabs_context`.
 - Test with a fake extension (a ws client in the test) — no browser needed.
 

@@ -1,6 +1,6 @@
 // Claude's browser tools when CLEARCART_BROWSER=ext: an in-process MCP server
 // named "browser" (tools appear as mcp__browser__<name>) whose every tool is
-// one or two calls over the extension bridge. Only the 12 TOOLS from
+// one or two calls over the extension bridge. Only the TOOLS from
 // extension/lib/protocol.js are exposed; INTERNAL methods (fill_payment,
 // lock_arm, press_protected and friends) stay reachable from our own code
 // only. Clicks, keys and form_input on protected controls are refused by the
@@ -14,7 +14,7 @@ import { ERR, ExtError, extBridge, type ExtBridge } from "./extbridge.ts";
 type Bridge = Pick<ExtBridge, "call">;
 type ToolResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; isError?: boolean };
 
-const tabId = z.number().int().optional().describe("Tab id from tabs_context. Default: the active tab in the Clearcart group.");
+const tabId = z.number().int().optional().describe("Tab id from tabs_context. Default: the tab you used last, else the user's active tab.");
 
 function text(value: unknown): ToolResult {
   return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }] };
@@ -76,15 +76,27 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
   return [
     tool(
       "tabs_context",
-      "List the tabs in the Clearcart tab group: { tabs: [{ tabId, url, title, active }], groupId }. Call this first.",
+      "List the user's open tabs you may use: { tabs: [{ tabId, title, url, active, openedByClearcart }] }. url is the origin and path only. active is the tab the user is looking at. Tabs on blocked sites are not listed. Call this first.",
       {},
       pass("tabs_context")
     ),
     tool(
       "tabs_create",
-      "Open a new tab in the Clearcart group, optionally at a URL. Returns { tabId }.",
+      "Open a new tab in the background next to the user's tab, optionally at a URL. The user stays on their tab. Prefer this over navigating away from a page the user had open. Returns { tabId }.",
       { url: z.string().optional() },
       pass("tabs_create")
+    ),
+    tool(
+      "tabs_close",
+      "Close a tab you opened (openedByClearcart true). The user's own tabs cannot be closed.",
+      { tabId: z.number().int() },
+      pass("tabs_close")
+    ),
+    tool(
+      "tabs_activate",
+      "Bring a tab to the front. Only when the user asks to see it.",
+      { tabId: z.number().int() },
+      pass("tabs_activate")
     ),
     tool(
       "navigate",
