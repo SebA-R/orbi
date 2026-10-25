@@ -117,7 +117,8 @@ function renderUi() {
 function friendlyStatus(text) {
   const t = text.toLowerCase();
   if (t.includes('request_checkout')) return 'Waiting for your yes';
-  if (t.includes('pay_now') || t === 'paying') return 'Paying securely';
+  if (t.includes('pick_card') || t.startsWith('waiting for the user to pick')) return 'Pick a card in Chrome';
+  if (t.includes('pay_now') || t === 'paying') return 'Placing your order';
   if (t === 'order placed') return 'Order placed';
   if (t === 'checkout confirmed') return 'Confirmed';
   if (t === 'checkout declined') return 'Okay, not paying';
@@ -514,7 +515,7 @@ function standby(m) {
 function showReceipt(r) {
   els.receiptItem.textContent = r.item || '';
   els.receiptTotal.textContent = r.total || '';
-  els.receiptCard.textContent = r.last4 ? `Visa ending in ${r.last4}` : '';
+  els.receiptCard.textContent = r.last4 ? `Card ending in ${r.last4}` : '';
   ui.confirm = null;
   ui.receipt = true;
   els.receipt.hidden = false;
@@ -529,7 +530,7 @@ function showReceipt(r) {
   logEvent(`Receipt: ${r.item} ${r.total} card ending ${r.last4}`);
   // The agent speaks the confirmation; only announce here if replies go to the screen reader too.
   if (els.announce.checked) {
-    announce(els.srAgent, `Order placed. ${r.item || ''}, total ${r.total || ''}, Visa ending in ${r.last4 || ''}.`);
+    announce(els.srAgent, `Order placed. ${r.item || ''}, total ${r.total || ''}${r.last4 ? `, card ending in ${r.last4}` : ''}.`);
   }
 }
 
