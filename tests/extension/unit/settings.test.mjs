@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  AGENT_SETTING_KEYS, DEFAULTS, agentSettingsMessage, endpoints, loadSettings, localModels, localStatusText, migrateSettings, MIGRATIONS_KEY, normalize,
+  AGENT_SETTING_KEYS, CLAUDE_MODELS, DEFAULTS, agentSettingsMessage, claudeModelLabel, endpoints, loadSettings, localModels, localStatusText, migrateSettings, MIGRATIONS_KEY, normalize,
   normalizeAgentUrl, normalizeLocalBaseUrl, normalizeLocalModel, normalizeOrigin, parseOriginLines, RETIRED_ALLOWED, saveSettings, seedBlocklist,
 } from "../../../extension/lib/settings.js";
 import { readFileSync } from "node:fs";
@@ -180,12 +180,18 @@ test("local model address must be http(s) on a loopback host", () => {
 
 test("the worker sends the provider fields in the settings message and on change", () => {
   assert.deepEqual(agentSettingsMessage({ provider: "local", localModel: "qwen2.5:7b", guidedMode: false }), {
-    type: "settings", guidedMode: false, memory: true, provider: "local", localBaseUrl: "http://localhost:11434/v1", localModel: "qwen2.5:7b", searchEngine: "google",
+    type: "settings", guidedMode: false, memory: true, provider: "local", claudeModel: "claude-sonnet-5-5", localBaseUrl: "http://localhost:11434/v1", localModel: "qwen2.5:7b", searchEngine: "google",
   });
   assert.equal(agentSettingsMessage({ searchEngine: "bing" }).searchEngine, "bing");
   assert.equal(agentSettingsMessage({ searchEngine: "yahoo" }).searchEngine, "google", "an unknown engine falls back to Google");
   assert.deepEqual(agentSettingsMessage({ localBaseUrl: "http://evil.example" }).localBaseUrl, DEFAULTS.localBaseUrl);
-  for (const k of ["guidedMode", "memory", "provider", "localBaseUrl", "localModel", "searchEngine"]) assert.ok(AGENT_SETTING_KEYS.includes(k), k);
+  assert.equal(agentSettingsMessage({ claudeModel: "claude-opus-5-5" }).claudeModel, "claude-opus-5-5");
+  for (const claudeModel of ["claude-opus-4", "gpt-5", "", 7, "__proto__", "toString"]) {
+    assert.equal(agentSettingsMessage({ claudeModel }).claudeModel, "claude-sonnet-5-5", `${claudeModel} falls back to Sonnet`);
+  }
+  assert.deepEqual(Object.keys(CLAUDE_MODELS), ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5"]);
+  assert.equal(claudeModelLabel("claude-opus-5-5"), "Opus 5.5, most capable, slower");
+  for (const k of ["guidedMode", "memory", "provider", "claudeModel", "localBaseUrl", "localModel", "searchEngine"]) assert.ok(AGENT_SETTING_KEYS.includes(k), k);
   const src = readFileSync(new URL("../../../extension/background/worker.js", import.meta.url), "utf8");
   assert.match(src, /bridge\?\.send\(agentSettingsMessage\(s\)\)/);
   assert.match(src, /AGENT_SETTING_KEYS\.some\(\(k\) => changes\[k\]\)\) sendAgentSettings\(\)/);

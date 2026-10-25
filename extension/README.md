@@ -45,6 +45,7 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | Danger mode | off | no button lock and orders placed without a spoken yes; masking, the blocklist and the CAPTCHA hand-off stay. Turning it on takes a second press (`lib/danger-toggle.js`) |
 | Remember things about me | on | Memory: saved facts and the last two hours of conversation, kept by the agent server (`lib/memory.js`) |
 | Model provider | Claude | Claude or Local, with `localBaseUrl` (`http://localhost:11434/v1`, loopback only) and `localModel` (`llama3.1:8b`); sent to the agent server in the `settings` message, which does not act on it yet |
+| Claude model | Sonnet 5.5 | With Claude: Sonnet 5.5 (`claude-sonnet-5-5`), Opus 5.5 (`claude-opus-5-5`) or Haiku 5.5 (`claude-haiku-5-5`); sent as `claudeModel` in the `settings` message. A change starts a new conversation on the next turn |
 
 Allowed sites take one site address per line (`https://www.etsy.com`; a path is dropped, a login in the address is refused). Only extension pages can change these settings; the agent server cannot.
 

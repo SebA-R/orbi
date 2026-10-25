@@ -423,17 +423,17 @@ test("extension settings: provider, a loopback-only base URL and a safe model na
   assert.equal(parseLocalModel("hf.co/org/model:Q4_K_M"), "hf.co/org/model:Q4_K_M");
   assert.throws(() => envProviderSettings({ CLEARCART_LOCAL_URL: "https://api.openai.com/v1" }), /CLEARCART_LOCAL_URL/);
   assert.throws(() => envProviderSettings({ CLEARCART_PROVIDER: "gpt" }), /CLEARCART_PROVIDER/);
-  assert.deepEqual(envProviderSettings({}), { provider: "claude", localBaseUrl: "http://localhost:11434/v1", localModel: "llama3.1:8b", localVision: false });
+  assert.deepEqual(envProviderSettings({}), { provider: "claude", claudeModel: "claude-sonnet-5-5", localBaseUrl: "http://localhost:11434/v1", localModel: "llama3.1:8b", localVision: false });
 
   const b = await startBridge();
   try {
     const ext = new FakeExt(b.url);
     await ext.open();
     const send = (extra: Record<string, unknown>) => ext.ws.send(JSON.stringify({ type: "settings", guidedMode: true, memory: true, ...extra }));
-    assert.deepEqual(b.bridge.providerSettings(), { provider: null, localBaseUrl: null, localModel: null, localVision: null }, "nothing until the extension says");
+    assert.deepEqual(b.bridge.providerSettings(), { provider: null, claudeModel: null, localBaseUrl: null, localModel: null, localVision: null }, "nothing until the extension says");
     let changed = onceEvent(b.bridge, "provider");
     send({ provider: "local", localBaseUrl: "http://127.0.0.1:1234/v1/", localModel: "qwen2.5:7b" });
-    assert.deepEqual(await changed, { provider: "local", localBaseUrl: "http://127.0.0.1:1234/v1", localModel: "qwen2.5:7b", localVision: null });
+    assert.deepEqual(await changed, { provider: "local", claudeModel: null, localBaseUrl: "http://127.0.0.1:1234/v1", localModel: "qwen2.5:7b", localVision: null });
     let events = 0;
     b.bridge.on("provider", () => events++);
     for (const localBaseUrl of ["https://api.openai.com/v1", "http://localhost.evil.example/v1", "http://localhost@evil.example/v1", "http://localhost./v1", "http://[::ffff:127.0.0.1]:11434/v1", "http://192.168.1.5:11434/v1", "file:///etc/passwd", "http://localhost:11434/v1?x=1", "http://localhost:11434//evil.example/v1", 42]) {
@@ -443,7 +443,7 @@ test("extension settings: provider, a loopback-only base URL and a safe model na
     for (const provider of ["openai", true, null]) send({ provider });
     await ext.ping();
     assert.equal(events, 0, "every bad value refused, nothing changed");
-    assert.deepEqual(b.bridge.providerSettings(), { provider: "local", localBaseUrl: "http://127.0.0.1:1234/v1", localModel: "qwen2.5:7b", localVision: null });
+    assert.deepEqual(b.bridge.providerSettings(), { provider: "local", claudeModel: null, localBaseUrl: "http://127.0.0.1:1234/v1", localModel: "qwen2.5:7b", localVision: null });
     changed = onceEvent(b.bridge, "provider");
     send({ provider: "claude", localBaseUrl: "http://127.0.0.1:1234/v1", localModel: "qwen2.5:7b" });
     assert.equal((await changed).provider, "claude");

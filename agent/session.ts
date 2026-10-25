@@ -53,7 +53,6 @@ import {
 } from "./user-unlock.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const MODEL = process.env.CLEARCART_MODEL || "claude-sonnet-5-5";
 const BROWSER_SERVER =
   process.env.OCIC_SERVER || "/Users/sebastianarellano-rubach/code/open-claude-in-chrome/host/mcp-server.js";
 
@@ -171,7 +170,7 @@ export function memoryOn(): boolean {
 
 // Which model runs the agent (local/config.ts): in ext mode the
 // extension's provider setting, each field it has not sent falling back to
-// the environment; elsewhere CLEARCART_PROVIDER, CLEARCART_LOCAL_URL,
+// the environment; elsewhere CLEARCART_PROVIDER, CLEARCART_MODEL, CLEARCART_LOCAL_URL,
 // CLEARCART_LOCAL_MODEL and CLEARCART_LOCAL_VISION. Claude unless one of
 // them says local. (server.ts refuses to start on a bad environment value.)
 export function currentProvider(): ProviderSettings {
@@ -185,6 +184,7 @@ export function currentProvider(): ProviderSettings {
   const ext = extBridge.providerSettings();
   return {
     provider: ext.provider ?? env.provider,
+    claudeModel: ext.claudeModel ?? env.claudeModel,
     localBaseUrl: ext.localBaseUrl ?? env.localBaseUrl,
     localModel: ext.localModel ?? env.localModel,
     localVision: ext.localVision ?? env.localVision,
@@ -1762,7 +1762,7 @@ export class Session {
         : query({
             prompt: this.input,
             options: {
-              model: MODEL,
+              model: p.claudeModel,
               systemPrompt: this.systemPrompt(ext, true),
               cwd: HERE,
               // Only the built-in web search; every other built-in tool
