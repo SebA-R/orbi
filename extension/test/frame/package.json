@@ -1,0 +1,12 @@
+{
+  "name": "clearcart-ext-frame-tests",
+  "private": true,
+  "type": "module",
+  "description": "jsdom unit tests for extension/content/frame.js (the active-tab frame).",
+  "scripts": {
+    "test": "node --test unit.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}
