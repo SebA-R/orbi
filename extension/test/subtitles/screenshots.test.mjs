@@ -119,3 +119,71 @@ test("thinking state with only the user line", async () => {
   await page.screenshot({ path: path.join(OUT, "subtitles-thinking-light.png") });
   await page.close();
 });
+
+// Karaoke: a line mid-utterance, the fifth word being heard.
+const KLINE = "I found Oatly Barista for $4.99. Want me to add it to your cart?";
+const karaoke = (index, extra = {}) => [
+  { type: "subtitle", speaker: "user", text: "Find me oat milk under five dollars", final: true },
+  { type: "voice.state", state: "speaking" },
+  { type: "subtitle", speaker: "agent", text: KLINE, final: true, utteranceId: "u1", karaoke: true },
+  { type: "subtitle.word", utteranceId: "u1", index, ...extra },
+];
+const KOUT = process.env.KARAOKE_OUT || OUT;
+
+for (const [name, media] of [
+  ["light", { colorScheme: "light" }],
+  ["dark", { colorScheme: "dark" }],
+  ["reduced-motion", { colorScheme: "light", reducedMotion: "reduce" }],
+  ["forced-colors", { colorScheme: "light", forcedColors: "active" }],
+]) {
+  test(`karaoke line mid-utterance (${name})`, async () => {
+    const page = await context.newPage();
+    await page.emulateMedia(media);
+    await page.goto(`http://localhost:${port}/`);
+    await page.waitForTimeout(300);
+    await sendAll(karaoke(4));
+    await page.waitForTimeout(700); // the sweep is .3 s
+    fs.mkdirSync(KOUT, { recursive: true });
+    await page.screenshot({ path: path.join(KOUT, `karaoke-${name}.png`) });
+    await page.close();
+  });
+}
+
+// Real Chromium styles for the heard word: the overlay script runs in the
+// page itself here, with a fake chrome.runtime and its shadow root kept.
+async function heardWordStyle(media) {
+  const page = await context.newPage();
+  await page.emulateMedia(media);
+  await page.goto(`http://localhost:${port}/`);
+  await page.evaluate(() => {
+    const listeners = [];
+    window.chrome = { runtime: { onMessage: { addListener: (f) => listeners.push(f) } } };
+    window.__send = (m) => listeners.forEach((f) => f(m, {}, () => {}));
+    const attach = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (init) { return (window.__root = attach.call(this, init)); };
+  });
+  for (const f of ["orb-face.js", "subtitles.js"]) {
+    await page.addScriptTag({ content: fs.readFileSync(path.join(EXT_SRC, "content", f), "utf8") });
+  }
+  const out = await page.evaluate(async (msgs) => {
+    for (const m of msgs) window.__send(m);
+    await new Promise((r) => setTimeout(r, 400));
+    const kc = window.__root.querySelector(".agent .w.kc");
+    const cs = getComputedStyle(kc);
+    const after = getComputedStyle(kc, "::after");
+    return { text: kc.textContent, anim: cs.animationName, line: after.animationName, deco: cs.textDecorationLine };
+  }, karaoke(2));
+  await page.close();
+  return out;
+}
+
+test("karaoke: reduced motion has no animation on the heard word; forced colors underline it", async () => {
+  const moving = await heardWordStyle({ reducedMotion: "no-preference", forcedColors: "none" });
+  assert.equal(moving.text, "Oatly");
+  assert.equal(moving.anim, "k-sweep");
+  const still = await heardWordStyle({ reducedMotion: "reduce", forcedColors: "none" });
+  assert.equal(still.anim, "none");
+  assert.equal(still.line, "none");
+  const forced = await heardWordStyle({ reducedMotion: "no-preference", forcedColors: "active" });
+  assert.equal(forced.deco, "underline");
+});
