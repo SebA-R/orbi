@@ -140,17 +140,19 @@ export async function tabsContext() {
 // it back); the user's own tabs on blocked pages are never reachable.
 export async function resolveTab(tabId, { nav = false } = {}) {
   if (tabId != null && !Number.isInteger(tabId)) throw new BridgeError(ERR.BAD_REQUEST, "tabId must be an integer");
-  const state = await loadState();
+  const [state, settings] = await Promise.all([loadState(), loadSettings()]);
   let tab = null;
   if (tabId != null) tab = await getTab(tabId);
   else {
+    // The last used tab, unless it has since moved somewhere blocked.
     if (state.last != null) tab = await api().tabs.get(state.last).catch(() => null);
+    if (tab && hiddenReason(tab, settings, { blankOk: state.created.includes(tab.id) })) tab = null;
     if (!tab) tab = await activeTab();
     if (!tab) throw new BridgeError(ERR.NO_TAB, "no open tab; call tabs_create");
   }
   const mine = state.created.includes(tab.id);
   const touched = mine || state.driven.includes(tab.id);
-  if (!(nav && touched) && hiddenReason(tab, await loadSettings(), { blankOk: mine && nav })) {
+  if (!(nav && touched) && hiddenReason(tab, settings, { blankOk: mine && nav })) {
     // No origin in the message: a blocked tab of the user's stays private.
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Clearcart does not use it`);
   }
