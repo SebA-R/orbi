@@ -15,8 +15,12 @@ let settings = await loadSettings();
 
 // Voice state, from the offscreen document's VOICE_STATE broadcasts. The
 // popup can't ask for the current state, so it starts at idle.
+const MISSING = { site: "site access", mic: "microphone", agent: "agent server" };
+let missing = [];
 const VOICE = {
-  idle: (key) => ["Ready", `Hold ${key} on any page to talk.`],
+  idle: (key) => missing.length
+    ? ["Not ready", `Finish setup to talk. Needed: ${missing.map((m) => MISSING[m]).join(", ")}.`]
+    : ["Ready", key === "Space" ? "Hold Space to talk, or Option + Space in a text field." : `Hold ${key} on any page to talk.`],
   listening: (key) => ["Listening", `Let go of ${key} when you're done.`],
   thinking: () => ["Thinking", "Working on your request."],
   speaking: () => ["Speaking", "Clearcart is answering."],
@@ -35,16 +39,23 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 // Setup pill: the same checks as the setup page; it opens the setup page.
+// Checks can overlap (each health check takes up to 3 s); only the latest counts.
+let setupRun = 0;
 async function refreshSetup() {
+  const run = ++setupRun;
   const s = await loadSettings();
   const [site, mic, agent] = await Promise.all([hasSiteAccess(), micState(), agentHealth(s.agentUrl)]);
+  if (run !== setupRun) return;
   const done = setupDone({ site, mic, agent });
+  missing = [!site && "site", mic !== "granted" && "mic", !agent.connected && "agent"].filter(Boolean);
+  // The voice status region names what is missing, so it is announced.
+  showVoice();
   const pill = $("setup-pill");
   pill.dataset.state = done === SETUP_STEPS ? "ok" : "todo";
   $("setup-text").textContent = done === SETUP_STEPS ? `Setup complete, ${done} of ${SETUP_STEPS}` : `Setup: ${done} of ${SETUP_STEPS}`;
   pill.setAttribute("aria-label", done === SETUP_STEPS
     ? `Setup complete, ${done} of ${SETUP_STEPS}. Open setup`
-    : `Setup: ${done} of ${SETUP_STEPS} done. Open setup to finish`);
+    : `Setup: ${done} of ${SETUP_STEPS} done. Needed: ${missing.map((m) => MISSING[m]).join(", ")}. Open setup to finish`);
   updateBadge(chrome, [!site && "site", mic !== "granted" && mic !== "unknown" && "mic"].filter(Boolean));
 }
 $("setup-pill").addEventListener("click", () => openTab(SETUP_PATH));
