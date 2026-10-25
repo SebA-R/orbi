@@ -51,6 +51,9 @@ test("the Clearcart new tab page is on by default; only a stored boolean changes
   assert.equal(DEFAULTS.newTabPage, true);
   assert.equal(normalize({ newTabPage: "no" }).newTabPage, true);
   assert.equal(normalize({ newTabPage: false }).newTabPage, false);
+  assert.equal(DEFAULTS.errorPages, true);
+  assert.equal(normalize({ errorPages: "no" }).errorPages, true);
+  assert.equal(normalize({ errorPages: false }).errorPages, false);
 });
 
 test("endpoints derive the bridge, session and token URLs", () => {

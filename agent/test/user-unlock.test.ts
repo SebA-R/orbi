@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { extBridge } from "../extbridge.ts";
+import { SessionHub } from "../hub.ts";
 import { Session, navigateLockReason, passCovers, PASS_MAX_MS, USER_WORDS_TTL_MS } from "../session.ts";
 import { decideUnlock, isDirectAsk, pressUnlockedExt, UserUnlockGate, type LockInfo } from "../user-unlock.ts";
 import { LockedError } from "../unlock.ts";
@@ -188,6 +189,8 @@ test("request_unlock: the user's direct ask presses once and logs it", async () 
   f.s.userText("go to checkout");
   const r = await f.s.requestUnlock(ask());
   assert.match(r.content[0].text, /^pressed Proceed to checkout once/);
+  // Claude learns the press is done and that another needs another request_unlock.
+  assert.match(r.content[0].text, /Do not click it again; another press needs another request_unlock\./);
   assert.equal(f.pressed(), 1);
   assert.equal(f.calls.find((c) => c[0] === "lock_arm")![1].scope, "user");
   assert.ok(f.out.some((m) => m.type === "status" && /^unlocked once: checkout "Proceed to checkout" \(user asked\)$/.test(m.text)));
@@ -322,4 +325,30 @@ test("request_unlock: the password ask needs an explicit yes as the very next wo
     await pending;
     assert.equal(f.pressed(), 0, next.join(" / "));
   }
+});
+
+test("request_unlock: an interrupted turn's question is declined unasked, so the next words can't answer it", async () => {
+  const f = session(locked({ kind: "subscription", label: "Subscribe", cls: "subscription" }));
+  f.s.userText("I want the coffee");
+  f.s.interrupt();
+  const r = await f.s.requestUnlock({ ...ask("Subscribe"), action: "subscribe" });
+  assert.match(r.content[0].text, /^declined, nothing was pressed\. The user interrupted/);
+  assert.ok(!f.out.some((m) => m.type === "agent_text"), "never asked");
+  f.s.userText("yes");
+  assert.equal(f.pressed(), 0);
+});
+
+test("request_unlock: a question asked in one window is declined when the user moves to another", async () => {
+  const f = session(locked({ kind: "subscription", label: "Subscribe", cls: "subscription" }));
+  const hub = new SessionHub(() => f.s);
+  const a = hub.join(() => {});
+  const b = hub.join(() => {});
+  a.userText("I want the coffee");
+  const pending = f.s.requestUnlock({ ...ask("Subscribe"), action: "subscribe" });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to press Subscribe?");
+  b.userText("yes please");
+  assert.match((await pending).content[0].text, /^declined, nothing was pressed\. No answer came/);
+  assert.equal(f.pressed(), 0);
+  assert.ok(!f.calls.some((c) => c[0] === "lock_arm"));
 });

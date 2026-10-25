@@ -12,7 +12,15 @@
 import { siteBlockReason, type SitePolicy } from "./origins.ts";
 
 export type PageContext = {
-  active?: { tabId?: number; title?: string; url?: string; blocked?: boolean; newTab?: boolean } | null;
+  active?: {
+    tabId?: number;
+    title?: string;
+    url?: string;
+    blocked?: boolean;
+    newTab?: boolean;
+    errorPage?: boolean;
+    failedUrl?: string;
+  } | null;
   selection?: string;
   pointing?: {
     via?: string;
@@ -68,6 +76,14 @@ const VIA: Record<string, string> = { hover: "under the mouse", click: "last cli
 export function contextBlock(ctx: PageContext, policy?: SitePolicy): string | null {
   const a = ctx?.active;
   if (!a) return null;
+  // Clearcart's "Can't reach this site" page (a network error) has nothing
+  // on it either. The address that failed only when the site policy allows it.
+  if (a.errorPage === true && !a.blocked) {
+    const tab = Number.isInteger(a.tabId) ? a.tabId : "?";
+    const failed = originPath(a.failedUrl);
+    const where = failed && !(policy && siteBlockReason(failed, policy)) ? ` could not load ${failed}` : " could not load the site";
+    return `${CONTEXT_LABEL} Active tab: tab ${tab}, an error page: Chrome${where} (navigate it to try again or to go somewhere else)`;
+  }
   // A new tab page has nothing on it; say so, so the tab is not taken for a
   // blocked site. navigate can still open a site in it.
   if (a.newTab === true && !a.blocked) {

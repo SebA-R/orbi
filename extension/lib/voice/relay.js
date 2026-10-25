@@ -12,19 +12,25 @@
 //   content/popup TTS_STOP     -> TTS_STOP to offscreen
 //   content VOICE_STATE_QUERY  -> the current VOICE_STATE back to that tab
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
-//   offscreen SUBTITLE / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
+//   offscreen SUBTITLE / SUBTITLE_WORD / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
 //   offscreen VOICE_ERROR code "mic_blocked" -> open the options page once
 //   PTT_CONFIRM and every VOICE_STATE also go to the ducker (duck.js), which
 //   quiets other tabs while listening, thinking and speaking
 //   every VOICE_STATE also goes to onVoiceState(state, tabId), with the tab it
 //   went to (the worker's active-tab frame, background/frame.js)
+//
+// There is one offscreen document, so one mic and one voice turn for every
+// tab and frame: a press from another tab while a turn is listening goes to
+// that turn, never to a second listener (controller.js). The document
+// outlives a worker restart; the new worker sends it VOICE_SYNC and learns
+// the state of a turn already in progress from its VOICE_STATE reply.
 import { RT } from "../protocol.js";
 import { loadSettings } from "../settings.js";
 import { createDucker } from "./duck.js";
 
 export const OFFSCREEN_PATH = "offscreen/offscreen.html";
 export const COMMAND_TOGGLE = "toggle-listening";
-const TO_TAB = new Set([RT.SUBTITLE, RT.VOICE_STATE, RT.VOICE_ERROR, RT.STATUS, RT.VOICE_PARTIAL, RT.VOICE_FINAL]);
+const TO_TAB = new Set([RT.SUBTITLE, RT.SUBTITLE_WORD, RT.VOICE_STATE, RT.VOICE_ERROR, RT.STATUS, RT.VOICE_PARTIAL, RT.VOICE_FINAL]);
 
 export function createVoiceRelay({
   chromeApi = globalThis.chrome,
@@ -39,7 +45,9 @@ export function createVoiceRelay({
   // What the caption card shows right now, so it can follow the user to the
   // tab they switch to: the voice state and the latest line from each speaker.
   const REPLAY_MS = 5000;
-  const replay = { state: null, lines: [], at: 0 };
+  // word is the latest SUBTITLE_WORD for the saved agent line (karaoke), so
+  // a tab switched to mid-line shows the word being heard, not the first.
+  const replay = { state: null, lines: [], word: null, at: 0 };
 
   async function hasOffscreen() {
     const url = chromeApi.runtime.getURL(OFFSCREEN_PATH);
@@ -206,9 +214,18 @@ export function createVoiceRelay({
       if (clean.state === "listening" && was === "idle") replay.lines = [];
       // Barge-in: the agent line the user cut off is not carried to other tabs.
       else if (clean.state === "listening" && was === "speaking") replay.lines = replay.lines.filter((l) => l.msg.speaker !== "agent");
+      if (!replay.lines.some((l) => l.msg.speaker === "agent")) replay.word = null;
       replay.state = clean;
     } else if (msg.type === RT.SUBTITLE) {
       replay.lines = [...replay.lines.filter((l) => l.msg.speaker !== clean.speaker), { msg: clean, at: now }];
+      if (clean.speaker === "agent" && (!replay.word || replay.word.utteranceId !== clean.utteranceId)) replay.word = null;
+    } else if (msg.type === RT.SUBTITLE_WORD) {
+      // Only for the agent line on record; a line being heard stays fresh.
+      const line = replay.lines.find((l) => l.msg.speaker === "agent" && l.msg.utteranceId === clean.utteranceId);
+      if (!line) return;
+      line.at = now;
+      replay.word = clean;
+      replay.wordAt = now;
     } else return;
     replay.at = now;
   }
@@ -226,12 +243,24 @@ export function createVoiceRelay({
     const active = state && state.state !== "idle";
     const lines = replay.lines.filter((l) => now - l.at <= REPLAY_MS);
     if (!active && !lines.length) return;
-    const queue = [...(state ? [{ kind: "state", msg: state }] : []), ...lines.map((l) => ({ kind: "line", entry: l, msg: l.msg }))];
+    const word = replay.word && lines.some((l) => l.msg.utteranceId === replay.word.utteranceId) ? replay.word : null;
+    const queue = [
+      ...(state ? [{ kind: "state", msg: state }] : []),
+      ...lines.map((l) => ({ kind: "line", entry: l, msg: l.msg })),
+      ...(word ? [{ kind: "word", msg: word }] : []),
+    ];
     for (const item of queue) {
       if (lastTabId !== tabId) return; // the user moved on again
-      if (item.kind === "state" ? replay.state !== item.msg : !replay.lines.includes(item.entry)) continue;
+      if (item.kind === "state" ? replay.state !== item.msg
+        : item.kind === "word" ? replay.word !== item.msg
+        : !replay.lines.includes(item.entry)) continue;
+      // A word still being heard has gone on since it was saved: the new
+      // tab's sweep across it picks up where the voice is now.
+      const out = item.kind === "word" && !item.msg.frozen && Number.isFinite(item.msg.elapsed) && Number.isFinite(item.msg.ms)
+        ? { ...item.msg, elapsed: Math.min(item.msg.ms, item.msg.elapsed + (Date.now() - replay.wordAt)) }
+        : item.msg;
       try {
-        await chromeApi.tabs.sendMessage(tabId, item.msg);
+        await chromeApi.tabs.sendMessage(tabId, out);
       } catch {
         return; // no content script there (chrome:// page); nothing to show
       }
@@ -245,7 +274,14 @@ export function createVoiceRelay({
     if (tab && tab.id != null) await onTabActivated({ tabId: tab.id });
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, ducker, idle: () => chain, statesIdle: () => stateChain };
+  // Worker start: an open offscreen document may be mid-turn (listening,
+  // speaking). Ask it to say its state again, so ducking does not restore
+  // tabs under a live turn and captions can follow it. Never creates one.
+  function resync() {
+    return toOffscreen({ type: RT.VOICE_SYNC }, { create: false });
+  }
+
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, resync, ducker, idle: () => chain, statesIdle: () => stateChain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.
@@ -259,5 +295,6 @@ export function installVoiceRelay(opts = {}) {
   chromeApi.windows?.onFocusChanged?.addListener((id) => relay.onWindowFocused(id));
   chromeApi.tabs.onUpdated?.addListener((id, change) => relay.ducker.onTabUpdated?.(id, change));
   relay.ducker.recover?.().catch(() => {});
+  relay.resync().catch(() => {});
   return relay;
 }

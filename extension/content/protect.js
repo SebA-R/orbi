@@ -545,14 +545,24 @@
   function lockInChain(el) {
     for (var n = el; n && n.nodeType === 1; n = parentOf(n)) {
       var l = lockOf(n, n === el);
-      if (l && blocks(l)) return l;
+      if (l && blocks(l)) return withEl(l, n);
       if (l) return null; // an uncheck-only box that is on: the click turns it off
       if (n.tagName === "LABEL" && n.control) {
         var c = lockOf(n.control);
-        if (c && blocks(c)) return c;
+        if (c && blocks(c)) return withEl(c, n.control);
       }
     }
     return null;
+  }
+
+  // Remembers which control a lock is for (lock.el, not enumerable, so it
+  // never reaches JSON), for the ref in the refusal Claude gets back. The
+  // shared frame and shadow locks name no control.
+  function withEl(lock, el) {
+    if (lock && el && el.nodeType === 1 && lock !== FRAME_LOCK && lock !== SHADOW_LOCK) {
+      Object.defineProperty(lock, "el", { value: el, configurable: true, writable: true, enumerable: false });
+    }
+    return lock;
   }
 
   var FRAME_TAGS = { IFRAME: 1, FRAME: 1, OBJECT: 1, EMBED: 1, FENCEDFRAME: 1 };
@@ -687,12 +697,17 @@
     if (fk) {
       var fl = { kind: fk, label: clip(formLabel(form) || "this form"), optin: false, checked: false };
       // A card form always locks; a password form only while it is kept.
-      if (fk !== "account" || !danger || !plainSignInForm(form) || keep(fl)) return fl;
+      if (fk !== "account" || !danger || !plainSignInForm(form) || keep(fl)) {
+        var first = submitsOf(form)[0];
+        // No submit button: nothing request_unlock could press.
+        if (!first) Object.defineProperty(fl, "cls", { value: null, configurable: true, writable: true, enumerable: false });
+        return withEl(fl, first);
+      }
     }
     var subs = submitsOf(form);
     for (var i = 0; i < subs.length; i++) {
       var l = lockOf(subs[i]);
-      if (l && blocks(l)) return l;
+      if (l && blocks(l)) return withEl(l, subs[i]);
     }
     return null;
   }
@@ -711,24 +726,43 @@
     return subs.length ? labelOf(subs[0]) : form.getAttribute("aria-label") || "";
   }
 
-  // The error Claude gets back. Never includes field values.
-  function message(lock) {
-    var name = "'" + (lock && lock.label ? lock.label : "this control") + "'";
+  // The error Claude gets back when a click, key or form_input would press
+  // a locked control. Never includes field values. It names the control,
+  // its ref when known (ref, e.g. from page.js refFor(lock.el)), says that
+  // nothing was pressed, and gives the one next step: request_unlock for a
+  // control the user may unlock on request (unlockClass), never for one
+  // that pays. lock.cls, when set, is unlockClass worked out where the
+  // element was (the OCIC path's page script).
+  // el (optional): the control, when the caller found it and lock.el is unset.
+  function message(lock, ref, el) {
+    var label = lock && lock.label ? lock.label : "this control";
+    var name = "'" + label + "'" + (ref ? " (" + ref + ")" : "");
+    var cls = lock && lock.cls !== undefined ? lock.cls : unlockClass(lock, el || (lock && lock.el));
+    var unlock = "call request_unlock with " + (ref ? "ref " + ref + " and label '" + label + "'" : "label '" + label + "' and its ref from read_page or find") +
+      "; it asks the user itself when needed. Do not retry the click or look for another way around it.";
+    var userOnly = " Only the user can press it. Never call request_unlock for it; tell the user where it is if they want it.";
+    var pay = " Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.";
     switch (lock && lock.kind) {
       case "frame":
-        return "Locked: that point is inside an embedded frame, often a payment widget, that Clearcart cannot inspect. The AI may not click inside it.";
+        return "Locked: that point is inside an embedded frame, often a payment widget, that Clearcart cannot inspect, so nothing was pressed. The AI may not click inside it; only the user can.";
       case "shadow":
-        return "Locked: that point is inside a hidden page component that Clearcart cannot inspect. The AI may not click or press keys inside it.";
+        return "Locked: that point is inside a hidden page component that Clearcart cannot inspect, so nothing was pressed. The AI may not click or press keys inside it; only the user can.";
+    }
+    if (lock && lock.optin) {
+      return "Locked: " + name + " can only be unchecked by the AI, so nothing was changed. Turning it on needs the user's permission:" +
+        (cls ? " if the user wants it on, " + unlock : " only the user can turn it on. Never call request_unlock for it.");
+    }
+    switch (lock && lock.kind) {
       case "account":
-        return "Locked: " + name + " signs in or creates an account. Clearcart never logs in or creates accounts.";
-      case "express":
+        return "Locked: " + name + " signs in or creates an account, so it needs the user's permission and nothing was pressed." + (cls ? " If the user wants this, " + unlock : userOnly);
       case "subscription":
       case "payment-method":
-        if (lock.optin) return "Locked: " + name + " can only be unchecked. Clearcart never turns on subscriptions, saved cards or one-tap payments.";
-        return "Locked: " + name + " moves money or saves payment details, and only the user can press it.";
+        return "Locked: " + name + " subscribes or saves payment details, so it needs the user's permission and nothing was pressed." + (cls ? " If the user wants this, " + unlock : userOnly);
+      case "express":
+        return "Locked: " + name + " is a one-tap wallet or pay later button, so nothing was pressed." + userOnly;
       default:
-        if (lock && lock.optin) return "Locked: " + name + " can only be unchecked.";
-        return "Locked: " + name + " can only be pressed by Clearcart after the user says yes.";
+        if (cls === "checkout") return "Locked: " + name + " starts checkout, so it needs the user's permission and nothing was pressed. If the user wants this, " + unlock;
+        return "Locked: " + name + " places the order or pays, so nothing was pressed." + pay;
     }
   }
 

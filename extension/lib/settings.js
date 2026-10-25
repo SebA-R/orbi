@@ -41,6 +41,11 @@ export const DEFAULTS = Object.freeze({
   // Clearcart's new tab page (newtab/newtab.html), so Space to talk and
   // subtitles work on new tabs. Off: it forwards to Chrome's own.
   newTabPage: true,
+  // A main-frame network error (no connection, unknown address, refused)
+  // in a normal tab goes to Clearcart's "Can't reach this site" page
+  // (background/errpage.js), where Space to talk works. Off: Chrome's own
+  // error page stays.
+  errorPages: true,
   // Danger mode: Clearcart presses sign in and sign up without asking
   // (content/protect.js says what it lifts). Off unless the user turns it
   // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
@@ -50,6 +55,13 @@ export const DEFAULTS = Object.freeze({
   // (background/actor.js). Off, they happen at once. Typing is always
   // key by key at a typist's cadence, either way.
   watchablePace: true,
+  // Memory: the agent keeps facts the user asked it to remember and the
+  // last two hours of the conversation, on this computer only
+  // (agent/memory.ts). Off, it neither uses nor saves them.
+  memory: true,
+  // Clearcart's own pointer on the page while it clicks, types and scrolls
+  // (content/cursor.js). Purely visual.
+  showCursor: true,
 });
 
 export const DANGER_MODE_COPY = "Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.";
@@ -99,7 +111,10 @@ export function normalize(raw = {}) {
   if (typeof raw.sounds === "boolean") out.sounds = raw.sounds;
   if (typeof raw.guidedMode === "boolean") out.guidedMode = raw.guidedMode;
   if (typeof raw.watchablePace === "boolean") out.watchablePace = raw.watchablePace;
+  if (typeof raw.showCursor === "boolean") out.showCursor = raw.showCursor;
   if (typeof raw.newTabPage === "boolean") out.newTabPage = raw.newTabPage;
+  if (typeof raw.memory === "boolean") out.memory = raw.memory;
+  if (typeof raw.errorPages === "boolean") out.errorPages = raw.errorPages;
   // Only a stored true turns it on.
   out.dangerMode = raw.dangerMode === true;
   return out;

@@ -9,6 +9,11 @@
 // says goes out as a "(not spoken)" status, and the SDK turn is interrupted.
 // The next turn speaks again. An interrupt during a checkout read-back only
 // stops the speech: the read-back keeps waiting for a spoken answer.
+//
+// Every Clearcart window shares this one session (hub.ts). When the user
+// moves to another window, handOff() declines a read-back or unlock question
+// still waiting (it was asked in the old window, so no yes from the new one
+// may answer it) and mutes the turn in progress like a barge-in.
 
 import dns from "node:dns";
 import path from "node:path";
@@ -24,7 +29,8 @@ import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } fro
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, paySite, SITE_POLICY, siteBlockReason, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
-import { buildSystemPrompt, EXT_TABS_PROMPT, guidedNote } from "./prompt.ts";
+import { buildSystemPrompt, EXT_TABS_PROMPT, guidedNote, MEMORY_OFF_PROMPT, MEMORY_PROMPT } from "./prompt.ts";
+import { factFromUserWords, factNamedBy, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
   decideUnlock,
   isDirectAsk,
@@ -74,6 +80,10 @@ export const DISALLOWED_BROWSER = [
   "update_plan",
 ].map((t) => B + t);
 
+// Long-term memory (memory.ts): remember asks the user unless their own
+// words just asked for it; forget the same way; recall lists.
+const MEMORY_TOOLS = [C + "remember", C + "forget", C + "recall"];
+
 export const ALLOWED = [
   "tabs_context_mcp",
   "tabs_create_mcp",
@@ -86,7 +96,7 @@ export const ALLOWED = [
   "read_page",
   "read_console_messages",
   "set_tab_focus",
-].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"]);
+].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
 
 // Blocked while card values sit in the checkout form: anything that can read
 // or screenshot the page, or change it.
@@ -97,7 +107,7 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
 // CLEARCART_BROWSER=ext: Claude's browser tools are the Clearcart extension's
 // TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
 // key and scroll stand in for "computer" in the card-live block list.
-const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"]);
+const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
   ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
@@ -114,6 +124,15 @@ function extPrompt(prompt: string): string {
 // CLEARCART_GUIDED=1 turns it on.
 export function currentGuided(): boolean {
   return extMode() ? (extBridge.guidedMode() ?? false) : /^(1|true|on|yes)$/i.test(process.env.CLEARCART_GUIDED?.trim() || "");
+}
+
+// The user's Memory setting: the extension's in ext mode, off until the
+// extension has said it is on (so a session that starts before the
+// setting arrives never uses memory the user turned off). Elsewhere
+// CLEARCART_MEMORY=0 turns it off. Off: saved facts
+// are not used or saved and the conversation is not kept for a restart.
+export function memoryOn(): boolean {
+  return extMode() ? extBridge.memoryEnabled() === true : process.env.CLEARCART_MEMORY !== "0";
 }
 
 // How long a user turn waits for page_context before going without it.
@@ -137,6 +156,11 @@ export function browseDenyReason(url: string, policy: SitePolicy = sitePolicy())
 }
 
 const BLANK = /^(about:blank|chrome:\/\/newtab)/;
+// The sweep also leaves chrome-error://chromewebdata/ alone: the extension's
+// name for its "Can't reach this site" page (extension/background/errpage.js),
+// which holds nothing. Only the sweep: the OCIC tab guard keeps BLANK, since
+// Chrome's own error page names the host it failed on.
+const SWEEP_BLANK = /^(about:blank|chrome:\/\/newtab|chrome-error:\/\/chromewebdata\/?$)/;
 
 // Tools that act on an existing tab's page. On the Open Claude in Chrome
 // path the guard checks that tab's current URL first (a redirect or page
@@ -196,7 +220,7 @@ export async function returnStrays(
   for (const t of strays) {
     if (policy.mode === "open") {
       const at = await nav(t.tabId, "back").catch(() => null);
-      if (at && (BLANK.test(at) || !strayReason(at, policy))) continue;
+      if (at && (SWEEP_BLANK.test(at) || !strayReason(at, policy))) continue;
     }
     await nav(t.tabId, STRAY_PAGE).catch(() => null);
   }
@@ -231,7 +255,7 @@ export function strayReason(url: string, policy: SitePolicy = sitePolicy()): str
 }
 
 export function isStrayTab(url: string | undefined, policy: SitePolicy = sitePolicy()): boolean {
-  return !!url && !BLANK.test(url) && !!strayReason(url, policy);
+  return !!url && !SWEEP_BLANK.test(url) && !!strayReason(url, policy);
 }
 
 // Text of an MCP tool result as the PostToolUse hook receives it.
@@ -346,8 +370,14 @@ type UserWords = {
   passwordYes: { tabId: number; label: string; origin: string } | null;
 };
 
+const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null });
+
 type ToolText = { content: Array<{ type: "text"; text: string }> };
 const said = (text: string): ToolText => ({ content: [{ type: "text", text }] });
+
+// What Claude is told when a question got no answer at all: the window that
+// asked it went away or the user moved to another one (handOff, close).
+const NO_ANSWER = "No answer came: the user moved to another Clearcart window, or it closed, before answering.";
 
 export class Session {
   private input = new InputQueue();
@@ -357,7 +387,7 @@ export class Session {
   private closed = false;
   private q: Query | null = null;
   // The user's most recent words, for request_unlock's direct-ask match.
-  private lastUser: UserWords = { text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null };
+  private lastUser: UserWords = noWords();
   // A sign in the user asked for before typing their own password. Lives
   // only until the next utterance, which becomes passwordYes if it is an
   // explicit yes.
@@ -388,10 +418,29 @@ export class Session {
   // "Danger mode is on." was spoken in this session.
   private dangerSaid = false;
 
-  constructor(private send: (m: ServerMessage) => void) {}
+  // Saved facts and the recent conversation (memory.ts). Null in tests that
+  // do not give them: nothing is read or written.
+  private mem: MemoryStore | null;
+  private log: Transcript | null;
+  // Saved memory as the model last heard it (see withMemoryNote).
+  private memSeen: string;
+  // The conversation from before this session (a restart), read once when
+  // the session is made and put in front of its first turn when Memory is on.
+  private restore: Turn[] | null;
+  // The remember or forget question waiting for an answer, if any.
+  private memoryAsk: ((text: string | null) => void) | null = null;
+
+  constructor(private send: (m: ServerMessage) => void, opts: { memory?: MemoryStore | null; log?: Transcript | null } = {}) {
+    this.mem = opts.memory ?? null;
+    this.log = opts.log ?? null;
+    this.restore = this.log?.recent() ?? null;
+    this.memSeen = this.memKey();
+  }
 
   userText(text: string) {
     if (this.closed || !text.trim()) return;
+    // Only the user's own words are kept, never the context block.
+    if (memoryOn()) this.log?.add("user", text);
     const tabId = this.state.lastTabId;
     const pw = this.passwordAsk;
     this.passwordAsk = null;
@@ -417,14 +466,14 @@ export class Session {
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
     const fetch = this.pageContext;
-    if (!fetch) return this.input.push(this.withGuidedNote(text));
+    if (!fetch) return this.input.push(this.withMemoryNote(this.withGuidedNote(text)));
     const ctx = Promise.race([
       fetch().catch(() => null),
       new Promise<null>((r) => setTimeout(() => r(null), CONTEXT_TIMEOUT_MS + 200).unref?.()),
     ]);
     this.turns = this.turns.then(async () => {
       const c = await ctx;
-      if (!this.closed) this.input.push(withContext(this.withGuidedNote(text), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
+      if (!this.closed) this.input.push(withContext(this.withMemoryNote(this.withGuidedNote(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
     });
     return this.turns;
   }
@@ -439,8 +488,47 @@ export class Session {
     return `${guidedNote(now)}\n\n${turn}`;
   }
 
+  // What the model knows of saved memory: "off", or the facts' text.
+  private memKey(): string {
+    if (!this.mem) return "none";
+    return memoryOn() ? "on:" + JSON.stringify(this.mem.list().map((f) => f.text)) : "off";
+  }
+
+  // Memory changed outside the tools (the settings page deleted a fact, or
+  // the switch moved): the next turn says so, like withGuidedNote.
+  // The first turn also carries the conversation from before a restart,
+  // as quoted data.
+  private withMemoryNote(turn: string): string {
+    const restore = this.restore;
+    this.restore = null;
+    if (restore?.length && memoryOn()) turn = `${transcriptBlock(restore)}\n\n${turn}`;
+    const key = this.memKey();
+    if (key === this.memSeen) return turn;
+    const wasOff = !this.memSeen.startsWith("on:");
+    this.memSeen = key;
+    let note: string;
+    if (key === "off") {
+      // Off means nothing is kept: the recent conversation goes now.
+      this.log?.clear();
+      note = `[Setting changed, from the user's Clearcart settings] ${MEMORY_OFF_PROMPT.trim().split("\n").slice(1).join(" ").replace(/^- /, "")}`;
+    } else {
+      note = `[${wasOff ? "Setting changed" : "Memory changed"}, from the user's Clearcart settings]${wasOff ? MEMORY_PROMPT : ""}${memoryBlock(this.mem!.list())}`;
+    }
+    return `${note}\n\n${turn}`;
+  }
+
+  // The system prompt for this session: the rules, then memory (saved facts
+  // and the conversation from before a restart) when it is on.
+  systemPrompt(ext = extMode()): string {
+    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined });
+    this.memSeen = this.memKey();
+    if (!this.mem) return base;
+    if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
+    return base + MEMORY_PROMPT + memoryBlock(this.mem.list());
+  }
+
   // The user started talking over us.
-  interrupt() {
+  interrupt(note = "interrupted by the user") {
     if (this.closed) return;
     this.stopActions();
     this.held.forEach((t) => this.unspoken(t));
@@ -449,8 +537,37 @@ export class Session {
     // barge-in; the user is about to answer it.
     if (this.awaitingAnswer || this.turnsOpen === 0 || this.muted) return;
     this.muted = true;
-    this.status("interrupted by the user");
+    this.status(note);
     this.q?.interrupt().catch((e) => this.status(`interrupt failed: ${(e as Error).message}`));
+  }
+
+  // The user moved to another Clearcart window, or the one they used went
+  // away (hub.ts). A read-back or unlock question still waiting was asked
+  // there, so it is declined, never confirmed. A yes given there that
+  // pay_now has not used yet is withdrawn too: paying needs a read-back the
+  // user hears in the window they are in now. (A payment already under way
+  // is left to finish; its receipt goes to the new window.) The words said
+  // there stop counting for request_unlock, and the turn in progress is
+  // muted.
+  handOff() {
+    if (this.closed) return;
+    const pending = this.awaitingAnswer;
+    this.awaitingAnswer = null;
+    this.passwordAsk = null;
+    this.lastUser = noWords();
+    pending?.(null);
+    // Dropped rather than marked, so a read-back whose yes is still being
+    // pinned to its tab (request_checkout awaiting the snapshot) can't turn
+    // confirmed afterwards either.
+    const yes = this.state.confirmation;
+    if (yes && yes.state !== "used") {
+      this.state.confirmation = null;
+      if (yes.state === "confirmed") {
+        yes.state = "declined";
+        this.status("checkout yes withdrawn: the user moved to another Clearcart window");
+      }
+    }
+    this.interrupt("interrupted: the user moved to another Clearcart window");
   }
 
   close() {
@@ -470,6 +587,7 @@ export class Session {
 
   private say(text: string) {
     if (this.muted) return this.unspoken(text);
+    if (memoryOn()) this.log?.add("assistant", text);
     this.send({ type: "agent_text", text });
   }
 
@@ -528,7 +646,7 @@ export class Session {
     return {};
   };
 
-  // OCIC path: after read_page or find, name the locked refs for Claude and
+  // OCIC path: after read_page, find or get_page_text, name the locked controls for Claude and
   // draw the lock badges in the tab. Our own extension does both itself.
   private lockNotes: HookCallback = async (input) => {
     if (input.hook_event_name !== "PostToolUse" || !input.tool_name.startsWith(B) || extMode()) return {};
@@ -671,6 +789,7 @@ export class Session {
     // Pin the yes to this checkout tab and the cart on it (pay.ts). Taken while
     // the read-back plays; if it can't be read in 5 s the tab stays unknown and
     // pay_now refuses (fail closed).
+    this.cancelMemoryAsk();
     const conf: Confirmation = { item, quantity, total, state: "pending", tabId: null, cart: "" };
     this.state.confirmation = conf;
     // No browser tab used yet: nothing to pin, and pay_now will refuse.
@@ -694,7 +813,12 @@ export class Session {
     conf.state = "declined";
     this.status("checkout declined");
     this.send({ type: "confirm_done", outcome: "declined" });
-    return { content: [{ type: "text" as const, text: `declined. The user said: ${JSON.stringify(answer ?? "")}` }] };
+    const why = answer === null
+      ? NO_ANSWER
+      : this.state.confirmation === null && isExplicitYes(answer)
+        ? "The user moved to another Clearcart window before their yes could count."
+        : `The user said: ${JSON.stringify(answer)}`;
+    return { content: [{ type: "text" as const, text: `declined. ${why}` }] };
   }
 
   // Where a tab is now, on either browser path, or null.
@@ -763,13 +887,20 @@ export class Session {
     }
     let how = "user asked";
     if (d.kind === "ask") {
+      // Like request_checkout: a muted turn's question is never heard, so
+      // the user's next words must not answer it.
+      if (this.muted) {
+        this.status(`unlock not asked: the user interrupted (${d.cls})`);
+        return said("declined, nothing was pressed. The user interrupted before the question was asked.");
+      }
+      this.cancelMemoryAsk();
       this.say(d.question);
       const answer = await new Promise<string | null>((resolve) => {
         this.awaitingAnswer = resolve;
       });
       if (answer === null || !isExplicitYes(answer)) {
         this.status(`unlock declined: ${d.cls}`);
-        return said(`declined, nothing was pressed. The user said: ${JSON.stringify(answer ?? "")}`);
+        return said(`declined, nothing was pressed. ${answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}`}`);
       }
       how = "user confirmed";
     } else {
@@ -800,7 +931,119 @@ export class Session {
         : d.cls === "account"
           ? " Never type a password or card number; the user types those themselves."
           : "";
-    return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""}${next}`);
+    return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""} Do not click it again; another press needs another request_unlock.${next}`);
+  }
+
+  // The user's last words if they are recent enough to count, else "".
+  private freshWords(): string {
+    const w = this.lastUser;
+    return w.text && Date.now() - w.at <= USER_WORDS_TTL_MS ? w.text : "";
+  }
+
+  // Asks the user one question out loud and waits for the answer. Like
+  // request_unlock: a muted turn's question is never asked.
+  // Never while another question (a checkout read-back, an unlock) waits,
+  // and a yes that names paying or ordering is not a yes to remembering.
+  private async askYes(question: string): Promise<{ yes: boolean; why: string }> {
+    if (this.muted) return { yes: false, why: "The user interrupted before the question was asked." };
+    if (this.awaitingAnswer || this.state.confirmation?.state === "pending") return { yes: false, why: "Another question is waiting for the user's answer. Ask again later." };
+    this.say(question);
+    const answer = await new Promise<string | null>((resolve) => {
+      const done = (t: string | null) => {
+        if (this.memoryAsk === done) this.memoryAsk = null;
+        resolve(t);
+      };
+      this.awaitingAnswer = done;
+      this.memoryAsk = done;
+    });
+    if (answer !== null && isExplicitYes(answer) && !/\b(pay|order|buy|checkout|confirm(ed)?)\b/i.test(answer)) return { yes: true, why: "" };
+    return { yes: false, why: answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}` };
+  }
+
+  // A checkout read-back or unlock question is about to be asked: a memory
+  // question still waiting is declined first, so the two never share a yes.
+  private cancelMemoryAsk() {
+    const ask = this.memoryAsk;
+    if (!ask) return;
+    if (this.awaitingAnswer === ask) this.awaitingAnswer = null;
+    ask(null);
+  }
+
+  // The remember tool. Saves only when the user's own last words asked to
+  // remember it and the fact is made of what they said; anything else (the
+  // model's idea, or a page's) is asked out loud first and saved only on an
+  // explicit yes. The filter (memory.ts) refuses secrets either way.
+  async remember({ fact }: { fact: string }): Promise<ToolText> {
+    if (!this.mem) return said("Memory is not available here.");
+    if (!memoryOn()) return said("Memory is off in the user's Clearcart settings, so nothing was saved. They can turn it on there.");
+    const text = String(fact ?? "").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
+    const why = sensitiveReason(text);
+    if (why) {
+      this.status("memory: refused a fact");
+      return said(`Not saved: ${why}. Clearcart never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
+    }
+    // One save per utterance without a question, of a fact made only of
+    // the words in it.
+    const words = this.freshWords();
+    let how = "the user asked";
+    if (words && isRememberAsk(words) && factFromUserWords(text, words) && !this.lastUser.spent.has("remember")) {
+      this.lastUser.spent.add("remember");
+    } else {
+      const a = await this.askYes(`Want me to remember that ${text}?`);
+      if (!a.yes) {
+        this.status("memory: not saved (no yes)");
+        return said(`Not saved. ${a.why}`.trim());
+      }
+      how = "the user confirmed";
+    }
+    const r = this.mem.add(text);
+    if (!r.ok) return said(r.reason);
+    this.memSeen = this.memKey();
+    this.status(`memory: saved a fact (${how})`);
+    return said(r.existed ? `Already saved: ${r.fact.text}` : `Saved: ${r.fact.text}.${how === "the user confirmed" ? " The question was already spoken; do not ask again." : ""}`);
+  }
+
+  // The forget tool: one fact, or everything. Direct when the user's last
+  // words asked to forget, otherwise asked out loud first.
+  async forget({ fact, all }: { fact?: string; all?: boolean }): Promise<ToolText> {
+    if (!this.mem) return said("Memory is not available here.");
+    const words = this.freshWords();
+    const asked = !!words && isForgetAsk(words) && !this.lastUser.spent.has("forget");
+    if (all) {
+      if (asked && isForgetAllAsk(words)) this.lastUser.spent.add("forget");
+      else {
+        const a = await this.askYes("Want me to forget everything I remember about you?");
+        if (!a.yes) return said(`Nothing was forgotten. ${a.why}`.trim());
+      }
+      const n = this.mem.clear();
+      this.log?.clear();
+      this.memSeen = this.memKey();
+      this.status("memory: forgot everything");
+      return said(`Forgot everything (${n} saved fact${n === 1 ? "" : "s"}).`);
+    }
+    const hits = this.mem.find(String(fact ?? ""));
+    if (!hits.length) return said("Nothing saved matches that. Call recall to see what is saved.");
+    if (hits.length > 1) return said(`More than one saved fact matches. Ask the user which one, then call forget with its id:\n${hits.map((f) => `${f.id}: ${f.text}`).join("\n")}`);
+    const hit = hits[0];
+    if (asked && factNamedBy(hit.text, words)) this.lastUser.spent.add("forget");
+    else {
+      const a = await this.askYes(`Want me to forget that ${hit.text}?`);
+      if (!a.yes) return said(`Nothing was forgotten. ${a.why}`.trim());
+    }
+    this.mem.remove(hit.id);
+    this.memSeen = this.memKey();
+    this.status("memory: forgot a fact");
+    return said(`Forgot: ${hit.text}.`);
+  }
+
+  // The recall tool: what is saved, freshly read.
+  recall(): ToolText {
+    if (!this.mem) return said("Memory is not available here.");
+    if (!memoryOn()) return said("Memory is off in the user's Clearcart settings, so nothing saved is used. They can turn it on there.");
+    const facts = this.mem.list();
+    this.memSeen = this.memKey();
+    if (!facts.length) return said("Nothing is saved yet.");
+    return said(`Saved facts (read them plainly, never the ids):\n${facts.map((f) => `${f.id}: ${f.text}`).join("\n")}`);
   }
 
   private tools() {
@@ -852,7 +1095,7 @@ export class Session {
 
     const requestUnlockTool = tool(
       "request_unlock",
-      "Press a [locked] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card, or a marked control. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_now. Returns what happened.",
+      "Press a [locked] or [uncheck only] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card. Use it whenever the task needs a locked control or a click comes back Locked, with the ref and label it names; do not give up, retry the click or look for a workaround. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_now. Returns what happened.",
       {
         tabId: z.number().int().optional().describe("Tab id of the page with the control. Default: the last tab used."),
         ref: z.string().optional().describe("The control's ref from read_page or find, e.g. ref_12"),
@@ -863,10 +1106,27 @@ export class Session {
       (args) => this.requestUnlock(args)
     );
 
+    const rememberTool = tool(
+      "remember",
+      "Save one fact about the user for later sessions, when they ask you to remember it or after they agree. If their own words did not just ask for it, this tool asks them one short question itself and saves only on a yes, so do not ask first. Refuses card, password, ID and bank details.",
+      { fact: z.string().max(200).describe("The fact in a few words, addressed to the user, e.g. \"you wear size medium\" or \"you like to be called Seb\"") },
+      (args) => this.remember(args)
+    );
+    const forgetTool = tool(
+      "forget",
+      "Forget one saved fact (by its words or its id from recall), or everything with all true. Asks the user first unless their own words just asked to forget it.",
+      {
+        fact: z.string().max(200).optional().describe("A few words of the saved fact, or its id"),
+        all: z.boolean().optional().describe("Forget every saved fact and the recent conversation"),
+      },
+      (args) => this.forget(args)
+    );
+    const recallTool = tool("recall", "List the facts saved about the user. Call it when they ask what you remember.", {}, async () => this.recall());
+
     return createSdkMcpServer({
       name: "clearcart",
       version: "0.1.0",
-      tools: [sayTool, requestCheckout, payNowTool, requestUnlockTool],
+      tools: [sayTool, requestCheckout, payNowTool, requestUnlockTool, rememberTool, forgetTool, recallTool],
       alwaysLoad: true,
       // request_checkout waits on a person; give it room.
       timeout: 10 * 60_000,
@@ -918,7 +1178,7 @@ export class Session {
       prompt: this.input,
       options: {
         model: MODEL,
-        systemPrompt: buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined }),
+        systemPrompt: this.systemPrompt(ext),
         cwd: HERE,
         tools: [],
         settingSources: [],

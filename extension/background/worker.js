@@ -9,12 +9,14 @@ import * as cdp from "./cdp.js";
 import * as netguard from "./netguard.js";
 import { createRouter } from "./router.js";
 import { createFollower } from "./follow.js";
+import { createErrorPages, FILTER as ERROR_FILTER } from "./errpage.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
 import { endpoints, loadSettings, migrateSettings, seedBlocklist } from "../lib/settings.js";
 import { MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 import { installFrame } from "./frame.js";
+import { createCursorRelay } from "./cursor.js";
 import { onInstalledSetup, refreshBadge } from "../lib/setup.js";
 import { injectIntoOpenTabs } from "../lib/inject.js";
 
@@ -78,6 +80,19 @@ async function closeIfAgentTab(tabId, flag) {
   } catch {}
 }
 
+// Network error pages: Chrome's runs no content scripts, so a failed main
+// frame in a normal tab goes on to Clearcart's "Can't reach this site" page
+// (errpage.js), where Space to talk works.
+const errorPages = createErrorPages({ loadSettings });
+chrome.webRequest.onErrorOccurred.addListener((d) => errorPages.onRequestError(d), ERROR_FILTER);
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => void errorPages.onTabUpdated(tabId, change, tab).catch(() => {}));
+chrome.tabs.onRemoved.addListener((tabId) => void errorPages.forget(tabId));
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (!msg || msg.type !== RT.ERROR_PAGE_RETRY || msg.target != null || sender.id !== chrome.runtime.id) return;
+  errorPages.onRetry(sender).then(reply, () => reply({ url: null }));
+  return true;
+});
+
 const loadAllowlist = () => loadSettings().then((s) => netguard.setAllowlist(s.allowlist)).catch(() => {});
 loadAllowlist();
 
@@ -87,7 +102,16 @@ loadAllowlist();
 // The active-tab frame (content/frame.js) goes on the tab Clearcart is
 // acting on during a turn; the relay reports voice states, the router calls.
 const frame = installFrame();
-const voice = installVoiceRelay({ onVoiceState: frame.onVoiceState });
+// Clearcart's cursor (content/cursor.js), cached like the settings below.
+let showCursor = true;
+loadSettings().then((s) => { showCursor = s.showCursor; }).catch(() => {});
+const cursor = createCursorRelay({ enabled: () => showCursor });
+const voice = installVoiceRelay({
+  onVoiceState: (state, tabId) => {
+    frame.onVoiceState(state, tabId);
+    cursor.onVoiceState(state);
+  },
+});
 
 // Bridge to the agent server: each request is routed to tabs/CDP or the page
 // script. Results never include card values (fill_payment answers last4).
@@ -118,6 +142,10 @@ const actor = router.actor;
 chrome.tabs.onActivated.addListener((info) => actor.onTabActivated(info));
 chrome.tabs.onRemoved.addListener((tabId) => actor.onTabRemoved(tabId));
 chrome.tabs.onUpdated.addListener((tabId, change) => actor.onTabUpdated(tabId, change));
+// The cursor follows the actor's input; a tab switch or interrupt hides it.
+actor.onPointer(cursor.onPointer);
+chrome.tabs.onActivated.addListener((info) => cursor.onTabActivated(info));
+chrome.tabs.onRemoved.addListener((tabId) => cursor.onTabRemoved(tabId));
 const BARGE_IN = new Set([RT.PTT_CONFIRM, RT.PTT_HUSH, RT.PTT_TOGGLE]);
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg || msg.target === "offscreen") return;
@@ -152,9 +180,9 @@ let bridge = null;
 // sites too, so send them on every connect and every change.
 const sendBlocklist = () =>
   loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
-// Guided mode shapes the agent's prompt; sent on connect and on change.
+// Guided mode and Memory shape the agent's prompt; sent on connect and on change.
 const sendAgentSettings = () =>
-  loadSettings().then(({ guidedMode }) => bridge?.send({ type: MSG.SETTINGS, guidedMode })).catch(() => {});
+  loadSettings().then(({ guidedMode, memory }) => bridge?.send({ type: MSG.SETTINGS, guidedMode, memory })).catch(() => {});
 
 // Danger mode too, the same way, so the agent says "Danger mode is on." and
 // tells Claude. The extension enforces the lock itself; this only informs.
@@ -178,8 +206,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.allowlist) loadAllowlist();
   if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
   if (changes.blocklist) sendBlocklist();
-  if (changes.guidedMode) sendAgentSettings();
+  if (changes.guidedMode || changes.memory) sendAgentSettings();
   if (changes.watchablePace) watchablePace = changes.watchablePace.newValue !== false;
+  if (changes.showCursor) {
+    showCursor = changes.showCursor.newValue !== false;
+    if (!showCursor) cursor.hide();
+  }
   if (changes.dangerMode) {
     // Straight from the change, so the very next page call has it.
     dangerMode = changes.dangerMode.newValue === true;
@@ -190,5 +222,5 @@ chrome.storage.onChanged.addListener((changes, area) => {
 startBridge().catch((e) => log.warn(`bridge start failed: ${e.message}`));
 
 // For tests and the console.
-// actor.onPointer(fn) is the hook for a future on-page cursor.
-globalThis.clearcart = { router, voice, frame, actor, get bridge() { return bridge; } };
+// actor.onPointer(fn) feeds the on-page cursor (background/cursor.js).
+globalThis.clearcart = { router, voice, frame, actor, cursor, get bridge() { return bridge; } };
