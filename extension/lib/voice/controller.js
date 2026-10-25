@@ -48,6 +48,8 @@
 //            SUBTITLE_WORD {utteranceId, index, done?, frozen?, fallback?}
 //            as each word is heard. A speaker without captions (a test fake)
 //            gets SUBTITLE(agent) as soon as agent_text arrives.
+//   typed(text) words typed in the popup or on the new tab page
+//            (VOICE_TYPED): barge-in, then one user_text, like a turn.
 //   confirm_done -> the placed cue (paid) or the failed cue (failed)
 //   standby  the agent server gave the conversation to another Orbi
 //            window (agent/hub.ts): stop speaking and stop waiting for a
@@ -466,6 +468,46 @@ export class VoiceController {
 
   stopSpeaking() {
     this.speaker.stop();
+  }
+
+  // Words typed in the popup or on the new tab page (basic voice, or where
+  // speech recognition can't run): one turn, like a spoken one. Barges in
+  // on speech or a reply still coming. A turn released but not sent yet
+  // goes out with it, joined, like a press during one. Ignored while a held
+  // or latched turn is listening (that turn is the user's words). Returns
+  // whether it was sent.
+  typed(text) {
+    const t = join([String(text || "")]);
+    if (!t) return false;
+    if (this.listening && this.confirmed) {
+      this.emit({ type: RT.STATUS, kind: "status", text: "Orbi is listening, so the typed words were not sent. Let go of the talk key and send them again." });
+      return false;
+    }
+    let carried = "";
+    if (this.listening) {
+      // A tap's silent start: drop it, quietly, keeping the words it
+      // carried over from a turn released before it.
+      carried = (this.turn && this.turn.carried) || "";
+      this.listening = false;
+      if (this.turn) this.turn.dropped = true;
+      this.#endLatch();
+      this.held = [];
+      this.mic.sink = null;
+      const s = this.session;
+      this.session = null;
+      if (s) s.abort();
+    }
+    const prev = this.turn;
+    if (prev && !prev.open && !prev.sent && !prev.dropped) {
+      carried = join([...prev.parts, prev.partial]);
+      prev.dropped = true;
+      if (prev.waitTimer != null) this.clearTimer(prev.waitTimer);
+      prev.waitTimer = null;
+    }
+    const cut = this.#bargeIn();
+    this.chime("sent", cut ? { when: cueLength("cut") } : undefined);
+    this.#sendUserText(join([carried, t]));
+    return true;
   }
 
   releaseSpeech() {

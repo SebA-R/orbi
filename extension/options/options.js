@@ -19,7 +19,7 @@ import { RT } from "../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/blocklist.js";
 import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
 import { bindDangerToggle } from "../lib/danger-toggle.js";
-import { SETUP_STEPS, agentHealth, hasSiteAccess, keyName, setupDone } from "../lib/setup.js";
+import { SETUP_STEPS, agentHealth, basicVoice, hasSiteAccess, keyName, setupDone } from "../lib/setup.js";
 import { forgetAll, forgetFact, listMemory } from "../lib/memory.js";
 
 const $ = (id) => document.getElementById(id);
@@ -376,6 +376,7 @@ async function refreshSetup() {
   tag(els.agentState, agent.connected ? "ok" : "todo", agent.connected ? "Connected" : "Not reachable");
   serverVoice = agent.voice;
   showSpeakNote();
+  $("basic-voice-note").hidden = !basicVoice(agent);
 }
 
 // Switches and menus changed elsewhere (the popup) show up here. Only the

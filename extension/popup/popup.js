@@ -3,7 +3,8 @@
 // on its own; the worker and offscreen document follow chrome.storage.
 import { HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, localModels, localStatusText, saveSettings, speakRepliesNote } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
-import { SETUP_PATH, SETUP_STEPS, agentHealth, hasSiteAccess, keyName, micState, setupDone, updateBadge } from "../lib/setup.js";
+import { SETUP_PATH, SETUP_STEPS, agentHealth, basicVoice, hasSiteAccess, keyName, micState, setupDone, updateBadge } from "../lib/setup.js";
+import { mountTypeBox } from "../lib/typebox.js";
 import { bindDangerToggle } from "../lib/danger-toggle.js";
 
 const $ = (id) => document.getElementById(id);
@@ -66,6 +67,8 @@ function showSpeakNote() {
   $("speak-replies-note").hidden = !note;
   $("speak-replies").disabled = serverVoice === false;
 }
+// Basic voice (no Cartesia key): the "Type to Orbi" box.
+const typeBox = mountTypeBox($("type-form"));
 async function refreshSetup() {
   const run = ++setupRun;
   const s = await loadSettings();
@@ -74,6 +77,7 @@ async function refreshSetup() {
   const done = setupDone({ site, mic, agent });
   serverVoice = agent.voice;
   showSpeakNote();
+  typeBox.show(basicVoice(agent));
   missing = [!site && "site", mic !== "granted" && "mic", !agent.connected && "agent"].filter(Boolean);
   // The voice status region names what is missing, so it is announced.
   showVoice();

@@ -18,10 +18,15 @@ import { listModels, LocalModelError } from "./local/openai.ts";
 import { purchaseHistory } from "./history.ts";
 import { conversationLog, memoryStore } from "./memory.ts";
 import { currentProvider, memoryOn, Session, type SessionCarry } from "./session.ts";
+import { orbiConfigPath } from "./userconfig.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 dotenv.config({ path: path.join(ROOT, ".env"), quiet: true });
+// The keys `npm run setup` saved (userconfig.ts). The repo's .env and the
+// process environment win over it. Only the path is ever logged.
+const USER_CONFIG = orbiConfigPath();
+const userConfigLoaded = !dotenv.config({ path: USER_CONFIG, quiet: true }).error;
 
 const PORT = Number(process.env.AGENT_PORT || 5050);
 // CLEARCART_BROWSER=ext: the Orbi extension connects to /ext and drives
@@ -100,10 +105,14 @@ const VOICE_ENABLED: boolean = envBool("CLEARCART_VOICE", true);
 envProviderSettings();
 envLocalContext();
 
+// No Cartesia key: the extension uses basic voice (Chrome's own speech),
+// and /healthz says so with cartesia: false.
+const hasCartesia = () => VOICE_ENABLED && !!process.env.CARTESIA_API_KEY?.trim();
+
 async function cartesiaToken(res: http.ServerResponse) {
   if (!VOICE_ENABLED) return json(res, 503, { error: "Voice is off (CLEARCART_VOICE=false)", voice: false });
-  const key = process.env.CARTESIA_API_KEY;
-  if (!key) return json(res, 500, { error: "CARTESIA_API_KEY is not set in .env" });
+  const key = process.env.CARTESIA_API_KEY?.trim();
+  if (!key) return json(res, 503, { error: "No Cartesia key is set, so Orbi uses basic voice", cartesia: false });
   try {
     const r = await fetch("https://api.cartesia.ai/access-token", {
       method: "POST",
@@ -186,8 +195,8 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/local-models") return void localModelsRoute(req, res, url);
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
   if (req.method === "GET" && url.pathname === "/healthz") {
-    if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, browser: "ext", extension: extBridge.connected() });
-    return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED });
+    if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, cartesia: hasCartesia(), browser: "ext", extension: extBridge.connected() });
+    return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, cartesia: hasCartesia() });
   }
   if (req.method === "GET" || req.method === "HEAD") return serveStatic(url.pathname, res);
   res.writeHead(405).end();
@@ -262,6 +271,11 @@ wss.on("connection", (ws: WebSocket) => {
 });
 
 server.listen(PORT, () => {
+  if (userConfigLoaded) console.log(`config: ${USER_CONFIG}`);
+  if (!process.env.ANTHROPIC_API_KEY?.trim() && envProviderSettings().provider === "claude") {
+    console.log("note: no Anthropic API key is set, so Claude can't answer. Run `npm run setup`, or choose Local in Orbi's settings.");
+  }
+  if (VOICE_ENABLED && !hasCartesia()) console.log("voice: no Cartesia key, so the extension uses basic voice (Chrome's own speech)");
   console.log(`Orbi agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext" : ""}${ECHO ? ", echo mode" : ""})`);
   if (!fs.existsSync(PUBLIC_DIR)) console.log(`note: ${PUBLIC_DIR} does not exist yet`);
 });

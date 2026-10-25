@@ -1,0 +1,25 @@
+{
+  "name": "orbi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orbi: talk to the web. Installer and server control for the Orbi Chrome extension and agent server.",
+  "type": "module",
+  "bin": {
+    "orbi": "scripts/orbi.mjs"
+  },
+  "files": [
+    "scripts/orbi.mjs",
+    "scripts/orbi/*.mjs"
+  ],
+  "scripts": {
+    "setup": "node scripts/orbi.mjs setup",
+    "start": "npm --prefix agent start",
+    "status": "node scripts/orbi.mjs status",
+    "test:installer": "node --test scripts/orbi/test/",
+    "pack:extension": "node scripts/pack-extension.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

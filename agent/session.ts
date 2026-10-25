@@ -34,7 +34,7 @@ import { isCheckoutUrl, originOf, paySite, SITE_POLICY, siteBlockReason, type Si
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
 import { ACK_PROMPT, buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
-import { factFromUserWords, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
+import { factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
   decideUnlock,
   isDirectAsk,
@@ -434,9 +434,15 @@ type UserWords = {
   tabId: number | null;
   origin: Promise<string | null>;
   passwordYes: { tabId: number; label: string; origin: string } | null;
+  // Facts the remember tool saved from these words without a question.
+  saves: number;
 };
 
-const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null });
+const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, saves: 0 });
+
+// How many facts one utterance can save without a question ("I'm vegan and
+// I wear a medium" is two).
+export const SILENT_SAVES_PER_UTTERANCE = 3;
 
 type ToolText = { content: Array<{ type: "text"; text: string }> };
 const said = (text: string): ToolText => ({ content: [{ type: "text", text }] });
@@ -489,6 +495,9 @@ export class Session {
   backend?: string;
   // The user's most recent words, for request_unlock's direct-ask match.
   private lastUser: UserWords = noWords();
+  // The utterance before it, so a fact said just before a short answer
+  // ("I wear a medium." then "yes, that one") still counts as theirs.
+  private prevUser: UserWords = noWords();
   // A sign in the user asked for before typing their own password. Lives
   // only until the next utterance, which becomes passwordYes if it is an
   // explicit yes.
@@ -560,6 +569,7 @@ export class Session {
     const tabId = this.state.lastTabId;
     const pw = this.passwordAsk;
     this.passwordAsk = null;
+    this.prevUser = this.lastUser;
     this.lastUser = {
       text,
       spent: new Set(),
@@ -567,6 +577,7 @@ export class Session {
       tabId,
       origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
       passwordYes: pw && isExplicitYes(text) ? pw : null,
+      saves: 0,
     };
     if (this.awaitingAnswer) {
       const resolve = this.awaitingAnswer;
@@ -696,6 +707,7 @@ export class Session {
     this.awaitingAnswer = null;
     this.passwordAsk = null;
     this.lastUser = noWords();
+    this.prevUser = noWords();
     pending?.(null);
     // Dropped rather than marked, so a read-back whose yes is still being
     // pinned to its tab (request_checkout awaiting the snapshot) can't turn
@@ -1271,10 +1283,14 @@ export class Session {
     ask(null);
   }
 
-  // The remember tool. Saves only when the user's own last words asked to
-  // remember it and the fact is made of what they said; anything else (the
-  // model's idea, or a page's) is asked out loud first and saved only on an
-  // explicit yes. The filter (memory.ts) refuses secrets either way.
+  // The remember tool. Saves without a question only when one of the
+  // user's last two utterances (within USER_WORDS_TTL_MS) asked to
+  // remember it or states a lasting fact about themselves of this kind
+  // (memory.ts statesFact: a size, name, diet, accessibility need,
+  // favorite store or brand, language), and the fact is made of the words
+  // in that utterance. Anything else (the model's idea, or a page's or a
+  // search result's) is asked out loud first and saved only on an explicit
+  // yes. The filter (memory.ts) refuses secrets either way.
   async remember({ fact }: { fact: string }, signal?: AbortSignal): Promise<ToolText> {
     if (!this.mem) return said("Memory is not available here.");
     if (!memoryOn()) return said("Memory is off in the user's Orbi settings, so nothing was saved. They can turn it on there.");
@@ -1284,25 +1300,40 @@ export class Session {
       this.status("memory: refused a fact");
       return said(`Not saved: ${why}. Orbi never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
     }
-    // One save per utterance without a question, of a fact made only of
-    // the words in it.
-    const words = this.freshWords();
-    let how = "the user asked";
-    if (words && isRememberAsk(words) && factFromUserWords(text, words) && !this.lastUser.spent.has("remember")) {
-      this.lastUser.spent.add("remember");
+    const fresh = (w: UserWords) => !!w.text && Date.now() - w.at <= USER_WORDS_TTL_MS;
+    // The utterance before counts only while the latest one takes nothing
+    // back: not a forget, a no, or a "don't remember".
+    const last = this.lastUser.text;
+    const prevOk = !!last && !isForgetAsk(last) && !/\b(no|nope|nah|don'?t|do not|never|stop|cancel|wrong|not|undo)\b/i.test(fold(last));
+    const from = (prevOk ? [this.lastUser, this.prevUser] : [this.lastUser]).find(
+      (w) => fresh(w) && w.saves < SILENT_SAVES_PER_UTTERANCE && factGroundedIn(text, w.text) && (isRememberAsk(w.text) || statesFact(text, w.text))
+    );
+    let how: "asked" | "told" | "confirmed";
+    if (from) {
+      from.saves++;
+      how = isRememberAsk(from.text) ? "asked" : "told";
     } else {
-      const a = await this.askYes(`Want me to remember that ${text}?`, signal);
+      // A fact it would replace is named in the question.
+      const old = this.mem.replacing(text);
+      const a = await this.askYes(`Want me to remember that ${text}${old ? `, instead of ${old.text}` : ""}?`, signal);
       if (!a.yes) {
         this.status("memory: not saved (no yes)");
         return said(`Not saved. ${a.why}`.trim());
       }
-      how = "the user confirmed";
+      how = "confirmed";
     }
     const r = this.mem.add(text);
-    if (!r.ok) return said(r.reason);
+    if (!r.ok) {
+      // A silent save that could not happen undoes its count.
+      if (from) from.saves--;
+      return said(r.reason);
+    }
     this.memSeen = this.memKey();
-    this.status(`memory: saved a fact (${how})`);
-    return said(r.existed ? `Already saved: ${r.fact.text}` : `Saved: ${r.fact.text}.${how === "the user confirmed" ? " The question was already spoken; do not ask again." : ""}`);
+    this.status(`memory: ${r.replaced ? "updated" : "saved"} a fact (${how === "told" ? "the user said it" : how === "asked" ? "the user asked" : "the user confirmed"})`);
+    if (r.existed) return said(`Already saved: ${r.fact.text}.${how === "told" ? " Do not mention it." : ""}`);
+    const what = r.replaced ? `Updated: ${r.fact.text} (replaces "${r.replaced.text}").` : `Saved: ${r.fact.text}.`;
+    if (how === "told") return said(`${what} Saved quietly: do not announce it or ask about it; at most say "Got it" and carry on with what they asked.`);
+    return said(`${what}${how === "confirmed" ? " The question was already spoken; do not ask again." : ""}`);
   }
 
   // The forget tool: one fact, or everything. Direct when the user's last
@@ -1437,8 +1468,8 @@ export class Session {
 
     const rememberTool = tool(
       "remember",
-      "Save one fact about the user for later sessions, when they ask you to remember it or after they agree. If their own words did not just ask for it, this tool asks them one short question itself and saves only on a yes, so do not ask first. Refuses card, password, ID and bank details.",
-      { fact: z.string().max(200).describe("The fact in a few words, addressed to the user, e.g. \"you wear size medium\" or \"you like to be called Seb\"") },
+      "Save one lasting fact about the user, kept for good. Call it every time the user states one about themselves (a size, their name or what to call them, a favorite store or brand, a dietary need or allergy, an accessibility need, their language), and when they ask you to remember something. Saves quietly when their own words said it; a newer fact on the same topic replaces the old one. Otherwise it asks them one short question itself, so never ask first. Refuses card, password, ID and bank details.",
+      { fact: z.string().max(200).describe("The fact in a few of the user's own words, addressed to them, e.g. \"you wear a medium\", \"call you Seb\", \"you are vegan\"") },
       (args, extra) => this.remember(args, signalOf(extra))
     );
     const forgetTool = tool(

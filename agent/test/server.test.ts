@@ -58,7 +58,7 @@ test("CLEARCART_BROWSER=ext: /ext and /session share the server", async () => {
     await ext.open();
     assert.equal(ext.welcome.server, "clearcart-agent");
     const health = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
-    assert.deepEqual(health, { ok: true, echo: true, voice: false, browser: "ext", extension: true });
+    assert.deepEqual(health, { ok: true, echo: true, voice: false, cartesia: false, browser: "ext", extension: true });
     assert.equal(await sessionEcho(port), "You said: hi");
     ext.close();
   } finally {
@@ -72,7 +72,7 @@ test("default mode: no /ext endpoint, /session unchanged", async () => {
   try {
     await assert.rejects(new FakeExt(`ws://127.0.0.1:${port}/ext`).open());
     const health = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
-    assert.deepEqual(health, { ok: true, echo: true, voice: false });
+    assert.deepEqual(health, { ok: true, echo: true, voice: false, cartesia: false });
     assert.equal(await sessionEcho(port), "You said: hi");
   } finally {
     child.kill();
@@ -146,6 +146,23 @@ test("CLEARCART_VOICE=false: no Cartesia token is minted", async () => {
     assert.equal(r.status, 503);
     assert.equal((await r.json()).voice, false);
     assert.equal((await (await fetch(`http://127.0.0.1:${port}/healthz`)).json()).voice, false);
+  } finally {
+    child.kill();
+  }
+});
+
+// Voice on with no key: nothing is fetched from Cartesia (there is no key
+// to send), and the extension is told to use basic voice.
+test("no Cartesia key: /healthz says cartesia false, no token", async () => {
+  const port = 5179;
+  const child = await startServer(port, { CLEARCART_VOICE: "true", CARTESIA_API_KEY: "" });
+  try {
+    const health = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
+    assert.equal(health.voice, true);
+    assert.equal(health.cartesia, false);
+    const r = await fetch(`http://127.0.0.1:${port}/cartesia-token`);
+    assert.equal(r.status, 503);
+    assert.equal((await r.json()).cartesia, false);
   } finally {
     child.kill();
   }
