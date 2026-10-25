@@ -86,8 +86,7 @@ const voice = installVoiceRelay();
 // onChanged below. Starts off, so a page call before the first load is
 // locked as usual.
 let dangerMode = false;
-const loadDangerMode = () => loadSettings().then((s) => { dangerMode = s.dangerMode; }).catch(() => { dangerMode = false; });
-const dangerReady = loadDangerMode();
+const dangerReady = loadSettings().then((s) => { dangerMode = s.dangerMode; }).catch(() => { dangerMode = false; });
 const router = createRouter({ dangerMode: () => dangerReady.then(() => dangerMode) });
 
 // The user started talking: snapshot what they are looking at and pointing
@@ -140,7 +139,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
   if (changes.blocklist) sendBlocklist();
   if (changes.dangerMode) {
-    loadDangerMode();
+    // Straight from the change, so the very next page call has it.
+    dangerMode = changes.dangerMode.newValue === true;
     sendDangerMode();
   }
 });
