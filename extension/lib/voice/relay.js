@@ -2,17 +2,22 @@
 // messages between content scripts and it. The worker only has to call
 // installVoiceRelay() at top level (see "Voice and subtitles" in extension/README.md).
 //
-//   content PTT_START {silent} -> ensure offscreen, VOICE_START {settings, silent} to offscreen
-//   content PTT_CONFIRM        -> VOICE_CONFIRM (the key is held: chime, show it)
+//   content PTT_START {silent, latch} -> ensure offscreen, VOICE_START {settings, silent, latch} to offscreen
+//   content PTT_CONFIRM        -> VOICE_CONFIRM (the key is held: listen sound, show it)
 //   content PTT_CANCEL         -> VOICE_CANCEL (a quick tap: drop the audio)
 //   content PTT_STOP           -> VOICE_STOP to offscreen
+//   content PTT_HUSH           -> VOICE_HUSH (double-tap Space while speaking: hard-stop
+//                                 the speech), only from the tab that is talking
 //   command "toggle-listening" -> PTT_TOGGLE {settings} to offscreen
 //   content/popup TTS_STOP     -> TTS_STOP to offscreen
+//   content VOICE_STATE_QUERY  -> the current VOICE_STATE back to that tab
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
 //   offscreen SUBTITLE / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
 //   offscreen VOICE_ERROR code "mic_blocked" -> open the options page once
 //   PTT_CONFIRM and every VOICE_STATE also go to the ducker (duck.js), which
 //   quiets other tabs while listening, thinking and speaking
+//   every VOICE_STATE also goes to onVoiceState(state, tabId), with the tab it
+//   went to (the worker's active-tab frame, background/frame.js)
 //
 // There is one offscreen document, so one mic and one voice turn for every
 // tab and frame: a press from another tab while a turn is listening goes to
@@ -32,6 +37,7 @@ export function createVoiceRelay({
   getSettings = () => loadSettings(chromeApi.storage.local),
   log = () => {},
   ducker = createDucker({ chromeApi, getSettings, log }),
+  onVoiceState = () => {},
 } = {}) {
   let creating = null;
   let lastTabId = null;
@@ -56,7 +62,7 @@ export function createVoiceRelay({
       creating = chromeApi.offscreen.createDocument({
         url: OFFSCREEN_PATH,
         reasons: ["USER_MEDIA", "AUDIO_PLAYBACK"],
-        justification: "Hold-to-talk: microphone capture for speech recognition and playback of spoken replies and chimes.",
+        justification: "Hold-to-talk: microphone capture for speech recognition and playback of spoken replies and sound cues.",
       }).catch((err) => {
         // Another caller won the race; that's fine.
         if (!/single offscreen|already exists/i.test(String(err && err.message))) throw err;
@@ -94,6 +100,16 @@ export function createVoiceRelay({
     return tab && tab.id != null ? tab.id : lastTabId;
   }
 
+  // Same tab toTab picks. One chain, so states reach onVoiceState in the
+  // order they came even when the tab has to be looked up.
+  let stateChain = Promise.resolve();
+  function noteState(state) {
+    const call = (id) => { try { onVoiceState(state, id ?? null); } catch {} };
+    stateChain = stateChain
+      .then(() => (lastTabId != null ? lastTabId : activeTabId()))
+      .then(call, () => call(null));
+  }
+
   async function toTab(msg) {
     const tabId = lastTabId != null ? lastTabId : await activeTabId();
     if (tabId == null) return;
@@ -112,7 +128,10 @@ export function createVoiceRelay({
       if (!TO_TAB.has(msg.type)) return false;
       remember(msg);
       toTab(msg);
-      if (msg.type === RT.VOICE_STATE) ducker.onState(msg.state);
+      if (msg.type === RT.VOICE_STATE) {
+        ducker.onState(msg.state);
+        noteState(msg.state);
+      }
       if (msg.type === RT.VOICE_ERROR) ducker.onError?.();
       if (msg.type === RT.VOICE_ERROR && msg.code === "mic_blocked" && !openedOptions) {
         openedOptions = true;
@@ -124,7 +143,7 @@ export function createVoiceRelay({
     switch (msg.type) {
       case RT.PTT_START:
         if (sender.tab && sender.tab.id != null) lastTabId = sender.tab.id;
-        toOffscreen(async () => ({ type: RT.VOICE_START, settings: await getSettings(), ...(msg.silent ? { silent: true } : {}) }));
+        toOffscreen(async () => ({ type: RT.VOICE_START, settings: await getSettings(), ...(msg.silent ? { silent: true } : {}), ...(msg.latch ? { latch: true } : {}) }));
         return true;
       case RT.PTT_CONFIRM:
         // Ducking waits for the offscreen doc's "listening" state, so a turn
@@ -137,11 +156,28 @@ export function createVoiceRelay({
       case RT.PTT_STOP:
         toOffscreen({ type: RT.VOICE_STOP }, { create: false });
         return true;
+      case RT.PTT_HUSH:
+        // A double-tap in another tab must not stop this one; just drop its
+        // first tap's silent start.
+        if (sender.tab && sender.tab.id != null && lastTabId != null && sender.tab.id !== lastTabId) {
+          toOffscreen({ type: RT.VOICE_CANCEL }, { create: false });
+          return true;
+        }
+        toOffscreen({ type: RT.VOICE_HUSH }, { create: false });
+        return true;
       case RT.PTT_TOGGLE:
         toggle(sender.tab && sender.tab.id);
         return true;
       case RT.TTS_STOP:
         toOffscreen({ type: RT.TTS_STOP }, { create: false });
+        return true;
+      case RT.VOICE_STATE_QUERY:
+        // A tab became visible again: tell it the current state (the hotkey
+        // needs it for the latch and the double-tap).
+        if (sender.tab && sender.tab.id != null) {
+          const { from, target, ...state } = replay.state || { type: RT.VOICE_STATE, state: "idle" };
+          try { chromeApi.tabs.sendMessage(sender.tab.id, state)?.catch?.(() => {}); } catch {}
+        }
         return true;
       default:
         return false;
@@ -222,7 +258,7 @@ export function createVoiceRelay({
     return toOffscreen({ type: RT.VOICE_SYNC }, { create: false });
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, resync, ducker, idle: () => chain };
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, resync, ducker, idle: () => chain, statesIdle: () => stateChain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.

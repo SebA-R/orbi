@@ -5,7 +5,8 @@
 
 export const CONTENT_SCRIPTS = [
   { files: ["content/hotkey.js"], allFrames: true },
-  { files: ["content/subtitles.js"], allFrames: false },
+  { files: ["content/orb-face.js", "content/subtitles.js"], allFrames: false },
+  { files: ["content/frame.js"], allFrames: false },
   { files: ["content/context.js"], allFrames: false },
 ];
 

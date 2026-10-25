@@ -23,12 +23,19 @@
   if (globalThis[FLAG]) return; // idempotent if injected twice
   globalThis[FLAG] = true;
 
-  const RT = { SUBTITLE: "subtitle", VOICE_STATE: "voice.state", SETTINGS_CHANGED: "settings.changed" };
+  // VOICE_LEVEL ({ level: 0..1 }) is optional: nothing sends it yet, and the
+  // orb loops its listening and speaking motion until something does.
+  const RT = { SUBTITLE: "subtitle", VOICE_STATE: "voice.state", VOICE_LEVEL: "voice.level", SETTINGS_CHANGED: "settings.changed" };
+  // The status orb face comes from content/orb-face.js, loaded just before this
+  // script. Without it the card simply has no orb.
+  const FACE = globalThis.__clearcartOrbFace || null;
   const HIDE_MIN_MS = 10000;  // shortest wait after the last words, once nothing is being said
   const HIDE_MAX_MS = 60000;  // longest wait, however much text is on the card
   const MS_PER_EXTRA_WORD = 300; // about 200 words per minute of extra reading time
   const FREE_WORDS = 15;      // lines up to this many words get the minimum wait
   const STALE_MIN_MS = 30000; // hard cap after the last update, even if a state never returns to idle
+  const STALE_LATCHED_MS = 70000; // a latched session stops itself after 60 s without speech
+  const LATCH_HINT = "Listening. Press Space to send.";
   const FADE_MS = 700;        // matches the .wrap fade-out transition
   const MAX_CHARS = 600;
   const STATES = new Set(["idle", "listening", "thinking", "speaking"]);
@@ -44,7 +51,6 @@
   --ink: #1d1d1f; --muted: #6e6e73;
   --card: rgb(255 255 255 / .74); --edge: rgb(0 0 0 / .08);
   --shadow: 0 10px 40px rgb(30 34 60 / .14), 0 1px 3px rgb(30 34 60 / .08);
-  --s1: #2e8bff; --s2: #b65cff; --s3: #ff4d7a; --s4: #ffa14a;
   --ease: cubic-bezier(.25, .8, .25, 1);
   position: fixed !important; left: 50% !important; bottom: 28px !important; z-index: 2147483647 !important;
   width: max-content; max-width: min(720px, calc(100vw - 32px));
@@ -66,20 +72,8 @@
   background: var(--card); border: 1px solid var(--edge); box-shadow: var(--shadow);
   -webkit-backdrop-filter: blur(28px) saturate(180%); backdrop-filter: blur(28px) saturate(180%);
 }
-.dot {
-  flex: none; width: 9px; height: 9px; margin-top: 7px; border-radius: 50%;
-  background: var(--muted); opacity: .45;
-  transition: background-color .3s var(--ease), opacity .3s var(--ease);
-}
-.wrap[data-state="listening"] .dot { background: var(--s1); opacity: 1; animation: breathe 1.6s ease-in-out infinite; }
-.wrap[data-state="thinking"] .dot {
-  background: conic-gradient(from 0deg, var(--s1), var(--s2), var(--s3), var(--s4), var(--s1));
-  opacity: 1; animation: spin 1.4s linear infinite;
-}
-.wrap[data-state="speaking"] .dot {
-  background: linear-gradient(135deg, var(--s2), var(--s3));
-  opacity: 1; animation: pulse .9s ease-in-out infinite alternate;
-}
+.card > .ccf { margin: 1px 0 0 !important; }
+.wrap:not(.on) .ccf, .wrap:not(.on) .ccf * { animation: none !important; } /* no work while hidden */
 .lines { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .user {
   font-size: 13.5px; line-height: 1.4; font-weight: 400; letter-spacing: -.005em; color: var(--muted);
@@ -89,15 +83,13 @@
   font-size: 21px; line-height: 1.36; font-weight: 500; letter-spacing: -.018em; color: var(--ink);
   max-height: calc(21px * 1.36 * 3); overflow: hidden; overflow-wrap: anywhere;
 }
-.user:empty, .agent:empty { display: none; }
+.hint { font-size: 12px; line-height: 1.3; font-weight: 500; letter-spacing: .01em; color: var(--muted); }
+.user:empty, .agent:empty, .hint:empty { display: none; }
 .w { display: inline; animation: word-in .46s var(--ease) both; animation-delay: calc(var(--i, 0) * 55ms); }
 @keyframes word-in {
   from { opacity: 0; filter: blur(7px); transform: translateY(3px); }
   to { opacity: 1; filter: blur(0); transform: none; }
 }
-@keyframes breathe { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.72); opacity: .6; } }
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse { from { transform: scale(.8); } to { transform: scale(1.15); } }
 @media (prefers-color-scheme: dark) {
   .wrap {
     --ink: #f5f5f7; --muted: #a1a1a6;
@@ -108,7 +100,6 @@
 @media (prefers-reduced-motion: reduce) {
   .wrap, .wrap.on { transform: translate(-50%, 0); }
   .w { animation-name: fade-in; animation-duration: .2s; animation-delay: 0s; }
-  .wrap[data-state] .dot { animation: none; transform: none; }
   @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 }
 @media (forced-colors: active) {
@@ -118,8 +109,8 @@
 `;
 
   const ui = {
-    host: null, wrap: null, user: null, agent: null,
-    enabled: true, state: "idle",
+    host: null, wrap: null, user: null, agent: null, face: null,
+    enabled: true, state: "idle", latched: false, hint: null,
     agentWords: [], agentFinal: false, userFinal: false, lastSpeaker: null,
     hideTimer: 0,
     staleTimer: 0,
@@ -141,13 +132,13 @@
     let adopted = false;
     try {
       const sheet = new CSSStyleSheet();
-      sheet.replaceSync(CSS);
+      sheet.replaceSync(FACE ? FACE.CSS + CSS : CSS);
       shadow.adoptedStyleSheets = [sheet]; // not subject to page style-src CSP
       adopted = true;
     } catch {}
     if (!adopted) {
       const style = document.createElement("style");
-      style.textContent = CSS;
+      style.textContent = FACE ? FACE.CSS + CSS : CSS;
       shadow.append(style);
     }
 
@@ -156,20 +147,25 @@
     wrap.dataset.state = ui.state;
     const card = document.createElement("div");
     card.className = "card";
-    const dot = document.createElement("span");
-    dot.className = "dot";
+    const face = FACE ? FACE.create(document, { canPlay: () => wrap.classList.contains("on") }) : null;
+    if (face) face.setState(ui.state);
     const lines = document.createElement("div");
     lines.className = "lines";
+    const hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = ui.latched ? LATCH_HINT : "";
     const user = document.createElement("div");
     user.className = "user";
     const agent = document.createElement("div");
     agent.className = "agent";
-    lines.append(user, agent);
-    card.append(dot, lines);
+    lines.append(hint, user, agent);
+    if (face) card.append(face.el);
+    card.append(lines);
     wrap.append(card);
     shadow.append(wrap);
     root.append(host);
-    Object.assign(ui, { host, wrap, user, agent });
+    if (ui.face) ui.face.destroy();
+    Object.assign(ui, { host, wrap, hint, user, agent, face });
     keepLast(root);
     return true;
   }
@@ -238,7 +234,7 @@
     flushPendingClear();
     clearTimeout(ui.staleTimer);
     // The stale cap never cuts a long caption short.
-    ui.staleTimer = setTimeout(hide, Math.max(STALE_MIN_MS, hideDelayMs() + 10000));
+    ui.staleTimer = setTimeout(hide, Math.max(ui.latched ? STALE_LATCHED_MS : STALE_MIN_MS, hideDelayMs() + 10000));
     ui.wrap.classList.add("on");
     raise();
   }
@@ -327,16 +323,20 @@
       ui.agentFinal = final;
     }
     ui.lastSpeaker = speaker;
+    if (ui.face) ui.face.poke(); // a caption is activity: restart the idle clock
     if (!text && !ui.user.textContent && !ui.agent.textContent) return scheduleHide();
     show();
     if (final) scheduleHide();
     else cancelHide();
   }
 
-  function onState(state) {
+  function onState(state, latched) {
     if (!STATES.has(state)) return;
     ui.state = state;
+    ui.latched = state === "listening" && latched === true;
+    if (ui.hint) ui.hint.textContent = ui.latched ? LATCH_HINT : "";
     if (ui.wrap) ui.wrap.dataset.state = state;
+    if (ui.face) ui.face.setState(state);
     if (!ui.enabled) return;
     if (state === "idle") {
       if (ui.wrap && ui.wrap.classList.contains("on") && !ui.hideTimer) scheduleHide();
@@ -353,8 +353,9 @@
       hide();
       if (watcher) watcher.disconnect();
       watcher = null;
+      if (ui.face) ui.face.destroy();
       if (ui.host) ui.host.remove();
-      ui.host = ui.wrap = ui.user = ui.agent = null;
+      ui.host = ui.wrap = ui.hint = ui.user = ui.agent = ui.face = null;
     }
   }
 
@@ -363,7 +364,8 @@
     chromeApi.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg !== "object") return;
       if (msg.type === RT.SUBTITLE) onSubtitle(msg);
-      else if (msg.type === RT.VOICE_STATE) onState(msg.state);
+      else if (msg.type === RT.VOICE_STATE) onState(msg.state, msg.latched);
+      else if (msg.type === RT.VOICE_LEVEL) { if (ui.face) ui.face.setLevel(msg.level); }
       else if (msg.type === RT.SETTINGS_CHANGED && msg.settings && "subtitles" in msg.settings) {
         setEnabled(msg.settings.subtitles);
       }

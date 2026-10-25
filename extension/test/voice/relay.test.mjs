@@ -238,3 +238,47 @@ test("a replayed line is skipped once a newer live line for that speaker has gon
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(state.tabSent.map((x) => x.m.text || x.m.state), ["speaking", "Three options."]);
 });
+
+test("PTT_START latch passes through to VOICE_START", async () => {
+  const { relay, state } = make();
+  relay.onMessage({ type: RT.PTT_START, latch: true }, { tab: { id: 3 } });
+  await relay.idle();
+  assert.deepEqual(state.runtimeSent[0], { type: RT.VOICE_START, settings: SETTINGS, latch: true, target: "offscreen" });
+});
+
+test("PTT_HUSH reaches the offscreen doc only from the tab that is talking", async () => {
+  const { relay, state } = make();
+  relay.onMessage({ type: RT.PTT_START, silent: true }, { tab: { id: 3 } });
+  relay.onMessage({ type: RT.PTT_HUSH }, { tab: { id: 9 } });
+  relay.onMessage({ type: RT.PTT_HUSH }, { tab: { id: 3 } });
+  await relay.idle();
+  assert.deepEqual(state.runtimeSent.map((m) => m.type), [RT.VOICE_START, RT.VOICE_CANCEL, RT.VOICE_HUSH]);
+});
+
+test("a latched listening state follows to the next tab with latched kept", async () => {
+  const { relay, state } = make();
+  relay.onMessage({ type: RT.PTT_START, latch: true }, { tab: { id: 3 } });
+  relay.onMessage({ type: RT.VOICE_STATE, state: "listening", latched: true, from: "offscreen" });
+  await relay.idle();
+  await relay.onTabActivated({ tabId: 4 });
+  assert.deepEqual(state.tabSent.filter((s) => s.tabId === 4).map((s) => s.m), [{ type: RT.VOICE_STATE, state: "listening", latched: true }]);
+});
+
+test("a hush from another tab only drops that tab's silent start", async () => {
+  const { relay, state } = make();
+  relay.onMessage({ type: RT.PTT_START, silent: true }, { tab: { id: 3 } });
+  relay.onMessage({ type: RT.PTT_HUSH }, { tab: { id: 9 } });
+  await relay.idle();
+  assert.deepEqual(state.runtimeSent.map((m) => m.type), [RT.VOICE_START, RT.VOICE_CANCEL]);
+});
+
+test("VOICE_STATE_QUERY answers the asking tab with the current state", async () => {
+  const { relay, state } = make();
+  relay.onMessage({ type: RT.VOICE_STATE_QUERY }, { tab: { id: 5 } });
+  relay.onMessage({ type: RT.VOICE_STATE, state: "listening", latched: true, from: "offscreen" });
+  relay.onMessage({ type: RT.VOICE_STATE_QUERY }, { tab: { id: 5 } });
+  await relay.idle();
+  const to5 = state.tabSent.filter((s) => s.tabId === 5).map((s) => s.m);
+  assert.deepEqual(to5[0], { type: RT.VOICE_STATE, state: "idle" });
+  assert.deepEqual(to5.at(-1), { type: RT.VOICE_STATE, state: "listening", latched: true });
+});

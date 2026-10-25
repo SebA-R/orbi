@@ -893,7 +893,13 @@
 
   function handle(msg) {
     return Promise.resolve()
-      .then(function () { return call(msg.method, msg.params); })
+      .then(function () {
+        // Danger mode comes from the worker, from the extension's own
+        // settings, on every call (the message, never params, which carry
+        // what the agent sent). Anything but true is off.
+        if (Protect) Protect.setDangerMode(msg.dangerMode === true);
+        return call(msg.method, msg.params);
+      })
       .then(
         // href: which document answered, so the worker can drop a reply
         // from a page that moved to a blocked site. Never passed to Claude.
