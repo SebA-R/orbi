@@ -11,14 +11,22 @@
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
 //   offscreen SUBTITLE / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
 //   offscreen VOICE_ERROR code "mic_blocked" -> open the options page once
+//   PTT_CONFIRM and every VOICE_STATE also go to the ducker (duck.js), which
+//   quiets other tabs while listening, thinking and speaking
 import { RT } from "../protocol.js";
 import { loadSettings } from "../settings.js";
+import { createDucker } from "./duck.js";
 
 export const OFFSCREEN_PATH = "offscreen/offscreen.html";
 export const COMMAND_TOGGLE = "toggle-listening";
 const TO_TAB = new Set([RT.SUBTITLE, RT.VOICE_STATE, RT.VOICE_ERROR, RT.STATUS, RT.VOICE_PARTIAL, RT.VOICE_FINAL]);
 
-export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = () => loadSettings(chromeApi.storage.local), log = () => {} } = {}) {
+export function createVoiceRelay({
+  chromeApi = globalThis.chrome,
+  getSettings = () => loadSettings(chromeApi.storage.local),
+  log = () => {},
+  ducker = createDucker({ chromeApi, getSettings, log }),
+} = {}) {
   let creating = null;
   let lastTabId = null;
   let openedOptions = false;
@@ -98,6 +106,7 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
       if (!TO_TAB.has(msg.type)) return false;
       remember(msg);
       toTab(msg);
+      if (msg.type === RT.VOICE_STATE) ducker.onState(msg.state);
       if (msg.type === RT.VOICE_ERROR && msg.code === "mic_blocked" && !openedOptions) {
         openedOptions = true;
         chromeApi.runtime.openOptionsPage?.();
@@ -112,6 +121,7 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
         return true;
       case RT.PTT_CONFIRM:
         toOffscreen({ type: RT.VOICE_CONFIRM }, { create: false });
+        ducker.duck(); // the key is really held; a quick tap never gets here
         return true;
       case RT.PTT_CANCEL:
         toOffscreen({ type: RT.VOICE_CANCEL }, { create: false });
@@ -194,7 +204,7 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
     if (tab && tab.id != null) await onTabActivated({ tabId: tab.id });
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, idle: () => chain };
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, ducker, idle: () => chain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.
@@ -206,5 +216,6 @@ export function installVoiceRelay(opts = {}) {
   chromeApi.storage.onChanged.addListener((changes, area) => relay.onStorageChanged(changes, area));
   chromeApi.tabs.onActivated?.addListener((info) => relay.onTabActivated(info));
   chromeApi.windows?.onFocusChanged?.addListener((id) => relay.onWindowFocused(id));
+  relay.ducker.recover?.().catch(() => {});
   return relay;
 }
