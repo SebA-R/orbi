@@ -63,6 +63,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/context.js` | Declared content script (top frame): remembers the element under the mouse and the last one clicked or focused, for `page_context` |
 | `content/indicator.js` | Injected on each call that touches a tab: the "Clearcart is using this tab" pill |
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP`, Option+Space latch, double-tap Space hush |
+| `content/orb-face.js` | The mini orb face (eyes and a smile) that shows the voice state; loaded before `subtitles.js` and by the popup |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `content/frame.js`, `background/frame.js` | Active-tab frame: a faint rotating spectrum ring around the tab Clearcart is acting on during a turn or within 10 s of an agent call (declared content script, top frame; the worker sends `FRAME {on}`) |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
