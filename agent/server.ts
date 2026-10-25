@@ -71,7 +71,23 @@ function serveStatic(pathname: string, res: http.ServerResponse) {
   });
 }
 
+// Environment variables arrive as text; parse "true"/"false" into a real
+// boolean and refuse anything else, so a typo can't silently pick a mode.
+export function envBool(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  throw new Error(`${name} must be true or false, got "${process.env[name]}"`);
+}
+
+// CLEARCART_VOICE=false: for tests and recordings that don't need audio. No
+// token is minted, so nothing reaches Cartesia: replies show as text only and
+// the mic reports that voice is off.
+const VOICE_ENABLED: boolean = envBool("CLEARCART_VOICE", true);
+
 async function cartesiaToken(res: http.ServerResponse) {
+  if (!VOICE_ENABLED) return json(res, 503, { error: "Voice is off (CLEARCART_VOICE=false)", voice: false });
   const key = process.env.CARTESIA_API_KEY;
   if (!key) return json(res, 500, { error: "CARTESIA_API_KEY is not set in .env" });
   try {
@@ -97,8 +113,8 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
   if (req.method === "GET" && url.pathname === "/healthz") {
-    if (EXT) return json(res, 200, { ok: true, echo: ECHO, browser: "ext", extension: extBridge.connected() });
-    return json(res, 200, { ok: true, echo: ECHO });
+    if (EXT) return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED, browser: "ext", extension: extBridge.connected() });
+    return json(res, 200, { ok: true, echo: ECHO, voice: VOICE_ENABLED });
   }
   if (req.method === "GET" || req.method === "HEAD") return serveStatic(url.pathname, res);
   res.writeHead(405).end();
