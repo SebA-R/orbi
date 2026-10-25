@@ -43,6 +43,8 @@ test("containsCardNumber finds Luhn-valid 13-19 digit runs only", () => {
   assert.ok(containsCardNumber("4111 1111 1111 1111"));
   assert.ok(containsCardNumber("pay 4111-1111-1111-1111 now"));
   assert.ok(containsCardNumber("x94111111111111111"));
+  assert.ok(containsCardNumber("8171 9999 2766 0000"), "RuPay");
+  assert.ok(containsCardNumber("9792123456789018"), "Troy");
   assert.ok(!containsCardNumber("4111 1111 1111 2"));
   assert.ok(!containsCardNumber("order 12345 qty 2"));
   assert.ok(!containsCardNumber("blue wool sweater"));
@@ -87,6 +89,8 @@ test("type refuses card numbers and payment fields, and allows normal text", asy
 
   const num = fakes();
   await assert.rejects(num.router.route("type", { text: "4111111111111111" }), { code: "payment_field" });
+  await assert.rejects(num.router.route("type", { text: "8123456789012340" }), { code: "payment_field" });
+  await assert.rejects(num.router.route("type", { text: "9792 1234 5678 9018" }), { code: "payment_field" });
   assert.ok(!num.calls.some((c) => c[0] === "cdp.type" || c[0] === "cdp.send"));
 
   const field = fakes({ focus: { kind: "cc-csc", payment: true } });
@@ -368,4 +372,105 @@ test("dismiss_overlay: a sign-in or payment dialog is refused with nothing press
   assert.ok(!s.calls.some((c) => c[0].startsWith("cdp") || c[1] === "overlay_hide"));
   const none = overlayRouter({ find: () => ({ found: false }) });
   assert.equal((await none.router.route("dismiss_overlay", {})).dismissed, false);
+});
+
+// Google Docs, Sheets and Slides (background/gdocs.js).
+function docsFakes({ url = "https://docs.google.com/document/d/1jfHEhSnJs75Jd188KNDu0UE-SKfh7QSgtpYzw1LElUc/edit", tabUrl = url + "?tab=t.0", focus, exported = "Doc body text", type = "text/plain", landed = "https://doc-0s-docstext.googleusercontent.com/x", blockAfterFetch = false } = {}) {
+  const calls = [];
+  const chromeApi = {
+    scripting: { executeScript: async () => {} },
+    tabs: {
+      get: async () => ({ id: 7, url: tabUrl }),
+      sendMessage: async (_t, msg) => {
+        calls.push(["page", msg.method]);
+        if (msg.method === "focused_field") return { ok: true, result: focus };
+        return { ok: true, href: tabUrl, result: { url, title: "Doc - Google Docs", text: "File\n\nEdit", truncated: false } };
+      },
+    },
+  };
+  const tabs = {
+    resolveAllowedTab: async (id) => id ?? 7,
+    assertPageAllowed: async (id, u) => {
+      calls.push(["allowed", u ?? null]);
+      if (blockAfterFetch && calls.some((c) => c[0] === "fetch")) throw Object.assign(new Error("tab 7 is on a blocked site"), { code: "not_allowed" });
+    },
+  };
+  const cdp = { send: async (_t, m, p) => calls.push(["cdp.send", m, p]), click: async () => {}, key: async () => {} };
+  const fetchImpl = async (u) => {
+    calls.push(["fetch", u]);
+    if (exported == null) return { ok: false, status: 403, url: u, headers: { get: () => "text/html" }, text: async () => "" };
+    return { ok: true, status: 200, url: landed, headers: { get: (h) => (h === "content-type" ? type : null) }, text: async () => exported };
+  };
+  return { calls, router: createRouter({ chromeApi, tabs, cdp, fetchImpl }) };
+}
+
+test("get_page_text on a Google Doc reads the file's text, then checks the tab again", async () => {
+  const { calls, router } = docsFakes();
+  const r = await router.route("get_page_text", { tabId: 7 });
+  assert.equal(r.text, "Doc body text\n\n---\n\nFile\n\nEdit");
+  assert.equal(r.source, "Google Docs file text");
+  assert.match(r.note, /click in the document/);
+  const fetchAt = calls.findIndex((c) => c[0] === "fetch");
+  assert.equal(calls[fetchAt][1], "https://docs.google.com/document/d/1jfHEhSnJs75Jd188KNDu0UE-SKfh7QSgtpYzw1LElUc/export?format=txt");
+  assert.ok(calls.slice(fetchAt).some((c) => c[0] === "allowed"), "allowlist checked after the download");
+  // A sheet exports the tab shown.
+  const s = docsFakes({ url: "https://docs.google.com/spreadsheets/d/1uuLbAjXtZuXK-N8nNT4FQzzi4bvgXtxI6BAdiIEDUHo/edit", tabUrl: "https://docs.google.com/spreadsheets/d/1uuLbAjXtZuXK-N8nNT4FQzzi4bvgXtxI6BAdiIEDUHo/edit#gid=9" });
+  await s.router.route("get_page_text", {});
+  assert.match(s.calls.find((c) => c[0] === "fetch")[1], /format=csv&gid=9$/);
+});
+
+test("get_page_text keeps the page text, with a note, when the file can't be downloaded; other sites never fetch", async () => {
+  const d = docsFakes({ exported: null });
+  const r = await d.router.route("get_page_text", {});
+  assert.equal(r.text, "File\n\nEdit");
+  assert.match(r.note, /could not be downloaded/);
+  const other = docsFakes({ url: "https://www.example.com/a", tabUrl: "https://www.example.com/a" });
+  const o = await other.router.route("get_page_text", {});
+  assert.equal(o.note, undefined);
+  assert.ok(!other.calls.some((c) => c[0] === "fetch"));
+});
+
+test("type with nothing focused is refused before any key; read_page on Docs says how to edit", async () => {
+  const { calls, router } = docsFakes({ focus: { kind: "none", payment: false, nothing: true } });
+  await assert.rejects(router.route("type", { text: "hello" }), { code: "no_element", message: /Click the field or editor first/ });
+  assert.ok(!calls.some((c) => c[0] === "cdp.send"));
+  // A focused element that is not a text field still types (insertText), as before.
+  const b = docsFakes({ focus: { kind: "none", payment: false } });
+  await b.router.route("type", { text: "a" });
+  assert.ok(b.calls.some((c) => c[0] === "cdp.send" && c[1] === "Input.insertText"));
+  const rp = await router.route("read_page", {});
+  assert.match(rp.note, /Google Docs draws the document on a canvas/);
+});
+
+test("get_page_text drops the file's text when the tab moved to a blocked site during the download", async () => {
+  const { router } = docsFakes({ blockAfterFetch: true, exported: "secret plans" });
+  await assert.rejects(router.route("get_page_text", {}), { code: "not_allowed" });
+});
+
+test("get_page_text: a sheet's gid only from the page that answered; CSV; maxChars; a redirect to sign-in", async () => {
+  const sheet = "https://docs.google.com/spreadsheets/d/1uuLbAjXtZuXK-N8nNT4FQzzi4bvgXtxI6BAdiIEDUHo/edit";
+  // The tab has moved on to another file: its gid is not used.
+  const moved = docsFakes({ url: sheet, tabUrl: "https://docs.google.com/spreadsheets/d/1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/edit#gid=5", type: "text/csv; charset=utf-8", exported: "a,b\n1,2" });
+  const r = await moved.router.route("get_page_text", {});
+  assert.equal(moved.calls.find((c) => c[0] === "fetch")[1], "https://docs.google.com/spreadsheets/d/1uuLbAjXtZuXK-N8nNT4FQzzi4bvgXtxI6BAdiIEDUHo/export?format=csv");
+  assert.match(r.text, /^a,b\n1,2/);
+  const long = docsFakes({ exported: "x".repeat(500) });
+  const t = await long.router.route("get_page_text", { maxChars: 100 });
+  assert.equal(t.truncated, true);
+  assert.equal(t.text, "x".repeat(100) + "\n… (truncated)");
+  const signin = docsFakes({ landed: "https://accounts.google.com/v3/signin/identifier" });
+  assert.match((await signin.router.route("get_page_text", {})).note, /could not be downloaded/);
+  // The account and a link-shared file's key go along.
+  const keyed = docsFakes({ tabUrl: "https://docs.google.com/document/d/1jfHEhSnJs75Jd188KNDu0UE-SKfh7QSgtpYzw1LElUc/edit?authuser=2&resourcekey=0-abc_D" });
+  await keyed.router.route("get_page_text", {});
+  assert.match(keyed.calls.find((c) => c[0] === "fetch")[1], /format=txt&authuser=2&resourcekey=0-abc_D$/);
+});
+
+test("in a hidden field (Google Docs) a typed space goes in without a Space key; letters are keys", async () => {
+  const { calls, router } = docsFakes({ focus: { kind: "other", payment: false, text: true, hidden: true } });
+  await router.route("type", { text: "a b" });
+  const sent = calls.filter((c) => c[0] === "cdp.send");
+  assert.ok(!sent.some((c) => c[1] === "Input.dispatchKeyEvent" && c[2].code === "Space"), "no Space key event");
+  assert.ok(sent.some((c) => c[1] === "Input.insertText" && c[2].text === " "));
+  assert.ok(sent.some((c) => c[1] === "Input.dispatchKeyEvent" && c[2].type === "char" && c[2].text === "a"));
 });

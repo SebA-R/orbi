@@ -33,6 +33,12 @@
 // turns in steps, and the lock and hit-test checks run again at press time
 // (after the pointer arrives). Off, clicks and scrolls go to CDP at once.
 // Tab work, reads and screenshots are never slowed.
+//
+// Canvas editors: Google Docs, Sheets and Slides draw the file on a canvas,
+// so get_page_text gets the file's text from its export link (gdocs.js),
+// and read_page and get_page_text say how to edit there. Typing with
+// nothing focused is refused with a message to click into the editor first,
+// instead of answering ok for text that went nowhere.
 
 import * as tabsModule from "./tabs.js";
 import * as cdpModule from "./cdp.js";
@@ -40,7 +46,9 @@ import { ACT_METHODS, createFollower } from "./follow.js";
 import { assertInViewport, parseKey } from "./cdp.js";
 import { createActor } from "./actor.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
+import "../content/mask.js";
 import { luhnValid } from "../lib/log.js";
+import { APPS, editNote, exportText, googleFileOf } from "./gdocs.js";
 
 export const PAGE_FILES = ["content/mask.js", "content/protect.js", "content/page.js"];
 // page_context also loads the pointer tracker, for tabs that were open
@@ -103,21 +111,12 @@ export const NO_CARD_FIELDS = "couldn't find the card fields on this page";
 const NOT_FILLED = "couldn't fill the card fields on this page";
 
 const NO_RECEIVER = /Receiving end does not exist|Could not establish connection/i;
-const DIGIT_RUN = /\d(?:[ -]?\d){12,18}/g;
 
-// True when the text holds a Luhn-valid run of 13 to 19 digits (optionally
-// grouped by single spaces or dashes), checked at every window so a card
-// number glued to other digits is still caught.
+// True when the text holds a card number: a Luhn-valid 13 to 19 digit
+// window in any digit run (optionally grouped by single spaces or dashes),
+// by content/mask.js, so a card number glued to other digits is still caught.
 export function containsCardNumber(text) {
-  for (const run of String(text).match(DIGIT_RUN) || []) {
-    const d = run.replace(/[ -]/g, "");
-    for (let len = 13; len <= Math.min(19, d.length); len++) {
-      for (let i = 0; i + len <= d.length; i++) {
-        if (luhnValid(d.slice(i, i + len))) return true;
-      }
-    }
-  }
-  return false;
+  return globalThis.ClearcartMask.hasCardNumber(String(text));
 }
 
 // A coordinate from the bridge, checked like cdp.js does.
@@ -204,6 +203,8 @@ export function createRouter({
   watchable = async () => false,
   settle = (ms) => new Promise((r) => setTimeout(r, ms)),
   actor = createActor({ cdp, tabWindow: async (id) => (await chromeApi.tabs.get(id)).windowId }),
+  // Fetches a Google file's export (gdocs.js).
+  fetchImpl = (...a) => globalThis.fetch(...a),
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
@@ -338,6 +339,30 @@ export function createRouter({
     return reply.result;
   }
 
+  // get_page_text, with a Google Docs, Sheets or Slides file's own text in
+  // place of the menus the page script sees (gdocs.js). The full address
+  // (a sheet's gid is in its hash) is used only while it is the page that
+  // answered.
+  async function pageText(tabId, params) {
+    const r = await pageCall(tabId, "get_page_text", params);
+    let file = r && googleFileOf(r.url);
+    if (!file) return r;
+    const full = await Promise.resolve(chromeApi.tabs.get(tabId)).then((t) => t && t.url, () => null);
+    if (typeof full === "string" && full.split(/[?#]/)[0] === r.url) file = googleFileOf(full) || file;
+    const text = await exportText(file, { fetchImpl });
+    // The tab may have moved to a blocked site during the download.
+    await recheck(tabId);
+    const app = APPS[file.app];
+    if (text == null) {
+      return { ...r, note: `${app.name} draws the ${app.what} on a canvas and its text could not be downloaded (not signed in, no access, or the owner turned off downloads), so this text is only the page's menus. Take a screenshot to read the ${app.what}.` };
+    }
+    const max = Math.max(100, Math.min(Number(params.maxChars) || 20000, 200000));
+    let all = r.text ? `${text}\n\n---\n\n${r.text}` : text;
+    const truncated = all.length > max;
+    if (truncated) all = all.slice(0, max) + "\n… (truncated)";
+    return { ...r, text: all, truncated, source: `${app.name} file text`, note: editNote(file.app) };
+  }
+
   const paced = () => Promise.resolve().then(watchable).then((v) => v === true, () => false);
 
   // CDP typing goes around the page script, so check here that it is not
@@ -371,8 +396,10 @@ export function createRouter({
   }
 
   // Key events only go into a plain text field; anywhere else (a button, a
-  // select, the page) a key press could act on its own.
-  const keysFor = (focus) => ({ keys: !!(focus && focus.text === true) });
+  // select, the page) a key press could act on its own. A space in a hidden
+  // field (a canvas editor's, such as Google Docs') goes in without a Space
+  // key, which content/hotkey.js would take for the user holding Space.
+  const keysFor = (focus, ch) => ({ keys: !!(focus && focus.text === true) && !(focus.hidden === true && ch === " ") });
 
   // Typing: the check for every character. The focus may have moved to a
   // card or password field since the last one, a newline may now land in a
@@ -381,7 +408,7 @@ export function createRouter({
     const focus = await guardType(tabId, "");
     sameDoc(tabId, start);
     if (/[\r\n]/.test(ch)) await pageCall(tabId, "guard_key", { key: "Enter" });
-    return keysFor(focus);
+    return keysFor(focus, ch);
   }
 
   // The element's exact centre, unrounded: the same point the page hit-tests
@@ -794,7 +821,10 @@ export function createRouter({
       case "click":
         return clickAt(tabId, params, epoch);
       case "type": {
-        await guardType(tabId, params.text);
+        const focus = await guardType(tabId, params.text);
+        if (focus && focus.nothing && params.text) {
+          throw new BridgeError(ERR.NO_ELEMENT, "Nothing that takes text has focus. Click the field or editor first (in Google Docs or another canvas editor, click in the document where the text goes), then type.");
+        }
         const start = docs.get(tabId);
         // A typed newline can submit the focused field's form.
         if (/[\r\n]/.test(String(params.text ?? ""))) await pageCall(tabId, "guard_key", { key: "Enter" });
@@ -853,6 +883,12 @@ export function createRouter({
         await recheck(tabId);
         return shot;
       }
+    }
+    if (method === "get_page_text") return pageText(tabId, params);
+    if (method === "read_page") {
+      const r = await pageCall(tabId, method, params);
+      const file = r && googleFileOf(r.url);
+      return file ? { ...r, note: editNote(file.app) } : r;
     }
     if (PAGE_METHODS.has(method)) return pageCall(tabId, method, params);
     throw new BridgeError(ERR.UNKNOWN_METHOD, `unknown method: ${method}`);

@@ -16,6 +16,9 @@ test("maskCardNumbers hides Luhn-valid runs, grouped or not, and keeps other num
   assert.equal(maskCardNumbers("4111-1111-1111-1111"), "[card number]");
   assert.equal(maskCardNumbers("order 1234567890123 total $14.27"), "order 1234567890123 total $14.27");
   assert.equal(maskCardNumbers("ending in 1111"), "ending in 1111");
+  // The same check as content/mask.js: a card glued to other digits too.
+  assert.equal(maskCardNumbers("card 4111 1111 1111 1111 123"), "card [card number]");
+  assert.equal(maskCardNumbers("Order 12 4111111111111111"), "Order [card number]");
 });
 
 test("redact removes secret keys at any depth and masks strings", () => {

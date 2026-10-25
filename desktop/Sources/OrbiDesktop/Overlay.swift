@@ -158,6 +158,8 @@ final class Overlay: NSObject, WKNavigationDelegate {
     w.hasShadow = false
     w.isReleasedWhenClosed = false
     w.animationBehavior = .none
+    // Not an accessibility element, so hit tests look through it.
+    w.setAccessibilityElement(false)
     let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
 
     let blur = ClickThroughBlur(frame: .zero)
@@ -428,6 +430,16 @@ final class Overlay: NSObject, WKNavigationDelegate {
   }
 
   // overlay {cursor}: only the drawn cursor, not the real pointer.
+
+  // Runs body with the overlay window off screen, for a hit test that must
+  // see what is under it. Put back at once, within the same run loop turn.
+  func withoutWindow<T>(_ body: () -> T) -> T {
+    guard let w = window, w.isVisible else { return body() }
+    w.orderOut(nil)
+    defer { w.orderFrontRegardless() }
+    return body()
+  }
+
   private func glide(to p: CGPoint) {
     glide?.cancel()
     guard let from = drawn, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {

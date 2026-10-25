@@ -42,3 +42,45 @@ test("maskValue masks payment elements and card runs in free text", () => {
   assert.ok(!out.includes("4111"), out);
   assert.ok(out.includes("1-800-555-0142"), out);
 });
+
+test("maskCardRuns finds a card glued to other digits: a CVC, an expiry, a short number", () => {
+  const { window } = loadPage("");
+  const { maskCardRuns, hasCardNumber } = window.ClearcartMask;
+  const M = "[masked card number]";
+  assert.equal(maskCardRuns("Card 4111 1111 1111 1111 123"), `Card ${M}`);
+  assert.equal(maskCardRuns("Card 4111 1111 1111 1111 05/27"), `Card ${M}/27`);
+  assert.equal(maskCardRuns("Order 12 4111111111111111"), `Order ${M}`);
+  assert.equal(maskCardRuns("CVV: 4111111111111111123"), `CVV: ${M}`);
+  assert.equal(maskCardRuns("Card 5555-5555-5555-4444-12 ok"), `Card ${M} ok`);
+  assert.equal(hasCardNumber("pay 4111 1111 1111 1111 123"), true);
+  assert.equal(hasCardNumber("order 12345 qty 2, ending in 1111"), false);
+  // Cards that start with 8 or 9: RuPay, UnionPay 81, Troy 9792.
+  for (const n of ["8123456789012340", "8171 9999 2766 0000", "9792123456789018"]) {
+    assert.equal(maskCardRuns(`card ${n}`), `card ${M}`, n);
+    assert.equal(hasCardNumber(n), true, n);
+  }
+  // Order and tracking numbers are not cards.
+  for (const n of ["Order 112-4829105-7730216", "Tracking 9400111202555842736455", "Tracking 9400 1112 0255 5842 7364 55", "Order 123456789012345678"]) {
+    assert.equal(maskCardRuns(n), n, n);
+  }
+  assert.equal(maskCardRuns("x".repeat(10) + "1".repeat(5000)), "x".repeat(10) + M);
+});
+
+test("order and tracking numbers mostly stay readable", () => {
+  const { window } = loadPage("");
+  const { maskCardRuns } = window.ClearcartMask;
+  // Random digits, seeded: Amazon-style order ids and 22-digit tracking numbers.
+  let seed = 7;
+  const digit = () => ((seed = (seed * 1103515245 + 12345) % 2147483648), String(seed % 10));
+  const digits = (n) => Array.from({ length: n }, digit).join("");
+  const masked = { orders: 0, spaced: 0, plain: 0 };
+  for (let i = 0; i < 500; i++) {
+    const o = `112-${digits(7)}-${digits(7)}`;
+    if (maskCardRuns(o) !== o) masked.orders++;
+    const t = `9400 ${digits(4)} ${digits(4)} ${digits(4)} ${digits(4)} ${digits(2)}`;
+    if (maskCardRuns(t) !== t) masked.spaced++;
+    const u = `9400${digits(18)}`;
+    if (maskCardRuns(u) !== u) masked.plain++;
+  }
+  assert.ok(masked.orders < 75 && masked.spaced < 175 && masked.plain === 0, JSON.stringify(masked));
+});

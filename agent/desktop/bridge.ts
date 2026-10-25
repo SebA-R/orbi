@@ -1,7 +1,9 @@
-// Server side of the Orbi Desktop bridge (ws://localhost:5050/desktop).
+// Server side of the Orbi Desktop bridge, over a Unix domain socket
+// (link.ts: ~/Library/Application Support/Orbi/desktop.sock, framed JSON
+// and audio). There is no TCP endpoint for the helper.
 //
 // The native menu-bar helper (desktop/) is the client: it connects, sends
-// hello, and we reply welcome. After that we send requests ({type:"req"})
+// hello, proves the token (token.ts), and we reply welcome. After that we send requests ({type:"req"})
 // and it answers ({type:"res"}). One helper at a time: a newer hello
 // replaces the older socket (newest wins), like the extension bridge.
 //
@@ -15,15 +17,15 @@
 
 import type { SpeechUpdate } from "./voice.ts";
 import { EventEmitter } from "node:events";
-import type http from "node:http";
-import { WebSocketServer, type WebSocket } from "ws";
+import type net from "node:net";
+
+import { LinkSocket, listenDesktop } from "./link.ts";
 
 import { userBlockedApps } from "./safety.ts";
-import { tokenMatches } from "./token.ts";
+import { NONCE, helperProof, newNonce, proofMatches, serverProof, tokenMatches } from "./token.ts";
 
 export const DESKTOP_PROTOCOL_VERSION = 1;
 export const DESKTOP_HELPER_NAME = "orbi-desktop";
-export const DESKTOP_PATH = "/desktop";
 export const DESKTOP_METHODS = [
   "frontmost",
   "apps_list",
@@ -88,19 +90,14 @@ export interface DesktopBridgeEvents {
   audio: [Buffer];
 }
 
+type WebSocket = LinkSocket;
 type Pending = { ws: WebSocket; method: string; resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
-
-// The Origin of a /desktop upgrade: the helper is a native app, which sends
-// none. Any Origin means a browser (a web page, or an extension) and is
-// refused, so no page can pose as the helper and drive the computer.
-export function desktopOriginAllowed(origin: string | string[] | undefined): boolean {
-  return origin === undefined;
-}
 
 const bool = (v: unknown) => v === true;
 
 export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
-  readonly wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
+  private server: net.Server | null = null;
+  private sockets = new Set<WebSocket>();
   private current: WebSocket | null = null;
   private info: DesktopInfo | null = null;
   private pending = new Map<string, Pending>();
@@ -108,11 +105,22 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
 
   // blockedApps: the user's extra blocked apps (safety.ts), sent in welcome
   // so the helper refuses them too. The server enforces them either way.
-  // token: the shared secret the helper must send in hello (token.ts). Null
+  // token: the shared secret both sides prove with (token.ts). Null
   // (no token could be made) refuses every helper.
   constructor(private log: (line: string) => void = (l) => console.log(l), private blockedApps: () => string[] = () => [], private token: () => string | null = () => null) {
     super();
-    this.wss.on("connection", (ws) => this.accept(ws));
+  }
+
+  // Starts listening on the socket path (link.ts).
+  async listen(sockPath: string): Promise<void> {
+    this.server = await listenDesktop(sockPath, (s) => this.attach(s));
+  }
+
+  // One new connection (from listen, or a test).
+  attach(ws: WebSocket) {
+    this.sockets.add(ws);
+    ws.on("close", () => this.sockets.delete(ws));
+    this.accept(ws);
   }
 
   connected(): boolean {
@@ -161,21 +169,17 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
     if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "audio_stop" }));
   }
 
-  // Lets server.ts route /desktop upgrades here. `verify` is the server's
-  // loopback and Host check (hostcheck.ts); on top of it the helper must
-  // send no Origin.
-  accepts(req: http.IncomingMessage): boolean {
-    return desktopOriginAllowed(req.headers.origin);
-  }
-
   close() {
     this.current?.close(1001, "server closing");
-    for (const ws of this.wss.clients) ws.terminate();
-    this.wss.close();
+    for (const ws of this.sockets) ws.terminate();
+    this.server?.close();
+    this.server = null;
   }
 
   private accept(ws: WebSocket) {
     let greeted = false;
+    // Between hello and auth: the hello, both nonces and the token used.
+    let pending: { hello: any; helperNonce: string; serverNonce: string; token: string } | null = null;
     const helloTimer = setTimeout(() => {
       if (!greeted) ws.close(4001, "no hello");
     }, HELLO_TIMEOUT_MS);
@@ -199,25 +203,37 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
         return;
       }
       if (!greeted) {
-        if (m.type !== "hello") return;
+        const refuse = () => {
+          this.log("desktop: refused a helper that could not prove the token");
+          ws.close(4004, "unauthorized");
+        };
+        // hello {nonce} -> challenge {nonce, proof} -> auth {proof} -> welcome.
+        // The token itself never crosses the socket.
+        if (m.type === "auth" && pending) {
+          const { hello, helperNonce, serverNonce, token } = pending;
+          pending = null;
+          if (!proofMatches(helperProof(token, serverNonce, helperNonce), m.proof)) return refuse();
+          greeted = true;
+          clearTimeout(helloTimer);
+          const p = hello.permissions && typeof hello.permissions === "object" ? hello.permissions : {};
+          const features = Array.isArray(hello.features) ? hello.features.filter((f: unknown) => typeof f === "string").slice(0, 50) : [];
+          this.promote(ws, { accessibility: bool(p.accessibility), screen: bool(p.screen), mic: bool(p.mic) }, features);
+          return;
+        }
+        if (m.type !== "hello" || pending) return refuse();
         if (m.name !== DESKTOP_HELPER_NAME || m.version !== DESKTOP_PROTOCOL_VERSION) {
           ws.close(4003, "unsupported client");
           return;
         }
-        let expected: string | null = null;
+        let token: string | null = null;
         try {
-          expected = this.token();
+          token = this.token();
         } catch {}
-        if (!tokenMatches(expected, m.token)) {
-          this.log("desktop: refused a helper without the right token");
-          ws.close(4004, "unauthorized");
-          return;
-        }
-        greeted = true;
-        clearTimeout(helloTimer);
-        const p = m.permissions && typeof m.permissions === "object" ? m.permissions : {};
-        const features = Array.isArray(m.features) ? m.features.filter((f: unknown) => typeof f === "string").slice(0, 50) : [];
-        this.promote(ws, { accessibility: bool(p.accessibility), screen: bool(p.screen), mic: bool(p.mic) }, features);
+        // tokenMatches(token, token): the server has a well formed token.
+        if (!token || !tokenMatches(token, token) || typeof m.nonce !== "string" || !NONCE.test(m.nonce)) return refuse();
+        const serverNonce = newNonce();
+        pending = { hello: m, helperNonce: m.nonce, serverNonce, token };
+        ws.send(JSON.stringify({ type: "challenge", nonce: serverNonce, proof: serverProof(token, m.nonce, serverNonce) }));
         return;
       }
       if (ws !== this.current) return;

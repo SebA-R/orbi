@@ -149,7 +149,7 @@ test("the real server refuses /cards from web pages before opening any vault", a
   const port = 5177;
   const child = spawn(path.join(AGENT, "node_modules", ".bin", "tsx"), ["server.ts"], {
     cwd: AGENT,
-    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", AGENT_PORT: String(port), AGENT_MODE: "echo", CLEARCART_DATA_DIR: dir },
+    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", AGENT_PORT: String(port), AGENT_MODE: "echo", CLEARCART_DATA_DIR: dir, ORBI_DESKTOP_TOKEN_FILE: path.join(dir, "desktop.token"), ORBI_DESKTOP_SOCKET: path.join(dir, "desktop.sock") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
