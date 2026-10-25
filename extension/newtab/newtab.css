@@ -59,10 +59,8 @@ main {
   display: flex; flex-direction: column; align-items: center; gap: 28px;
 }
 .brand { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; letter-spacing: .02em; color: var(--muted); }
-.mini-orb { display: inline-flex; flex: none; }
-.mini-orb:empty { display: none; }
 
-/* Orb, as in the popup, a little larger. */
+/* The orb face, as in the popup, at hero size. */
 .hero { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
 @property --ring-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 @keyframes ring-turn { to { --ring-a: 360deg; } }
@@ -84,6 +82,15 @@ main {
 }
 .orb[data-state="thinking"] { animation: none; }
 .orb[data-state="thinking"]::after { animation-duration: 4s; }
+/* With the face inside, the orb is its frame: the face (content/orb-face.js)
+   paints, breathes and pulses at hero size; the ring stays while active. */
+.orb:has(> .ccf) {
+  --ccf-size: 128px;
+  --ccf-glow: 0 18px 48px rgba(94, 139, 255, .35);
+  display: grid; place-items: center; background: none; box-shadow: none; filter: none; animation: none;
+}
+/* Clear of the face at its biggest swell (1.14 x 128px). */
+.orb:has(> .ccf)::after { inset: -12px; }
 .voice-title { font-size: 28px; font-weight: 600; letter-spacing: -.02em; }
 .voice-sub { font-size: 16px; color: var(--muted); text-wrap: balance; }
 .hint { margin-top: 6px; font-size: 15px; color: var(--soft); text-wrap: balance; }
