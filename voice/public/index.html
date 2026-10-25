@@ -193,6 +193,7 @@
         hook.state('idle', { user: 'Yes', agent: 'Done. Your order is placed, $9.64 on your Visa ending in 1111.' });
         hook.receipt({ item: 'Store brand cetirizine 10mg, 30 count', total: '$9.64', last4: '1111' });
       } else {
+        if (demo === 'speaking') hook.turn('Clearcart', 'I unchecked a Subscribe and Save membership. Your total is $9.64.');
         hook.state(demo, {
           user: demo === 'idle' ? '' : demo === 'listening' ? 'Reorder my allergy pills, cheapest same dose' : 'The 30 count.',
           agent: demo === 'speaking' ? 'I unchecked a Subscribe and Save membership. Your total is $9.64.' : '',

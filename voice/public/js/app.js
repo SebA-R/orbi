@@ -46,6 +46,7 @@ function appendWords(el, text) {
     el.append(w);
   }
 }
+const splitLayout = matchMedia('(min-width: 900px)');
 function addTurn(who, text) {
   const li = document.createElement('li');
   li.className = who === 'You' ? 'user' : 'agent';
@@ -56,7 +57,8 @@ function addTurn(who, text) {
   if (who === 'You') li.append(document.createTextNode(text));
   else appendWords(li, text);
   els.conversation.append(li);
-  if (li.getBoundingClientRect().bottom > innerHeight) {
+  // Desktop: keep the newest turn in view. Phones: the reply already shows under the orb; don't scroll away.
+  if (splitLayout.matches && li.getBoundingClientRect().bottom > innerHeight) {
     li.scrollIntoView({ behavior: reducedMotion.matches ? 'auto' : 'smooth', block: 'nearest' });
   }
 }

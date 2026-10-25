@@ -280,7 +280,7 @@ body[data-phase="confirm"][data-ui="idle"] .orb-ring { opacity: .7; }
   body[data-ui="speaking"] .orb-ripple-2 { animation-delay: .9s; }
   @keyframes cc-breathe { 50% { transform: scale(1.03); } }
   @keyframes cc-shimmer { from { transform: translate(-8%, -6%) rotate(0deg); } to { transform: translate(8%, 6%) rotate(40deg); } }
-  @keyframes cc-ripple { 0% { transform: scale(.92); opacity: .55; } 100% { transform: scale(1.45); opacity: 0; } }
+  @keyframes cc-ripple { 0% { transform: scale(.92); opacity: .55; } 100% { transform: scale(1.3); opacity: 0; } }
 }
 
 /* ---------- status line ---------- */
