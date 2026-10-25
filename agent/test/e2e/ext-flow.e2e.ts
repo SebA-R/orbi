@@ -36,6 +36,7 @@ const CARD_RUNS = [CARD.number, "4111 1111 1111 1111", "4111-1111-1111-1111"];
 process.env.CLEARCART_BROWSER = "ext";
 process.env.AGENT_PORT = String(AGENT_PORT);
 process.env.AGENT_MODE = "echo"; // /session without Claude; the bridge is unaffected
+process.env.CLEARCART_VOICE = "false"; // never spend Cartesia credits in tests
 process.env.CLEARCART_STORE_ORIGIN = STORE;
 process.env.CLEARCART_ALLOWED_ORIGINS = STORE;
 
