@@ -489,6 +489,20 @@ test("clicking the page fades the card out early, then clears it", () => {
   assert.ok(t.visible(), "the next line shows again");
 });
 
+test("a press inside the card's rect keeps it up; the click still goes to the page", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
+  assert.ok(t.visible());
+  t.$(".card").getBoundingClientRect = () => ({ left: 100, top: 500, right: 400, bottom: 580, width: 300, height: 80 });
+  let reached = false;
+  t.window.document.body.addEventListener("pointerdown", () => { reached = true; });
+  t.window.document.body.dispatchEvent(new t.window.MouseEvent("pointerdown", { bubbles: true, clientX: 250, clientY: 540 }));
+  assert.ok(reached, "the page still gets the press");
+  assert.ok(t.visible(), "card stays visible");
+  t.window.document.body.dispatchEvent(new t.window.MouseEvent("pointerdown", { bubbles: true, clientX: 20, clientY: 20 }));
+  assert.equal(t.visible(), false, "a press outside the rect still fades it");
+});
+
 // Karaoke: SUBTITLE {utteranceId, karaoke} then SUBTITLE_WORD as words are heard.
 const LINE = "Found it, nine dollars.";
 const kline = (t, id = "u1", text = LINE) => t.send({ type: "subtitle", speaker: "agent", text, final: true, utteranceId: id, karaoke: true });
