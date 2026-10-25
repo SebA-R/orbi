@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  agentHealth, allReady, hasSiteAccess, missingSetup, onInstalledSetup, requestSiteAccess, shouldOpenSetup, talkKeyHelp, SETUP_PATH,
+  agentHealth, allReady, hasSiteAccess, missingSetup, onInstalledSetup, requestSiteAccess, setupDone, shouldOpenSetup, talkKeyHelp, SETUP_PATH, SETUP_STEPS,
 } from "../../../extension/lib/setup.js";
 import { grantMic } from "../../../extension/lib/mic-grant.js";
 
@@ -129,4 +129,12 @@ test("setup and popup buttons keep 4.5:1 text contrast in light and dark", async
     assert.ok(ratio(v("on-accent"), v("accent")) >= 4.5, block);
   }
   assert.match(css, /button \{[^}]*color: var\(--on-accent\)/);
+});
+
+test("setupDone counts the four setup checks; the talk key is always done", () => {
+  assert.equal(SETUP_STEPS, 4);
+  assert.equal(setupDone({ site: true, mic: "granted", agent: { connected: true } }), 4);
+  assert.equal(setupDone({ site: false, mic: "prompt", agent: { connected: false } }), 1);
+  assert.equal(setupDone({ site: true, mic: "unknown", agent: null }), 2);
+  assert.equal(setupDone({ site: false, mic: "granted", agent: { connected: true } }), 3);
 });
