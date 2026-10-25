@@ -1,5 +1,6 @@
 // Clearcart agent server: static voice console at /, GET /cartesia-token,
-// and the /session WebSocket (one Claude conversation per socket).
+// and the /session WebSocket. Every /session socket shares one Claude
+// conversation; the one the user last talked into owns it (hub.ts).
 
 import fs from "node:fs";
 import http from "node:http";
@@ -10,7 +11,8 @@ import { WebSocketServer, type WebSocket } from "ws";
 
 import { extBridge, extMode } from "./extbridge.ts";
 import { hostAllowed } from "./hostcheck.ts";
-import { Session, type ServerMessage } from "./session.ts";
+import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
+import { Session } from "./session.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
@@ -128,15 +130,28 @@ const wss = EXT
   : new WebSocketServer({ server, path: "/session", verifyClient: ({ req }: { req: http.IncomingMessage }, done: (ok: boolean, code?: number) => void) => done(localHost(req), 403) });
 if (EXT) extBridge.attach(server, { "/session": wss }, "/ext", localHost);
 
+// One voice session for all /session sockets (hub.ts). Echo mode goes
+// through the same hub, so it follows the same one-owner rules.
+const hub = new SessionHub(
+  (send, ended) => {
+    if (ECHO) return echoSession(send);
+    const session = new Session(send);
+    void session.run().finally(() => {
+      console.log("session agent stopped");
+      ended();
+    });
+    return session;
+  },
+  (line) => console.log(line)
+);
+
 wss.on("connection", (ws: WebSocket) => {
-  const send = (m: ServerMessage) => {
+  const send = (m: HubMessage) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m));
   };
-  console.log("session opened");
-
-  const session = ECHO ? null : new Session(send);
-  if (session) void session.run().finally(() => console.log("session agent stopped"));
+  console.log("session socket opened");
   send({ type: "status", text: ECHO ? "connected (echo mode)" : "connected" });
+  const peer = hub.join(send);
 
   ws.on("message", (raw) => {
     let msg: any;
@@ -145,18 +160,18 @@ wss.on("connection", (ws: WebSocket) => {
     } catch {
       return send({ type: "status", text: "ignored a message that was not JSON" });
     }
-    // Barge-in: the user held the talk key over our speech.
-    if (msg?.type === "interrupt") return void session?.interrupt();
+    // The talk key went down: barge-in, and this window takes the session.
+    if (msg?.type === "interrupt") return void peer.interrupt();
     if (msg?.type !== "user_text" || typeof msg.text !== "string") {
       return send({ type: "status", text: `ignored message type ${String(msg?.type)}` });
     }
-    if (ECHO) return send({ type: "agent_text", text: `You said: ${msg.text}` });
-    session!.userText(msg.text);
+    peer.userText(msg.text);
   });
 
+  ws.on("error", () => {});
   ws.on("close", () => {
-    console.log("session closed");
-    session?.close();
+    console.log("session socket closed");
+    peer.leave();
   });
 });
 
