@@ -19,7 +19,8 @@ const TSX = path.join(AGENT, "node_modules", ".bin", "tsx");
 async function startServer(port: number, env: Record<string, string>): Promise<ChildProcess> {
   const child = spawn(TSX, ["server.ts"], {
     cwd: AGENT,
-    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", ...env, AGENT_PORT: String(port), AGENT_MODE: "echo" },
+    // The desktop token goes to a scratch file, never the user's own.
+    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", ORBI_DESKTOP_TOKEN_FILE: path.join(os.tmpdir(), `orbi-test-${process.pid}`, "desktop.token"), ...env, AGENT_PORT: String(port), AGENT_MODE: "echo" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise<void>((resolve, reject) => {
