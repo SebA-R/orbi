@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { parseBlockLines } from "../blocklist.ts";
 import { extBridge } from "../extbridge.ts";
 import { STORE_ORIGIN, type SitePolicy } from "../origins.ts";
-import { sitesPrompt } from "../prompt.ts";
+import { sitesPrompt, SYSTEM_PROMPT } from "../prompt.ts";
 import { browseDenyReason, localDnsReason, returnStrays, Session, sweepNote } from "../session.ts";
 
 process.env.CLEARCART_BROWSER = "ext";
@@ -254,4 +254,11 @@ test("the sweep fails closed when a stray tab will not move", async () => {
   const r = await post(s, "click");
   assert.match(r.hookSpecificOutput.additionalContext, /paused/);
   assert.match(denied(await pre(s, "screenshot", {})) || "", /paused/);
+});
+
+test("the prompt: locked means ask through request_unlock, never for paying, and never tell the user it is locked", () => {
+  assert.match(SYSTEM_PROMPT, /comes back starting "Locked:" with its ref and the next step; nothing was pressed\. Do not retry it/);
+  assert.match(SYSTEM_PROMPT, /call request_unlock with its ref and label\. Locked means ask through request_unlock, not give up\./);
+  assert.match(SYSTEM_PROMPT, /Never call request_unlock for Place order, Buy now, Pay or wallet buttons/);
+  assert.match(SYSTEM_PROMPT, /Do not tell the user a control is "locked"/);
 });

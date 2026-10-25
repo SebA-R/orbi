@@ -9,6 +9,7 @@ import * as cdp from "./cdp.js";
 import * as netguard from "./netguard.js";
 import { createRouter } from "./router.js";
 import { createFollower } from "./follow.js";
+import { createErrorPages, FILTER as ERROR_FILTER } from "./errpage.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
 import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
@@ -74,6 +75,19 @@ async function closeIfAgentTab(tabId, flag) {
     await chrome.tabs.remove(tabId);
   } catch {}
 }
+
+// Network error pages: Chrome's runs no content scripts, so a failed main
+// frame in a normal tab goes on to Clearcart's "Can't reach this site" page
+// (errpage.js), where Space to talk works.
+const errorPages = createErrorPages({ loadSettings });
+chrome.webRequest.onErrorOccurred.addListener((d) => errorPages.onRequestError(d), ERROR_FILTER);
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => void errorPages.onTabUpdated(tabId, change, tab).catch(() => {}));
+chrome.tabs.onRemoved.addListener((tabId) => void errorPages.forget(tabId));
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (!msg || msg.type !== RT.ERROR_PAGE_RETRY || msg.target != null || sender.id !== chrome.runtime.id) return;
+  errorPages.onRetry(sender).then(reply, () => reply({ url: null }));
+  return true;
+});
 
 const loadAllowlist = () => loadSettings().then((s) => netguard.setAllowlist(s.allowlist)).catch(() => {});
 loadAllowlist();

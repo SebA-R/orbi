@@ -25,7 +25,7 @@
 
   // VOICE_LEVEL ({ level: 0..1 }) is optional: nothing sends it yet, and the
   // orb loops its listening and speaking motion until something does.
-  const RT = { SUBTITLE: "subtitle", VOICE_STATE: "voice.state", VOICE_LEVEL: "voice.level", SETTINGS_CHANGED: "settings.changed" };
+  const RT = { SUBTITLE: "subtitle", SUBTITLE_WORD: "subtitle.word", VOICE_STATE: "voice.state", VOICE_LEVEL: "voice.level", SETTINGS_CHANGED: "settings.changed" };
   // The status orb face comes from content/orb-face.js, loaded just before this
   // script. Without it the card simply has no orb.
   const FACE = globalThis.__clearcartOrbFace || null;
@@ -92,28 +92,72 @@
   from { opacity: 0; filter: blur(7px); transform: translateY(3px); }
   to { opacity: 1; filter: blur(0); transform: none; }
 }
+/* Karaoke: the agent line as it is heard. Words already said (ks) are a
+   slightly lighter ink, words still to come (kp) slightly darker, and the
+   word being heard (kc) is the boundary: a color sweep across it, from the
+   said ink to the coming ink, timed to the word's own start and end (--k-dur,
+   with --k-delay negative for the part already heard), with a thin orb
+   gradient line growing under it. Both inks keep 4.5:1 on the card over any
+   page, light or dark. */
+.wrap { --k-said: #48484e; --k-next: #1d1d1f; }
+.agent.karaoke .w { animation: k-in .28s var(--ease) both; color: var(--k-next); }
+.agent.karaoke .w.ks { color: var(--k-said); }
+.agent.karaoke .w.kc {
+  position: relative; color: var(--k-next);
+  background: linear-gradient(90deg, var(--k-said) 0 45%, var(--k-next) 55% 100%) no-repeat;
+  background-size: 220% 100%; background-position: 100% 0;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  animation: k-sweep var(--k-dur, 250ms) linear var(--k-delay, 0ms) both;
+}
+.agent.karaoke .w.kc::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 1px; height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff);
+  transform-origin: left center; animation: k-line var(--k-dur, 250ms) linear var(--k-delay, 0ms) both;
+}
+.agent.karaoke.frozen .w:not(.kc) { animation: none; }
+.agent.karaoke.frozen .w.kc, .agent.karaoke.frozen .w.kc::after { animation-play-state: paused; }
+@keyframes k-in { from { opacity: 0; } }
+@keyframes k-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes k-line { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 @media (prefers-color-scheme: dark) {
   .wrap {
     --ink: #f5f5f7; --muted: #a1a1a6;
     --card: rgb(28 28 30 / .72); --edge: rgb(255 255 255 / .1);
     --shadow: 0 12px 44px rgb(0 0 0 / .55), 0 1px 3px rgb(0 0 0 / .4);
+    --k-said: #ffffff; --k-next: #d4d4d9;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .wrap, .wrap.on { transform: translate(-50%, 0); }
   .w { animation-name: fade-in; animation-duration: .2s; animation-delay: 0s; }
   @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  /* The color steps word by word: no sweep, no fades. The word being heard
+     takes the said ink at once and keeps a still line under it. */
+  .agent.karaoke .w, .agent.karaoke .w.kc, .agent.karaoke .w.kc::after { animation: none; }
+  .agent.karaoke .w.kc { background: none; -webkit-text-fill-color: currentColor; color: var(--k-said); }
+}
+@media (prefers-contrast: more) {
+  .agent.karaoke .w.kc { text-decoration: underline 3px; text-underline-offset: 4px; }
+  .agent.karaoke .w.kc::after { display: none; }
 }
 @media (forced-colors: active) {
   .card { background: Canvas; border-color: CanvasText; }
   .agent { color: CanvasText; } .user { color: GrayText; }
+  /* Not color alone: the word being heard is underlined. */
+  .agent.karaoke .w, .agent.karaoke .w.ks, .agent.karaoke .w.kc { color: CanvasText; }
+  .agent.karaoke .w.kc { background: none; -webkit-text-fill-color: CanvasText; text-decoration: underline 3px; text-underline-offset: 4px; }
+  .agent.karaoke .w.kc::after { display: none; }
 }
 `;
 
   const ui = {
     host: null, wrap: null, user: null, agent: null, face: null,
     enabled: true, state: "idle", latched: false, hint: null,
-    agentWords: [], agentFinal: false, userFinal: false, lastSpeaker: null,
+    agentWords: [], agentFinal: false,
+    // Karaoke (SUBTITLE with utteranceId and karaoke, then SUBTITLE_WORD):
+    // the line's id, words cut from its start to fit MAX_CHARS, the word
+    // being heard, and a word that came before its line did.
+    agentId: null, agentCut: 0, kIndex: -1, kDone: false, pendingWord: null, userFinal: false, lastSpeaker: null,
     hideTimer: 0,
     staleTimer: 0,
     clearTimer: 0,
@@ -283,17 +327,30 @@
     return Math.min(HIDE_MAX_MS, HIDE_MIN_MS + Math.max(0, n - FREE_WORDS) * MS_PER_EXTRA_WORD);
   }
 
+  // The stale cap never cuts a long caption short.
+  function armStale() {
+    clearTimeout(ui.staleTimer);
+    ui.staleTimer = setTimeout(hide, Math.max(ui.latched ? STALE_LATCHED_MS : STALE_MIN_MS, hideDelayMs() + 10000));
+  }
+
   function show() {
     if (!ui.enabled || !mount()) return;
     flushPendingClear();
-    clearTimeout(ui.staleTimer);
-    // The stale cap never cuts a long caption short.
-    ui.staleTimer = setTimeout(hide, Math.max(ui.latched ? STALE_LATCHED_MS : STALE_MIN_MS, hideDelayMs() + 10000));
+    armStale();
     ui.wrap.classList.add("on");
     raise();
   }
 
+  function resetKaraoke() {
+    ui.agentId = null;
+    ui.agentCut = 0;
+    ui.kIndex = -1;
+    ui.kDone = false;
+    if (ui.agent) ui.agent.classList.remove("karaoke", "frozen");
+  }
+
   function clearText() {
+    resetKaraoke();
     ui.agentWords = [];
     ui.lastSpeaker = null;
     if (ui.agent) ui.agent.textContent = "";
@@ -352,36 +409,132 @@
     ui.agent.scrollTop = ui.agent.scrollHeight; // keep the newest line in view
   }
 
-  function onSubtitle({ speaker, text, final }) {
+  // Whole words from the end of the line, up to MAX_CHARS, and how many
+  // words were cut from its start (word indexes count from the full line).
+  function fitWords(text) {
+    const all = words(text);
+    let cut = 0;
+    let len = all.join(" ").length;
+    while (len > MAX_CHARS && cut < all.length - 1) len -= all[cut++].length + 1;
+    return { text: all.slice(cut).join(" ").slice(-MAX_CHARS), cut };
+  }
+
+  // A karaoke line: every word drawn at once, in the coming ink until heard.
+  function renderKaraoke(text, id, cut) {
+    resetKaraoke();
+    ui.agentWords = [];
+    ui.agent.textContent = "";
+    ui.agentId = id;
+    ui.agentCut = cut;
+    ui.agent.classList.add("karaoke");
+    const frag = document.createDocumentFragment();
+    for (const w of words(text)) {
+      const span = document.createElement("span");
+      span.className = "w kp";
+      span.textContent = w;
+      frag.append(span, document.createTextNode(" "));
+    }
+    ui.agent.append(frag);
+    ui.agentWords = words(text);
+    ui.agent.scrollTop = 0;
+  }
+
+  // Said (ks) before the word being heard, the sweep (kc) on it, still to
+  // come (kp) after. The sweep lasts as long as the word is heard, already
+  // `elapsed` ms in.
+  function paintKaraoke(timing) {
+    const spans = ui.agent.querySelectorAll(".w");
+    const at = ui.kDone ? Infinity : ui.kIndex - ui.agentCut;
+    let current = null;
+    spans.forEach((span, i) => {
+      const cls = i < at ? "ks" : i === at ? "kc" : "kp";
+      if (cls === "kc") current = span;
+      for (const c of ["ks", "kc", "kp"]) if (c !== cls) span.classList.remove(c);
+      span.classList.add(cls);
+    });
+    if (current && timing && Number.isFinite(timing.ms)) {
+      current.style.setProperty("--k-dur", `${Math.max(1, timing.ms)}ms`);
+      current.style.setProperty("--k-delay", `${-Math.max(0, Math.min(timing.ms, timing.elapsed || 0))}ms`);
+    }
+    // Keep the word being heard in view on a long line.
+    if (current && ui.agent.scrollHeight > ui.agent.clientHeight) {
+      ui.agent.scrollTop = Math.max(0, current.offsetTop - ui.agent.offsetTop - ui.agent.clientHeight / 3);
+    }
+  }
+
+  function onWord(msg) {
+    if (!ui.enabled || typeof msg.utteranceId !== "string") return;
+    if (!ui.agent || msg.utteranceId !== ui.agentId) {
+      ui.pendingWord = msg; // its line is on the way (a tab switch replay)
+      return;
+    }
+    ui.pendingWord = null;
+    if (!ui.agent.classList.contains("karaoke")) return; // already shown plainly
+    if (msg.fallback) {
+      // No timestamps: the line is shown plainly, as before karaoke.
+      ui.agent.classList.remove("karaoke", "frozen");
+      ui.agent.querySelectorAll(".w").forEach((s) => s.classList.remove("ks", "kc", "kp"));
+      return;
+    }
+    const fresh = msg.done || msg.frozen || (Number.isInteger(msg.index) && msg.index > ui.kIndex);
+    if (!fresh) return; // late or replayed: never goes back
+    if (msg.done) ui.kDone = true;
+    else if (Number.isInteger(msg.index)) ui.kIndex = msg.index;
+    ui.agent.classList.toggle("frozen", msg.frozen === true);
+    paintKaraoke(msg);
+    if (ui.face) ui.face.poke();
+    // The card stays up while the line is being heard; its reading time
+    // starts once the voice goes idle (onState) or the line is done.
+    if (msg.done && ui.state === "idle") scheduleHide();
+    else if (!msg.done) cancelHide();
+    if (ui.wrap && ui.wrap.classList.contains("on")) armStale(); // a word heard is activity
+  }
+
+  function onSubtitle({ speaker, text, final, utteranceId, karaoke }) {
     if (speaker !== "user" && speaker !== "agent") return;
     if (typeof text !== "string") return;
-    text = text.replace(/\s+/g, " ").trim().slice(-MAX_CHARS);
+    const fit = fitWords(text);
+    text = fit.text;
     if (!ui.enabled || !mount()) return;
     flushPendingClear(); // before the new text goes in
     final = final === true;
+    const id = typeof utteranceId === "string" ? utteranceId : null;
 
     if (speaker === "user") {
       // A new user turn clears the previous agent answer.
       if (ui.lastSpeaker === "agent" || ui.userFinal) {
+        resetKaraoke();
         ui.agentWords = [];
         ui.agent.textContent = "";
       }
       ui.user.textContent = text;
       ui.userFinal = final;
+    } else if (id && id === ui.agentId && ui.agent.textContent) {
+      // The same line again (a replay to a tab that has it): keep its place.
+    } else if (id && karaoke === true) {
+      renderKaraoke(text, id, fit.cut);
+      ui.agentFinal = final;
+      const early = ui.pendingWord;
+      ui.pendingWord = null;
+      if (early && early.utteranceId === id) onWord(early);
     } else {
-      if (ui.agentFinal) {
+      if (ui.agentFinal || ui.agentId) {
         // Previous agent line is done; this is a new one.
+        resetKaraoke();
         ui.agentWords = [];
         ui.agent.textContent = "";
       }
       renderAgent(text);
+      ui.agentId = id;
       ui.agentFinal = final;
     }
     ui.lastSpeaker = speaker;
     if (ui.face) ui.face.poke(); // a caption is activity: restart the idle clock
     if (!text && !ui.user.textContent && !ui.agent.textContent) return scheduleHide();
     show();
-    if (final) scheduleHide();
+    // An agent line captioned from the audio (it has an utteranceId) arrives
+    // while the voice is speaking: its reading time starts at idle instead.
+    if (final && !(speaker === "agent" && id && ui.state === "speaking")) scheduleHide();
     else cancelHide();
   }
 
@@ -442,6 +595,7 @@
     chromeApi.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg !== "object") return;
       if (msg.type === RT.SUBTITLE) onSubtitle(msg);
+      else if (msg.type === RT.SUBTITLE_WORD) onWord(msg);
       else if (msg.type === RT.VOICE_STATE) onState(msg.state, msg.latched);
       else if (msg.type === RT.VOICE_LEVEL) { if (ui.face) ui.face.setLevel(msg.level); }
       else if (msg.type === RT.SETTINGS_CHANGED && msg.settings && "subtitles" in msg.settings) {

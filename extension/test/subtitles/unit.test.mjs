@@ -489,6 +489,184 @@ test("clicking the page fades the card out early, then clears it", () => {
   assert.ok(t.visible(), "the next line shows again");
 });
 
+// Karaoke: SUBTITLE {utteranceId, karaoke} then SUBTITLE_WORD as words are heard.
+const LINE = "Found it, nine dollars.";
+const kline = (t, id = "u1", text = LINE) => t.send({ type: "subtitle", speaker: "agent", text, final: true, utteranceId: id, karaoke: true });
+const kword = (t, m) => t.send({ type: "subtitle.word", utteranceId: "u1", ...m });
+// Each word as "ks" (said), "kc" (being heard), "kp" (still to come) or "" (plain).
+const marks = (t) => [...t.$(".agent").querySelectorAll(".w")].map((s) => ["ks", "kc", "kp"].find((c) => s.classList.contains(c)) || "");
+const sheet = (t) => {
+  const root = t.getShadow();
+  return [...(root.adoptedStyleSheets || [])].flatMap((s) => [...s.cssRules].map((r) => r.cssText)).join("\n")
+    || root.querySelector("style")?.textContent || "";
+};
+
+test("karaoke: the exact line is drawn in the coming ink; said words before the heard word, coming words after", () => {
+  const t = setup();
+  kline(t);
+  assert.equal(t.$(".agent").textContent.trim(), LINE, "the text sent to TTS, word for word");
+  assert.ok(t.$(".agent").classList.contains("karaoke"));
+  assert.deepEqual(marks(t), ["kp", "kp", "kp", "kp"]);
+  kword(t, { index: 0 });
+  assert.deepEqual(marks(t), ["kc", "kp", "kp", "kp"]);
+  kword(t, { index: 2 });
+  assert.deepEqual(marks(t), ["ks", "ks", "kc", "kp"]);
+  kword(t, { index: 1 }); // late or duplicate: never goes back
+  assert.deepEqual(marks(t), ["ks", "ks", "kc", "kp"]);
+  kword(t, { index: 4, done: true });
+  assert.deepEqual(marks(t), ["ks", "ks", "ks", "ks"]);
+});
+
+test("karaoke: an interrupt freezes the highlight; nothing advances it after", () => {
+  const t = setup();
+  kline(t);
+  kword(t, { index: 1 });
+  kword(t, { index: 1, frozen: true });
+  assert.ok(t.$(".agent").classList.contains("frozen"), "the sweep stops");
+  assert.deepEqual(marks(t), ["ks", "kc", "kp", "kp"]);
+  t.send({ type: "voice.state", state: "listening" });
+  assert.deepEqual(marks(t), ["ks", "kc", "kp", "kp"], "a barge-in keeps the frozen line until the user speaks");
+  t.send({ type: "subtitle", speaker: "user", text: "wait", final: false });
+  assert.equal(t.$(".agent").textContent, "", "a new turn clears it");
+  assert.equal(t.$(".agent").classList.contains("karaoke"), false);
+  kword(t, { index: 3 });
+  assert.equal(t.$(".agent").textContent, "", "a stray word for the old line draws nothing");
+});
+
+test("karaoke: a tab switch replay shows the line at the word being heard, even when the word comes first", () => {
+  const t = setup();
+  // The relay's replay: line, then word.
+  kline(t);
+  kword(t, { index: 2 });
+  assert.deepEqual(marks(t), ["ks", "ks", "kc", "kp"]);
+  // Switching back to a tab that already has the line keeps its place.
+  kline(t);
+  assert.deepEqual(marks(t), ["ks", "ks", "kc", "kp"]);
+
+  // A live word can reach the new tab just before the replayed line.
+  const u = setup();
+  u.send({ type: "subtitle.word", utteranceId: "u7", index: 1 });
+  kline(u, "u7");
+  assert.deepEqual(marks(u), ["ks", "kc", "kp", "kp"]);
+});
+
+test("karaoke: a new line resets the highlight", () => {
+  const t = setup();
+  kline(t);
+  kword(t, { index: 3 });
+  kline(t, "u2", "Want the store brand?");
+  assert.deepEqual(marks(t), ["kp", "kp", "kp", "kp"]);
+  assert.equal(t.$(".agent").textContent.trim(), "Want the store brand?");
+  t.send({ type: "subtitle.word", utteranceId: "u2", index: 0 });
+  assert.deepEqual(marks(t), ["kc", "kp", "kp", "kp"]);
+});
+
+test("karaoke: without timestamps the line falls back to the plain caption", () => {
+  const t = setup();
+  kline(t);
+  kword(t, { fallback: true });
+  assert.equal(t.$(".agent").classList.contains("karaoke"), false);
+  assert.deepEqual(marks(t), ["", "", "", ""], "every word at full ink");
+  assert.equal(t.$(".agent").textContent.trim(), LINE);
+
+  // A line sent without karaoke (TTS failed, or an older offscreen) streams in as before.
+  const u = setup();
+  u.send({ type: "subtitle", speaker: "agent", text: LINE, final: true, utteranceId: "u3", karaoke: false });
+  assert.equal(u.$(".agent").classList.contains("karaoke"), false);
+  assert.equal(u.$(".agent").querySelector(".w").style.getPropertyValue("--i"), "0", "the staggered word-in");
+  u.send({ type: "subtitle.word", utteranceId: "u3", index: 2 });
+  assert.deepEqual(marks(u), ["", "", "", ""]);
+});
+
+test("karaoke: word indexes count from the full line when a long line is cut to fit", () => {
+  const t = setup();
+  const long = Array.from({ length: 150 }, (_, i) => `w${i}`).join(" ");
+  kline(t, "u1", long);
+  const shown = [...t.$(".agent").querySelectorAll(".w")].map((s) => s.textContent);
+  assert.ok(shown.length < 150 && shown.at(-1) === "w149");
+  const first = Number(shown[0].slice(1));
+  kword(t, { index: first + 2 });
+  assert.equal(marks(t).indexOf("kc"), 2);
+  assert.equal(t.$(".agent .kc").textContent, `w${first + 2}`);
+});
+
+test("karaoke: reduced motion keeps a static highlight; high contrast underlines the word", () => {
+  const t = setup({ reduce: true });
+  kline(t);
+  kword(t, { index: 1 });
+  assert.deepEqual(marks(t), ["ks", "kc", "kp", "kp"], "the highlight is still there");
+  const css = sheet(t).replace(/\s+/g, " ");
+  // Every @media (q) block, joined (the orb face has its own).
+  const block = (q) => css.split("@media").filter((part) => part.trimStart().startsWith(`(${q})`)).join("\n");
+  assert.match(block("prefers-reduced-motion: reduce"), /\.agent\.karaoke \.w\.kc[^{]*\{[^}]*animation: (?:auto ease 0s 1 normal none running )?none/);
+  assert.match(block("prefers-reduced-motion: reduce"), /\.w\.kc \{[^}]*color: var\(--k-said\)/, "steps to the said ink");
+  assert.match(block("forced-colors: active"), /\.w\.kc \{[^}]*text-decoration: underline/);
+  assert.match(block("prefers-contrast: more"), /\.w\.kc \{[^}]*text-decoration: underline/);
+});
+
+test("karaoke: the sweep across the heard word lasts as long as the word, from where the voice is", () => {
+  const t = setup();
+  kline(t);
+  kword(t, { index: 1, ms: 320, elapsed: 80 });
+  const kc = t.$(".agent .kc");
+  assert.equal(kc.textContent, "it,");
+  assert.equal(kc.style.getPropertyValue("--k-dur"), "320ms");
+  assert.equal(kc.style.getPropertyValue("--k-delay"), "-80ms");
+  kword(t, { index: 1, ms: 320, elapsed: 200, frozen: true });
+  assert.equal(kc.style.getPropertyValue("--k-delay"), "-200ms", "frozen where the voice stopped");
+  const css = sheet(t).replace(/\s+/g, " ");
+  assert.match(css, /\.w\.kc \{[^}]*animation: k-sweep var\(--k-dur/);
+  assert.match(css, /\.frozen \.w\.kc[^{]*\{[^}]*animation-play-state: paused/);
+});
+
+test("karaoke: the card stays up for the whole line and its reading time starts at idle", () => {
+  const t = setup();
+  t.send({ type: "voice.state", state: "speaking" });
+  kline(t);
+  for (let i = 0; i < 4; i++) { t.tick(20_000); kword(t, { index: i }); } // a long, slow line
+  assert.ok(t.visible(), "still up 80 s in");
+  kword(t, { index: 4, done: true });
+  t.send({ type: "voice.state", state: "idle" });
+  t.tick(9_000);
+  assert.ok(t.visible(), "reading time after the voice stops");
+  t.tick(2_000);
+  assert.equal(t.visible(), false);
+});
+
+// WCAG contrast of a CSS hex ink on the card composited over a page.
+function contrast(hex, card, page) {
+  const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const over = card.rgb.map((c, i) => c * card.a + page[i] * (1 - card.a));
+  const lum = (c) => {
+    const [r, g, b] = c.map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [a, b] = [lum(rgb(hex)), lum(over)].sort((x, y) => y - x);
+  return (a + 0.05) / (b + 0.05);
+}
+
+test("karaoke: said and coming inks are 4.5:1 on the card in light and dark, over a white or black page", () => {
+  const t = setup();
+  kline(t);
+  const css = sheet(t).replace(/\s+/g, " ");
+  const light = css.match(/\.wrap \{ --k-said: (#[0-9a-f]{6}); --k-next: (#[0-9a-f]{6}); \}/i);
+  const dark = css.match(/--k-said: (#[0-9a-f]{6}); --k-next: (#[0-9a-f]{6}); \} \}/i);
+  assert.ok(light && dark);
+  const cards = { light: { rgb: [255, 255, 255], a: 0.74 }, dark: { rgb: [28, 28, 30], a: 0.72 } };
+  for (const [name, m] of [["light", light], ["dark", dark]]) {
+    const [, said, next] = m;
+    for (const page of [[255, 255, 255], [0, 0, 0]]) {
+      for (const ink of [said, next]) {
+        const c = contrast(ink, cards[name], page);
+        assert.ok(c >= 4.5, `${name} ${ink} on page ${page}: ${c.toFixed(2)}`);
+      }
+    }
+    // Said is lighter than coming, slightly.
+    const L = (h) => parseInt(h.slice(1, 3), 16);
+    assert.ok(L(said) > L(next), `${name}: said ${said} lighter than coming ${next}`);
+  }
+});
+
 test("the action line: a small secondary line under the words, never replacing them", () => {
   const t = setup();
   const caption = t.window.__clearcartCaption;
