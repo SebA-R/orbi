@@ -152,8 +152,16 @@ export async function navigate({ tabId, url } = {}) {
   if (typeof url !== "string" || !url) throw new BridgeError(ERR.BAD_REQUEST, "url is required");
   const id = await resolveTab(tabId);
   let start;
-  if (url === "back") start = () => api().tabs.goBack(id);
-  else if (url === "forward") start = () => api().tabs.goForward(id);
+  const history = (fn, dir) => async () => {
+    try {
+      await fn(id);
+    } catch {
+      // Includes entries Chrome skips because they were added without a user gesture.
+      throw new BridgeError(ERR.BAD_REQUEST, `no page to go ${dir} to`);
+    }
+  };
+  if (url === "back") start = history((i) => api().tabs.goBack(i), "back");
+  else if (url === "forward") start = history((i) => api().tabs.goForward(i), "forward");
   else {
     await assertAllowed(url);
     start = () => api().tabs.update(id, { url });
