@@ -22,6 +22,10 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
   let creating = null;
   let lastTabId = null;
   let openedOptions = false;
+  // What the caption card shows right now, so it can follow the user to the
+  // tab they switch to: the voice state and the latest line from each speaker.
+  const REPLAY_MS = 5000;
+  const replay = { state: null, lines: [], at: 0 };
 
   async function hasOffscreen() {
     const url = chromeApi.runtime.getURL(OFFSCREEN_PATH);
@@ -92,6 +96,7 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
     if (!msg || typeof msg.type !== "string") return false;
     if (msg.from === "offscreen") {
       if (!TO_TAB.has(msg.type)) return false;
+      remember(msg);
       toTab(msg);
       if (msg.type === RT.VOICE_ERROR && msg.code === "mic_blocked" && !openedOptions) {
         openedOptions = true;
@@ -142,11 +147,38 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
     toOffscreen(async () => ({ type: RT.SETTINGS_CHANGED, settings: await getSettings() }), { create: false });
   }
 
-  function onTabActivated({ tabId }) {
-    lastTabId = tabId;
+  function remember(msg) {
+    const { from, target, ...clean } = msg;
+    if (msg.type === RT.VOICE_STATE) replay.state = clean;
+    else if (msg.type === RT.SUBTITLE) replay.lines = [...replay.lines.filter((l) => l.speaker !== clean.speaker), clean];
+    else return;
+    replay.at = Date.now();
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, ensureOffscreen, closeOffscreen, toggle, idle: () => chain };
+  // Switching tabs carries the caption along while Clearcart is listening,
+  // thinking or speaking, or its last words are still on screen.
+  async function onTabActivated({ tabId }) {
+    if (tabId == null || tabId === lastTabId) return;
+    lastTabId = tabId;
+    const active = replay.state && replay.state.state !== "idle";
+    if (!active && (!replay.lines.length || Date.now() - replay.at > REPLAY_MS)) return;
+    for (const m of [replay.state, ...replay.lines].filter(Boolean)) {
+      try {
+        await chromeApi.tabs.sendMessage(tabId, m);
+      } catch {
+        return; // no content script there (chrome:// page); nothing to show
+      }
+    }
+  }
+
+  // Switching windows changes the visible tab too.
+  async function onWindowFocused(windowId) {
+    if (windowId == null || windowId < 0) return;
+    const [tab] = await chromeApi.tabs.query({ active: true, windowId }).catch(() => []);
+    if (tab && tab.id != null) await onTabActivated({ tabId: tab.id });
+  }
+
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, idle: () => chain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.
@@ -157,5 +189,6 @@ export function installVoiceRelay(opts = {}) {
   chromeApi.commands?.onCommand.addListener((command, tab) => relay.onCommand(command, tab));
   chromeApi.storage.onChanged.addListener((changes, area) => relay.onStorageChanged(changes, area));
   chromeApi.tabs.onActivated?.addListener((info) => relay.onTabActivated(info));
+  chromeApi.windows?.onFocusChanged?.addListener((id) => relay.onWindowFocused(id));
   return relay;
 }
