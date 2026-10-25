@@ -9,6 +9,13 @@
 // In text fields plain Space just types a space. Releasing a confirmed hold
 // sends PTT_STOP, so nothing listens after you let go.
 //
+// Canvas editors (Google Docs, and others that type through a hidden text
+// field, see isHiddenEntry) keep the caret in a field the user can't see,
+// so Space there types as usual and a hold of CONFIRM_MS also talks: PTT_START
+// then (with the listen sound, nothing recorded before), key repeats are
+// swallowed, and the release sends PTT_STOP. The first space stays typed.
+// Any other key during those first moments means typing, so no talk.
+//
 // With Space as the talk key, Option+Space (Alt+Space) latches, everywhere
 // including text fields: one press sends PTT_START {latch: true} and listening
 // stays on after you let go. The next Space or Option+Space (even in a text
@@ -134,6 +141,29 @@
     return isTextEntry(deepFocus(targetOf(e), dom));
   }
 
+  // No visible area: off the viewport, or under 2px on a side.
+  function offscreen(r, w, h) {
+    return !r || !(r.width >= 2) || !(r.height >= 2) || r.right <= 0 || r.bottom <= 0 || r.left >= w || r.top >= h;
+  }
+
+  // A text field the user can't see: the hidden input a canvas editor types
+  // through, such as Google Docs' .docs-texteventtarget-iframe (a frame 1px
+  // tall at top -10000) or a code editor's offscreen textarea. The caret
+  // lives there the whole time the user edits, so Space there must still be
+  // able to talk.
+  function isHiddenEntry(el) {
+    try {
+      const win = el.ownerDocument && el.ownerDocument.defaultView;
+      if (!win) return false;
+      if (offscreen(el.getBoundingClientRect(), win.innerWidth, win.innerHeight)) return true;
+      const frame = win.frameElement; // null at the top and for a cross-origin parent
+      const parent = frame && frame.ownerDocument && frame.ownerDocument.defaultView;
+      return !!parent && offscreen(frame.getBoundingClientRect(), parent.innerWidth, parent.innerHeight);
+    } catch {
+      return false;
+    }
+  }
+
   // What a Space press would have activated, if anything.
   function isPressable(el) {
     if (!el || !el.tagName) return false;
@@ -154,7 +184,7 @@
   function createHoldDetector({
     hotkey = "Space", send, onTap = () => {},
     setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
-    doubleTapMs = DOUBLE_TAP_MS, dom = null,
+    doubleTapMs = DOUBLE_TAP_MS, dom = null, isHidden = isHiddenEntry,
   }) {
     let specs = [];
     let spec = null; // the spec of the current hold
@@ -172,6 +202,7 @@
     let swallowUp = null; // the keyup of a press we already acted on
     let pendingTap = null; // a tap while speaking, waiting to see if a second one follows
     let secondTap = false; // this press continues a pending tap's silent start
+    let typed = false; // a Space hold in a hidden text field: its space was typed
 
     const clearHoldTimer = () => {
       if (timer != null) clearTimer(timer);
@@ -196,9 +227,13 @@
       clearHoldTimer();
       const wasConfirmed = confirmed;
       const wasSecond = secondTap;
+      const wasTyped = typed;
       confirmed = false;
       secondTap = false;
+      typed = false;
       if (wasConfirmed) return send(RT.PTT_STOP);
+      // A tap in a hidden text field typed its space, and nothing was started.
+      if (wasTyped) return;
       if (!e) return send(RT.PTT_CANCEL);
       // Second quick tap while speaking: hard-stop the speech.
       if (wasSecond) return send(RT.PTT_HUSH);
@@ -225,6 +260,13 @@
       onKeyDown(e) {
         // Space confirms or spaces an IME candidate: never ours.
         if (e.isComposing || e.keyCode === 229) return;
+        // Another key while Space is down in a hidden text field, before it
+        // talks: the user is typing, so that Space was a space.
+        if (typed && !confirmed && e.code !== spec.code) {
+          held = false;
+          typed = false;
+          clearHoldTimer();
+        }
         if (latched) {
           if (!endsLatch(e)) return;
           consume(e);
@@ -237,7 +279,23 @@
         const hit = held ? (matches(spec, e) ? spec : null) : specs.find((s) => matches(s, e));
         if (!hit) return;
         spec = hit;
-        if (spec.confirmMs && !held && isTyping(e, dom)) { flushPending(); return; }
+        if (spec.confirmMs && !held && isTyping(e, dom)) {
+          flushPending();
+          // A hidden text field (a canvas editor's caret): the space types at
+          // once, as always, and only a hold starts talking, with the listen
+          // sound. Nothing records before that, so typing never opens the mic.
+          if (e.repeat || !isHidden(deepFocus(targetOf(e), dom))) return;
+          held = true;
+          typed = true;
+          confirmed = false;
+          timer = setTimer(() => {
+            timer = null;
+            if (!held) return;
+            confirmed = true;
+            send(RT.PTT_START);
+          }, spec.confirmMs);
+          return;
+        }
         consume(e);
         if (e.repeat || held) return;
         if (spec.latch) {
@@ -292,7 +350,7 @@
           return;
         }
         if (!releasesHold(spec, e)) return;
-        if (e.code === spec.code) consume(e);
+        if (e.code === spec.code && !(typed && !confirmed)) consume(e);
         release(e);
       },
       // Focus left the page mid-hold (window switch, tab switch): we will never
@@ -360,6 +418,9 @@
       detector.cancel();
       win.removeEventListener("keydown", onDown, true);
       win.removeEventListener("keyup", onUp, true);
+      win.removeEventListener("pagehide", onLeave);
+      win.removeEventListener("blur", onLeave);
+      doc.removeEventListener("visibilitychange", onVisibility);
       if (rewrites) rewrites.disconnect();
     };
     // Adding a listener that is already there does nothing, so this can run
@@ -378,7 +439,7 @@
     // editors do) erases every listener on the window and the document, ours
     // too, and replaces the document's children: put ours back then.
     try {
-      rewrites = new win.MutationObserver(() => { if (!orphaned()) listen(); });
+      rewrites = new win.MutationObserver(() => (orphaned() ? detach() : listen()));
       rewrites.observe(doc, { childList: true });
     } catch {}
     // The worker sends the voice state to the tab that is talking (all frames).
@@ -399,7 +460,7 @@
   }
 
   if (typeof globalThis.__clearcartHotkeyTest === "object") {
-    Object.assign(globalThis.__clearcartHotkeyTest, { createHoldDetector, install, isTextEntry, isPressable, deepFocus, isTyping, SPECS, RT, CONFIRM_MS, DOUBLE_TAP_MS });
+    Object.assign(globalThis.__clearcartHotkeyTest, { createHoldDetector, install, isTextEntry, isHiddenEntry, isPressable, deepFocus, isTyping, SPECS, RT, CONFIRM_MS, DOUBLE_TAP_MS });
   } else if (globalThis.chrome && globalThis.chrome.runtime && globalThis.chrome.runtime.id) {
     install();
   }

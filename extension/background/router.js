@@ -46,6 +46,7 @@ import { ACT_METHODS, createFollower } from "./follow.js";
 import { assertInViewport, parseKey } from "./cdp.js";
 import { createActor } from "./actor.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
+import "../content/mask.js";
 import { luhnValid } from "../lib/log.js";
 import { APPS, editNote, exportText, googleFileOf } from "./gdocs.js";
 
@@ -110,21 +111,12 @@ export const NO_CARD_FIELDS = "couldn't find the card fields on this page";
 const NOT_FILLED = "couldn't fill the card fields on this page";
 
 const NO_RECEIVER = /Receiving end does not exist|Could not establish connection/i;
-const DIGIT_RUN = /\d(?:[ -]?\d){12,18}/g;
 
-// True when the text holds a Luhn-valid run of 13 to 19 digits (optionally
-// grouped by single spaces or dashes), checked at every window so a card
-// number glued to other digits is still caught.
+// True when the text holds a card number: a Luhn-valid 13 to 19 digit
+// window in any digit run (optionally grouped by single spaces or dashes),
+// by content/mask.js, so a card number glued to other digits is still caught.
 export function containsCardNumber(text) {
-  for (const run of String(text).match(DIGIT_RUN) || []) {
-    const d = run.replace(/[ -]/g, "");
-    for (let len = 13; len <= Math.min(19, d.length); len++) {
-      for (let i = 0; i + len <= d.length; i++) {
-        if (luhnValid(d.slice(i, i + len))) return true;
-      }
-    }
-  }
-  return false;
+  return globalThis.ClearcartMask.hasCardNumber(String(text));
 }
 
 // A coordinate from the bridge, checked like cdp.js does.

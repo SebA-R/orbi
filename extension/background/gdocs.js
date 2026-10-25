@@ -7,12 +7,12 @@
 //
 // Only docs.google.com addresses of a file (…/d/<id>/…) count, and the
 // answer must come from docs.google.com or Google's download host
-// (*.googleusercontent.com) as plain text or CSV. Anything else (a sign-in
+// (doc-*.googleusercontent.com) as plain text or CSV. Anything else (a sign-in
 // page, an owner who turned off downloads, a timeout) answers null, and the
 // caller keeps the page's own text. Card numbers are masked like every page
 // read (content/mask.js).
 
-import { luhnValid } from "../lib/log.js";
+import "../content/mask.js";
 
 const FILE_PATH = /^\/(document|spreadsheets|presentation)((?:\/u\/\d+)?)\/d\/([A-Za-z0-9_-]{20,})(?:\/|$)/;
 
@@ -23,7 +23,7 @@ export const APPS = Object.freeze({
 });
 
 export const EXPORT_TIMEOUT_MS = 8_000;
-const MAX_BYTES = 2_000_000;
+const MAX_BYTES = 1_000_000;
 
 // { app, id, exportUrl } for a Google Docs, Sheets or Slides file address,
 // else null. A sheet exports the tab shown (gid in the hash or query).
@@ -39,29 +39,50 @@ export function googleFileOf(url) {
   if (!m) return null;
   const [, app, account, id] = m;
   const base = `https://docs.google.com/${app}${account}/d/${id}`;
-  if (app !== "spreadsheets") return { app, id, exportUrl: `${base}/export?format=txt` };
+  // The signed-in account (authuser) and a link-shared file's key go along.
+  const keep = ["authuser", "resourcekey"].filter((k) => /^[\w-]{1,100}$/.test(u.searchParams.get(k) || ""))
+    .map((k) => `&${k}=${encodeURIComponent(u.searchParams.get(k))}`).join("");
+  if (app !== "spreadsheets") return { app, id, exportUrl: `${base}/export?format=txt${keep}` };
   const gid = /[#&?]gid=(\d+)/.exec(u.hash) || /[#&?]gid=(\d+)/.exec(u.search);
-  return { app, id, exportUrl: `${base}/export?format=csv${gid ? `&gid=${gid[1]}` : ""}` };
+  return { app, id, exportUrl: `${base}/export?format=csv${gid ? `&gid=${gid[1]}` : ""}${keep}` };
 }
 
 function fromGoogle(url) {
   try {
     const u = new URL(url);
-    return u.protocol === "https:" && (u.hostname === "docs.google.com" || u.hostname.endsWith(".googleusercontent.com"));
+    return u.protocol === "https:" && (u.hostname === "docs.google.com" || /^doc-[a-z0-9-]+\.googleusercontent\.com$/.test(u.hostname));
   } catch {
     return false;
   }
 }
 
-const DIGIT_RUN = /\d(?:[ -]?\d){12,18}/g;
-export function maskCardRuns(text) {
-  return String(text).replace(DIGIT_RUN, (run) => {
-    const d = run.replace(/[ -]/g, "");
-    return d.length >= 13 && luhnValid(d) ? "[masked card number]" : run;
-  });
+export const maskCardRuns = (text) => globalThis.ClearcartMask.maskCardRuns(String(text));
+
+// The body as text, cut at MAX_BYTES (more than get_page_text ever
+// returns): read in chunks, so a huge, compressed or chunked answer is never
+// held whole in the worker.
+async function capped(res) {
+  const reader = res.body && typeof res.body.getReader === "function" ? res.body.getReader() : null;
+  if (!reader) {
+    return (await res.text()).slice(0, MAX_BYTES);
+  }
+  const dec = new TextDecoder();
+  let size = 0;
+  let out = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    out += dec.decode(value.subarray(0, MAX_BYTES - size), { stream: true });
+    size += value.byteLength;
+    if (size >= MAX_BYTES) {
+      reader.cancel().catch(() => {});
+      break;
+    }
+  }
+  return out + dec.decode();
 }
 
-// The file's text, or null. fetchImpl is fetch (tests pass a fake).
+// The file's text (masked), or null. fetchImpl is fetch (tests pass a fake).
 export async function exportText(file, { fetchImpl = globalThis.fetch, timeoutMs = EXPORT_TIMEOUT_MS } = {}) {
   if (!file || typeof fetchImpl !== "function") return null;
   const ctl = typeof AbortController === "function" ? new AbortController() : null;
@@ -71,10 +92,8 @@ export async function exportText(file, { fetchImpl = globalThis.fetch, timeoutMs
     if (!res || !res.ok || !fromGoogle(res.url || file.exportUrl)) return null;
     const type = String(res.headers?.get?.("content-type") || "").toLowerCase();
     if (!/^text\/(plain|csv)\b/.test(type)) return null;
-    const len = Number(res.headers?.get?.("content-length"));
-    if (len > MAX_BYTES) return null;
-    const text = await res.text();
-    return maskCardRuns(text.slice(0, MAX_BYTES).replace(/^﻿/, "").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim());
+    const text = await capped(res);
+    return maskCardRuns(text.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim());
   } catch {
     return null;
   } finally {

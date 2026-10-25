@@ -371,7 +371,7 @@ test("dismiss_overlay: a sign-in or payment dialog is refused with nothing press
 });
 
 // Google Docs, Sheets and Slides (background/gdocs.js).
-function docsFakes({ url = "https://docs.google.com/document/d/1jfHEhSnJs75Jd188KNDu0UE-SKfh7QSgtpYzw1LElUc/edit", tabUrl = url + "?tab=t.0", focus, exported = "Doc body text" } = {}) {
+function docsFakes({ url = "https://docs.google.com/document/d/1jfHEhSnJs75Jd188KNDu0UE-SKfh7QSgtpYzw1LElUc/edit", tabUrl = url + "?tab=t.0", focus, exported = "Doc body text", type = "text/plain", landed = "https://doc-0s-docstext.googleusercontent.com/x", blockAfterFetch = false } = {}) {
   const calls = [];
   const chromeApi = {
     scripting: { executeScript: async () => {} },
@@ -384,12 +384,18 @@ function docsFakes({ url = "https://docs.google.com/document/d/1jfHEhSnJs75Jd188
       },
     },
   };
-  const tabs = { resolveAllowedTab: async (id) => id ?? 7, assertPageAllowed: async (id, u) => calls.push(["allowed", u ?? null]) };
+  const tabs = {
+    resolveAllowedTab: async (id) => id ?? 7,
+    assertPageAllowed: async (id, u) => {
+      calls.push(["allowed", u ?? null]);
+      if (blockAfterFetch && calls.some((c) => c[0] === "fetch")) throw Object.assign(new Error("tab 7 is on a blocked site"), { code: "not_allowed" });
+    },
+  };
   const cdp = { send: async (_t, m, p) => calls.push(["cdp.send", m, p]), click: async () => {}, key: async () => {} };
   const fetchImpl = async (u) => {
     calls.push(["fetch", u]);
     if (exported == null) return { ok: false, status: 403, url: u, headers: { get: () => "text/html" }, text: async () => "" };
-    return { ok: true, status: 200, url: "https://doc-0s-docstext.googleusercontent.com/x", headers: { get: (h) => (h === "content-type" ? "text/plain" : null) }, text: async () => exported };
+    return { ok: true, status: 200, url: landed, headers: { get: (h) => (h === "content-type" ? type : null) }, text: async () => exported };
   };
   return { calls, router: createRouter({ chromeApi, tabs, cdp, fetchImpl }) };
 }
@@ -430,4 +436,28 @@ test("type with nothing focused is refused before any key; read_page on Docs say
   assert.ok(b.calls.some((c) => c[0] === "cdp.send" && c[1] === "Input.insertText"));
   const rp = await router.route("read_page", {});
   assert.match(rp.note, /Google Docs draws the document on a canvas/);
+});
+
+test("get_page_text drops the file's text when the tab moved to a blocked site during the download", async () => {
+  const { router } = docsFakes({ blockAfterFetch: true, exported: "secret plans" });
+  await assert.rejects(router.route("get_page_text", {}), { code: "not_allowed" });
+});
+
+test("get_page_text: a sheet's gid only from the page that answered; CSV; maxChars; a redirect to sign-in", async () => {
+  const sheet = "https://docs.google.com/spreadsheets/d/1uuLbAjXtZuXK-N8nNT4FQzzi4bvgXtxI6BAdiIEDUHo/edit";
+  // The tab has moved on to another file: its gid is not used.
+  const moved = docsFakes({ url: sheet, tabUrl: "https://docs.google.com/spreadsheets/d/1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/edit#gid=5", type: "text/csv; charset=utf-8", exported: "a,b\n1,2" });
+  const r = await moved.router.route("get_page_text", {});
+  assert.equal(moved.calls.find((c) => c[0] === "fetch")[1], "https://docs.google.com/spreadsheets/d/1uuLbAjXtZuXK-N8nNT4FQzzi4bvgXtxI6BAdiIEDUHo/export?format=csv");
+  assert.match(r.text, /^a,b\n1,2/);
+  const long = docsFakes({ exported: "x".repeat(500) });
+  const t = await long.router.route("get_page_text", { maxChars: 100 });
+  assert.equal(t.truncated, true);
+  assert.equal(t.text, "x".repeat(100) + "\n… (truncated)");
+  const signin = docsFakes({ landed: "https://accounts.google.com/v3/signin/identifier" });
+  assert.match((await signin.router.route("get_page_text", {})).note, /could not be downloaded/);
+  // The account and a link-shared file's key go along.
+  const keyed = docsFakes({ tabUrl: "https://docs.google.com/document/d/1jfHEhSnJs75Jd188KNDu0UE-SKfh7QSgtpYzw1LElUc/edit?authuser=2&resourcekey=0-abc_D" });
+  await keyed.router.route("get_page_text", {});
+  assert.match(keyed.calls.find((c) => c[0] === "fetch")[1], /format=txt&authuser=2&resourcekey=0-abc_D$/);
 });

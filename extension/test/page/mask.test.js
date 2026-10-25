@@ -42,3 +42,20 @@ test("maskValue masks payment elements and card runs in free text", () => {
   assert.ok(!out.includes("4111"), out);
   assert.ok(out.includes("1-800-555-0142"), out);
 });
+
+test("maskCardRuns finds a card glued to other digits: a CVC, an expiry, a short number", () => {
+  const { window } = loadPage("");
+  const { maskCardRuns, hasCardNumber } = window.ClearcartMask;
+  const M = "[masked card number]";
+  assert.equal(maskCardRuns("Card 4111 1111 1111 1111 123"), `Card ${M}`);
+  assert.equal(maskCardRuns("Card 4111 1111 1111 1111 05/27"), `Card ${M}/27`);
+  assert.equal(maskCardRuns("Order 12 4111111111111111"), `Order ${M}`);
+  assert.equal(maskCardRuns("CVV: 4111111111111111123"), `CVV: ${M}`);
+  assert.equal(maskCardRuns("Card 5555-5555-5555-4444-12 ok"), `Card ${M} ok`);
+  assert.equal(hasCardNumber("pay 4111 1111 1111 1111 123"), true);
+  assert.equal(hasCardNumber("order 12345 qty 2, ending in 1111"), false);
+  // A long number that is not a card may be masked too: too much is safe.
+  const order = maskCardRuns("Order 123456789012345678");
+  assert.ok(order === "Order 123456789012345678" || order === `Order ${M}`);
+  assert.equal(maskCardRuns("x".repeat(10) + "1".repeat(5000)), "x".repeat(10) + M);
+});

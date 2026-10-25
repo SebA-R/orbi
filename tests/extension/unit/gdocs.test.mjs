@@ -51,3 +51,16 @@ test("editNote tells the agent to click into the canvas before typing", () => {
   assert.match(editNote("spreadsheets"), /Google Sheets/);
   assert.equal(editNote("other"), "");
 });
+
+test("exportText reads a big answer in chunks and stops at the cap", async () => {
+  const file = googleFileOf(`https://docs.google.com/document/d/${ID}/edit`);
+  let cancelled = false;
+  let reads = 0;
+  const chunk = new TextEncoder().encode("a".repeat(400_000));
+  const body = { getReader: () => ({ read: async () => (reads++ < 10 ? { done: false, value: chunk } : { done: true }), cancel: async () => { cancelled = true; } }) };
+  const r = { ...res(), body, text: async () => { throw new Error("read whole"); } };
+  const text = await exportText(file, { fetchImpl: async () => r });
+  assert.equal(text.length, 1_000_000);
+  assert.equal(cancelled, true);
+  assert.ok(reads <= 4);
+});

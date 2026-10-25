@@ -2,6 +2,8 @@
 // reaches the console or the in-memory ring buffer, so card numbers, security
 // codes and tokens never land in a log even if a caller passes them by mistake.
 
+import "../content/mask.js";
+
 const SECRET_KEYS = /^(number|card|card_?number|cc-?(number|csc|exp)|csc|cvc|cvv|cvv2|exp|expiry|token|access_token|api_?key|password|secret|authorization|values|fields)$/i;
 const MAX_STRING = 400;
 const RING_SIZE = 200;
@@ -22,11 +24,10 @@ export function luhnValid(digits) {
   return sum % 10 === 0;
 }
 
-// 13 to 19 digits, optionally grouped by single spaces or dashes.
-const DIGIT_RUN = /\d(?:[ -]?\d){12,18}/g;
-
+// Any digit run holding a card number, by content/mask.js's check (a card
+// glued to other digits too).
 export function maskCardNumbers(text) {
-  return String(text).replace(DIGIT_RUN, (run) => (luhnValid(run.replace(/[ -]/g, "")) ? "[card number]" : run));
+  return globalThis.ClearcartMask.maskCardRuns(String(text), "[card number]");
 }
 
 function redactString(s) {

@@ -24,7 +24,7 @@ function key(code, mods = {}, extra = {}) {
   return e;
 }
 
-function detector(hotkey = "Alt+Space") {
+function detector(hotkey = "Alt+Space", opts = {}) {
   const { createHoldDetector } = load();
   const sent = [];
   const extras = [];
@@ -36,6 +36,7 @@ function detector(hotkey = "Alt+Space") {
     onTap: (e) => taps.push(e.code),
     setTimer: (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length - 1; },
     clearTimer: (i) => { timers[i].cleared = true; },
+    ...opts,
   });
   const fire = () => { for (const t of timers) if (!t.cleared) { t.cleared = true; t.fn(); } };
   return { d, sent, extras, timers, taps, fire };
@@ -521,4 +522,69 @@ test("a frame rewritten with document.open() gets its listeners back", () => {
   assert.equal(listeners.keydown.size, 1);
   fire("keydown", key("Space", { altKey: true }));
   assert.deepEqual(messages.map((m) => m.type), ["ptt.start"]);
+});
+
+// Google Docs' caret lives in a hidden contenteditable in a frame 1px tall
+// at top -10000 (.docs-texteventtarget-iframe).
+const DOCS_BOX = { tagName: "DIV", isContentEditable: true, getAttribute: () => null };
+
+test("Space in a hidden text field types, and a hold talks with nothing recorded before", () => {
+  const { d, sent, extras, fire } = detector("Space", { isHidden: () => true });
+  const down = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyDown(down);
+  assert.equal(down.prevented, false, "the space is typed");
+  assert.deepEqual(sent, [], "no silent start while typing");
+  fire();
+  assert.deepEqual(sent, ["ptt.start"]);
+  assert.equal(extras[0], undefined, "a confirmed start, with the listen sound");
+  const rep = key("Space", {}, { target: DOCS_BOX, repeat: true });
+  d.onKeyDown(rep);
+  assert.equal(rep.prevented, true, "no run of spaces while talking");
+  const up = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyUp(up);
+  assert.equal(up.prevented, true);
+  assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
+});
+
+test("a tap, or Space then another key, in a hidden text field is just typing", () => {
+  const { d, sent, taps, timers, fire } = detector("Space", { isHidden: () => true });
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  const up = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyUp(up);
+  assert.equal(up.prevented, false);
+  fire();
+  // Space down, the next letter before Space comes up: a fast typist.
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  const b = key("KeyB", {}, { target: DOCS_BOX });
+  d.onKeyDown(b);
+  assert.equal(b.prevented, false);
+  fire();
+  d.onKeyUp(key("Space", {}, { target: DOCS_BOX }));
+  assert.deepEqual(sent, []);
+  assert.deepEqual(taps, [], "no replayed tap: the space was typed");
+  assert.ok(timers.length >= 2);
+});
+
+test("a visible text field still never talks on Space", () => {
+  const { d, sent, fire } = detector("Space", { isHidden: () => false });
+  const down = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyDown(down);
+  fire();
+  assert.equal(down.prevented, false);
+  assert.deepEqual(sent, []);
+});
+
+test("isHiddenEntry: the Docs text frame off the top is hidden, a field on screen is not", () => {
+  const { isHiddenEntry } = load();
+  const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+  const top = { innerWidth: 1280, innerHeight: 900 };
+  const frameEl = { getBoundingClientRect: () => rect(0, -10000, 625, 1), ownerDocument: { defaultView: top } };
+  const inner = { innerWidth: 625, innerHeight: 1, frameElement: frameEl };
+  const box = { ownerDocument: { defaultView: inner }, getBoundingClientRect: () => rect(0, 0, 625, 18) };
+  assert.equal(isHiddenEntry(box), true);
+  const field = { ownerDocument: { defaultView: { ...top, frameElement: null } }, getBoundingClientRect: () => rect(10, 10, 200, 30) };
+  assert.equal(isHiddenEntry(field), false);
+  const offTextarea = { ownerDocument: { defaultView: { ...top, frameElement: null } }, getBoundingClientRect: () => rect(-9999, 10, 1, 1) };
+  assert.equal(isHiddenEntry(offTextarea), true);
+  assert.equal(isHiddenEntry({}), false);
 });

@@ -67,11 +67,39 @@
     return sum % 10 === 0;
   }
 
-  // Digit runs of 13-19 digits, optionally separated by single spaces/dashes.
-  var RUN = /\d(?:[ -]?\d){12,18}/g;
+  // Digit runs of 13 or more digits, optionally separated by single spaces
+  // or dashes.
+  var RUN = /\d(?:[ -]?\d){12,}/g;
 
-  function maskCardRuns(text) {
-    return String(text).replace(RUN, function (m) { return luhn(m) ? CARD_MASK : m; });
+  // True when some 13-19 digit window of the run passes Luhn, so a card
+  // glued to other digits ("4111 1111 1111 1111 123", "Order 12 4111...")
+  // is still found. Long numbers that are not cards are caught too, which is
+  // fine: masking too much is safe.
+  function hasCardWindow(run) {
+    var d = String(run).replace(/[\s-]/g, "");
+    // Too long to be anything a person reads as a number: mask it.
+    if (d.length > 400) return true;
+    for (var len = 13; len <= 19 && len <= d.length; len++) {
+      for (var i = 0; i + len <= d.length; i++) {
+        if (luhn(d.slice(i, i + len))) return true;
+      }
+    }
+    return false;
+  }
+
+  // True when text holds a card number anywhere.
+  function hasCardNumber(text) {
+    var runs = String(text == null ? "" : text).match(RUN) || [];
+    for (var i = 0; i < runs.length; i++) if (hasCardWindow(runs[i])) return true;
+    return false;
+  }
+
+  // Replaces every digit run holding a card number with label (default
+  // CARD_MASK). The one card check for the page scripts, the worker
+  // (lib/log.js, background/gdocs.js) and the agent server.
+  function maskCardRuns(text, label) {
+    var mask = label == null ? CARD_MASK : String(label);
+    return String(text).replace(RUN, function (m) { return hasCardWindow(m) ? mask : m; });
   }
 
   // Masks a value for output. With a payment element the whole value is
@@ -83,7 +111,7 @@
     return maskCardRuns(s);
   }
 
-  var api = { isPaymentField: isPaymentField, luhn: luhn, maskValue: maskValue, maskCardRuns: maskCardRuns, MASK: MASK, CARD_MASK: CARD_MASK };
+  var api = { isPaymentField: isPaymentField, luhn: luhn, maskValue: maskValue, maskCardRuns: maskCardRuns, hasCardNumber: hasCardNumber, MASK: MASK, CARD_MASK: CARD_MASK };
   root.ClearcartMask = api;
   if (typeof module === "object" && module && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
