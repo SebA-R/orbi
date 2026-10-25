@@ -7,7 +7,7 @@
 //     left out of tabsContext and refused for every call.
 //   - A new tab page (Chrome's or Clearcart's, isNewTabPage) and Clearcart's
 //     "Can't reach this site" page (errpage.js) are listed and may be
-//     navigated to a store, but are never read or acted on. The error page
+//     navigated to a site, but are never read or acted on. The error page
 //     is listed as chrome-error://chromewebdata/, without the address that
 //     failed; a user's error page for a blocked site is hidden.
 //   - That check runs again on every call (resolveAllowedTab), not only when
@@ -64,7 +64,7 @@ export function originPath(url) {
 }
 
 // A new tab page, Chrome's or Clearcart's. Nothing on it is the user's, so
-// Clearcart lists the tab and may navigate it to a store, like a blank tab
+// Clearcart lists the tab and may navigate it to a site, like a blank tab
 // it opened itself. It never reads or acts on the page.
 export function isNewTabPage(url) {
   const u = String(url || "");
@@ -236,7 +236,7 @@ export async function resolveAllowedTab(tabId, { peek = false } = {}) {
   const id = await resolveTab(tabId);
   const tab = await api().tabs.get(id);
   if (onNewTab(tab)) {
-    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page with nothing to use; navigate it to a store first`);
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page with nothing to use; navigate it to a web address first`);
   }
   if (onErrorPage(tab)) {
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a page saying Chrome could not reach the site; navigate it somewhere else first`);
