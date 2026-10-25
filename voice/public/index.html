@@ -6,6 +6,17 @@
   <meta name="color-scheme" content="light dark">
   <title>Clearcart Voice</title>
   <link rel="stylesheet" href="css/console.css">
+  <link rel="stylesheet" href="css/looks.css">
+  <script>
+    // Design variants: ?look=halo|liquid|bars|ambient (default: aurora), ?theme=light|dark.
+    (function () {
+      var q = new URLSearchParams(location.search), d = document.documentElement;
+      var look = q.get('look'), theme = q.get('theme');
+      if (look && /^[a-z]+$/.test(look)) d.dataset.look = look;
+      if (theme === 'light' || theme === 'dark') d.dataset.theme = theme;
+      if (q.has('demo')) d.dataset.demo = q.get('demo') || 'idle';
+    })();
+  </script>
 </head>
 <body data-ui="idle">
   <a class="skip" href="#talk">Skip to talk button</a>
@@ -37,6 +48,7 @@
           <span class="orb-aura"></span>
           <span class="orb-ring"></span>
           <span class="orb-core"><span class="orb-sheen"></span></span>
+          <span class="orb-bars"><i></i><i></i><i></i><i></i><i></i></span>
         </span>
         <span class="talk-label visually-hidden">Hold Space to talk</span>
       </button>
@@ -114,5 +126,24 @@
   <div id="sr-alert" class="visually-hidden" aria-live="assertive" aria-atomic="true"></div>
 
   <script type="module" src="js/app.js"></script>
+  <script type="module">
+    // Gallery previews (looks.html): ?demo=<state> shows a state with sample captions, no mic needed.
+    const demo = document.documentElement.dataset.demo;
+    if (demo && window.__clearcartDemoState) {
+      document.activeElement?.blur();
+      const user = 'Find me the cheapest allergy medicine, same dose as Zyrtec';
+      const agent = 'I found three. The cheapest is Elm Health cetirizine, 10 milligram, 90 count, for $18.49. Want me to add it to your cart?';
+      if (demo === 'receipt') {
+        window.__clearcartDemoState('idle', { user: 'Yes', agent: 'Done. Your order is placed.' });
+        window.__clearcartDemoReceipt();
+      } else {
+        window.__clearcartDemoState(demo, {
+          user: demo === 'idle' ? '' : user,
+          agent: demo === 'speaking' ? agent : '',
+          status: 'Searching the store',
+        });
+      }
+    }
+  </script>
 </body>
 </html>
