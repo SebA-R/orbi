@@ -95,3 +95,10 @@ test("parseOriginLines takes one site per line and reports bad lines", () => {
   assert.deepEqual(r.origins, ["https://www.etsy.com", "https://www.aritzia.com", "http://localhost:4000"]);
   assert.deepEqual(r.bad, ["javascript:alert(1)", "https://me:pw@shop.example"]);
 });
+
+test("sounds defaults on and keeps a stored false", () => {
+  assert.equal(DEFAULTS.sounds, true);
+  assert.equal(normalize({}).sounds, true);
+  assert.equal(normalize({ sounds: false }).sounds, false);
+  assert.equal(normalize({ sounds: "off" }).sounds, true);
+});

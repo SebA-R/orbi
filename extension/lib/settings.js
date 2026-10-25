@@ -31,6 +31,8 @@ export const DEFAULTS = Object.freeze({
   quietTabs: true,
   // Bring the user to the tab Clearcart acts on (background/follow.js).
   followTab: true,
+  // Earcons: listening, sent, cut off, order result, errors (lib/voice/chime.js).
+  sounds: true,
 });
 
 export const SPEED_MIN = 0.6;
@@ -78,6 +80,7 @@ export function normalize(raw = {}) {
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
   if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
+  if (typeof raw.sounds === "boolean") out.sounds = raw.sounds;
   return out;
 }
 
