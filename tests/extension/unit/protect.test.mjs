@@ -152,7 +152,8 @@ test("unlockClass: checkout, account, subscription and saved card unlock on requ
   assert.equal(P.unlockClass(lock("Create account")), "account");
   assert.equal(P.unlockClass(lock("Subscribe")), "subscription");
   assert.equal(P.unlockClass(lock("Save card")), "payment-method");
-  assert.equal(P.unlockClass({ kind: "marked", label: "Continue" }), "marked");
+  // Marked controls (data-clearcart-protected) never unlock on request.
+  for (const l of ["Continue", "Proceed to checkout", "Sign in", "Subscribe"]) assert.equal(P.unlockClass({ kind: "marked", label: l }), null, "marked " + l);
   for (const kind of ["payment-form", "express", "frame", "shadow"]) assert.equal(P.unlockClass({ kind, label: "Continue" }), null, kind);
   assert.equal(P.unlockClass(null), null);
 });
