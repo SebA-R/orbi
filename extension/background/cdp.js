@@ -122,6 +122,9 @@ export async function type({ tabId, text } = {}) {
 // Parses "Enter", "a", "Shift+Tab", "Ctrl+A" into CDP key event fields.
 export function parseKey(spec) {
   if (typeof spec !== "string" || !spec) throw new BridgeError(ERR.BAD_REQUEST, "key must be a non-empty string");
+  // Control characters ("\r", "\n", "\t", NUL...) are not key names, and
+  // "\r" as text would press Enter past every check keyed on the name.
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(spec)) throw new BridgeError(ERR.BAD_REQUEST, "key must not contain control characters");
   const parts = spec === "+" ? ["+"] : spec.split("+");
   const main = parts.pop();
   let modifiers = 0;

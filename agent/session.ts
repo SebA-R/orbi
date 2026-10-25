@@ -16,7 +16,7 @@ import { createExtToolsServer } from "./exttools.ts";
 import { ocicLockNote, ocicLockReason } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
-import { payNow, type PayState } from "./pay.ts";
+import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
 import { SITES_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -151,11 +151,11 @@ export async function returnStrays(
   nav: (tabId: number, url: string) => Promise<string | null>,
   policy: SitePolicy = SITE_POLICY
 ): Promise<number> {
-  const strays = tabs.filter((t) => t.url && !BLANK.test(t.url) && siteBlockReason(t.url, policy));
+  const strays = tabs.filter((t) => isStrayTab(t.url, policy));
   for (const t of strays) {
     if (policy.mode === "open") {
       const at = await nav(t.tabId, "back").catch(() => null);
-      if (at && (BLANK.test(at) || !siteBlockReason(at, policy))) continue;
+      if (at && (BLANK.test(at) || !strayReason(at, policy))) continue;
     }
     await nav(t.tabId, STORE_ORIGIN + "/").catch(() => null);
   }
@@ -164,7 +164,7 @@ export async function returnStrays(
 
 export function sweepNote(n: number, policy: SitePolicy = SITE_POLICY): string {
   return policy.mode === "open"
-    ? `A tab opened a blocked site and was sent back${n > 1 ? " (" + n + " tabs)" : ""}. Never open email, bank, password, government, health or account sites; tell the user instead.`
+    ? `A tab opened a blocked site or a checkout page and was sent back${n > 1 ? " (" + n + " tabs)" : ""}. Never open email, bank, password, government, health or account sites; tell the user instead.`
     : `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...policy.allowed].join(", ")}.`;
 }
 
@@ -179,6 +179,17 @@ export function navigateLockReason(url: string): string | null {
   return null;
 }
 
+// Why the sweep sends a tab away from url, or null: a blocked site, or a
+// checkout page navigate would have refused (a redirect or an in-page link
+// can land there).
+export function strayReason(url: string, policy: SitePolicy = SITE_POLICY): string | null {
+  return siteBlockReason(url, policy) || navigateLockReason(url);
+}
+
+export function isStrayTab(url: string | undefined, policy: SitePolicy = SITE_POLICY): boolean {
+  return !!url && !BLANK.test(url) && !!strayReason(url, policy);
+}
+
 // Text of an MCP tool result as the PostToolUse hook receives it.
 function responseText(r: unknown): string {
   if (typeof r === "string") return r;
@@ -191,12 +202,27 @@ export type ServerMessage =
   | { type: "status"; text: string }
   | { type: "receipt"; item: string; total: string; last4: string };
 
-const NEGATIVE = /\b(no|nope|not|don'?t|do not|stop|wait|cancel|change|hold on|never mind|nevermind)\b/i;
-const AFFIRMATIVE = /^(yes|yeah|yep|yup|yes please|confirm|confirmed|go ahead|pay|pay now|do it|place the order)\b/i;
+// The whole answer must be a yes: affirmative phrases plus polite filler and
+// nothing else, so "yes, but two of them", "do it later" or "pay attention"
+// are not a yes. Longer phrases first so "pay now" is not read as "pay".
+const AFFIRMATIVE = ["place the order", "place order", "go ahead", "pay now", "do it", "confirmed", "confirm", "yes", "yeah", "yep", "yup", "pay"];
+const FILLER = ["thank you", "all right", "please", "thanks", "okay", "ok", "alright", "sure"];
 
 export function isExplicitYes(text: string): boolean {
-  const t = text.trim().toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
-  return AFFIRMATIVE.test(t) && !NEGATIVE.test(t);
+  let rest = ` ${text.toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim()} `;
+  let affirmed = false;
+  for (let progress = true; progress && rest.trim(); ) {
+    progress = false;
+    for (const [phrase, strong] of [...AFFIRMATIVE.map((p) => [p, true] as const), ...FILLER.map((p) => [p, false] as const)]) {
+      if (rest.startsWith(` ${phrase} `)) {
+        rest = rest.slice(phrase.length + 1);
+        affirmed ||= strong;
+        progress = true;
+        break;
+      }
+    }
+  }
+  return affirmed && !rest.trim();
 }
 
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -352,7 +378,7 @@ export class Session {
   private async runSweep(): Promise<number> {
     const n = await returnStrays(await this.listTabs(), (id, url) => this.navTab(id, url));
     if (n) {
-      const left = (await this.listTabs()).filter((t) => t.url && !BLANK.test(t.url) && siteBlockReason(t.url, SITE_POLICY));
+      const left = (await this.listTabs()).filter((t) => isStrayTab(t.url, SITE_POLICY));
       if (left.length) throw new Error(`${left.length} tab(s) still on a blocked site`);
     }
     this.sweepBroken = false;
@@ -424,18 +450,22 @@ export class Session {
           .describe("One short sentence on anything you changed for the user, e.g. \"I removed a pre-checked Subscribe and Save membership that would have added $4.99.\" Omit if nothing changed."),
       },
       async ({ item, quantity, total, changes }) => {
-        this.state.confirmation = { item, quantity, total, state: "pending" };
+        // Pin the yes to this checkout tab and the cart on it (pay.ts).
+        const snap = await checkoutSnapshot(this.state.lastTabId);
+        const conf: Confirmation = { item, quantity, total, state: "pending", tabId: snap.tabId, cart: snap.cart };
+        this.state.confirmation = conf;
         const note = changes?.trim() ? ` ${changes.trim().replace(/([^.!?])$/, "$1.")}` : "";
         this.say(`You're buying ${quantity} ${item} for ${total}.${note} Say yes to pay, or no to change it.`);
         const answer = await new Promise<string | null>((resolve) => {
           this.awaitingAnswer = resolve;
         });
-        if (answer !== null && isExplicitYes(answer)) {
-          this.state.confirmation.state = "confirmed";
+        if (answer !== null && isExplicitYes(answer) && this.state.confirmation === conf) {
+          conf.state = "confirmed";
+          conf.confirmedAt = Date.now();
           this.status("checkout confirmed");
           return { content: [{ type: "text", text: "confirmed" }] };
         }
-        this.state.confirmation.state = "declined";
+        conf.state = "declined";
         this.status("checkout declined");
         return { content: [{ type: "text", text: `declined. The user said: ${JSON.stringify(answer ?? "")}` }] };
       }
@@ -516,6 +546,11 @@ export class Session {
       },
     }));
 
+    // Text-only messages are held until the turn ends: the SDK can send the
+    // text and the tool call of one step as separate messages, so a tool call
+    // that follows turns the held text into thinking aloud.
+    let held: string[] = [];
+    const unspoken = (text: string) => this.status(`(not spoken) ${text.slice(0, 120)}`);
     try {
       for await (const m of q) {
         if (m.type === "system" && m.subtype === "init") {
@@ -526,13 +561,19 @@ export class Session {
           // Only a message with no tool calls is a reply to the user. Text next
           // to tool calls is the model thinking aloud: log it, never speak it.
           const working = blocks.some((b) => b.type === "tool_use");
+          if (working) {
+            held.forEach(unspoken);
+            held = [];
+          }
           for (const block of blocks) {
             if (block.type === "text" && block.text?.trim()) {
-              if (working) this.status(`(not spoken) ${block.text.trim().slice(0, 120)}`);
-              else this.say(block.text.trim());
+              if (working) unspoken(block.text.trim());
+              else held.push(block.text.trim());
             } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
           }
         } else if (m.type === "result") {
+          if (held.length) this.say(held.join(" "));
+          held = [];
           if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
         }
       }

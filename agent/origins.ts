@@ -94,14 +94,43 @@ export function paySite(href: string | null | undefined): boolean {
 }
 
 // Checkout and payment pages by path. Used to keep Claude from navigating
-// straight into checkout on sites where no pay flow exists yet.
-const CHECKOUT_PATH = /(^|\/)(checkouts?|payments?|pay|billing|purchase|place-?order|one-?click|express-?checkout)(\/|$)/i;
+// straight into checkout on sites where no pay flow exists yet, and by the
+// tab sweep on the URL a tab actually landed on. The path is percent-decoded
+// (repeatedly, so %2563 is caught too) and split into segments; a segment
+// matches with or without a file extension or ;params ("checkout.html",
+// "pay.php", "checkout;jsessionid=1"). Amazon's /gp/buy/ is two segments.
+const CHECKOUT_SEGMENT = /^(checkouts?|payments?|pay|billing|purchase|place-?order|one-?click|express-?checkout)$/i;
+
+function decodedPath(pathname: string): string {
+  let p = pathname;
+  for (let i = 0; i < 4; i++) {
+    let next: string;
+    try {
+      next = decodeURIComponent(p);
+    } catch {
+      next = p.replace(/%([0-9a-f]{2})/gi, (_m, h) => String.fromCharCode(parseInt(h, 16)));
+    }
+    if (next === p) break;
+    p = next;
+  }
+  return p.replace(/\\/g, "/");
+}
 
 export function isCheckoutUrl(href: string | null | undefined): boolean {
   if (!href) return false;
+  let pathname: string;
   try {
-    return CHECKOUT_PATH.test(new URL(href).pathname);
+    pathname = new URL(href).pathname;
   } catch {
     return false;
   }
+  const segs = decodedPath(pathname)
+    .split("/")
+    .map((s) => s.split(";")[0].replace(/\.[a-z0-9]{1,5}$/i, "").trim())
+    .filter(Boolean);
+  for (let i = 0; i < segs.length; i++) {
+    if (CHECKOUT_SEGMENT.test(segs[i])) return true;
+    if (/^gp$/i.test(segs[i]) && /^buy$/i.test(segs[i + 1] || "")) return true;
+  }
+  return false;
 }

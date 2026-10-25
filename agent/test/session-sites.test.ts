@@ -78,6 +78,16 @@ test("open mode sweep: back to a blank page is fine", async () => {
   assert.deepEqual(f.calls, [[2, "back"]]);
 });
 
+test("open mode sweep: a tab that lands on a checkout page off the store goes back too", async () => {
+  const f = fakeNav({ "5 back": "https://www.etsy.com/cart", "6 back": "https://www.etsy.com/%63heckout" });
+  const n = await returnStrays(
+    [{ tabId: 5, url: "https://www.etsy.com/checkout.html" }, { tabId: 6, url: "https://www.etsy.com/gp/buy/spc" }, { tabId: 7, url: `${STORE_ORIGIN}/checkout` }],
+    f.nav
+  );
+  assert.equal(n, 2);
+  assert.deepEqual(f.calls, [[5, "back"], [6, "back"], [6, `${STORE_ORIGIN}/`]], "back onto another checkout page is not good enough");
+});
+
 test("allowlist mode sweep sends strays straight to the store", async () => {
   const f = fakeNav({});
   const n = await returnStrays([{ tabId: 1, url: "https://www.etsy.com/" }, { tabId: 2, url: `${STORE_ORIGIN}/cart` }], f.nav, ALLOWLIST);

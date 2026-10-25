@@ -250,10 +250,14 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   assert.match((await call<{ tree: string }>("read_page", { tabId, filter: "all" })).tree, /Place order[^\n]*\[locked\]/);
   assert.match(await urlOf(tabId), /\/checkout$/, "no order was placed by the attempts");
 
-  // pay_now over the extension, with a stand-in vault.
+  // pay_now over the extension, with a stand-in vault. The yes is pinned
+  // to the tab and its cart the way request_checkout pins it.
+  const snap = await pay.checkoutSnapshot(tabId);
+  assert.equal(snap.tabId, tabId);
+  assert.match(snap.cart, /Order total/);
   const state = {
     lastTabId: tabId,
-    confirmation: { item: "Cetirizine 30 tablets", quantity: 1, total: `$${total}`, state: "confirmed" as const },
+    confirmation: { item: "Cetirizine 30 tablets", quantity: 1, total: `$${total}`, state: "confirmed" as const, confirmedAt: Date.now(), tabId, cart: snap.cart },
     cardFieldsLive: false,
   };
   const r = await pay.payNowExt(state as any, { getCard: async () => ({ ...CARD }) });
@@ -294,7 +298,7 @@ test("a store rejection comes back as the alert text and the card fields are cle
   const total = /Order total\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i.exec(text)![1];
   const state = {
     lastTabId: tabId,
-    confirmation: { item: "Cetirizine", quantity: 1, total: `$${total}`, state: "confirmed" as const },
+    confirmation: { item: "Cetirizine", quantity: 1, total: `$${total}`, state: "confirmed" as const, confirmedAt: Date.now(), tabId },
     cardFieldsLive: false,
   };
   const bad = { ...CARD, number: "4111111111111112" }; // fails Luhn at the store
