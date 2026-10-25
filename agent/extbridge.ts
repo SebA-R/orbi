@@ -31,7 +31,7 @@ export const TOOLS = [
   "scroll",
   "screenshot",
 ] as const;
-export const INTERNAL = ["tab_info", "read_fields", "fill_payment", "clear_payment"] as const;
+export const INTERNAL = ["tab_info", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref"] as const;
 export const ERR = {
   BAD_REQUEST: "bad_request",
   UNKNOWN_METHOD: "unknown_method",

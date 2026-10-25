@@ -46,6 +46,8 @@ export const INTERNAL = Object.freeze([
   "read_fields",
   "fill_payment",
   "clear_payment",
+  "rect",
+  "click_ref",
 ]);
 
 export const METHODS = Object.freeze([...TOOLS, ...INTERNAL]);
