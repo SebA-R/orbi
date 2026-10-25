@@ -181,9 +181,11 @@ export async function scroll({ tabId, x, y, dx = 0, dy = 0 } = {}) {
 export async function viewport(tabId) {
   assertTabId(tabId);
   const m = (await send(tabId, "Page.getLayoutMetrics")) || {};
-  const css = m.cssVisualViewport || m.cssLayoutViewport;
+  // The layout viewport: input goes in window coordinates, which pinch zoom
+  // does not shrink.
+  const css = m.cssLayoutViewport || m.cssVisualViewport;
   if (!css || !(css.clientWidth > 0) || !(css.clientHeight > 0)) throw new BridgeError(ERR.INTERNAL, "no viewport size");
-  const dev = m.visualViewport || m.layoutViewport;
+  const dev = m.cssLayoutViewport ? m.layoutViewport : m.visualViewport;
   let dpr = dev && dev.clientWidth > 0 ? dev.clientWidth / css.clientWidth : 1;
   if (!Number.isFinite(dpr) || dpr <= 0) dpr = 1;
   return { width: Math.round(css.clientWidth), height: Math.round(css.clientHeight), dpr };

@@ -429,7 +429,12 @@ export function createRouter({
     const gone = async () => {
       await settle(OVERLAY_SETTLE_MS);
       now = await find();
-      return !now.found || now.ref !== first.ref;
+      // A re-rendered copy of the same pop-up (new ref, same name) is not gone.
+      return !now.found || (now.ref !== first.ref && now.name !== first.name);
+    };
+    // An interrupt or turn end stops the ladder between steps.
+    const live = () => {
+      if (actor.epoch() !== epoch) throw Object.assign(new BridgeError(ERR.INTERRUPTED, "stopped: the turn ended"), { noFallback: true });
     };
     const steps = [
       ["close button", async () => now.closeRef && (await clickAt(tabId, { ref: now.closeRef }, epoch), true)],
@@ -439,6 +444,7 @@ export function createRouter({
     for (const [via, step] of steps) {
       if (now.sensitive) break;
       let tried = false;
+      live();
       try {
         tried = await step();
       } catch (e) {
@@ -448,6 +454,7 @@ export function createRouter({
       if (tried && (await gone())) return { dismissed: true, via, name };
     }
     if (now.sensitive) throw new BridgeError(ERR.LOCKED, `Locked: not hiding "${now.name}", ${now.sensitive}.`);
+    live();
     await pageCall(tabId, "overlay_hide", { ref: first.ref });
     return { dismissed: true, via: "hidden", name };
   }
