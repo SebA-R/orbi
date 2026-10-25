@@ -12,6 +12,7 @@ import { isUnlockYes, type UnlockClass } from "../user-unlock.ts";
 import { DERR, DesktopError, desktopBridge, type DesktopBridge } from "./bridge.ts";
 import {
   appBlockReason,
+  userBlockedApps,
   CARD_TEXT,
   classifyElement,
   decidePress,
@@ -28,10 +29,11 @@ import {
   type AXElement,
   type DesktopLock,
   type DesktopUnlockGate,
+  unlabeled,
   type Target,
 } from "./safety.ts";
 
-export type DesktopBridgeLike = Pick<DesktopBridge, "call" | "overlay">;
+export type DesktopBridgeLike = Pick<DesktopBridge, "call" | "overlay" | "helperInfo">;
 
 // What the session lends the tools. words: the user's own last words
 // (fresh, never page or model text) and the unlock classes already used
@@ -286,8 +288,14 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
           const c = center(t.element) ?? (point ? { x: x!, y: y! } : undefined);
           if (c) bridge.overlay({ state: "thinking", cursor: c, ...(t.element?.frame ? { ring: t.element.frame } : {}) });
           host.acted();
+          // A labeled control under the point is clicked by its ref, so
+          // nothing that appears there in between gets the click. A bare spot
+          // the user said yes to is clicked at the point, and only when the
+          // helper re-checks the element there (expectRef).
           if (ref) await bridge.call("click", { ref });
-          else await bridge.call("click", { x, y, ...(t.element ? { expectRef: t.element.ref } : {}) });
+          else if (t.element && !unlabeled(t.element)) await bridge.call("click", { ref: t.element.ref });
+          else if (!bridge.helperInfo()?.features.includes("expectRef")) return refuse("Not clicked: this Orbi Desktop version can't check the spot at click time. Update Orbi Desktop, or use desktop_read and click by ref.");
+          else await bridge.call("click", { x, y, expectRef: t.element?.ref ?? null });
           const name = t.element ? maskText(t.element.title || t.element.label || "") : "";
           return text({ ok: true, app: t.appName, ...(name ? { clicked: name } : {}) });
         } catch (e) {
@@ -393,7 +401,13 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
           const f = await bridge.call<any>("frontmost", {});
           const why = appBlockReason(f?.bundleId, f?.appName);
           if (why) return refuse(`Not taken: ${why}`);
-          const r = await bridge.call<{ png?: string; width?: number; height?: number; scale?: number }>("screenshot", { maxWidth: maxWidth ?? 1280 });
+          // Every running app Orbi blocks, by the server's own rules, is
+          // left out of the capture. No app list, no screenshot.
+          const apps = await bridge.call<any>("apps_list", {});
+          const list: any[] = Array.isArray(apps?.apps) ? apps.apps : Array.isArray(apps) ? apps : [];
+          if (!list.length) return refuse("Not taken: Orbi could not list the running apps to leave the blocked ones out.");
+          const exclude = [...new Set([...userBlockedApps(), ...list.filter((a) => appBlockReason(a?.bundleId, a?.name ?? a?.appName)).map((a) => String(a.bundleId))])];
+          const r = await bridge.call<{ png?: string; width?: number; height?: number; scale?: number }>("screenshot", { maxWidth: maxWidth ?? 1280, exclude });
           if (!r || typeof r.png !== "string") return refuse("Not taken: no screenshot data came back.");
           // The helper leaves blocked apps' windows out of the capture and
           // blacks out secure fields; without its word for it, nothing is shown.

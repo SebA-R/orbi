@@ -63,7 +63,9 @@ export class DesktopError extends Error {
 }
 
 export type DesktopPermissions = { accessibility: boolean; screen: boolean; mic: boolean };
-export type DesktopInfo = { connectedAt: number; permissions: DesktopPermissions };
+// features: what the helper says it supports beyond the base methods, e.g.
+// "expectRef" (click {x,y} re-checks the element under the point).
+export type DesktopInfo = { connectedAt: number; permissions: DesktopPermissions; features: string[] };
 export type OverlayState = "idle" | "listening" | "thinking" | "speaking";
 export type Overlay = { state: OverlayState; subtitle?: string; cursor?: { x: number; y: number }; ring?: { x: number; y: number; w: number; h: number } };
 
@@ -193,7 +195,8 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
         greeted = true;
         clearTimeout(helloTimer);
         const p = m.permissions && typeof m.permissions === "object" ? m.permissions : {};
-        this.promote(ws, { accessibility: bool(p.accessibility), screen: bool(p.screen), mic: bool(p.mic) });
+        const features = Array.isArray(m.features) ? m.features.filter((f: unknown) => typeof f === "string").slice(0, 50) : [];
+        this.promote(ws, { accessibility: bool(p.accessibility), screen: bool(p.screen), mic: bool(p.mic) }, features);
         return;
       }
       if (ws !== this.current) return;
@@ -209,7 +212,9 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
         } else p.resolve(m.result ?? null);
         return;
       }
-      if (m.type === "ptt_down" || m.type === "ptt_up" || m.type === "latch_toggle") this.emit(m.type);
+      // Talk key events: {type:"event", name}, or the bare {type:name}.
+      const ev = m.type === "event" ? m.name : m.type;
+      if (ev === "ptt_down" || ev === "ptt_up" || ev === "latch_toggle") this.emit(ev);
       // Anything else: nothing to do.
     });
 
@@ -226,10 +231,10 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
     ws.on("error", () => {});
   }
 
-  private promote(ws: WebSocket, permissions: DesktopPermissions) {
+  private promote(ws: WebSocket, permissions: DesktopPermissions, features: string[]) {
     const old = this.current;
     this.current = ws;
-    this.info = { connectedAt: Date.now(), permissions };
+    this.info = { connectedAt: Date.now(), permissions, features };
     if (old && old !== ws) {
       this.dropPending(old, "replaced by a newer Orbi Desktop connection");
       old.close(4002, "replaced");

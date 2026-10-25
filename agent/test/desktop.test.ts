@@ -91,6 +91,9 @@ test("bridge handshake: hello gets welcome, requests round trip, errors keep the
     assert.equal((await d.bridge.call<any>("frontmost")).bundleId, "com.apple.Notes");
     await assert.rejects(d.bridge.call("ax_tree", {}), (e: any) => e instanceof DesktopError && e.code === "not_allowed");
     assert.equal(h.requests[0].method, "frontmost");
+    const ptt = new Promise<void>((r) => d.bridge.once("ptt_down", () => r()));
+    h.ws.send(JSON.stringify({ type: "event", name: "ptt_down" }));
+    await ptt;
   } finally {
     await d.stop();
   }
@@ -219,6 +222,7 @@ function fakeTools(over: { handler?: (m: string, p: any) => any; words?: string;
       return over.handler ? over.handler(method, params) : null;
     },
     overlay: () => {},
+    helperInfo: () => ({ connectedAt: 0, permissions: { accessibility: true, screen: true, mic: true }, features: ["expectRef"] }),
   };
   const host: DesktopHost = {
     words: () => (over.words ? { text: over.words, spent: new Set() } : null),
@@ -330,6 +334,24 @@ test("tools: desktop_read masks values and marks locked controls", async () => {
   assert.match(out, /Button "Send" \[d1\] \[locked\]/);
   assert.doesNotMatch(out, /pw"|4111111111111111/);
   assert.match(out, /\[masked card number\]/);
+});
+
+test("tools: a labeled control under a point is clicked by ref; screenshots leave blocked apps out", async () => {
+  const f = fakeTools({
+    handler: (m) => {
+      if (m === "element_at") return mail(el({ ref: "d7", title: "Bold" }), "com.apple.Notes", "Notes");
+      if (m === "frontmost") return { bundleId: "com.apple.Notes", appName: "Notes" };
+      if (m === "apps_list") return { apps: [{ bundleId: "com.apple.Notes", name: "Notes" }, { bundleId: "org.mozilla.firefox", name: "Firefox" }] };
+      if (m === "screenshot") return { png: "AAAA", width: 10, height: 10, scale: 2, redacted: true };
+      return null;
+    },
+  });
+  await f.defs.desktop_click.handler({ x: 5, y: 5 }, {});
+  assert.deepEqual(f.calls.find((c) => c.method === "click")!.params, { ref: "d7" });
+  const r: any = await f.defs.desktop_screenshot.handler({}, {});
+  assert.equal(r.content[0].type, "image");
+  const shot = f.calls.find((c) => c.method === "screenshot")!.params;
+  assert.ok(shot.exclude.includes("org.mozilla.firefox") && !shot.exclude.includes("com.apple.Notes"));
 });
 
 test("tools: desktop_screenshot needs a vision model", async () => {

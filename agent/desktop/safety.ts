@@ -285,8 +285,9 @@ export function keyEffect(c: Combo, bundleId: string, focused?: AXElement | null
   if (ENTER.test(c.key) && c.cmd) return { kind: "lock", lock: { kind: "send", label: "Send (Cmd+Return)", cls: "send" } };
   if (ENTER.test(c.key)) return { kind: "activate", enter: true };
   if (SPACE.test(c.key) && !c.cmd && !c.ctrl && !c.alt) return { kind: "activate", enter: false };
-  // A bare Delete outside a text field deletes the selection (Mail, Photos, Finder).
-  if (DELETE_KEYS.test(c.key) && !c.cmd && !isTextTarget(focused)) return { kind: "lock", lock: { kind: "delete", label: "Delete", cls: "delete" } };
+  // A bare Delete outside a text field deletes the selection (Mail, Photos,
+// Finder). A web area does not count: Mail's message view is one.
+  if (DELETE_KEYS.test(c.key) && !c.cmd && !TEXT_ROLES.test(String(focused?.role ?? ""))) return { kind: "lock", lock: { kind: "delete", label: "Delete", cls: "delete" } };
   if (DELETE_KEYS.test(c.key) && c.cmd) return { kind: "lock", lock: { kind: "delete", label: c.shift ? "Empty Trash" : "Move to Trash", cls: "delete" } };
   if (/^d$/i.test(c.key) && c.cmd && c.shift && /^com\.apple\.mail$/i.test(bundleId)) return { kind: "lock", lock: { kind: "send", label: "Send", cls: "send" } };
   return { kind: "none" };
