@@ -114,6 +114,7 @@ export function createRouter({
   cdp = cdpModule,
   now = () => Date.now(),
   newNonce = () => globalThis.crypto.randomUUID(),
+  onAgentTab = () => {},
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
@@ -144,6 +145,8 @@ export function createRouter({
   // a second per tab (each injection keeps it up a little longer).
   const shown = new Map();
   function indicate(tabId) {
+    // The active-tab frame (background/frame.js) follows every call.
+    try { onAgentTab(tabId); } catch {}
     const t = now();
     if (t - (shown.get(tabId) || 0) < 1_000) return;
     shown.set(tabId, t);
