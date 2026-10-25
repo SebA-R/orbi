@@ -766,10 +766,14 @@
     if (!el || el === document.body || el === document.documentElement) return { kind: "none", payment: false };
     var tag = el.tagName;
     if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
-      return { kind: el.isContentEditable ? "other" : "none", payment: false };
+      return { kind: el.isContentEditable ? "other" : "none", payment: false, text: !!el.isContentEditable };
     }
     var k = kindOf(el);
-    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el) };
+    // text: a field that takes typed characters, so a key press there only
+    // types (watchable typing sends key events only then).
+    var text = !el.disabled && !el.readOnly && (tag === "TEXTAREA" ||
+      (tag === "INPUT" && /^(text|search|email|url|tel|number)$/.test(String(el.type || "text").toLowerCase())));
+    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el), text: text };
   }
 
   // ---------------------------------------------------------- page_context

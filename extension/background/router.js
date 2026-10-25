@@ -18,11 +18,19 @@
 // Follow: a call that acts on a tab (follow.js ACT_METHODS, and tabs_create)
 // brings that tab to the front first, unless the setting is off or the user
 // switched away themselves this turn. Reads never switch.
+//
+// Watchable pace (setting watchablePace): clicks, typing and scrolls go
+// through background/actor.js, which moves the pointer along a path, types
+// a key at a time and scrolls in steps. The lock and hit-test checks then
+// run again at press time (after the pointer arrives), and the payment and
+// password check before every typed character. Tab work, reads and
+// screenshots are never slowed. Off, input goes to CDP at once as before.
 
 import * as tabsModule from "./tabs.js";
 import * as cdpModule from "./cdp.js";
 import { ACT_METHODS, createFollower } from "./follow.js";
 import { parseKey } from "./cdp.js";
+import { createActor } from "./actor.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
 import { luhnValid } from "../lib/log.js";
 
@@ -102,6 +110,13 @@ export function containsCardNumber(text) {
   return false;
 }
 
+// A coordinate from the bridge, checked like cdp.js does.
+function point(v, name) {
+  const n = Number(v);
+  if (v == null || v === "" || !Number.isFinite(n)) throw new BridgeError(ERR.BAD_REQUEST, `${name} must be a finite number`);
+  return n;
+}
+
 const msgOf = (e) => String((e && e.message) || e || "failed");
 
 function originOf(url) {
@@ -124,6 +139,9 @@ export function createRouter({
   dangerMode = async () => false,
   follow = createFollower({ chromeApi }),
   onAgentTab = () => {},
+  // The watchablePace setting (worker.js). Off unless it answers true.
+  watchable = async () => false,
+  actor = createActor({ cdp, tabWindow: async (id) => (await chromeApi.tabs.get(id)).windowId }),
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
@@ -242,8 +260,11 @@ export function createRouter({
     return reply.result;
   }
 
+  const paced = () => Promise.resolve().then(watchable).then((v) => v === true, () => false);
+
   // CDP typing goes around the page script, so check here that it is not
-  // aimed at a card field and does not carry a card number.
+  // aimed at a card field and does not carry a card number. Answers the
+  // focused field.
   async function guardType(tabId, text) {
     if (containsCardNumber(text)) {
       throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type a card number; pay_now fills payment fields");
@@ -255,15 +276,43 @@ export function createRouter({
     if (focus && focus.password) {
       throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a password field; the user types passwords themselves");
     }
+    return focus;
+  }
+
+  // Watchable typing: the check before every character. The focus may have
+  // moved to a card or password field since the last one, and a newline may
+  // now land in a form whose submit is locked.
+  async function guardChar(tabId, ch) {
+    const focus = await guardType(tabId, "");
+    if (/[\r\n]/.test(ch)) await pageCall(tabId, "guard_key", { key: "Enter" });
+    // Key events only go with the text into a plain text field; anywhere
+    // else (a button, a select, the page) a key press could act on its own.
+    return { keys: !!(focus && focus.text === true) };
+  }
+
+  const centre = (r) => ({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
+
+  function visibleRect(r, ref) {
+    if (!r || !(r.width > 0) || !(r.height > 0)) throw new BridgeError(ERR.NO_ELEMENT, `${ref} is not visible`);
+    return r;
   }
 
   // Clicks the centre of rect r with CDP, or asks the page to .click() the
-  // ref (domMethod) when CDP can't attach.
-  async function clickCentre(tabId, r, ref, domMethod) {
+  // ref (domMethod) when CDP can't attach. At watchable pace, recheck runs
+  // right before the press and answers the point to press; a failed check
+  // or an interrupt never falls back to the DOM click.
+  async function clickCentre(tabId, r, ref, domMethod, recheck) {
+    const p = centre(r);
     try {
-      await cdp.click({ tabId, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
+      if (await paced()) {
+        await actor.click(tabId, p, { size: Math.min(r.width, r.height), recheck });
+      } else {
+        await cdp.click({ tabId, x: p.x, y: p.y });
+        actor.notePointer(tabId, p.x, p.y);
+      }
       return { ok: true, via: "cdp" };
-    } catch {
+    } catch (e) {
+      if (e && e.noFallback) throw e;
       await pageCall(tabId, domMethod, { ref });
       return { ok: true, via: "dom" };
     }
@@ -273,12 +322,18 @@ export function createRouter({
     if (params.ref != null && (params.x == null || params.y == null)) {
       // guard_ref checks the element and whatever covers its centre, and
       // answers its rect like "rect" does.
-      const r = await pageCall(tabId, "guard_ref", { ref: params.ref });
-      if (!r || !(r.width > 0) || !(r.height > 0)) throw new BridgeError(ERR.NO_ELEMENT, `${params.ref} is not visible`);
-      return clickCentre(tabId, r, params.ref, "click_ref");
+      const r = visibleRect(await pageCall(tabId, "guard_ref", { ref: params.ref }), params.ref);
+      const recheck = async () => centre(visibleRect(await pageCall(tabId, "guard_ref", { ref: params.ref }), params.ref));
+      return clickCentre(tabId, r, params.ref, "click_ref", recheck);
     }
-    await pageCall(tabId, "guard_point", { x: params.x, y: params.y });
-    await cdp.click({ tabId, x: params.x, y: params.y });
+    const guard = () => pageCall(tabId, "guard_point", { x: params.x, y: params.y });
+    await guard();
+    if (await paced()) {
+      await actor.click(tabId, { x: point(params.x, "x"), y: point(params.y, "y") }, { recheck: async () => void (await guard()) });
+    } else {
+      await cdp.click({ tabId, x: params.x, y: params.y });
+      actor.notePointer(tabId, params.x, params.y);
+    }
     return { ok: true, via: "cdp" };
   }
 
@@ -322,10 +377,15 @@ export function createRouter({
 
   // Presses one order button. The nonce is spent before anything else, so
   // a failed press cannot be retried with it.
+  // At watchable pace the pointer approaches the button's rect first and
+  // press_check (which takes the lock marker off) runs on arrival, right
+  // before the press.
   async function pressProtected(tabId, params) {
     await spend(tabId, params.nonce, "order");
-    const r = await pageCall(tabId, "press_check", { ref: params.ref });
-    return clickCentre(tabId, r, params.ref, "press_ref");
+    const check = () => pageCall(tabId, "press_check", { ref: params.ref });
+    if (!(await paced())) return clickCentre(tabId, await check(), params.ref, "press_ref");
+    const r = visibleRect(await pageCall(tabId, "rect", { ref: params.ref }), params.ref);
+    return clickCentre(tabId, r, params.ref, "press_ref", async () => centre(await check()));
   }
 
   // Brings the tab a navigate call will use to the front, when it is one
@@ -351,12 +411,26 @@ export function createRouter({
     await spend(tabId, params.nonce, "user");
     const target = { ref: params.ref, label: params.label, cls: params.cls };
     const r = await pageCall(tabId, "press_check_user", target);
-    const x = Math.round(r.x + r.width / 2);
-    const y = Math.round(r.y + r.height / 2);
-    await pageCall(tabId, "press_hit_user", { ...target, x, y });
+    const { x, y } = centre(r);
+    const watch = await paced();
+    if (!watch) await pageCall(tabId, "press_hit_user", { ...target, x, y });
     try {
-      await cdp.click({ tabId, x, y });
-    } catch {
+      if (watch) {
+        // Checked again on arrival: the control and the point it is at now.
+        await actor.click(tabId, { x, y }, {
+          size: Math.min(r.width, r.height),
+          recheck: async () => {
+            const p = centre(await pageCall(tabId, "press_check_user", target));
+            await pageCall(tabId, "press_hit_user", { ...target, ...p });
+            return p;
+          },
+        });
+      } else {
+        await cdp.click({ tabId, x, y });
+        actor.notePointer(tabId, x, y);
+      }
+    } catch (e) {
+      if (e && e.noFallback) throw e;
       // press_ref_user checks, clicks and releases in one page task.
       await pageCall(tabId, "press_ref_user", target);
       return { ok: true, via: "dom" };
@@ -413,7 +487,11 @@ export function createRouter({
         await guardType(tabId, params.text);
         // A typed newline can submit the focused field's form.
         if (/[\r\n]/.test(String(params.text ?? ""))) await pageCall(tabId, "guard_key", { key: "Enter" });
-        await cdp.type({ tabId, text: params.text });
+        if (typeof params.text === "string" && params.text && (await paced())) {
+          await actor.type(tabId, params.text, { check: (ch) => guardChar(tabId, ch) });
+        } else {
+          await cdp.type({ tabId, text: params.text });
+        }
         return { ok: true };
       case "key": {
         // Parse first: a spec CDP would not send is refused before any check.
@@ -434,7 +512,13 @@ export function createRouter({
       case "press_protected":
         return pressProtected(tabId, params);
       case "scroll":
-        await cdp.scroll({ tabId, x: params.x, y: params.y, dx: params.dx, dy: params.dy });
+        if (await paced()) {
+          const at = { x: point(params.x, "x"), y: point(params.y, "y"), dx: point(params.dx ?? 0, "dx"), dy: point(params.dy ?? 0, "dy") };
+          await actor.scroll(tabId, at);
+        } else {
+          await cdp.scroll({ tabId, x: params.x, y: params.y, dx: params.dx, dy: params.dy });
+          actor.notePointer(tabId, Number(params.x), Number(params.y));
+        }
         return { ok: true };
       case "screenshot": {
         const shot = await cdp.screenshot({ tabId });
@@ -447,5 +531,5 @@ export function createRouter({
     throw new BridgeError(ERR.UNKNOWN_METHOD, `unknown method: ${method}`);
   }
 
-  return { route, pageCall, inject, noteTalkStart };
+  return { route, pageCall, inject, noteTalkStart, actor };
 }

@@ -98,7 +98,29 @@ const follow = createFollower();
 chrome.tabs.onActivated.addListener((info) => follow.onActivated(info));
 chrome.windows?.onFocusChanged?.addListener((id) => follow.onWindowFocused(id));
 chrome.tabs.onRemoved.addListener((tabId) => follow.forget(tabId));
-const router = createRouter({ follow, onAgentTab: frame.onAgentTab, dangerMode: () => dangerReady.then(() => dangerMode) });
+// Watchable pace (background/actor.js), cached like Danger mode. Starts
+// on, the default, so the first action after a restart is paced too.
+let watchablePace = true;
+const paceReady = loadSettings().then((s) => { watchablePace = s.watchablePace; }).catch(() => {});
+const router = createRouter({
+  follow,
+  onAgentTab: frame.onAgentTab,
+  dangerMode: () => dangerReady.then(() => dangerMode),
+  watchable: () => paceReady.then(() => watchablePace),
+});
+// A paced click, typing or scroll stops when the user barges in, switches
+// to another tab in that window, or the page goes away.
+const actor = router.actor;
+chrome.tabs.onActivated.addListener((info) => actor.onTabActivated(info));
+chrome.tabs.onRemoved.addListener((tabId) => actor.onTabRemoved(tabId));
+chrome.tabs.onUpdated.addListener((tabId, change) => actor.onTabUpdated(tabId, change));
+const BARGE_IN = new Set([RT.PTT_CONFIRM, RT.PTT_HUSH, RT.PTT_TOGGLE]);
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg || msg.target === "offscreen") return;
+  // A silent start may still be a tap; it barges in once confirmed.
+  if (BARGE_IN.has(msg.type) || (msg.type === RT.PTT_START && !msg.silent)) actor.abortAll("the user started talking");
+});
+chrome.commands?.onCommand.addListener(() => actor.abortAll("the user started talking"));
 
 // The user started talking: snapshot what they are looking at and pointing
 // at now, for the page_context call that comes with their words.
@@ -153,6 +175,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
   if (changes.blocklist) sendBlocklist();
   if (changes.guidedMode) sendAgentSettings();
+  if (changes.watchablePace) watchablePace = changes.watchablePace.newValue !== false;
   if (changes.dangerMode) {
     // Straight from the change, so the very next page call has it.
     dangerMode = changes.dangerMode.newValue === true;
@@ -163,4 +186,5 @@ chrome.storage.onChanged.addListener((changes, area) => {
 startBridge().catch((e) => log.warn(`bridge start failed: ${e.message}`));
 
 // For tests and the console.
-globalThis.clearcart = { router, voice, frame, get bridge() { return bridge; } };
+// actor.onPointer(fn) is the hook for a future on-page cursor.
+globalThis.clearcart = { router, voice, frame, actor, get bridge() { return bridge; } };

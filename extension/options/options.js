@@ -11,7 +11,7 @@ import { bindDangerToggle } from "../lib/danger-toggle.js";
 const $ = (id) => document.getElementById(id);
 const els = {
   form: $("form"), hotkey: $("hotkey"), speed: $("speed"), speedOut: $("speed-out"),
-  subtitles: $("subtitles"), quietTabs: $("quiet-tabs"), followTab: $("follow-tab"), guidedMode: $("guided-mode"), agentUrl: $("agent-url"), status: $("status"),
+  subtitles: $("subtitles"), quietTabs: $("quiet-tabs"), followTab: $("follow-tab"), watchablePace: $("watchable-pace"), guidedMode: $("guided-mode"), agentUrl: $("agent-url"), status: $("status"),
   grant: $("grant-mic"), micStatus: $("mic-status"), reset: $("reset"),
   allowlist: $("allowlist"), blocklist: $("blocklist"), blockErrors: $("blocklist-errors"), restore: $("restore-blocklist"),
 };
@@ -38,6 +38,7 @@ function fill(s) {
   els.subtitles.checked = s.subtitles;
   els.quietTabs.checked = s.quietTabs;
   els.followTab.checked = s.followTab;
+  els.watchablePace.checked = s.watchablePace;
   els.guidedMode.checked = s.guidedMode;
   els.agentUrl.value = s.agentUrl;
   modeInput(s.browseMode).checked = true;
@@ -103,6 +104,7 @@ els.form.addEventListener("submit", async (e) => {
     subtitles: els.subtitles.checked,
     quietTabs: els.quietTabs.checked,
     followTab: els.followTab.checked,
+    watchablePace: els.watchablePace.checked,
     guidedMode: els.guidedMode.checked,
     agentUrl: url,
   });
@@ -113,7 +115,7 @@ els.form.addEventListener("submit", async (e) => {
 
 els.reset.addEventListener("click", async () => {
   const saved = await saveSettings({
-    hotkey: DEFAULTS.hotkey, speed: DEFAULTS.speed, subtitles: DEFAULTS.subtitles, quietTabs: DEFAULTS.quietTabs, followTab: DEFAULTS.followTab, guidedMode: DEFAULTS.guidedMode, agentUrl: DEFAULTS.agentUrl,
+    hotkey: DEFAULTS.hotkey, speed: DEFAULTS.speed, subtitles: DEFAULTS.subtitles, quietTabs: DEFAULTS.quietTabs, followTab: DEFAULTS.followTab, watchablePace: DEFAULTS.watchablePace, guidedMode: DEFAULTS.guidedMode, agentUrl: DEFAULTS.agentUrl,
     browseMode: DEFAULTS.browseMode, allowlist: [...DEFAULTS.allowlist], blocklist: [...DEFAULTS.blocklist],
     dangerMode: DEFAULTS.dangerMode,
   });
