@@ -224,21 +224,155 @@ test("isPressable and isTextEntry classify focus targets", () => {
   assert.equal(isTextEntry(null), false);
 });
 
-test("with Space as the talk key, Option+Space also talks, even in text fields", () => {
-  const { d, sent, extras } = detector("Space");
-  const down = key("Space", { altKey: true }, { target: { tagName: "INPUT", type: "search" } });
+const field = { tagName: "INPUT", type: "search" };
+
+test("hold Space then release stops: nothing keeps listening", () => {
+  const { d, sent, fire } = detector("Space");
+  d.onKeyDown(key("Space", {}, { target: { tagName: "DIV" } }));
+  fire();
+  d.onKeyUp(key("Space"));
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+  assert.equal(d.held, false);
+  assert.equal(d.latched, false);
+  // A later stray keyup or blur sends nothing more.
+  d.onKeyUp(key("Space"));
+  d.cancel();
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+});
+
+test("Option+Space latches; the next Space sends without typing a space", () => {
+  const { d, sent, extras, taps } = detector("Space");
+  const down = key("Space", { altKey: true }, { target: field });
   d.onKeyDown(down);
   assert.equal(down.prevented, true);
   assert.deepEqual(sent, ["ptt.start"]);
-  assert.equal(extras[0], undefined); // confirms at once, no silent start
+  assert.deepEqual({ ...extras[0] }, { latch: true });
+  const up = key("Space", { altKey: true });
+  d.onKeyUp(up);
   d.onKeyUp(key("AltLeft"));
+  assert.equal(up.prevented, true);
+  assert.deepEqual(sent, ["ptt.start"], "letting go keeps listening");
+  assert.equal(d.latched, true);
+  const space = key("Space", {}, { target: { tagName: "DIV" } });
+  d.onKeyDown(space);
+  assert.equal(space.prevented, true, "no space typed, no scroll");
+  const spaceUp = key("Space");
+  d.onKeyUp(spaceUp);
+  assert.equal(spaceUp.prevented, true);
+  assert.deepEqual(sent, ["ptt.start", "ptt.stop"], "no new hold started");
+  assert.deepEqual(taps, []);
+  assert.equal(d.latched, false);
+});
+
+test("Space during a latch inside a text field ends the latch", () => {
+  const { d, sent } = detector("Space");
+  d.onKeyDown(key("Space", { altKey: true }, { target: field }));
+  d.onKeyUp(key("Space", { altKey: true }));
+  const space = key("Space", {}, { target: field });
+  d.onKeyDown(space);
+  assert.equal(space.prevented, true);
+  d.onKeyUp(key("Space"));
   assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
-  // Plain Space still types in the same field afterwards.
-  const plain = key("Space", {}, { target: { tagName: "INPUT", type: "search" } });
-  d.onKeyDown(plain);
-  assert.equal(plain.prevented, false);
-  // Other talk keys get no extra: F9 ignores Option+Space.
+  // Afterwards plain Space types in the field again.
+  const after = key("Space", {}, { target: field });
+  d.onKeyDown(after);
+  assert.equal(after.prevented, false);
+});
+
+test("Option+Space a second time also ends the latch; blur does not", () => {
+  const { d, sent } = detector("Space");
+  d.onKeyDown(key("Space", { altKey: true }));
+  d.onKeyUp(key("Space", { altKey: true }));
+  d.cancel(); // window blur: hands-free keeps listening
+  assert.deepEqual(sent, ["ptt.start"]);
+  d.onKeyDown(key("Space", { altKey: true }));
+  d.onKeyDown(key("Space", { altKey: true }, { repeat: true }));
+  d.onKeyUp(key("Space", { altKey: true }));
+  assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
+});
+
+test("a latch reported by VOICE_STATE (another frame, the toggle command) ends on Space", () => {
+  const { d, sent } = detector("Space");
+  d.setVoiceState("listening", true);
+  d.onKeyDown(key("Space", {}, { target: field }));
+  assert.deepEqual(sent, ["ptt.stop"]);
+  d.setVoiceState("listening", true);
+  d.setVoiceState("thinking"); // ended elsewhere (timeout): Space is Space again
+  const e = key("Space", {}, { target: field });
+  d.onKeyDown(e);
+  assert.equal(e.prevented, false);
+});
+
+test("other talk keys stay hold-to-talk and Option+Space does nothing with F9", () => {
+  const alt = detector("Alt+Space");
+  alt.d.onKeyDown(key("Space", { altKey: true }, { target: field }));
+  alt.d.onKeyUp(key("AltLeft"));
+  assert.deepEqual(alt.sent, ["ptt.start", "ptt.stop"]);
   const f9 = detector("F9");
   f9.d.onKeyDown(key("Space", { altKey: true }));
   assert.deepEqual(f9.sent, []);
+});
+
+function tap(d, target = { tagName: "DIV" }) {
+  const down = key("Space", {}, { target });
+  const up = key("Space");
+  d.onKeyDown(down);
+  d.onKeyUp(up);
+  return { down, up };
+}
+
+test("double-tap Space while speaking hushes, and both taps are consumed", () => {
+  const { d, sent, taps, timers } = detector("Space");
+  d.setVoiceState("speaking");
+  const one = tap(d);
+  assert.equal(one.down.prevented, true);
+  assert.deepEqual(sent, ["ptt.start"], "first tap keeps the speech ducked, no cancel yet");
+  assert.equal(timers.at(-1).ms, 350);
+  const two = tap(d);
+  assert.equal(two.down.prevented, true);
+  assert.deepEqual(sent, ["ptt.start", "ptt.hush"], "one silent start, then hush: no restore and fade again");
+  assert.deepEqual(taps, [], "no scroll or button press");
+  assert.equal(timers.filter((t) => !t.cleared && t.ms === 350).length, 0);
+});
+
+test("a single tap while speaking brings the speech back after the window", () => {
+  const { d, sent, taps, fire } = detector("Space");
+  d.setVoiceState("speaking");
+  tap(d);
+  fire();
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel"]);
+  assert.deepEqual(taps, []);
+});
+
+test("double-tap Space while idle passes through untouched", () => {
+  const { d, sent, taps } = detector("Space");
+  tap(d);
+  tap(d);
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel", "ptt.start", "ptt.cancel"]);
+  assert.deepEqual(taps, ["Space", "Space"], "each tap does what Space does");
+  // And in a text field nothing is touched at all.
+  const t = detector("Space");
+  t.d.setVoiceState("idle");
+  const a = tap(t.d, field);
+  const b = tap(t.d, field);
+  assert.equal(a.down.prevented || b.down.prevented, false);
+  assert.deepEqual(t.sent, []);
+});
+
+test("a tap then a hold while speaking still barges in", () => {
+  const { d, sent, timers } = detector("Space");
+  d.setVoiceState("speaking");
+  tap(d);
+  d.onKeyDown(key("Space", {}, { target: { tagName: "DIV" } }));
+  timers.at(-1).fn(); // held past the confirm time
+  d.onKeyUp(key("Space"));
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+});
+
+test("hiding the tab forgets the voice state and the latch", () => {
+  const { d, sent } = detector("Space");
+  d.setVoiceState("listening", true);
+  d.forgetVoiceState();
+  tap(d);
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel"]);
 });
