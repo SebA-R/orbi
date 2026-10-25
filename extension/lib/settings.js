@@ -44,10 +44,11 @@ export const DEFAULTS = Object.freeze({
   // (background/errpage.js), where Space to talk works. Off: Chrome's own
   // error page stays.
   errorPages: true,
-  // Danger mode: Clearcart presses sign in and sign up without asking
-  // (content/protect.js says what it lifts). Off unless the user turns it
-  // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
-  // masking, the blocklist and the CAPTCHA hand-off never change with it.
+  // Danger mode: the button lock is off and orders are placed without a
+  // spoken yes (content/protect.js, agent/session.ts). Off unless the user
+  // turns it on, with a confirm step (lib/danger-toggle.js). Masking of card
+  // and password fields, the blocklist and the CAPTCHA hand-off never
+  // change with it.
   dangerMode: false,
   // Clicks and scrolls go at a pace the user can follow
   // (background/actor.js). Off, they happen at once. Typing is always
@@ -62,7 +63,7 @@ export const DEFAULTS = Object.freeze({
   showCursor: true,
 });
 
-export const DANGER_MODE_COPY = "Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.";
+export const DANGER_MODE_COPY = "Danger mode. Clearcart acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
 
 export const SPEED_MIN = 0.6;
 export const SPEED_MAX = 2;
