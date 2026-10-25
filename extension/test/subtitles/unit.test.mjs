@@ -300,3 +300,17 @@ test("a line arriving mid-fade clears the old words at once instead of bringing 
   t.send({ type: "subtitle", speaker: "agent", text: "Newer.", final: false });
   assert.equal(t.$(".agent").textContent.trim(), "Newer.");
 });
+
+test("a latched listening state says how to send, and the hint goes when it ends", () => {
+  const t = setup();
+  t.send({ type: "voice.state", state: "listening", latched: true });
+  assert.ok(t.visible());
+  assert.equal(t.$(".hint").textContent, "Listening. Press Space to send.");
+  assert.doesNotMatch(t.$(".hint").textContent, /—/);
+  t.tick(45_000);
+  assert.ok(t.visible(), "a latch can sit quietly for up to a minute");
+  t.send({ type: "voice.state", state: "thinking" });
+  assert.equal(t.$(".hint").textContent, "");
+  t.send({ type: "voice.state", state: "listening" });
+  assert.equal(t.$(".hint").textContent, "", "a hold shows no hint");
+});

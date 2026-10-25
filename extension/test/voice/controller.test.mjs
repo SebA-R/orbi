@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { RT } from "../../lib/protocol.js";
-import { VoiceController, TAIL_MS } from "../../lib/voice/controller.js";
+import { VoiceController, TAIL_MS, LATCH_IDLE_MS } from "../../lib/voice/controller.js";
 import { AgentSession } from "../../lib/voice/agent-session.js";
 import { createTokenSource } from "../../lib/voice/token.js";
 
@@ -33,7 +33,8 @@ function rig({ micFails } = {}) {
     speaker, mic, agent,
     chime: (k) => log.push(`chime:${k}`),
     emit: (m) => emitted.push(m),
-    setTimer: (fn, ms) => timers.push({ fn, ms }),
+    setTimer: (fn, ms) => timers.push({ fn, ms, cleared: false }),
+    clearTimer: (n) => { if (timers[n - 1]) timers[n - 1].cleared = true; },
   });
   return { c, log, emitted, timers, agent, mic, get stt() { return stt; } };
 }
@@ -135,6 +136,105 @@ test("toggle starts then stops", async () => {
   assert.equal(r.c.listening, true);
   r.c.toggle();
   assert.equal(r.c.listening, false);
+});
+
+const live = (timers) => timers.filter((t) => !t.cleared);
+
+test("toggle latches like Option+Space", async () => {
+  const r = rig();
+  await r.c.toggle();
+  assert.equal(r.c.latched, true);
+  assert.deepEqual(r.emitted.filter((m) => m.type === RT.VOICE_STATE).at(-1), { type: RT.VOICE_STATE, state: "listening", latched: true });
+});
+
+test("a latched session holds its phrases and sends them as one user_text after stop", async () => {
+  const r = rig();
+  await r.c.start({ latch: true });
+  assert.deepEqual(r.log, ["tts.stop", "chime:start"], "confirms at once, no silent start");
+  r.stt.h.onFinal("two bags of");
+  r.stt.h.onPartial("chips");
+  assert.deepEqual(r.agent.sent.filter((m) => m.type === "user_text"), [], "nothing sent before Space");
+  assert.equal(r.emitted.filter((m) => m.type === RT.SUBTITLE).at(-1).text, "two bags of chips");
+  r.c.stop();
+  assert.equal(r.c.listening, false);
+  assert.equal(r.c.latched, false);
+  for (const t of live(r.timers)) if (t.ms === TAIL_MS) t.fn();
+  assert.equal(r.stt.finished, true);
+  r.stt.h.onFinal("please");
+  assert.deepEqual(r.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "two bags of please" }]);
+  r.stt.h.onClosed();
+  assert.equal(r.agent.sent.filter((m) => m.type === "user_text").length, 1, "sent once");
+});
+
+test("a latched session whose last phrase was already final flushes on close", async () => {
+  const r = rig();
+  await r.c.start({ latch: true });
+  r.stt.h.onFinal("milk");
+  r.c.stop();
+  r.stt.h.onClosed();
+  assert.deepEqual(r.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "milk" }]);
+});
+
+test("a latch stops itself after a minute with no speech, and speech pushes it back", async () => {
+  const r = rig();
+  await r.c.start({ latch: true });
+  let [t] = live(r.timers).filter((x) => x.ms === LATCH_IDLE_MS);
+  assert.ok(t);
+  r.stt.h.onPartial("hm");
+  assert.equal(t.cleared, true, "speech re-arms the timeout");
+  [t] = live(r.timers).filter((x) => x.ms === LATCH_IDLE_MS);
+  t.fn();
+  assert.equal(r.c.listening, false);
+  assert.ok(r.emitted.some((m) => m.type === RT.STATUS && /no speech/.test(m.text)));
+  assert.equal(r.log.at(-1), "chime:stop");
+});
+
+test("a hold has no idle timeout; the old timer is a no-op once the latch ended", async () => {
+  const r = rig();
+  await r.c.start({ latch: true });
+  const [t] = live(r.timers).filter((x) => x.ms === LATCH_IDLE_MS);
+  r.c.stop();
+  assert.equal(t.cleared, true);
+  await r.c.start();
+  assert.equal(live(r.timers).filter((x) => x.ms === LATCH_IDLE_MS).length, 0);
+  t.fn();
+  assert.equal(r.c.listening, true, "a stale latch timer doesn't stop a hold");
+});
+
+test("talking from another frame during a latch ends it", async () => {
+  const r = rig();
+  await r.c.start({ latch: true });
+  await r.c.start({ silent: true });
+  assert.equal(r.c.listening, false);
+});
+
+test("hush while speaking drops the tap's silent start, hard-stops speech and boops", async () => {
+  const r = rig();
+  r.c.onSpeakingChange(true);
+  await r.c.start({ silent: true }); // first tap ducked the speech
+  r.log.length = 0;
+  assert.equal(r.c.hush(), true);
+  assert.equal(r.stt.aborted, true);
+  assert.equal(r.c.listening, false);
+  assert.deepEqual(r.log, ["tts.stop", "chime:boop"]);
+  assert.deepEqual(r.agent.sent, [{ type: "interrupt" }], "never a user_text, so it can't answer a read-back");
+  assert.ok(!states(r.emitted).includes("listening"));
+});
+
+test("hush when speech already ended only brings the level back", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  r.log.length = 0;
+  assert.equal(r.c.hush(), false);
+  assert.deepEqual(r.log, ["tts.unduck"]);
+  assert.deepEqual(r.agent.sent, []);
+});
+
+test("hush never touches a confirmed turn", async () => {
+  const r = rig();
+  await r.c.start();
+  assert.equal(r.c.hush(), false);
+  assert.equal(r.c.listening, true);
 });
 
 class FakeWS {
@@ -275,4 +375,41 @@ test("token source says plainly when voice is off on the server", async () => {
     fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({ voice: false }) }),
   });
   await assert.rejects(get(), /Voice is off/);
+});
+
+test("an unconfirmed silent start never shows listening, even when speech ends meanwhile", async () => {
+  const r = rig();
+  r.c.onSpeakingChange(true);
+  await r.c.start({ silent: true });
+  r.c.onSpeakingChange(false);
+  assert.deepEqual(states(r.emitted), ["speaking", "idle"]);
+});
+
+test("the STT closing mid-latch ends the latch and sends what was held", async () => {
+  const r = rig();
+  await r.c.start({ latch: true });
+  r.stt.h.onFinal("eggs");
+  r.stt.h.onClosed();
+  assert.equal(r.c.listening, false);
+  assert.equal(r.c.latched, false);
+  assert.equal(r.mic.sink, null);
+  assert.deepEqual(r.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "eggs" }]);
+  assert.notEqual(states(r.emitted).at(-1), "listening");
+});
+
+test("a failed latch start tells the page it is not latched", async () => {
+  const r = rig({ micFails: "NotAllowedError" });
+  await r.c.start({ latch: true });
+  assert.equal(r.c.latched, false);
+  assert.deepEqual(r.emitted.filter((m) => m.type === RT.VOICE_STATE).at(-1), { type: RT.VOICE_STATE, state: "idle" });
+});
+
+test("the toggle during a tap's silent start latches instead of doing nothing", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  await r.c.toggle();
+  assert.equal(r.c.listening, true);
+  assert.equal(r.c.latched, true);
+  r.c.cancel(); // the tap's late PTT_CANCEL is a no-op now
+  assert.equal(r.c.listening, true);
 });
