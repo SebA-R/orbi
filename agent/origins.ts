@@ -150,7 +150,9 @@ export function isStripeCheckoutUrl(href: string | null | undefined): boolean {
   if (host === "checkout.stripe.com") return /^\/(c\/)?pay\/cs_test_[A-Za-z0-9]+\/?$/.test(u.pathname);
   if (host === "buy.stripe.com") return /^\/test_[A-Za-z0-9]+\/?$/.test(u.pathname);
   if (host === "js.stripe.com") {
-    return u.pathname === "/v3/embedded-checkout-inner.html" && /^cs_test_[A-Za-z0-9]+$/.test(u.searchParams.get("checkoutSessionId") || "");
+    const ids = u.searchParams.getAll("checkoutSessionId");
+    return u.pathname === "/v3/embedded-checkout-inner.html" && ids.length === 1 && /^cs_test_[A-Za-z0-9]+$/.test(ids[0]) &&
+      !/(cs|pk)_live_/i.test(decodeURIComponent(u.search + u.hash).replace(/%/g, ""));
   }
   return false;
 }

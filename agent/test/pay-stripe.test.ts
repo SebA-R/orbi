@@ -31,10 +31,13 @@ type Opts = {
   // Card number field still there after the press.
   formStays?: boolean;
   buttons?: Array<{ ref: string; role: string; name: string }>;
+  // The tab's address from the nth tab_info call on (a page swap).
+  swapTo?: { at: number; url: string };
 };
 
 function fakeStripe(o: Opts = {}) {
-  const url = o.url ?? URL_;
+  let url = o.url ?? URL_;
+  let infos = 0;
   const calls: Array<{ method: string; params: any }> = [];
   let paid = false;
   const before = o.fields ?? [
@@ -48,6 +51,7 @@ function fakeStripe(o: Opts = {}) {
     calls.push({ method, params });
     switch (method) {
       case "tab_info":
+        if (o.swapTo && ++infos >= o.swapTo.at) url = o.swapTo.url;
         return { tabId: 7, url, title: "Stripe Checkout" };
       case "tabs_context":
         return { tabs: [{ tabId: 7, url, title: "Stripe Checkout", active: true }] };
@@ -58,6 +62,7 @@ function fakeStripe(o: Opts = {}) {
       case "fill_payment":
         return { ok: true, last4: params.card.number.slice(-4) };
       case "find":
+        if (paid && !o.formStays) return { matches: [] };
         return {
           matches: o.buttons ?? [
             { ref: "ref_1", role: "button", name: "Pay with Link" },
@@ -107,6 +112,12 @@ test("stripeTotal: Total due, else the one amount shown; several amounts are unk
   assert.equal(stripeTotal(CHECKOUT_TEXT), "$14.00");
   assert.equal(stripeTotal("Blue mug\n$14.00\nTax\n$1.12\nTotal due\n$15.12"), "$15.12");
   assert.equal(stripeTotal("Blue mug\n$14.00\nTea\n$3.00"), "");
+  // A product named "Total due $1.00" next to the real one; another currency; whole dollars.
+  assert.equal(stripeTotal("Total due $1.00\n$14.00\nTotal due\n$14.00"), "");
+  assert.equal(stripeTotal("Blue mug\nCA$14.00"), "");
+  assert.equal(stripeTotal("Blue mug\n€14.00"), "");
+  assert.equal(stripeTotal("Blue mug\n$14\n$14.00"), "");
+  assert.equal(stripeTotal("Blue mug\nUS$14.00"), "$14.00");
   assert.equal(stripePaid(PAID_TEXT), true);
   assert.equal(stripePaid(CHECKOUT_TEXT), false);
 });
@@ -186,4 +197,25 @@ test("Stripe: missing card number field stops before the card is read", async ()
   assert.equal(r.ok, false);
   assert.match((r as any).error, /checkout fields/);
   assert.ok(!s.calls.some((c) => c.method === "fill_payment"));
+});
+
+test("Stripe: a page that already says thanks is refused before the card is read", async () => {
+  const s = fakeStripe({ text: CHECKOUT_TEXT + "\nThank you for your order" });
+  let read = false;
+  const r = await payNowExt(confirmed(), { ...fast, getCard: async () => ((read = true), { ...CARD }), bridge: s.bridge as any });
+  assert.equal(r.ok, false);
+  assert.match((r as any).error, /already shows a payment confirmation/);
+  assert.equal(read, false);
+});
+
+test("Stripe: a tab moved to another session on the same host is never filled or pressed", async () => {
+  // Same origin, live session: at the grant (3), after the Keychain read (4), right before the press (5).
+  for (const at of [3, 4, 5]) {
+    const s = fakeStripe({ swapTo: { at, url: `${STRIPE_SITE}/c/pay/cs_live_zzz` } });
+    const state = confirmed();
+    const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
+    assert.equal(r.ok, false, `swap at ${at}`);
+    assert.ok(!s.calls.some((c) => c.method === "lock_arm" || c.method === "press_protected"), `swap at ${at}`);
+    assert.equal(state.cardFieldsLive, false);
+  }
 });

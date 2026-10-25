@@ -780,11 +780,17 @@
     if (params.billing && typeof params.billing === "object") {
       var zip = params.billing.postal ? String(params.billing.postal) : "";
       var email = params.billing.email ? String(params.billing.email) : "";
+      var tokensOf = function (el) { return (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/); };
+      // The email only when the page has exactly one email field.
+      var emails = fields.filter(function (el) {
+        var t = tokensOf(el);
+        return el.tagName !== "SELECT" && t.indexOf("email") !== -1 && t.indexOf("shipping") === -1;
+      });
+      if (email && emails.length === 1 && !emails[0].value) put(emails[0], email);
       fields.forEach(function (el) {
         if (el.value || el.tagName === "SELECT") return;
-        var tokens = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+        var tokens = tokensOf(el);
         if (zip && tokens.indexOf("billing") !== -1 && tokens.indexOf("postal-code") !== -1) put(el, zip);
-        else if (email && tokens.indexOf("email") !== -1 && tokens.indexOf("shipping") === -1) put(el, email);
       });
     }
     return { ok: true, last4: number.slice(-4) };

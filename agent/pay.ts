@@ -175,16 +175,21 @@ function pageMoney(text: string, label: RegExp): string {
 // amount the page shows (a single item: "$14.00" under the product and as
 // the big summary amount). Several different amounts and no "Total due":
 // unknown, so pay_now refuses.
+// Any other currency ("CA$", "€", "£") or a whole-dollar amount: unknown.
 export function stripeTotal(text: string): string {
-  const due = pageMoney(text, /Total due\s*:?\s*\$\s*([0-9][0-9,]*\.[0-9]{2})/i);
-  if (due) return due;
+  const t = String(text);
+  if (/(^|[^A-Za-z])(?!US\$)[A-Z]{1,3}\$|[€£¥₹]|\$\s*[0-9][0-9,]*(?![0-9,]|\.[0-9]{2})/.test(t)) return "";
+  // Every "Total due" on the page must agree (a product name can say it too).
+  const dues = new Set([...t.matchAll(/Total due\s*:?\s*(?:US)?\$\s*([0-9][0-9,]*\.[0-9]{2})/gi)].map((m) => m[1].replace(/,/g, "")));
+  if (dues.size > 1) return "";
+  if (dues.size === 1) return `$${[...dues][0]}`;
   const amounts = new Set([...String(text).matchAll(/\$\s*([0-9][0-9,]*\.[0-9]{2})\b/g)].map((m) => m[1].replace(/,/g, "")));
   return amounts.size === 1 ? `$${[...amounts][0]}` : "";
 }
 
 // Stripe Checkout's confirmation, shown in place of the form on the same
 // page ("Thanks for your payment", "Payment successful").
-const STRIPE_PAID = /thanks? (you )?for your (payment|order|purchase)|payment (successful|succeeded|complete)/i;
+const STRIPE_PAID = /thanks? (you )?for your (payment|order|purchase)|payment (successful|succeeded)/i;
 export function stripePaid(text: string): boolean {
   return STRIPE_PAID.test(String(text));
 }
@@ -267,14 +272,28 @@ async function hasCardNumberField(bridge: Pick<ExtBridge, "call">, tabId: number
 
 // Place order is locked for every agent tool; only the grant plus the
 // extension's lock_arm nonce gets one press through press_protected.
-async function clickPlaceOrder(bridge: Pick<ExtBridge, "call">, tabId: number, grant: Grant, gate: UnlockGate, stripe = false): Promise<void> {
-  const r = await bridge.call<{ matches?: Array<{ ref: string; role?: string; name?: string }> }>("find", { tabId, query: stripe ? "Pay" : "Place order", limit: 20 });
+const FIND_LIMIT = 50;
+
+// The Stripe Pay buttons on the page, or null when the list was cut short.
+async function stripePayButtons(bridge: Pick<ExtBridge, "call">, tabId: number): Promise<Array<{ ref: string; role?: string; name?: string }> | null> {
+  const r = await bridge.call<{ matches?: Array<{ ref: string; role?: string; name?: string }> }>("find", { tabId, query: "Pay", limit: FIND_LIMIT });
+  const all = r?.matches || [];
+  if (all.length >= FIND_LIMIT) return null;
+  return all.filter((m) => m.role === "button" && STRIPE_PAY_BUTTON.test(m.name || ""));
+}
+
+// stripeHref: on Stripe, the exact page the user said yes on. Stripe's hosts
+// serve every merchant's sessions, live and test, so the origin alone is
+// not enough: the tab must still be on that page right before the press.
+async function clickPlaceOrder(bridge: Pick<ExtBridge, "call">, tabId: number, grant: Grant, gate: UnlockGate, stripeHref: string | null = null): Promise<void> {
   let btn: { ref: string; role?: string; name?: string } | undefined;
-  if (stripe) {
+  if (stripeHref) {
     // Exactly one Pay button, or nothing is pressed.
-    const pay = (r?.matches || []).filter((m) => m.role === "button" && STRIPE_PAY_BUTTON.test(m.name || ""));
-    btn = pay.length === 1 ? pay[0] : undefined;
+    const pay = await stripePayButtons(bridge, tabId);
+    btn = pay && pay.length === 1 ? pay[0] : undefined;
+    if (btn && (await extTabUrl(bridge, tabId)) !== stripeHref) throw new Error("the checkout page changed");
   } else {
+    const r = await bridge.call<{ matches?: Array<{ ref: string; role?: string; name?: string }> }>("find", { tabId, query: "Place order", limit: 20 });
     const matches = (r?.matches || []).filter((m) => /place order/i.test(m.name || ""));
     btn = matches.find((m) => m.role === "button") || matches[0];
   }
@@ -327,7 +346,10 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
   // counts as the order page.
   if (autoRevoked(state, c)) return { ok: false, error: DANGER_OFF };
   const startHref = await extTabUrl(bridge, tabId);
-  if (isStripeCheckoutUrl(startHref) !== stripe) return { ok: false, error: "The checkout page changed. Call request_checkout again." };
+  const PAGE_CHANGED = { ok: false as const, error: "The checkout page changed. Call request_checkout again." };
+  if (isStripeCheckoutUrl(startHref) !== stripe) return PAGE_CHANGED;
+  // A page that already says thanks cannot be told apart from a paid one.
+  if (stripe && stripePaid(checkoutText)) return { ok: false, error: "The checkout page already shows a payment confirmation. Check the page before trying again." };
   const issued = gate.issue({ confirmation: claimedYes(c), tabId, href: startHref, pageTotal });
   if (!issued.ok) return { ok: false, error: issued.error };
 
@@ -338,6 +360,8 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
     return { ok: false, error: (e as Error).message };
   }
   const four = last4(card.number);
+  // Reading the card can wait on the Keychain: on Stripe, still the same page?
+  if (stripe && (await extTabUrl(bridge, tabId)) !== startHref) return PAGE_CHANGED;
 
   state.cardFieldsLive = true;
   try {
@@ -358,7 +382,7 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
     }
 
     try {
-      await clickPlaceOrder(bridge, tabId, issued.grant, gate, stripe);
+      await clickPlaceOrder(bridge, tabId, issued.grant, gate, stripe ? startHref : null);
     } catch {
       return { ok: false, error: `Could not press ${stripe ? "Pay" : "Place order"} on the checkout page.` };
     }
@@ -367,11 +391,11 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
     await sleep(Math.min(600, pollMs));
     while (Date.now() < deadline) {
       const href = await extTabUrl(bridge, tabId);
-      // Stripe confirms on the same page: its thank-you text, and no card
-      // number field left.
+      // Stripe confirms on the same page: its thank-you text (not there
+      // before the press), no card number field and no Pay button left.
       if (stripe && href && paySite(href) && originOf(href) === originOf(startHref)) {
         const text = await pageText(bridge, tabId);
-        if (stripePaid(text) && !(await hasCardNumberField(bridge, tabId))) {
+        if (stripePaid(text) && !(await hasCardNumberField(bridge, tabId)) && (await stripePayButtons(bridge, tabId).catch(() => null))?.length === 0) {
           state.cardFieldsLive = !(await formEmpty(bridge, tabId));
           const shown = /ending in\s*(\d{4})/i.exec(text)?.[1];
           const receipt = { item: c.item, total: c.total, last4: shown || filled.last4 || four };
