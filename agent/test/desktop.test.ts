@@ -13,6 +13,9 @@ import { DesktopBridge, DesktopError, desktopOriginAllowed } from "../desktop/br
 import { appBlockReason, classifyElement, decidePress, DesktopUnlockGate, keyEffect, keyLock, maskElement, parseCombo, type AXElement, type Target } from "../desktop/safety.ts";
 import { desktopToolDefinitions, type DesktopHost } from "../desktop/tools.ts";
 import { DesktopVoice, s16ToF32, VOICE_OFF_TEXT } from "../desktop/voice.ts";
+import { ensureDesktopToken, tokenMatches } from "../desktop/token.ts";
+
+const TOKEN = "ab".repeat(32);
 
 process.env.ORBI_DESKTOP_BLOCKED_APPS = path.join(os.tmpdir(), `orbi-desktop-blocked-${process.pid}.txt`);
 
@@ -26,7 +29,7 @@ class FakeHelper {
   binary: Buffer[] = [];
   texts: any[] = [];
   constructor(public url: string, public handler: (method: string, params: any) => any = () => null, public headers: Record<string, string> = {}) {}
-  open(hello: Record<string, unknown> = { type: "hello", name: "orbi-desktop", version: 1, permissions: { accessibility: true, screen: true, mic: false } }): Promise<void> {
+  open(hello: Record<string, unknown> = { type: "hello", name: "orbi-desktop", version: 1, token: TOKEN, features: ["element", "focused", "expectRef", "exclude"], permissions: { accessibility: true, screen: true, mic: false } }): Promise<void> {
     this.ws = new WebSocket(this.url, { headers: this.headers });
     this.ws.on("close", (code) => (this.closed = { code }));
     return new Promise((resolve, reject) => {
@@ -60,7 +63,7 @@ class FakeHelper {
 // The same routing as server.ts: /desktop through ExtBridge.attach's router,
 // refused when the upgrade carries an Origin.
 async function startDesktop() {
-  const bridge = new DesktopBridge(() => {});
+  const bridge = new DesktopBridge(() => {}, () => [], () => TOKEN);
   const ext = new ExtBridge(() => {});
   const server = http.createServer((_q, r) => r.writeHead(404).end());
   ext.attach(server, { "/desktop": bridge.wss }, "/ext", (req) => !req.url?.startsWith("/desktop") || bridge.accepts(req));
@@ -105,6 +108,12 @@ test("bridge: wrong name or version is refused, newest helper wins, an Origin is
     const bad = new FakeHelper(d.url);
     void bad.open({ type: "hello", name: "something-else", version: 1 }).catch(() => {});
     assert.equal((await bad.waitClosed()).code, 4003);
+    for (const token of [undefined, "cd".repeat(32), "short"]) {
+      const h = new FakeHelper(d.url);
+      void h.open({ type: "hello", name: "orbi-desktop", version: 1, token }).catch(() => {});
+      assert.equal((await h.waitClosed()).code, 4004, `token ${token}`);
+    }
+    assert.equal(d.bridge.connected(), false);
     const old = new FakeHelper(d.url, () => ({ which: "old" }));
     await old.open();
     const neu = new FakeHelper(d.url, () => ({ which: "new" }));
@@ -201,6 +210,20 @@ test("masking of AX values: secure, card fields, card numbers and keys", () => {
   assert.equal(maskElement(el({ role: "AXTextField", label: "Subject", value: "Lunch" })).value, "Lunch");
 });
 
+test("token file: created 0600 in a 0700 directory, kept, compared in constant time", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orbi-token-"));
+  const file = path.join(dir, "Orbi", "desktop.token");
+  const t = ensureDesktopToken(file);
+  assert.match(t, /^[0-9a-f]{64}$/);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
+  assert.equal(ensureDesktopToken(file), t);
+  assert.equal(tokenMatches(t, t), true);
+  assert.equal(tokenMatches(t, "0".repeat(64)), false);
+  assert.equal(tokenMatches(null, t), false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("grants are single use and bound to app, window, control and label", () => {
   const g = new DesktopUnlockGate();
   const at = { bundleId: "com.apple.mail", windowTitle: "New Message", ref: "d1", label: "Send", cls: "send" };
@@ -222,7 +245,7 @@ function fakeTools(over: { handler?: (m: string, p: any) => any; words?: string;
       return over.handler ? over.handler(method, params) : null;
     },
     overlay: () => {},
-    helperInfo: () => ({ connectedAt: 0, permissions: { accessibility: true, screen: true, mic: true }, features: ["expectRef"] }),
+    helperInfo: () => ({ connectedAt: 0, permissions: { accessibility: true, screen: true, mic: true }, features: ["expectRef", "exclude"] }),
   };
   const host: DesktopHost = {
     words: () => (over.words ? { text: over.words, spent: new Set() } : null),
@@ -257,7 +280,7 @@ test("tools: Send in Mail after 'send it' presses once", async () => {
 });
 
 test("tools: an unlabeled coordinate click needs a yes; a failed hit test refuses", async () => {
-  const blank = fakeTools({ handler: (m) => (m === "element_at" ? mail(null, "com.apple.Notes", "Notes") : null), answer: "yes" });
+  const blank = fakeTools({ handler: (m) => (m === "element_at" ? mail(el({ ref: "d4", role: "AXGroup" }), "com.apple.Notes", "Notes") : null), answer: "yes" });
   await blank.defs.desktop_click.handler({ x: 10, y: 20 }, {});
   assert.equal(blank.asked.length, 1);
   assert.deepEqual(blank.acted(), ["click"]);
@@ -337,12 +360,13 @@ test("tools: desktop_read masks values and marks locked controls", async () => {
 });
 
 test("tools: a labeled control under a point is clicked by ref; screenshots leave blocked apps out", async () => {
+  let echo = true;
   const f = fakeTools({
-    handler: (m) => {
+    handler: (m, p) => {
       if (m === "element_at") return mail(el({ ref: "d7", title: "Bold" }), "com.apple.Notes", "Notes");
       if (m === "frontmost") return { bundleId: "com.apple.Notes", appName: "Notes" };
       if (m === "apps_list") return { apps: [{ bundleId: "com.apple.Notes", name: "Notes" }, { bundleId: "org.mozilla.firefox", name: "Firefox" }] };
-      if (m === "screenshot") return { png: "AAAA", width: 10, height: 10, scale: 2, redacted: true };
+      if (m === "screenshot") return { png: "AAAA", width: 10, height: 10, scale: 2, redacted: true, excluded: echo ? p.exclude : [] };
       return null;
     },
   });
@@ -352,6 +376,8 @@ test("tools: a labeled control under a point is clicked by ref; screenshots leav
   assert.equal(r.content[0].type, "image");
   const shot = f.calls.find((c) => c.method === "screenshot")!.params;
   assert.ok(shot.exclude.includes("org.mozilla.firefox") && !shot.exclude.includes("com.apple.Notes"));
+  echo = false;
+  assert.equal(((await f.defs.desktop_screenshot.handler({}, {})) as any).isError, true, "a helper that did not leave them out is refused");
 });
 
 test("tools: desktop_screenshot needs a vision model", async () => {

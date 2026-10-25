@@ -295,7 +295,8 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
           if (ref) await bridge.call("click", { ref });
           else if (t.element && !unlabeled(t.element)) await bridge.call("click", { ref: t.element.ref });
           else if (!bridge.helperInfo()?.features.includes("expectRef")) return refuse("Not clicked: this Orbi Desktop version can't check the spot at click time. Update Orbi Desktop, or use desktop_read and click by ref.");
-          else await bridge.call("click", { x, y, expectRef: t.element?.ref ?? null });
+          else if (!t.element) return refuse("Not clicked: Orbi found nothing at that spot to click. Call desktop_read or take a screenshot.");
+          else await bridge.call("click", { x, y, expectRef: t.element.ref });
           const name = t.element ? maskText(t.element.title || t.element.label || "") : "";
           return text({ ok: true, app: t.appName, ...(name ? { clicked: name } : {}) });
         } catch (e) {
@@ -396,6 +397,7 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
       "PNG screenshot of the screen, with passwords and secure fields blacked out. Prefer desktop_read; use this when the window has no readable controls. Its text is given with it: divide image pixels by scale for desktop_click.",
       { maxWidth: z.number().int().min(320).max(3000).optional() },
       async ({ maxWidth }) => {
+        if (!bridge.helperInfo()?.features.includes("exclude")) return refuse("Not taken: this Orbi Desktop version can't leave blocked apps out of a screenshot. Update Orbi Desktop, or use desktop_read.");
         if (!host.vision()) return refuse("Not taken: this local model can't see images. Use desktop_read to read the window instead.");
         try {
           const f = await bridge.call<any>("frontmost", {});
@@ -406,12 +408,13 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
           const apps = await bridge.call<any>("apps_list", {});
           const list: any[] = Array.isArray(apps?.apps) ? apps.apps : Array.isArray(apps) ? apps : [];
           if (!list.length) return refuse("Not taken: Orbi could not list the running apps to leave the blocked ones out.");
-          const exclude = [...new Set([...userBlockedApps(), ...list.filter((a) => appBlockReason(a?.bundleId, a?.name ?? a?.appName)).map((a) => String(a.bundleId))])];
+          const exclude = [...new Set([...userBlockedApps(), ...list.filter((a) => typeof a?.bundleId === "string" && a.bundleId && appBlockReason(a?.bundleId, a?.name ?? a?.appName)).map((a) => String(a.bundleId))])];
           const r = await bridge.call<{ png?: string; width?: number; height?: number; scale?: number }>("screenshot", { maxWidth: maxWidth ?? 1280, exclude });
           if (!r || typeof r.png !== "string") return refuse("Not taken: no screenshot data came back.");
           // The helper leaves blocked apps' windows out of the capture and
           // blacks out secure fields; without its word for it, nothing is shown.
-          if ((r as { redacted?: unknown }).redacted !== true) return refuse("Not taken: Orbi Desktop did not confirm the screenshot left out blocked apps. Use desktop_read.");
+          const excluded = new Set(Array.isArray((r as { excluded?: unknown }).excluded) ? ((r as { excluded: unknown[] }).excluded.map(String)) : []);
+          if ((r as { redacted?: unknown }).redacted !== true || !exclude.every((id) => excluded.has(id))) return refuse("Not taken: Orbi Desktop did not confirm the screenshot left out blocked apps. Use desktop_read.");
           const scale = r.scale && r.scale > 0 ? r.scale : 1;
           return {
             content: [

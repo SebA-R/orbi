@@ -11,7 +11,8 @@ import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createCardsRoute } from "./cards.ts";
-import { DESKTOP_PATH, desktopBridge } from "./desktop/bridge.ts";
+import { DESKTOP_PATH, desktopBridge, setDesktopToken } from "./desktop/bridge.ts";
+import { desktopTokenPath, ensureDesktopToken } from "./desktop/token.ts";
 import { DesktopVoice, mintCartesiaToken } from "./desktop/voice.ts";
 import { extBridge, extMode } from "./extbridge.ts";
 import * as timing from "./timing.ts";
@@ -282,6 +283,16 @@ if (EXT) {
     const p = currentProvider();
     if (hub.switchBackend(backendKey(p), describeBackend(p))) console.log(`agent: ${describeBackend(p)}`);
   });
+}
+
+// Orbi Desktop's shared secret (desktop/token.ts). If it can't be made, no
+// helper is let in.
+if (EXT) {
+  try {
+    setDesktopToken(ensureDesktopToken());
+  } catch {
+    console.log(`desktop: could not create ${desktopTokenPath()}, so Orbi Desktop can't connect`);
+  }
 }
 
 // Orbi Desktop's push-to-talk and speaker: one more window on the hub.

@@ -18,6 +18,7 @@ import type http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { userBlockedApps } from "./safety.ts";
+import { tokenMatches } from "./token.ts";
 
 export const DESKTOP_PROTOCOL_VERSION = 1;
 export const DESKTOP_HELPER_NAME = "orbi-desktop";
@@ -98,7 +99,9 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
 
   // blockedApps: the user's extra blocked apps (safety.ts), sent in welcome
   // so the helper refuses them too. The server enforces them either way.
-  constructor(private log: (line: string) => void = (l) => console.log(l), private blockedApps: () => string[] = () => []) {
+  // token: the shared secret the helper must send in hello (token.ts). Null
+  // (no token could be made) refuses every helper.
+  constructor(private log: (line: string) => void = (l) => console.log(l), private blockedApps: () => string[] = () => [], private token: () => string | null = () => null) {
     super();
     this.wss.on("connection", (ws) => this.accept(ws));
   }
@@ -192,6 +195,15 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
           ws.close(4003, "unsupported client");
           return;
         }
+        let expected: string | null = null;
+        try {
+          expected = this.token();
+        } catch {}
+        if (!tokenMatches(expected, m.token)) {
+          this.log("desktop: refused a helper without the right token");
+          ws.close(4004, "unauthorized");
+          return;
+        }
         greeted = true;
         clearTimeout(helloTimer);
         const p = m.permissions && typeof m.permissions === "object" ? m.permissions : {};
@@ -260,4 +272,9 @@ export class DesktopBridge extends EventEmitter<DesktopBridgeEvents> {
 }
 
 // The process-wide bridge used by server.ts and session.ts.
-export const desktopBridge = new DesktopBridge(undefined, () => userBlockedApps());
+// server.ts sets the token at startup (setDesktopToken); until then, none.
+let serverToken: string | null = null;
+export function setDesktopToken(t: string | null) {
+  serverToken = t;
+}
+export const desktopBridge = new DesktopBridge(undefined, () => userBlockedApps(), () => serverToken);
