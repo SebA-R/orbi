@@ -140,3 +140,26 @@ test("messages name the control and never offer a way around", () => {
   assert.match(P.message({ kind: "frame", label: "embedded frame" }), /embedded frame/);
   assert.match(P.message({ kind: "express", label: "Apple Pay" }), /only the user can press it/);
 });
+
+test("unlockClass: checkout, account, subscription and saved card unlock on request; paying never does", () => {
+  const lock = (label, extra = {}) => ({ kind: P.classifyLabel(label), label, optin: false, checked: false, ...extra });
+  for (const l of ["Checkout", "Proceed to checkout", "Secure checkout", "Go to checkout"]) assert.equal(P.unlockClass(lock(l)), "checkout", l);
+  for (const l of ["Place order", "Buy now", "Pay now", "Pay and checkout", "Continue to payment", "Checkout and place order", "Confirm purchase"]) {
+    assert.equal(P.unlockClass(lock(l)), null, l);
+  }
+  for (const l of ["Apple Pay", "Checkout with PayPal", "Shop Pay"]) assert.equal(P.unlockClass(lock(l)), null, l);
+  assert.equal(P.unlockClass(lock("Sign in")), "account");
+  assert.equal(P.unlockClass(lock("Create account")), "account");
+  assert.equal(P.unlockClass(lock("Subscribe")), "subscription");
+  assert.equal(P.unlockClass(lock("Save card")), "payment-method");
+  assert.equal(P.unlockClass({ kind: "marked", label: "Continue" }), "marked");
+  for (const kind of ["payment-form", "express", "frame", "shadow"]) assert.equal(P.unlockClass({ kind, label: "Continue" }), null, kind);
+  assert.equal(P.unlockClass(null), null);
+});
+
+test("sameLabel: equal after normalizing, or a long clipped prefix", () => {
+  assert.ok(P.sameLabel("Proceed to checkout", "proceed to Checkout"));
+  assert.ok(P.sameLabel("Subscribe & Save: deliver every…", "Subscribe and Save: deliver every 30 days"));
+  assert.ok(!P.sameLabel("Sign in", "Sign up"));
+  assert.ok(!P.sameLabel("", "Sign in"));
+});
