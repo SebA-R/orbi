@@ -67,7 +67,10 @@ a:hover { color: var(--strong); }
 [hidden] { display: none !important; }
 
 /* Header */
-.top { display: flex; align-items: center; height: 48px; padding: 0 6px 0 18px; flex: none; }
+.top { display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 6px 0 16px; flex: none; }
+/* The mini orb face (content/orb-face.js), a decorative echo of the voice state. */
+.mini-orb { display: inline-flex; flex: none; }
+.mini-orb:empty { display: none; }
 h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .icon {
   display: inline-flex; align-items: center; justify-content: center; margin-left: auto;
