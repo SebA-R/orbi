@@ -50,7 +50,7 @@ chrome.permissions.onAdded.addListener(() => {
 chrome.permissions.onRemoved.addListener(badge);
 
 // Module A lifecycle: forget debugger sessions and which tabs Clearcart
-// opened or drove.
+// opened.
 chrome.tabs.onRemoved.addListener((tabId) => cdp.onTabRemoved(tabId));
 chrome.tabs.onRemoved.addListener((tabId) => void tabs.onTabRemoved(tabId).catch(() => {}));
 chrome.debugger.onDetach.addListener((source) => cdp.onDetach(source));

@@ -394,7 +394,7 @@ export class Session {
   };
 
   // The browser's agent tabs: the MCP group, or on our extension the tabs
-  // Clearcart opened or drove (agent_tabs; the user's other tabs are never
+  // Clearcart opened (agent_tabs; the user's own tabs are never
   // swept). Throws when the list cannot be read.
   async listTabs(): Promise<Tab[]> {
     if (extMode()) return (await extBridge.call<{ tabs?: Tab[] }>("agent_tabs", {}, 10_000))?.tabs || [];

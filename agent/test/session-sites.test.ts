@@ -116,7 +116,7 @@ test("allowlist mode sweep sends strays straight to the store", async () => {
   assert.match(sweepNote(1), /blocked site/);
 });
 
-test("the session sweep over the extension bridge only looks at tabs Clearcart opened or drove", async () => {
+test("the session sweep over the extension bridge only looks at tabs Clearcart opened", async () => {
   const calls: Array<[string, any]> = [];
   let tab10 = "https://mail.google.com/";
   const orig = extBridge.call;

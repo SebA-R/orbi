@@ -27,7 +27,7 @@ export async function assertAllowed(url: string): Promise<void> // throws Bridge
 export function blockReason(url, settings): string | null      // browseMode "open": lib/blocklist.js fixed rules + settings.blocklist entries; "allowlist": origin in settings.allowlist
 export async function isPaySite(url: string): Promise<boolean>  // origin in the allowlist, in both modes; lock_arm needs it
 
-// tabs.js  (no tab group: the user's open tabs plus tabs Clearcart opens; which ones it opened or drove is kept in chrome.storage.session)
+// tabs.js  (no tab group: the user's open tabs plus tabs Clearcart opens; which ones it opened is kept in chrome.storage.session)
 export async function tabsContext(): Promise<{ tabs: {tabId,title,url,active,openedByClearcart}[] }> // url = origin+path; tabs on blocked pages left out
 export async function tabsCreate({ url? }): Promise<{ tabId }>                     // background tab (active: false) next to the user's tab
 export async function tabsClose({ tabId }), tabsActivate({ tabId })                // close: only tabs Clearcart opened; activate: when the user asks

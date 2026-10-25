@@ -11,9 +11,11 @@
 //   - New tabs open in the background next to the user's tab; a tab is only
 //     brought to the front by tabsActivate (when the user asks to see it).
 //
-// Which tabs Clearcart opened or drove (navigated, clicked, typed in) is kept
-// in chrome.storage.session so it survives a service-worker restart. The
-// agent server's tab sweep only looks at those (agentTabs).
+// Which tabs Clearcart opened is kept in chrome.storage.session so it
+// survives a service-worker restart. The agent server's tab sweep only looks
+// at those (agentTabs). Navigating, clicking or typing in one of the user's
+// own tabs never makes it sweepable: the user may later open a blocked site
+// in it, and Clearcart must then leave it alone.
 
 import { BridgeError, ERR } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
@@ -31,6 +33,7 @@ const BLANK = /^(about:blank|chrome:\/\/newtab\/?)$/;
 
 const api = () => globalThis.chrome;
 
+// Full URL: INTERNAL replies (tab_info, agent_tabs) only.
 function info(tab) {
   return { tabId: tab.id, url: tab.url || tab.pendingUrl || "", title: tab.title || "" };
 }
@@ -50,7 +53,8 @@ export function originPath(url) {
 
 async function loadState() {
   const { [STATE_KEY]: s } = await api().storage.session.get(STATE_KEY);
-  return { created: [...(s?.created || [])], driven: [...(s?.driven || [])], last: s?.last ?? null };
+  // An older version's `driven` list is dropped here.
+  return { created: [...(s?.created || [])], last: s?.last ?? null };
 }
 
 async function saveState(s) {
@@ -72,14 +76,12 @@ function update(fn) {
 const add = (list, id) => (list.includes(id) ? list : list.push(id));
 
 export const markCreated = (tabId) => update((s) => add(s.created, tabId));
-export const markDriven = (tabId) => update((s) => add(s.driven, tabId));
 export const markUsed = (tabId) => update((s) => (s.last = tabId));
 
 // tabs.onRemoved: forget the tab.
 export function onTabRemoved(tabId) {
   return update((s) => {
     s.created = s.created.filter((id) => id !== tabId);
-    s.driven = s.driven.filter((id) => id !== tabId);
     if (s.last === tabId) s.last = null;
   });
 }
@@ -136,8 +138,9 @@ export async function tabsContext() {
 
 // The tab a call acts on. Default: the tab Clearcart used last, else the
 // user's active tab. `nav` lets a navigate call reach a tab Clearcart opened
-// or drove even when it sits on a blocked page (that is how the sweep sends
-// it back); the user's own tabs on blocked pages are never reachable.
+// itself even when it sits on a blocked page (that is how the sweep sends
+// it back). The user's own tabs on blocked pages are never reachable, for
+// any call, however Clearcart used them before.
 export async function resolveTab(tabId, { nav = false } = {}) {
   if (tabId != null && !Number.isInteger(tabId)) throw new BridgeError(ERR.BAD_REQUEST, "tabId must be an integer");
   const [state, settings] = await Promise.all([loadState(), loadSettings()]);
@@ -151,8 +154,7 @@ export async function resolveTab(tabId, { nav = false } = {}) {
     if (!tab) throw new BridgeError(ERR.NO_TAB, "no open tab; call tabs_create");
   }
   const mine = state.created.includes(tab.id);
-  const touched = mine || state.driven.includes(tab.id);
-  if (!(nav && touched) && hiddenReason(tab, settings, { blankOk: mine && nav })) {
+  if (!(nav && mine) && hiddenReason(tab, settings, { blankOk: mine && nav })) {
     // No origin in the message: a blocked tab of the user's stays private.
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Clearcart does not use it`);
   }
@@ -259,8 +261,6 @@ export async function navigate({ tabId, url } = {}) {
     await assertAllowed(url);
     start = () => api().tabs.update(id, { url });
   }
-  // Before it moves: if it lands somewhere blocked, the sweep must see it.
-  await markDriven(id);
   await markUsed(id);
   await navigateAndWait(id, start);
   const tab = await api().tabs.get(id);
@@ -274,7 +274,24 @@ export async function navigate({ tabId, url } = {}) {
     throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Clearcart does not drive: ${origin}`);
   }
   assertNetSafe(id);
-  return info(tab);
+  // Origin and path only: a query string or fragment can carry login codes.
+  return { tabId: tab.id, url: originPath(tab.url || tab.pendingUrl || ""), title: tab.title || "" };
+}
+
+// Checks a page again right after Clearcart read from it, so a tab that
+// moved to a blocked site mid-call gives nothing back. `url` is the address
+// of the document that answered; without one the tab's current (and
+// pending) address is checked. Throws NOT_ALLOWED to drop the result.
+export async function assertPageAllowed(tabId, url) {
+  const settings = await loadSettings();
+  let urls = [url];
+  if (url == null) {
+    const t = await getTab(tabId);
+    urls = [t.url || "", t.pendingUrl].filter((u) => u != null);
+  }
+  if (urls.some((u) => blockReason(String(u), settings)) || flagOf(tabId)) {
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tabId} moved to a blocked site; the result was dropped`);
+  }
 }
 
 // Closes a tab, only one Clearcart opened.
@@ -301,15 +318,15 @@ export async function tabInfo({ tabId } = {}) {
   return info(await api().tabs.get(id));
 }
 
-// The tabs Clearcart opened or drove, with full URLs, blocked ones included.
-// INTERNAL: the agent server's tab sweep. The user's other tabs never appear.
+// The tabs Clearcart opened, with full URLs, blocked ones included.
+// INTERNAL: the agent server's tab sweep. The user's own tabs never appear,
+// even ones Clearcart navigated, clicked or typed in.
 export async function agentTabs() {
   const state = await loadState();
-  const ids = [...new Set([...state.created, ...state.driven])];
   const tabs = [];
-  for (const id of ids) {
+  for (const id of state.created) {
     const t = await api().tabs.get(id).catch(() => null);
-    if (t) tabs.push({ ...info(t), openedByClearcart: state.created.includes(id) });
+    if (t) tabs.push({ ...info(t), openedByClearcart: true });
   }
   return { tabs };
 }

@@ -30,9 +30,6 @@ export const INDICATOR_FILES = ["content/indicator.js"];
 // user_text that follows, if it comes within this long.
 export const CONTEXT_TTL_MS = 60_000;
 const CONTEXT_PAGE_TIMEOUT_MS = 1_500;
-// Calls that can move or change a page: the tab counts as driven by
-// Clearcart, so the agent server's tab sweep watches it.
-const DRIVING = new Set(["click", "type", "key", "form_input"]);
 
 // How long a lock_arm nonce stays good. The pay flow arms right before it
 // presses, so this only needs to cover one round trip.
@@ -313,7 +310,6 @@ export function createRouter({
     }
     const tabId = await tabs.resolveAllowedTab(params.tabId);
     indicate(tabId);
-    if (DRIVING.has(method) && typeof tabs.markDriven === "function") await tabs.markDriven(tabId);
     switch (method) {
       case "click":
         return clickAt(tabId, params);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { installChrome } from "./chrome-mock.mjs";
 import {
-  LEGACY_GROUP_TITLE, STATE_KEY, agentTabs, navigate, navigateAndWait, onTabRemoved, originPath, resolveAllowedTab, resolveTab,
+  LEGACY_GROUP_TITLE, STATE_KEY, agentTabs, assertPageAllowed, navigate, navigateAndWait, onTabRemoved, originPath, resolveAllowedTab, resolveTab,
   isPaySite, tabInfo, tabsActivate, tabsClose, tabsContext, tabsCreate, ungroupLegacy,
 } from "../../background/tabs.js";
 import * as netguard from "../../background/netguard.js";
@@ -112,20 +112,65 @@ test("resolveTab defaults to the tab Clearcart used last, else the user's active
   await assert.rejects(resolveTab("1"), (e) => e.code === ERR.BAD_REQUEST);
 });
 
-test("agentTabs (the sweep) holds only tabs Clearcart opened or drove, blocked ones included", async () => {
+test("agentTabs (the sweep) holds only tabs Clearcart opened, blocked ones included", async () => {
   const c = fresh();
   const untouched = await userTab(c, "https://mail.google.com/");
-  const driven = await userTab(c, "https://www.etsy.com/");
-  await navigate({ tabId: driven, url: "https://www.etsy.com/cart" });
+  const used = await userTab(c, "https://www.etsy.com/");
+  await navigate({ tabId: used, url: "https://www.etsy.com/cart" });
   const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
   // A clicked link lands the agent's own tab on a blocked site.
   await navigateAndWait(tabId, () => c.tabs.update(tabId, { url: "https://www.paypal.com/signin" }));
   const { tabs } = await agentTabs();
-  assert.deepEqual(tabs.map((t) => t.tabId).sort(), [driven, tabId].sort());
-  assert.ok(!tabs.some((t) => t.tabId === untouched));
+  assert.deepEqual(tabs.map((t) => t.tabId), [tabId]);
+  assert.ok(!tabs.some((t) => t.tabId === untouched || t.tabId === used));
   // The sweep may still send it back.
   assert.equal((await navigate({ tabId, url: "back" })).url, "https://www.etsy.com/");
   assert.deepEqual(c.storage.session.data[STATE_KEY].created, [tabId]);
+});
+
+test("a user tab Clearcart navigated is never swept or navigated once the user opens a blocked site in it", async () => {
+  const c = fresh();
+  const id = await userTab(c, "https://www.etsy.com/");
+  await navigate({ tabId: id, url: "https://www.etsy.com/cart" });
+  assert.equal(await resolveAllowedTab(id), id);
+  // The user opens Gmail in their own tab.
+  c._tabs.get(id).url = "https://mail.google.com/mail/u/0/#inbox";
+  assert.deepEqual((await agentTabs()).tabs, []);
+  await assert.rejects(navigate({ tabId: id, url: "back" }), (e) => e.code === ERR.NOT_ALLOWED && !/google/.test(e.message));
+  await assert.rejects(navigate({ tabId: id, url: "https://www.etsy.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
+  await assert.rejects(tabInfo({ tabId: id }), (e) => e.code === ERR.NOT_ALLOWED);
+  assert.equal(c._tabs.get(id).url, "https://mail.google.com/mail/u/0/#inbox");
+});
+
+test("a driven list left by an older version gives no tab a pass", async () => {
+  const c = fresh();
+  const id = await userTab(c, "https://mail.google.com/");
+  c.storage.session.data[STATE_KEY] = { created: [], driven: [id], last: null };
+  assert.deepEqual((await agentTabs()).tabs, []);
+  await assert.rejects(navigate({ tabId: id, url: "https://www.etsy.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
+});
+
+test("navigate reports origin and path only, never the query string or fragment", async () => {
+  fresh();
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
+  const r = await navigate({ tabId, url: "https://www.etsy.com/oauth/callback?code=SECRET&state=x#access_token=TOKEN" });
+  assert.equal(r.url, "https://www.etsy.com/oauth/callback");
+  assert.ok(!r.url.includes("SECRET") && !r.url.includes("TOKEN"));
+  // The agent server's internal pay flow still gets the full URL.
+  assert.match((await tabInfo({ tabId })).url, /code=SECRET/);
+});
+
+test("assertPageAllowed drops a result from a page that moved to a blocked site", async () => {
+  const c = fresh();
+  const id = await userTab(c, "https://www.etsy.com/");
+  await assertPageAllowed(id);
+  await assertPageAllowed(id, "https://www.etsy.com/c/mugs");
+  await assert.rejects(assertPageAllowed(id, "https://mail.google.com/"), (e) => e.code === ERR.NOT_ALLOWED && !/google/.test(e.message));
+  c._tabs.get(id).pendingUrl = "https://www.paypal.com/signin";
+  await assert.rejects(assertPageAllowed(id), (e) => e.code === ERR.NOT_ALLOWED);
+  delete c._tabs.get(id).pendingUrl;
+  c._tabs.get(id).url = "https://www.paypal.com/signin";
+  await assert.rejects(assertPageAllowed(id), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
 test("ungroupLegacy takes tabs out of the old Clearcart group without closing them", async () => {

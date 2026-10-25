@@ -123,18 +123,20 @@ function contextFakes({ blocked = false, page = { selection: "Blue mug", pointin
     markDriven: async (id) => calls.push(["driven", id]),
     tabsClose: async ({ tabId }) => (calls.push(["close", tabId]), { ok: true }),
   };
-  const cdp = { click: async () => {}, scroll: async () => {} };
+  const cdp = { click: async () => {}, scroll: async () => {}, type: async () => {}, key: async () => {} };
   return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
 }
 
-test("tab-bound calls show the indicator; clicks mark the tab driven, scrolls do not", async () => {
+test("tab-bound calls show the indicator; clicking or typing never marks a user tab sweepable", async () => {
   const { calls, router } = fakes();
   await router.route("click", { tabId: 4, x: 1, y: 2 });
   assert.ok(calls.some((c) => c[0] === "indicator" && c[1] === 4));
   const b = contextFakes();
   await b.router.route("click", { tabId: 5, x: 1, y: 2 });
+  await b.router.route("type", { tabId: 5, text: "mug" });
+  await b.router.route("key", { tabId: 5, key: "Tab" });
   await b.router.route("scroll", { tabId: 6, x: 1, y: 2 });
-  assert.deepEqual(b.calls.filter((c) => c[0] === "driven"), [["driven", 5]]);
+  assert.deepEqual(b.calls.filter((c) => c[0] === "driven"), []);
   await b.router.route("tabs_close", { tabId: 5 });
   assert.ok(b.calls.some((c) => c[0] === "close" && c[1] === 5));
 });
