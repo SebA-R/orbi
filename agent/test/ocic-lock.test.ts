@@ -9,8 +9,9 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { ocicLockNote, ocicLockReason, pageScript, parseRefLine, type Deps } from "../ocic-lock.ts";
-import { ALLOWED, DISALLOWED_BROWSER, navigateLockReason } from "../session.ts";
+import { ocicLockNote, ocicLockReason, pageScript, parseRefLine, REF_CLICK, type Deps } from "../ocic-lock.ts";
+import { ALLOWED, DISALLOWED_BROWSER, isStrayTab, navigateLockReason } from "../session.ts";
+import { isCheckoutUrl, STORE_ORIGIN, type SitePolicy } from "../origins.ts";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PW = path.join(REPO, "tests", "extension", "node_modules", "playwright", "index.mjs");
@@ -49,6 +50,32 @@ test("navigate: checkout pages are locked off the store, open on it", () => {
   assert.equal(navigateLockReason("back"), null);
 });
 
+test("checkout paths: decoded, any segment, with extensions; the sweep re-checks where a tab landed", () => {
+  for (const u of [
+    "https://shop.example/%63heckout",
+    "https://shop.example/%2563heckout",
+    "https://shop.example/en/us/checkout.html",
+    "https://shop.example/pay.php?x=1",
+    "https://shop.example/a/b/billing/step2",
+    "https://shop.example/checkout;jsessionid=abc",
+    "https://www.amazon.com/gp/buy/spc/handlers/display.html",
+    "https://shop.example/PAYMENT/",
+  ]) assert.ok(isCheckoutUrl(u), u);
+  for (const u of ["https://shop.example/product/checkout-tee/123", "https://shop.example/paypal-info", "https://shop.example/gp/product/123", "https://shop.example/cart"]) {
+    assert.ok(!isCheckoutUrl(u), u);
+  }
+  const open: SitePolicy = { mode: "open", allowed: new Set([STORE_ORIGIN]), blocked: new Set(), entries: [] };
+  const allow: SitePolicy = { mode: "allowlist", allowed: new Set([STORE_ORIGIN, "https://shop.example"]), blocked: new Set(), entries: [] };
+  assert.ok(isStrayTab("https://elsewhere.example/", allow), "off the allowlist");
+  assert.ok(!isStrayTab("https://shop.example/cart", open), "an open-web cart is fine");
+  for (const p of [open, allow]) {
+    assert.ok(isStrayTab("https://shop.example/en/checkout.html", p), "a landed checkout page is sent back");
+    assert.ok(isStrayTab("https://shop.example/%63heckout", p));
+    assert.ok(!isStrayTab(STORE_ORIGIN + "/checkout", p), "the store's own checkout is fine");
+  }
+  assert.ok(!isStrayTab("about:blank") && !isStrayTab(undefined));
+});
+
 test("parseRefLine reads role, name and type", () => {
   assert.deepEqual(parseRefLine('button "Place order · $14.27" [ref_9] type="submit"\n\nViewport: 1000x600'), { role: "button", name: "Place order · $14.27", type: "submit" });
   assert.deepEqual(parseRefLine('  checkbox "Subscribe & Save" [ref_3] type="checkbox"'), { role: "checkbox", name: "Subscribe & Save", type: "checkbox" });
@@ -58,8 +85,10 @@ test("parseRefLine reads role, name and type", () => {
 test("click by ref: locked by name, or by matching the page's locked controls", async () => {
   const byName = fake({ refLine: 'button "Place order · $14.27" [ref_9]' });
   assert.equal(await ocicLockReason("computer", { action: "left_click", ref: "ref_9", tabId: 1 }, byName), PLACE);
+  // A harmless name is not enough: OCIC clicks the ref's centre, which the
+  // main-world check cannot see, so ref-only clicks must use a coordinate.
   const plain = fake();
-  assert.equal(await ocicLockReason("computer", { action: "left_click", ref: "ref_2", tabId: 1 }, plain), null);
+  assert.equal(await ocicLockReason("computer", { action: "left_click", ref: "ref_2", tabId: 1 }, plain), REF_CLICK);
   // "Continue" says nothing, but the page knows it submits the card form.
   const byPage = fake({ refLine: 'button "Continue" [ref_4]', pageLocks: [{ name: "Continue", kind: "payment-form", optin: false, checked: false }] });
   assert.equal(await ocicLockReason("computer", { action: "double_click", ref: "ref_4", tabId: 1 }, byPage), "Locked: 'Continue' can only be pressed by Clearcart after the user says yes.");
@@ -98,11 +127,39 @@ test("fails closed when the check cannot run", async () => {
   const msg = /^Locked: Clearcart could not check/;
   assert.match((await ocicLockReason("computer", { action: "left_click", coordinate: [1, 1], tabId: 1 }, broken))!, msg);
   assert.match((await ocicLockReason("computer", { action: "key", text: "Enter", tabId: 1 }, broken))!, msg);
-  assert.match((await ocicLockReason("computer", { action: "left_click", ref: "ref_1", tabId: 1 }, fake({ refLine: "Error: ref_id \"ref_1\" not found" })))!, msg);
+  assert.equal(await ocicLockReason("computer", { action: "left_click", ref: "ref_1", tabId: 1 }, fake({ refLine: "Error: ref_id \"ref_1\" not found" })), REF_CLICK);
   assert.match((await ocicLockReason("computer", { action: "left_click", coordinate: [1, 1] }, fake()))!, msg, "no tab id");
   // Read-only actions are never checked.
   assert.equal(await ocicLockReason("computer", { action: "screenshot", tabId: 1 }, broken), null);
   assert.equal(await ocicLockReason("read_page", { tabId: 1 }, broken), null);
+});
+
+// Security review regressions.
+test("a ref-only click on a harmless-looking wrapper around Place order is refused", async () => {
+  // "Order summary" names nothing locked and the page's lock list has no
+  // match, but its centre is the Place order button inside it.
+  const wrap = fake({ refLine: 'generic "Order summary" [ref_7]', pageLocks: [{ name: "Place order · $14.27", kind: "marked", optin: false, checked: false }] });
+  for (const action of ["left_click", "double_click", "triple_click", "right_click"]) {
+    assert.equal(await ocicLockReason("computer", { action, ref: "ref_7", tabId: 1 }, wrap), REF_CLICK, action);
+  }
+  // The same point by coordinate gets the real hit test.
+  const at = fake({ evalResult: { kind: "marked", label: "Place order · $14.27", optin: false, checked: false } });
+  assert.equal(await ocicLockReason("computer", { action: "left_click", coordinate: [400, 300], tabId: 1 }, at), PLACE);
+});
+
+test("a control character key name is checked as Enter", async () => {
+  const f = fake({ evalResult: { kind: "order", label: "Place order", optin: false, checked: false } });
+  assert.match((await ocicLockReason("computer", { action: "key", text: "\r", tabId: 1 }, f))!, /^Locked:/);
+  assert.match(f.evals[0], /lockForKey\(document, "Enter"\)/);
+});
+
+test("form_input on a dropdown never chooses an opt-in option", async () => {
+  const sel = fake({ refLine: 'combobox "Delivery" [ref_6]' });
+  assert.match((await ocicLockReason("form_input", { ref: "ref_6", value: "Subscribe and save 15%", tabId: 1 }, sel))!, /^Locked: 'Subscribe and save 15%'/);
+  assert.equal(await ocicLockReason("form_input", { ref: "ref_6", value: "One-time purchase", tabId: 1 }, sel), null);
+  // A text box may hold the words.
+  const box = fake({ refLine: 'textbox "Gift note" [ref_8]' });
+  assert.equal(await ocicLockReason("form_input", { ref: "ref_8", value: "Subscribe and save", tabId: 1 }, box), null);
 });
 
 test("read_page and find notes name locked and uncheck-only refs", async () => {

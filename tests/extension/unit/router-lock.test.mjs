@@ -155,3 +155,21 @@ test("isActivationKey", () => {
   assert.ok(isActivationKey("Enter") && isActivationKey(" ") && isActivationKey("Shift+Space"));
   assert.ok(!isActivationKey("Tab") && !isActivationKey("a") && !isActivationKey(undefined));
 });
+
+// Security review: the activation check must follow what parseKey sends,
+// not how the key is spelled.
+test("key specs that send Enter or Space under another spelling are checked or refused", async () => {
+  const f = fakes({ locked: new Set(["guard_key"]) });
+  for (const key of ["Shift+ ", "Ctrl+ ", "alt+Space", "Shift+Enter", "meta+Return"]) {
+    await assert.rejects(f.router.route("key", { key }), { code: "locked" }, JSON.stringify(key));
+  }
+  // Control characters never reach CDP at all: parseKey refuses them.
+  for (const key of ["\r", "\n", "Shift+\r", "\t", "\u0000", "Ctrl+\n"]) {
+    await assert.rejects(f.router.route("key", { key }), { code: "bad_request" }, JSON.stringify(key));
+  }
+  assert.deepEqual(f.sent(), []);
+  // The page saw a plain Enter or Space to check.
+  const keys = f.calls.filter((c) => c[1] === "guard_key").map((c) => c[2].key);
+  assert.deepEqual(keys, ["Space", "Space", "Space", "Enter", "Enter"]);
+  for (const k of ["Shift+ ", "Ctrl+ ", "\r", "\n"]) assert.ok(isActivationKey(k), JSON.stringify(k));
+});

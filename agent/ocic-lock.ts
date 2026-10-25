@@ -67,6 +67,14 @@ const CLICKS = new Set(["left_click", "right_click", "double_click", "triple_cli
 
 const UNCHECKED = "Locked: Clearcart could not check what this action would press, so it was not sent.";
 
+// OCIC clicks a ref at the centre of its rect, after scrolling it into view,
+// in its own isolated world. Our check runs in the main world and cannot
+// map a ref to its element or that point, so a name check on the ref would
+// miss a locked control under or inside it ("Continue" wrapping Place
+// order, an overlay over the centre). Ref-only clicks are refused; a click
+// at coordinates gets the full hit test.
+export const REF_CLICK = "Not sent: on this browser Clearcart checks clicks only at coordinates, not by ref. Click the same element by its coordinate instead (find reports where it is).";
+
 function xy(v: unknown): [number, number] | null {
   return Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === "number" && Number.isFinite(n)) ? [v[0], v[1]] : null;
 }
@@ -104,11 +112,12 @@ function sameName(a: string, b: string): boolean {
 }
 
 // Lock for a ref, by its name and by matching the page's locked controls.
-async function refLock(deps: Deps, tabId: number, ref: string): Promise<Lock | null> {
+async function refLock(deps: Deps, tabId: number, ref: string, out?: { role?: string }): Promise<Lock | null> {
   const text = await deps.readRef(tabId, ref);
   if (/^Error/i.test(text.trim())) throw new Error("ref not found");
   const info = parseRefLine(text);
   if (!info) throw new Error("ref line not understood");
+  if (out) out.role = info.role;
   const checkable = CHECKABLE_ROLES.has(info.role) || info.type === "checkbox" || info.type === "radio";
   const kind = Protect.classifyLabel(info.name, { checkable });
   const label = info.name.slice(0, 60);
@@ -145,15 +154,17 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
           const l = await pageLock(deps, tabId, `P.lockAt(document, ${x}, ${y})`);
           if (l) return Protect.message(l);
         }
-        if (!points.length && typeof args.ref === "string") {
-          const l = await refLock(deps, tabId, args.ref);
-          if (l && Protect.blocks(l)) return Protect.message(l);
+        if (!points.length && args.ref != null) {
+          // Name it if it is locked, so Claude stops trying; else ask for a coordinate.
+          const l = typeof args.ref === "string" ? await refLock(deps, tabId, args.ref).catch(() => null) : null;
+          return l && Protect.blocks(l) ? Protect.message(l) : REF_CLICK;
         }
         return null;
       }
       if (action === "key" || action === "type") {
         const keys = action === "key" ? String(args.text || "").split(" ").filter(Boolean) : /[\r\n]/.test(String(args.text || "")) ? ["Enter"] : [];
-        const act = keys.filter((k) => Protect.isActivationKey(k));
+        // A control character in a key name ("\r") may be sent as Enter.
+        const act = keys.map((k) => (/[\u0000-\u001f\u007f]/.test(k) ? "Enter" : k)).filter((k) => Protect.isActivationKey(k));
         if (!act.length) return null;
         if (!Number.isFinite(tabId)) return UNCHECKED;
         for (const k of act) {
@@ -166,9 +177,14 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
     }
     if (tool === "form_input") {
       if (typeof args.ref !== "string" || !Number.isFinite(tabId)) return UNCHECKED;
-      const l = await refLock(deps, tabId, args.ref);
+      const seen: { role?: string } = {};
+      const l = await refLock(deps, tabId, args.ref, seen);
       // Unchecking an opt-in is fine; anything else on a locked control is not.
       if (l && !(l.optin && falsy(args.value))) return Protect.message(l);
+      // A dropdown is uncheck-only too: never choose an opt-in option.
+      const value = String(args.value ?? "");
+      const opt = /^(combobox|listbox|select)$/i.test(seen.role || "") ? Protect.classifyLabel(value, { checkable: true }) : null;
+      if (opt) return `Locked: '${value.slice(0, 60)}' turns on a subscription, saved card, account or one-tap payment. Only the user can choose it.`;
       return null;
     }
     return null;

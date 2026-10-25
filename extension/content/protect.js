@@ -190,6 +190,38 @@
       r === "menuitemcheckbox" || r === "menuitemradio" || r === "tab" || r === "option";
   }
 
+  var REAL_CONTROLS = "a[href],button,summary,input,select,textarea,label,[role=button],[role=link],[role=menuitem]," +
+    "[role=checkbox],[role=radio],[role=switch],[role=menuitemcheckbox],[role=menuitemradio],[role=tab],[role=option]";
+
+  // A <div onclick> or a styled <span> with no role: sites build "Place
+  // order" out of these too. It counts when it has an onclick handler, a
+  // tabindex, or a pointer cursor (where the pointer starts, not inherited),
+  // and holds no real control of its own (a wrapper around a checkbox and
+  // its label is not one big button). Only its own text names it. hit: el
+  // is the element under the click, which counts with an inherited pointer
+  // cursor too ("Place order" in a span inside a long clickable card).
+  function isPseudoControl(el, hit) {
+    if (!el || el.nodeType !== 1 || isControl(el)) return false;
+    var tag = el.tagName;
+    if (tag === "HTML" || tag === "BODY" || tag === "LABEL" || FORM_FIELD_TAGS[tag]) return false;
+    if (el.querySelector && el.querySelector(REAL_CONTROLS)) return false;
+    // Inside a real control or a <label>, that control decides.
+    var up = el.parentElement;
+    if (up && up.closest && up.closest(REAL_CONTROLS)) return false;
+    if (el.hasAttribute("onclick") || typeof el.onclick === "function") return true;
+    if (el.hasAttribute("tabindex") && Number(el.getAttribute("tabindex")) >= 0) return true;
+    var view = el.ownerDocument && el.ownerDocument.defaultView;
+    if (!view || typeof view.getComputedStyle !== "function") return false;
+    try {
+      if (view.getComputedStyle(el).cursor !== "pointer") return false;
+      if (hit) return true;
+      var p = parentOf(el);
+      return !p || p.nodeType !== 1 || view.getComputedStyle(p).cursor !== "pointer";
+    } catch (_) { return false; }
+  }
+
+  var FORM_FIELD_TAGS = { INPUT: 1, SELECT: 1, TEXTAREA: 1, OPTION: 1, FORM: 1, IFRAME: 1, IMG: 1 };
+
   // What a person (or screen reader) would call the control.
   function labelOf(el) {
     var s;
@@ -254,18 +286,21 @@
     return s.length > 60 ? s.slice(0, 59) + "…" : s;
   }
 
-  // Lock of one element, or null. { kind, label, optin, checked }.
-  function lockOf(el) {
+  // Lock of one element, or null. { kind, label, optin, checked }. hit: el
+  // is the element under the pointer (see isPseudoControl).
+  function lockOf(el, hit) {
     if (!el || el.nodeType !== 1) return null;
     var marked = el.closest ? el.closest("[data-clearcart-protected]") : null;
     var control = isControl(el);
+    var pseudo = !control && isPseudoControl(el, !!hit);
+    if (pseudo) control = true;
     if (!control && !marked) return null;
     var label = control ? labelOf(el) : labelOf(marked);
     var checkable = control && isCheckable(el);
     var checked = checkable && checkedOf(el);
     if (marked) return { kind: "marked", label: clip(label || "this control"), optin: checkable, checked: checked };
     var kind = classifyLabel(label, { checkable: checkable });
-    if (!kind && !checkable) {
+    if (!kind && !checkable && !pseudo) {
       var idk = classifyLabel(idWords(el), { checkable: false });
       // Ids only count for commit and money words; an id like "login-help"
       // or "account-menu" is too loose to lock on.
@@ -292,7 +327,7 @@
   // "Buy now" link activates the link). A <label> stands for its control.
   function lockInChain(el) {
     for (var n = el; n && n.nodeType === 1; n = parentOf(n)) {
-      var l = lockOf(n);
+      var l = lockOf(n, n === el);
       if (l && blocks(l)) return l;
       if (l) return null; // an uncheck-only box that is on: the click turns it off
       if (n.tagName === "LABEL" && n.control) {
@@ -311,18 +346,56 @@
     try { return el.contentDocument || null; } catch (_) { return null; }
   }
 
-  // Blocking lock under viewport point (x, y), or null. Descends open shadow
-  // roots and same-origin frames; a cross-origin frame (hosted payment
-  // fields, wallet buttons) cannot be inspected, so it is locked.
+  var SHADOW_LOCK = { kind: "shadow", label: "hidden component", optin: false, checked: false };
+  // Hosts that may hold a closed shadow root: custom elements, and empty
+  // boxes whose content must come from somewhere.
+  var NO_SHADOW_TAGS = { IMG: 1, INPUT: 1, SELECT: 1, TEXTAREA: 1, BUTTON: 1, A: 1, IFRAME: 1, FRAME: 1, OBJECT: 1, EMBED: 1,
+    VIDEO: 1, AUDIO: 1, CANVAS: 1, SVG: 1, svg: 1, BR: 1, HR: 1, HTML: 1, BODY: 1, OPTION: 1, LABEL: 1 };
+
+  function closedRootApi() {
+    try {
+      var c = root.chrome || (typeof chrome !== "undefined" ? chrome : null); // eslint-disable-line no-undef
+      var f = c && c.dom && c.dom.openOrClosedShadowRoot;
+      return typeof f === "function" ? function (el) { try { return f.call(c.dom, el) || null; } catch (_) { return null; } } : null;
+    } catch (_) { return null; }
+  }
+
+  function mayHostShadow(el) {
+    if (NO_SHADOW_TAGS[el.tagName]) return false;
+    if (el.tagName.indexOf("-") !== -1) return true;
+    return !el.firstElementChild && !squash(el.textContent);
+  }
+
+  // The shadow root of el, open or closed. The content script reads closed
+  // roots through chrome.dom.openOrClosedShadowRoot; where that API is
+  // missing (the page main world on the Open Claude in Chrome path), an
+  // element that may host a closed root returns SHADOW_UNKNOWN so the
+  // caller fails closed.
+  var SHADOW_UNKNOWN = {};
+  function shadowOf(el) {
+    if (el.shadowRoot) return el.shadowRoot;
+    var api = closedRootApi();
+    if (api) return api(el);
+    return mayHostShadow(el) ? SHADOW_UNKNOWN : null;
+  }
+
+  // Blocking lock under viewport point (x, y), or null. Descends open and
+  // closed shadow roots and same-origin frames; a cross-origin frame (hosted
+  // payment fields, wallet buttons) or a shadow root it cannot read is
+  // locked.
   function lockAt(doc, x, y) {
     if (!doc || typeof doc.elementFromPoint !== "function") return null;
     var el = doc.elementFromPoint(x, y);
     var guard = 0;
-    while (el && el.shadowRoot && typeof el.shadowRoot.elementFromPoint === "function" && guard++ < 20) {
-      var inner = el.shadowRoot.elementFromPoint(x, y);
+    while (el && guard++ < 20) {
+      var sr = shadowOf(el);
+      if (sr === SHADOW_UNKNOWN) return lockInChain(el) || SHADOW_LOCK;
+      if (!sr || typeof sr.elementFromPoint !== "function") break;
+      var inner = sr.elementFromPoint(x, y);
       if (!inner || inner === el) break;
       el = inner;
     }
+    if (guard > 20) return SHADOW_LOCK;
     if (!el) return null;
     if (FRAME_TAGS[el.tagName]) {
       var sub = frameDoc(el);
@@ -333,10 +406,17 @@
     return lockInChain(el);
   }
 
+  // The focused element, through open and closed shadow roots, or
+  // SHADOW_UNKNOWN when focus sits on a host whose root cannot be read.
   function deepActive(doc) {
     var el = doc.activeElement;
     var guard = 0;
-    while (el && el.shadowRoot && el.shadowRoot.activeElement && guard++ < 20) el = el.shadowRoot.activeElement;
+    while (el && guard++ < 20) {
+      var sr = shadowOf(el);
+      if (sr === SHADOW_UNKNOWN) return SHADOW_UNKNOWN;
+      if (!sr || !sr.activeElement) break;
+      el = sr.activeElement;
+    }
     return el;
   }
 
@@ -364,6 +444,7 @@
     var enter = ENTER.test(k);
     if (!enter && !SPACE.test(k)) return null;
     var el = doc && deepActive(doc);
+    if (el === SHADOW_UNKNOWN) return SHADOW_LOCK;
     if (!el || el === doc.body || el === doc.documentElement) return null;
     if (FRAME_TAGS[el.tagName]) {
       var sub = frameDoc(el);
@@ -374,19 +455,34 @@
     if (enter && el.form && (el.tagName === "INPUT" || el.tagName === "SELECT")) {
       var t = inputType(el);
       if (t === "submit" || t === "button" || t === "reset" || t === "image") return null;
-      var fk = formKind(el.form);
-      if (fk) return { kind: fk, label: clip(formLabel(el.form) || "this form"), optin: false, checked: false };
-      var subs = submitsOf(el.form);
-      for (var i = 0; i < subs.length; i++) {
-        var l = lockOf(subs[i]);
-        if (l && blocks(l)) return l;
-      }
+      return lockForSubmit(el.form);
     }
     return null;
   }
 
+  // Blocking lock for submitting form without a pressed button (Enter in a
+  // field, implicit submission): locked when the form holds payment or
+  // password fields, or when any of its submit buttons, inside the form or
+  // tied to it with form="id", would be locked.
+  function lockForSubmit(form) {
+    if (!form) return null;
+    var fk = formKind(form);
+    if (fk) return { kind: fk, label: clip(formLabel(form) || "this form"), optin: false, checked: false };
+    var subs = submitsOf(form);
+    for (var i = 0; i < subs.length; i++) {
+      var l = lockOf(subs[i]);
+      if (l && blocks(l)) return l;
+    }
+    return null;
+  }
+
+  // Submit buttons of form in tree order, including those outside it with
+  // form="id" (form.elements has both).
   function submitsOf(form) {
-    return Array.prototype.filter.call(form.querySelectorAll("button,input[type=submit],input[type=image]"), isSubmit);
+    var els = form.elements || form.querySelectorAll("button,input");
+    return Array.prototype.filter.call(els, function (e) {
+      return (e.tagName === "BUTTON" || e.tagName === "INPUT") && isSubmit(e);
+    });
   }
 
   function formLabel(form) {
@@ -400,6 +496,8 @@
     switch (lock && lock.kind) {
       case "frame":
         return "Locked: that point is inside an embedded frame, often a payment widget, that Clearcart cannot inspect. The AI may not click inside it.";
+      case "shadow":
+        return "Locked: that point is inside a hidden page component that Clearcart cannot inspect. The AI may not click or press keys inside it.";
       case "account":
         return "Locked: " + name + " signs in or creates an account. Clearcart never logs in or creates accounts.";
       case "express":
@@ -417,7 +515,7 @@
   // Capped so a huge page cannot stall the content script.
   var CANDIDATES = "a[href],button,summary,input[type=submit],input[type=button],input[type=image],input[type=checkbox]," +
     "input[type=radio],[role=button],[role=link],[role=menuitem],[role=checkbox],[role=radio],[role=switch]," +
-    "[role=tab],[role=option],[data-clearcart-protected]";
+    "[role=tab],[role=option],[onclick],[tabindex],[data-clearcart-protected]";
 
   function listLocks(doc, max) {
     var out = [];
@@ -630,6 +728,7 @@
     lockInChain: lockInChain,
     lockAt: lockAt,
     lockForKey: lockForKey,
+    lockForSubmit: lockForSubmit,
     isActivationKey: isActivationKey,
     pressable: function (lock) { return !!lock && !lock.optin && !!PRESSABLE[lock.kind]; },
     message: message,

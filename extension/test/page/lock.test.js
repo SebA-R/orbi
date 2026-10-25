@@ -133,3 +133,30 @@ test("page calls fail closed without protect.js", async () => {
   assert.equal(r.ok, false);
   assert.match(r.error.message, /protect\.js was not injected/);
 });
+
+// Security review: a dropdown is uncheck-only too. Switching to
+// "Subscribe and save" was not checked at all.
+test("form_input on a select may move away from an opt-in option, never onto one", async () => {
+  const p = loadPage(`<form><label>Delivery <select id="plan" name="plan">
+      <option value="once" selected>One-time purchase</option>
+      <option value="sns">Subscribe and save 15%</option>
+      <option value="x" label="Start free trial">Trial</option>
+      <option value="2">2 items</option>
+    </select></label></form>`);
+  const ref = refIn(lineOf((await p.call("read_page", { filter: "all" })).result.tree, /combobox/));
+  const sel = p.document.getElementById("plan");
+  for (const value of ["sns", "Subscribe and save 15%", "x", "Trial"]) {
+    const r = await p.call("form_input", { ref, value });
+    assert.equal(r.ok, false, value);
+    assert.equal(r.error.code, "locked");
+    assert.match(r.error.message, /^Locked: '.+' turns on a subscription/);
+    assert.equal(sel.value, "once");
+  }
+  assert.equal((await p.call("form_input", { ref, value: "2" })).ok, true);
+  assert.equal(sel.value, "2");
+  // Already on the opt-in (the page preselected it): moving away is fine.
+  sel.value = "sns";
+  assert.equal((await p.call("form_input", { ref, value: "sns" })).ok, true, "keeping the current choice changes nothing");
+  assert.equal((await p.call("form_input", { ref, value: "once" })).ok, true);
+  assert.equal(sel.value, "once");
+});
