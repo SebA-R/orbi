@@ -190,3 +190,24 @@ test("blocklist: the extension's BridgeClient sends it on connect", async () => 
     await b.stop();
   }
 });
+
+test("settings: guidedMode from the current socket is kept; non-booleans are ignored", async () => {
+  const b = await startBridge();
+  try {
+    assert.equal(b.bridge.guidedMode(), null);
+    const ext = new FakeExt(b.url);
+    await ext.open();
+    ext.ws.send(JSON.stringify({ type: proto.MSG.SETTINGS, guidedMode: "no" }));
+    await ext.ping();
+    assert.equal(b.bridge.guidedMode(), null, "a string is not a setting");
+    const got = onceEvent(b.bridge, "settings");
+    ext.ws.send(JSON.stringify({ type: proto.MSG.SETTINGS, guidedMode: false }));
+    assert.deepEqual(await got, { guidedMode: false });
+    assert.equal(b.bridge.guidedMode(), false);
+    ext.close();
+    await onceEvent(b.bridge, "disconnect");
+    assert.equal(b.bridge.guidedMode(), false, "kept across a disconnect");
+  } finally {
+    await b.stop();
+  }
+});

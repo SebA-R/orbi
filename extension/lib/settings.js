@@ -31,6 +31,9 @@ export const DEFAULTS = Object.freeze({
   quietTabs: true,
   // Bring the user to the tab Clearcart acts on (background/follow.js).
   followTab: true,
+  // Guided mode: the agent describes each page and lets the user choose.
+  // Off, it picks and acts on its own (agent/prompt.ts GUIDED_PROMPT).
+  guidedMode: true,
   // Danger mode: Clearcart presses sign in and sign up without asking
   // (content/protect.js says what it lifts). Off unless the user turns it
   // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
@@ -85,6 +88,7 @@ export function normalize(raw = {}) {
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
   if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
+  if (typeof raw.guidedMode === "boolean") out.guidedMode = raw.guidedMode;
   // Only a stored true turns it on.
   out.dangerMode = raw.dangerMode === true;
   return out;
