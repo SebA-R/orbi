@@ -27,6 +27,8 @@ export const MSG = Object.freeze({
   PING: "ping",
   PONG: "pong",
   BLOCKLIST: "blocklist",
+  // { type: "settings", guidedMode }: agent behavior settings, worker to agent.
+  SETTINGS: "settings",
   DANGER_MODE: "danger_mode",
 });
 
@@ -117,7 +119,6 @@ export const RT = Object.freeze({
   VOICE_ERROR: "voice.error",
   TTS_SPEAK: "tts.speak",
   TTS_STOP: "tts.stop",
-  CHIME: "chime",
   SUBTITLE: "subtitle",
   FRAME: "frame",
   SETTINGS_CHANGED: "settings.changed",

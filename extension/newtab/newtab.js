@@ -48,11 +48,24 @@ function start() {
     thinking: () => ["Thinking", "Working on your request."],
     speaking: (k) => ["Speaking", `Hold ${k} to interrupt${k === "Space" ? ", or tap it twice to stop" : ""}.`],
   };
+  // The popup's mini orb face beside the name. Decorative: the heading says the state.
+  let face = null;
+  const FACE = globalThis.__clearcartOrbFace;
+  if (FACE) {
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(FACE.CSS);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      face = FACE.create(document);
+      $("mini-orb").append(face.el);
+    } catch {}
+  }
   const show = (next = state) => {
     if (!Object.hasOwn(TEXT, next)) return;
     state = next;
     const [title, sub] = TEXT[state](keyName(hotkey));
     $("orb").dataset.state = state;
+    face?.setState(state);
     if ($("voice-title").textContent !== title) $("voice-title").textContent = title;
     if ($("voice-sub").textContent !== sub) $("voice-sub").textContent = sub;
   };

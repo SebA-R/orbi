@@ -47,7 +47,7 @@ before(async () => {
   extDir = fs.mkdtempSync(path.join(os.tmpdir(), "clearcart-subs-ext-"));
   fs.cpSync(EXT_SRC, extDir, { recursive: true, filter: (p) => !p.includes(`${path.sep}test${path.sep}`) && !p.endsWith(`${path.sep}test`) });
   const manifest = JSON.parse(fs.readFileSync(path.join(extDir, "manifest.json"), "utf8"));
-  manifest.content_scripts = [{ matches: ["<all_urls>"], js: ["content/subtitles.js"], run_at: "document_idle", all_frames: false }];
+  manifest.content_scripts = [{ matches: ["<all_urls>"], js: ["content/orb-face.js", "content/subtitles.js"], run_at: "document_idle", all_frames: false }];
   fs.writeFileSync(path.join(extDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 
   userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "clearcart-subs-profile-"));

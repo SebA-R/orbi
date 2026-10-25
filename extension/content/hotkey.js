@@ -2,7 +2,7 @@
 //
 // The default is plain Space. Touching it starts recording at once, silently
 // (PTT_START {silent: true}), so the first word is never lost. If it is still
-// down after CONFIRM_MS it is a hold: PTT_CONFIRM makes the chime and the
+// down after CONFIRM_MS it is a hold: PTT_CONFIRM makes the listen sound and the
 // listening state appear, and the audio from the first moment is kept.
 // Letting go before that is a tap: PTT_CANCEL throws the audio away and the
 // tap does what Space normally does (press the focused button, or scroll).
@@ -19,7 +19,7 @@
 //
 // Double-tap Space while Clearcart is speaking: the first tap ducks the speech
 // (silent start) and, instead of bringing it back, waits DOUBLE_TAP_MS for a
-// second tap, which sends PTT_HUSH (hard stop plus a boop). A second press
+// second tap, which sends PTT_HUSH (hard stop plus the cut-off sound). A second press
 // that is held instead barges in as usual. Both taps are consumed. When not
 // speaking, taps behave exactly as before.
 //

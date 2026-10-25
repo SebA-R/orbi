@@ -67,6 +67,7 @@
         "<all_urls>"
       ],
       "js": [
+        "content/orb-face.js",
         "content/subtitles.js"
       ],
       "run_at": "document_idle",
