@@ -20,6 +20,7 @@ export const ACT_METHODS = new Set([
   "type",
   "key",
   "scroll",
+  "dismiss_overlay",
   "form_input",
   "click_ref",
   "press_protected",

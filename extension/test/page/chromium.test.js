@@ -40,7 +40,7 @@ test("checkout: fill_payment, masked read_page, rect hits #place-order", async (
   });
   const { page, call } = await open("/checkout");
   const fill = await call("fill_payment", { card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/29", csc: "737" }, address: "1 Main St" });
-  assert.deepEqual(fill, { ok: true, result: { ok: true, last4: "1111" } });
+  assert.deepEqual({ ok: fill.ok, result: fill.result }, { ok: true, result: { ok: true, last4: "1111" } });
   const tree = (await call("read_page", { filter: "all" })).result.tree;
   for (const s of ["4111111111111111", "Ada Lovelace", "12/29", "737"]) assert.ok(!tree.includes(s), "leaked " + s);
   const ref = (await call("find", { query: "place order" })).result.matches[0].ref;
@@ -195,4 +195,75 @@ test("a lock badge at the right edge stays in the viewport and adds no scroll wi
   assert.ok(after.right <= 1440, `badge right ${after.right}`);
   assert.deepEqual([after.pos, after.overflow], ["fixed", "hidden"]);
   await page.close();
+});
+
+const POPUP = (inner, { close = '<button aria-label="Close" class="x">×</button>' } = {}) => `<body style="overflow:hidden">
+  <h1>Wool sweater</h1><button id="add">Add to bag</button><div style="height:3000px"></div>
+  <div id="wrap" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10">
+    <div id="dlg" role="dialog" aria-modal="true" aria-labelledby="t" style="position:absolute;left:400px;top:200px;width:500px;height:300px;background:#fff">
+      ${close}<h2 id="t">Get 10% off your first order</h2>${inner}
+    </div>
+  </div>
+  <script>document.getElementById("wrap").addEventListener("click", (e) => { if (e.target.id === "wrap") window.backdropClicked = true; });</script></body>`;
+
+async function openPopup(html) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto("about:blank");
+  await page.setContent(html);
+  for (const f of ["mask.js", "protect.js", "page.js"]) await page.addScriptTag({ path: file("../../content/" + f) });
+  const call = (method, params = {}) => page.evaluate(([m, p]) => globalThis.__clearcartPage.handle({ method: m, params: p }), [method, params]);
+  return { page, call };
+}
+
+test("dismiss_overlay page helpers: a sign-up pop-up's close button and backdrop are found, and hiding it frees the page", async () => {
+  const { page, call } = await openPopup(POPUP('<input type="email" placeholder="Email"><button>Sign up</button><button>No thanks</button>'));
+  const f = (await call("overlay_find")).result;
+  assert.equal(f.found, true);
+  assert.equal(f.name, "Get 10% off your first order");
+  assert.ok(!f.sensitive, f.sensitive);
+  assert.ok(f.closeRef, "close button found");
+  assert.equal(await page.evaluate((ref) => [...document.querySelectorAll("button")].find((b) => globalThis.__clearcartPage.refFor(b) === ref)?.getAttribute("aria-label"), f.closeRef), "Close");
+  assert.ok(f.backdrop, "a backdrop point");
+  await page.mouse.click(f.backdrop.x, f.backdrop.y);
+  assert.equal(await page.evaluate(() => window.backdropClicked), true, "the point lands on the backdrop");
+
+  const h = (await call("overlay_hide", { ref: f.ref })).result;
+  assert.equal(h.hidden, true);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("wrap")).display), "none");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.body).overflow), "auto");
+  assert.deepEqual((await call("overlay_find")).result, { found: false });
+  await page.close();
+});
+
+test("dismiss_overlay page helpers: no close button by name falls back to a close-ish class; text 'No thanks' counts too", async () => {
+  const a = await openPopup(POPUP("<p>Join the list</p>", { close: '<div class="modal-close" style="cursor:pointer;width:20px;height:20px"></div>' }));
+  const fa = (await a.call("overlay_find")).result;
+  assert.ok(fa.closeRef);
+  await a.page.close();
+  const b = await openPopup(POPUP("<p>Join the list</p><a href='#' id='nt'>No, thanks</a>", { close: "" }));
+  const fb = (await b.call("overlay_find")).result;
+  assert.equal(await b.page.evaluate((ref) => globalThis.__clearcartPage.refFor(document.getElementById("nt")) === ref, fb.closeRef), true);
+  await b.page.close();
+});
+
+test("dismiss_overlay page helpers: sign-in, payment and cookie dialogs are never hidden", async () => {
+  for (const [inner, heading] of [
+    ['<input type="password" name="pw"><button>Continue</button>', null],
+    ['<input autocomplete="cc-number" name="cardnumber"><button>Save</button>', null],
+    ["<button>Continue</button>", "Sign in to your account"],
+    ["<button>Accept all</button><button>Reject all</button>", "We use cookies"],
+  ]) {
+    let html = POPUP(inner);
+    if (heading) html = html.replace("Get 10% off your first order", heading);
+    const { page, call } = await openPopup(html);
+    const f = (await call("overlay_find")).result;
+    assert.equal(f.found, true);
+    assert.ok(f.sensitive, `${inner} ${heading}`);
+    assert.equal(f.closeRef, undefined);
+    const h = await call("overlay_hide", { ref: f.ref });
+    assert.equal(h.ok, false);
+    assert.equal(h.error.code, "locked");
+    assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById("wrap")).display), "block");
+    await page.close();
+  }
 });
