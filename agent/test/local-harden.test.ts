@@ -182,8 +182,14 @@ test("a Locked click the user asked for is followed by request_unlock at once an
     (r.s as any).state.lastTabId = 7;
     r.s.userText("Click create an account.");
     await until(() => r.spoken().length > 0, "the reply");
-    assert.deepEqual(r.spoken(), ["I opened the create account page."]);
+    // The press the user asked for ends the turn: no more model steps that
+    // could fill in the form it opened.
+    assert.deepEqual(r.spoken(), ["I pressed Create an account."]);
     assert.match(toolMessages(model.requests[1])[0].content, /ref_99 is not a ref on the page\. Call find/);
+    const offered = model.requests[0].tools.map((t: any) => t.function.name);
+    assert.ok(!offered.some((n: string) => n.startsWith("desktop_")), "no desktop tools while Orbi Desktop is not connected");
+    assert.ok(!offered.includes("tabs_close") && !offered.includes("record_purchase"), "fewer tools for a small model");
+    assert.match(model.requests[0].messages[0].content, /^You are Orbi, a voice assistant that works the web/, "the local prompt");
     assert.ok(!br.calls.some((c) => c[0] === "rect" && c[1].ref === "ref_99"), "the made-up ref never reached the page");
     const found = toolMessages(model.requests[2]).at(-1).content;
     assert.ok(found.startsWith(PAGE_OPEN));
@@ -192,7 +198,7 @@ test("a Locked click the user asked for is followed by request_unlock at once an
     assert.ok(pressed, `pressed through the user unlock ${JSON.stringify(model.requests.map((q) => toolMessages(q).map((m: any) => m.content.slice(0, 300))))} ${JSON.stringify(r.statuses())}`);
     assert.equal(pressed![1].ref, "ref_31");
     assert.equal(pressed![1].tabId, 7);
-    assert.match(toolMessages(model.requests[3]).at(-1).content, /^pressed Create an account once/);
+    assert.equal(model.requests.length, 3, "no model step after the press");
     assert.ok(r.statuses().includes('unlocked once: account "Create an account" (user asked)'));
   } finally {
     await r.stop();

@@ -9,6 +9,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { DESKTOP_TOOL_NAMES } from "../desktop/tools.ts";
 import { extBridge } from "../extbridge.ts";
 import { SessionHub, type HubMessage, type HubSession } from "../hub.ts";
 import { envProviderSettings, parseLocalBaseUrl, parseLocalModel } from "../local/config.ts";
@@ -21,7 +22,9 @@ process.env.CLEARCART_BROWSER = "ext";
 process.env.CLEARCART_VOICE = "false";
 const B = "mcp__browser__";
 const C = "mcp__clearcart__";
-const EXT_ALLOWED_SHORT = EXT_ALLOWED.map((t) => t.replace(/^mcp__(browser|clearcart)__/, ""));
+// Orbi Desktop's tools are offered in ext mode too (the plain loop; the
+// local scaffold offers them only while Orbi Desktop is connected).
+const EXT_ALLOWED_SHORT = [...EXT_ALLOWED.map((t) => t.replace(/^mcp__(browser|clearcart)__/, "")), ...DESKTOP_TOOL_NAMES];
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 async function until(ok: () => boolean, what: string, ms = 5_000) {
@@ -146,7 +149,7 @@ test("a tool call loop: the call runs over the bridge, its result goes back, the
     assert.equal(result.tool_call_id, "call_1_0");
     assert.match(result.content, /Mugs on Etsy/);
     assert.ok(r.statuses().includes("navigate https://www.etsy.com/search?q=mug"), "tool status as on the SDK path");
-    assert.ok(r.statuses().some((t) => /^agent ready \(browser: connected, clearcart: connected\)/.test(t)));
+    assert.ok(r.statuses().some((t) => /^agent ready \(browser: connected, clearcart: connected(, desktop: connected)?\)/.test(t)));
     await until(() => (r.s as any).turnsOpen === 0, "the turn closed");
   } finally {
     await r.stop();

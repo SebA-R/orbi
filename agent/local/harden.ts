@@ -154,6 +154,14 @@ export class LoopGuard {
     }
     return false;
   }
+  // A page action that was refused (a made-up ref, a field it may not
+  // fill) did nothing on the page, so it does not count toward the turn's
+  // repeats. The same call over and over still does.
+  undo(c: Call) {
+    const k = key(c);
+    const n = this.acts.get(k);
+    if (n) this.acts.set(k, n - 1);
+  }
 }
 
 // A reply that is the model's reasoning, not something to say to the
@@ -165,12 +173,38 @@ const REASONING: RegExp[] = [
   /\bref_\d+\b|\btab ?id\b|\bjson\b|\bfunction call\b|\btool (call|result)s?\b|\bparameters?\b|\barguments?\b/i,
   /\b(read_page|get_page_text|form_input|tabs_context|tabs_create|request_unlock|request_checkout|pay_with_saved_card|dismiss_overlay)\b/i,
   /^\s*(i (need|will|should|must|am going) to (call|use|invoke|run)|let me (call|use|invoke)|next,? i (will|need))/i,
+  /\b(find|click|navigate|form_input)\s+(with\s+)?(the\s+)?(query|ref|value|url)\b/i,
   /^\s*[{[]/,
   // Asking for what the user only ever types into the page themselves.
   /\b(what|which|tell me|give me|say|share)\b.{0,25}\b(password|passcode|card number|security code|cvv|cvc|pin)\b/i,
 ];
 export function looksLikeReasoning(text: string): boolean {
   return REASONING.some((re) => re.test(text));
+}
+
+// A tool call a small model wrote out as text instead of making it: the
+// JSON form ({"name": "find", "parameters": {...}}) or the prose form the
+// examples read like ('find with query "size"', 'click ref_12',
+// 'form_input ref_3 with value "Sam"'). Only the tools in names; null when
+// none is plain. The call still goes through every gate.
+export function textCall(text: string, names: readonly string[]): Call | null {
+  const has = (n: string) => names.includes(n);
+  const t = String(text ?? "");
+  const json = repairJson(t);
+  if (json && typeof json.name === "string" && has(json.name)) {
+    const args = json.parameters ?? json.arguments ?? {};
+    const parsed = typeof args === "string" ? repairJson(args) : args;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { name: json.name, args: parsed as Record<string, unknown> };
+  }
+  let m = /\bfind\b(?: with(?: (?:the )?query)?| query):? ["“]([^"”\n]{1,60})["”]/i.exec(t);
+  if (m && has("find")) return { name: "find", args: { query: m[1].trim() } };
+  m = /\bform_input\b[^\n]{0,40}?\b(ref_\d+)\b[^\n]{0,30}?["“]([^"”\n]{1,80})["”]/i.exec(t);
+  if (m && has("form_input")) return { name: "form_input", args: { ref: m[1], value: m[2] } };
+  m = /\bclick\b[^\n]{0,30}?\b(ref_\d+)\b/i.exec(t);
+  if (m && has("click")) return { name: "click", args: { ref: m[1] } };
+  m = /\b(read_page|get_page_text)\b/.exec(t);
+  if (m && has(m[1])) return { name: m[1], args: {} };
+  return null;
 }
 
 // A reply that says a page action happened ("I added it to your bag").
@@ -187,5 +221,7 @@ export function speakable(text: string): string {
     .replace(/[*_#`>]+/g, "")
     .replace(/^\s*[-•]\s+/gm, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    // A reply wrapped in quotes, as the prompt's examples are.
+    .replace(/^["“]([^"“”]*)["”]$/, "$1");
 }

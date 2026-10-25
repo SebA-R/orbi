@@ -30,7 +30,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 
 import { chat, detectFlavor, LocalModelError, type ChatMessage, type ContentPart, type Flavor, type ToolCall, type ToolSpec } from "./openai.ts";
-import { argsHelp, claimsAction, coerceArgs, looksLikeReasoning, LoopGuard, pageData, repairJson, speakable, type Call } from "./harden.ts";
+import { argsHelp, claimsAction, coerceArgs, looksLikeReasoning, LoopGuard, PAGE_CLOSE, PAGE_OPEN, pageData, repairJson, speakable, textCall, type Call } from "./harden.ts";
 
 export const MAX_STEPS = 25;
 // A tool result longer than this is cut before it goes to the model;
@@ -288,7 +288,12 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // The user's words this turn (no context block), and the control the
   // last result named as the best match for them.
   private userWords = "";
+  // Every user turn's own words this session, for form values.
+  private userSaid: string[] = [];
   private best: string | null = null;
+  // What this turn's page actions were (runTurn's didNames), so the best
+  // match is never a control already used this turn.
+  private didNames: string[] = [];
   // The page those refs are from (origin and path).
   private pageUrl = "";
   private schemas = new Map<string, Record<string, unknown>>();
@@ -359,6 +364,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           this.learn(text);
           // Only from the user's turn (the context block), never page text.
           this.userWords = text.split(/\n\s*\n/).at(-1)?.trim() ?? "";
+          this.userSaid.push(this.userWords);
           this.best = null;
           const active = /Active tab: tab (\d+), (?!an error page)/.exec(text);
           if (active) this.lastTab = Number(active[1]);
@@ -384,7 +390,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     // claims one when none happened.
     let acted = 0;
     // What those actions were: 'click button "Add to bag"', 'form_input ...'.
-    const didNames: string[] = [];
+    const didNames: string[] = (this.didNames = []);
     // Scaffold: how often the model was told not to stop yet this turn.
     let nudged = 0;
     try {
@@ -428,7 +434,16 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         }
         this.checkPromptSize(reply.promptTokens, messages);
         trace(`model step ${step}: ${JSON.stringify(reply.content).slice(0, 300)} calls=${reply.toolCalls.map((c) => c.function.name).join(",")}`);
-        const calls = reply.toolCalls;
+        let calls = reply.toolCalls;
+        // Scaffold: a tool call written out as text (JSON, or prose like
+        // 'find with query "size"') is made as the call it plainly is,
+        // through every gate; the text is not spoken.
+        const written = sc && !calls.length && step < max ? textCall(reply.content, this.specs.map((x) => x.function.name)) : null;
+        if (written) {
+          this.o.onStatus?.(`local: made the ${written.name} call the model wrote as text`);
+          calls = [{ id: `call_text_${randomUUID().slice(0, 8)}`, type: "function", function: { name: written.name, arguments: JSON.stringify(written.args) } }];
+          reply.content = "";
+        }
         turn.push({ role: "assistant", content: reply.content, ...(calls.length ? { tool_calls: calls } : {}) });
         // A tool call written out as text instead of made is never spoken,
         // and never run: tools only run from real tool calls.
@@ -450,13 +465,13 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           // A best match found but never used: say exactly what to press.
           const bestRef = this.best ? /\[(ref_\d+)\]/.exec(this.best)?.[1] : undefined;
           const bestName = this.best ? /"([^"]*)"/.exec(this.best)?.[1] ?? "" : "";
-          if (said && nudged < MAX_NUDGES && step < max - 1 && bestRef && !/\[locked\]/.test(this.best!) && !didNames.some((d) => sharesWord(d, bestName)) && isRequest(lastWords(turn))) {
+          if (said && nudged < MAX_NUDGES && step < max - 1 && bestRef && !didNames.some((d) => sharesWord(d, bestName)) && isRequest(lastWords(turn))) {
             this.o.onStatus?.(`(not spoken) local reply stopped before using the best match: ${said.slice(0, 120)}`);
             nudged++;
             turn.push({ role: "user", content: `[Orbi note, not from the user] Not spoken: you found ${this.best} but did not open it. Call click with ref ${bestRef} now, then carry on with what the user asked: ${JSON.stringify(lastWords(turn).slice(0, 200))}` });
             continue;
           }
-          if (said && nudged < MAX_NUDGES && step < max - 1 && (givesUp(said) || (announces(said) && !acted)) && isRequest(lastWords(turn))) {
+          if (said && nudged < MAX_NUDGES && step < max - 1 && (givesUp(said) || announces(said)) && isRequest(lastWords(turn))) {
             this.o.onStatus?.(`(not spoken) local reply stopped before the task was done: ${said.slice(0, 120)}`);
             nudged++;
             const options = this.lastFound.length ? ` The last results showed: ${this.lastFound.slice(0, 12).join(", ")}.` : "";
@@ -495,6 +510,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         // A small model that sends several at once guesses the later ones'
         // refs before it has seen what the first returned.
         let ran = 0;
+        // Scaffold: a locked control the user asked to press was pressed:
+        // a plain "click X" ask is done then, and the turn ends.
+        let pressed: string | null = null;
+        const clickAsk = !!sc && /^(please\s+)?(click|press|tap|hit)\b/i.test(this.userWords) && !/\b(and|then)\b/i.test(this.userWords);
         for (const call of calls) {
           let out: Outcome;
           const notBrowser = !(this.resolve(call.function.name)?.full ?? "").startsWith("mcp__browser__");
@@ -505,8 +524,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
             out = { text: "Not run: the same step was repeated too many times, so the turn stopped.", isError: true, images: [] };
           } else {
             out = await this.runTool(call, signal);
+            if (out.isError) loops?.undo(this.callOf(call));
             if (!notBrowser) ran++;
             const full = this.resolve(call.function.name)?.full ?? "";
+            if (clickAsk && !out.isError && /__request_unlock$/.test(full) && /^pressed /.test(out.text)) pressed = String(this.callOf(call).args.label ?? "it");
             if (sc && !out.isError && sc.actionTools.has(full)) {
               acted++;
               const ref = this.callOf(call).args.ref;
@@ -529,6 +550,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
             yield this.assistant([{ type: "tool_use", id, name: t.full, input: next.args }]);
             const fo = await this.runTool(fc, signal);
             if (!fo.isError) {
+              if (clickAsk && /^pressed /.test(fo.text)) pressed = String(next.args.label ?? "it");
               acted++;
               didNames.push(`request_unlock ${String(next.args.label ?? "")}`);
             }
@@ -536,6 +558,13 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
             turn.push({ role: "tool", tool_call_id: id, content: fo.text });
             yield this.toolResult(id, fo);
           }
+        }
+        if (pressed && !looped && !signal.aborted) {
+          const text = `I pressed ${speakable(pressed).slice(0, 60)}.`;
+          turn.push({ role: "assistant", content: text });
+          yield this.assistant([{ type: "text", text }]);
+          yield this.result("success", step);
+          return;
         }
         if (looped) {
           this.o.onStatus?.("local: loop detected, turn stopped");
@@ -577,6 +606,14 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     return { name: full, args: this.o.scaffold ? coerceArgs(raw, this.schemas.get(full)) : raw };
   }
 
+  // Whether value is in the user's own words this session (case and
+  // spacing aside).
+  private saidByUser(value: string): boolean {
+    const norm = (x: string) => x.toLowerCase().replace(/\s+/g, " ").trim();
+    const v = norm(value);
+    return !v || this.userSaid.some((w) => norm(w).includes(v));
+  }
+
   // Scaffold: refs and tab ids in text the model was shown.
   private learn(text: string) {
     for (const m of text.matchAll(/\bref_\d+\b/g)) this.refs.add(m[0]);
@@ -607,6 +644,11 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       const named = typeof args.ref === "string" ? this.refNames.get(args.ref) : undefined;
       if (named && typeof args.label === "string" && args.label.trim() && !sharesWord(named, args.label)) {
         return refuse(`Error: ${args.ref} is ${named}, not "${args.label}". Call find with query "${args.label.slice(0, 40)}" to get the right ref.`);
+      }
+      // A text field gets only what the user said: a small model fills in
+      // names and emails of its own (or the prompt's examples) otherwise.
+      if (/__form_input$/.test(t.full) && typeof args.value === "string" && /^(textbox|searchbox)\b/.test(named ?? "") && !this.saidByUser(args.value)) {
+        return refuse(`Error: "${args.value.slice(0, 40)}" is not something the user said. Fill a field only with the user's own words; leave the others empty and ask the user for them.`);
       }
       if (sc.prepare) {
         let prepared;
@@ -676,11 +718,14 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       const t2 = out.text.replace(/\\"/g, '"');
       const found = [...t2.matchAll(/"ref":"(ref_\d+)","role":"([^"]*)","name":"([^"]{1,60})"(,"locked":true)?/g)].map((m) => `${m[2]} "${m[3]}" [${m[1]}]${m[4] ? " [locked]" : ""}`);
       const listed = [...t2.matchAll(/-?\s*(link|button|combobox|textbox|checkbox)\s+"([^"\n]{1,60})"[^\n\[]*\[(ref_\d+)\]( \[locked\])?/g)].map((m) => `${m[1]} "${m[2]}" [${m[3]}]${m[4] ? " [locked]" : ""}`);
+      // Arrived: the page's title names what the user asked for.
+      const title = /Now on: "([^"\n]*)"/.exec(out.text)?.[1];
+      if (title && arrived(this.userWords, title)) out.text += "\nThis is the page the user asked for. Tell them about it now, or do the next thing they asked for on it (choose options with form_input, then press the button).";
       if (found.length || listed.length) {
         this.lastFound = [...new Set([...found, ...listed])];
         // The control whose name best fits the user's words, said plainly:
         // a small model often finds it and then stops.
-        const best = bestMatch(this.userWords, this.lastFound);
+        const best = bestMatch(this.userWords, this.lastFound.filter((f) => !this.didNames.some((d) => d.includes(f.replace(/ \[ref_\d+\].*$/, "")))));
         this.best = best;
         if (best && !out.text.includes("Best match")) out.text += `\nBest match for what the user asked: ${best}. If that is what they want, use it now.`;
       }
@@ -792,7 +837,9 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     while (this.turns.length > 1 && size() > HISTORY_MAX_CHARS) this.turns.shift();
     const results = this.turns.at(-1)!.filter((m): m is Extract<ChatMessage, { role: "tool" }> => m.role === "tool");
     for (let i = 0; i < results.length - 2 && size() > HISTORY_MAX_CHARS; i++) {
-      if (results[i].content.length > 400) results[i].content = `${results[i].content.slice(0, 400)}\n[Shortened to save space.]`;
+      // Page data keeps its closing marker, so the cut text still reads as page data.
+      const c = results[i].content;
+      if (c.length > 400) results[i].content = `${c.slice(0, 400)}\n[Shortened to save space.]${c.startsWith(PAGE_OPEN) ? `\n${PAGE_CLOSE}` : ""}`;
     }
   }
 
@@ -860,10 +907,21 @@ function bestMatch(userWords: string, found: string[]): string | null {
   return scored[0].f;
 }
 
+// The page title names what the user asked for: it shares two of their
+// words (or their only one).
+function arrived(userWords: string, title: string): boolean {
+  const want = words(userWords);
+  const have = words(title);
+  const n = want.filter((w) => have.some((x) => x === w || x.startsWith(w) || w.startsWith(x))).length;
+  return want.length > 0 && n >= Math.min(2, want.length);
+}
+
 // Whether this turn's actions back what the reply says happened: adding to
 // a bag needs a press of an "add" control, filling in needs a form_input,
 // anything else needs some action.
 function claimBacked(said: string, did: string[]): boolean {
+  // "in size medium", "in black": an option was chosen, so a form_input ran.
+  if (/\b(in (size|colou?r)|in (a |an )?(xx?s|xx?l|small|medium|large|s|m|l))\b/i.test(said) && !did.some((d) => /^form_input\b/.test(d))) return false;
   if (/\b(added|add(ed)? (it|them)|in your (bag|cart))\b/i.test(said)) return did.some((d) => /\badd\b/i.test(d));
   if (/\b(filled|entered|typed)\b/i.test(said)) return did.some((d) => /^(form_input|type)\b/.test(d));
   return did.length > 0;

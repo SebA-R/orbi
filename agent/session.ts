@@ -578,6 +578,8 @@ export class Session {
   // Orbi Desktop was connected when the local session started, so its tools
   // are offered (they stay as they were for the rest of the session).
   private localDesktop = false;
+  // The user's own words this turn, as the local scaffold last saw them.
+  private localWords = "";
 
   // "Danger mode is on." was spoken in this session.
   private dangerSaid = false;
@@ -1776,6 +1778,7 @@ export class Session {
         if (short === "find" && /"matches":\[\]/.test(text)) return "Nothing on this page matches. It may be on another page: call read_page to see this page's links, click the one that leads there, then find again.";
         if (short === "request_unlock" && /^That control is not locked/.test(text)) return "Next: if that ref is the control you meant, click it with that ref.";
         if (!isError) return null;
+        if (/no option matching value/i.test(text)) return "Next: call form_input on the same ref with one of the options listed above, written exactly as shown.";
         if (/not a form field/i.test(text)) return "Next: call read_page to list the form's fields (textbox, combobox) with their refs, then call form_input on each field you have a value for.";
         if (/no_element|not visible|is gone|not found|covered by/i.test(text)) return "Next: call find with a few words of its name to get a fresh ref.";
         if (/not_allowed|blocked/i.test(text) && (short === "navigate" || short === "tabs_create")) return "Next: if the user asked for this site, open it with tabs_create and its full url; if it is blocked, tell the user in one short sentence.";
@@ -1786,29 +1789,38 @@ export class Session {
       follow: (tool, _args, text) => {
         if (!/^mcp__browser__click$/.test(tool) || !/^Locked:/.test(text) || /Never call request_unlock/.test(text)) return null;
         const m = /call request_unlock with ref (ref_\d+) and label '([^']+)'/.exec(text);
-        return m ? { tool: C + "request_unlock", args: { ref: m[1], label: m[2], action: `press ${m[2]}` } } : null;
+        // Only a control the user's words name: request_unlock would ask
+        // them about a press they never asked for otherwise.
+        const said = new Set(this.localWords.toLowerCase().replace(/check ?out/g, "checkout").split(/[^a-z0-9]+/).filter((w) => w.length >= 3));
+        const named = !!m && m[2].toLowerCase().replace(/check ?out/g, "checkout").split(/[^a-z0-9]+/).some((w) => w.length >= 3 && said.has(w));
+        return m && named ? { tool: C + "request_unlock", args: { ref: m[1], label: m[2], action: `press ${m[2]}` } } : null;
       },
-      userTurn: (text) =>
-        text
+      userTurn: (text) => {
+        this.localWords = text.split(/\n\s*\n/).at(-1)?.trim() ?? "";
+        return text
           .split("\n")
           .map((l) => (l.startsWith("[User context") && isInjectionLine(l) ? l.replace(/"(?:[^"\\]|\\.)*"/g, `"${REMOVED_LINE}"`) : l))
-          .join("\n"),
+          .join("\n");
+      },
     };
   }
 
   // The page's controls as 'link "Jackets" [ref_4]' (local scaffold
   // hints), at most 15, from read_page's interactive tree. roles narrows it.
+  // Those named in the user's words come first, then fields and buttons,
+  // then links: a store's header links would fill the list otherwise.
   private async controlsOn(tabId: number | null, roles?: RegExp): Promise<string[]> {
     if (!extMode()) return [];
-    const page = await extBridge.call<{ tree?: string }>("read_page", { ...(tabId != null ? { tabId } : {}), filter: "interactive", maxNodes: 80 }, 10_000).catch(() => null);
-    const out: string[] = [];
+    const page = await extBridge.call<{ tree?: string }>("read_page", { ...(tabId != null ? { tabId } : {}), filter: "interactive", maxNodes: 150 }, 10_000).catch(() => null);
+    const want = new Set(this.localWords.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !/^(the|and|for|with|click|press|please|now|then|this|that|here|into|from|your|you)$/.test(w)));
+    const all: Array<{ line: string; rank: number; i: number }> = [];
     for (const l of String(page?.tree ?? "").split("\n")) {
       const m = /-\s*([a-z]+)\s+"([^"]{1,60})"[^\[]*\[(ref_\d+)\]/.exec(l);
       if (!m || (roles && !roles.test(m[1]))) continue;
-      out.push(`${m[1]} "${m[2]}" [${m[3]}]${/\[locked\]/.test(l) ? " [locked]" : ""}`);
-      if (out.length >= 15) break;
+      const named = m[2].toLowerCase().split(/[^a-z0-9]+/).some((w) => w.length >= 3 && [...want].some((x) => w.startsWith(x) || x.startsWith(w)));
+      all.push({ line: `${m[1]} "${m[2]}" [${m[3]}]${/\[locked\]/.test(l) ? " [locked]" : ""}`, rank: named ? 0 : m[1] === "link" ? 2 : 1, i: all.length });
     }
-    return out;
+    return all.sort((a, b) => a.rank - b.rank || a.i - b.i).slice(0, 15).map((x) => x.line);
   }
 
   // The ref of the locked control on the tab whose name is label, from the

@@ -462,7 +462,14 @@
       var loose = function (t) { return clean(t).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); };
       var hit = opts.find(function (o) { return o.value === s; }) ||
         opts.find(function (o) { return clean(o.textContent).toLowerCase() === s.trim().toLowerCase(); }) ||
-        opts.find(function (o) { return loose(o.textContent) === loose(s) && loose(s) !== ""; });
+        opts.find(function (o) { return loose(o.textContent) === loose(s) && loose(s) !== ""; }) ||
+        // "Medium" picks "M (Medium)", when only one option has it as words.
+        (function () {
+          var w = " " + loose(s) + " ";
+          if (w.trim() === "") return null;
+          var hits = opts.filter(function (o) { return (" " + loose(o.textContent) + " ").indexOf(w) >= 0; });
+          return hits.length === 1 ? hits[0] : null;
+        })();
       if (!hit) {
         var names = opts.slice(0, 15).map(function (o) { return clean(Mask.maskValue(o.textContent, null), 40); }).filter(Boolean);
         throw PageError(ERR.BAD_REQUEST, "no option matching value" + (names.length ? ". The options are: " + names.join(", ") : ""));
