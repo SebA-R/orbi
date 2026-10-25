@@ -133,9 +133,16 @@ export function createRouter({
     }
   }
 
-  // Fails closed: any error from the page check stops the input.
-  async function guard(tabId, method, params) {
-    await pageCall(tabId, method, params);
+  // Clicks the centre of rect r with CDP, or asks the page to .click() the
+  // ref (domMethod) when CDP can't attach.
+  async function clickCentre(tabId, r, ref, domMethod) {
+    try {
+      await cdp.click({ tabId, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
+      return { ok: true, via: "cdp" };
+    } catch {
+      await pageCall(tabId, domMethod, { ref });
+      return { ok: true, via: "dom" };
+    }
   }
 
   async function clickAt(tabId, params) {
@@ -144,15 +151,9 @@ export function createRouter({
       // answers its rect like "rect" does.
       const r = await pageCall(tabId, "guard_ref", { ref: params.ref });
       if (!r || !(r.width > 0) || !(r.height > 0)) throw new BridgeError(ERR.NO_ELEMENT, `${params.ref} is not visible`);
-      try {
-        await cdp.click({ tabId, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
-        return { ok: true, via: "cdp" };
-      } catch {
-        await pageCall(tabId, "click_ref", { ref: params.ref });
-        return { ok: true, via: "dom" };
-      }
+      return clickCentre(tabId, r, params.ref, "click_ref");
     }
-    await guard(tabId, "guard_point", { x: params.x, y: params.y });
+    await pageCall(tabId, "guard_point", { x: params.x, y: params.y });
     await cdp.click({ tabId, x: params.x, y: params.y });
     return { ok: true, via: "cdp" };
   }
@@ -185,13 +186,7 @@ export function createRouter({
       throw new BridgeError(ERR.LOCKED, "Locked: the page changed origin after the unlock");
     }
     const r = await pageCall(tabId, "press_check", { ref: params.ref });
-    try {
-      await cdp.click({ tabId, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
-      return { ok: true, via: "cdp" };
-    } catch {
-      await pageCall(tabId, "press_ref", { ref: params.ref });
-      return { ok: true, via: "dom" };
-    }
+    return clickCentre(tabId, r, params.ref, "press_ref");
   }
 
   async function route(method, params = {}) {
@@ -213,13 +208,13 @@ export function createRouter({
       case "type":
         await guardType(tabId, params.text);
         // A typed newline can submit the focused field's form.
-        if (/[\r\n]/.test(String(params.text ?? ""))) await guard(tabId, "guard_key", { key: "Enter" });
+        if (/[\r\n]/.test(String(params.text ?? ""))) await pageCall(tabId, "guard_key", { key: "Enter" });
         await cdp.type({ tabId, text: params.text });
         return { ok: true };
       case "key":
         // A single printable key is typing too.
         if (typeof params.key === "string" && params.key.length === 1) await guardType(tabId, params.key);
-        if (isActivationKey(params.key)) await guard(tabId, "guard_key", { key: params.key });
+        if (isActivationKey(params.key)) await pageCall(tabId, "guard_key", { key: params.key });
         await cdp.key({ tabId, key: params.key });
         return { ok: true };
       case "lock_arm":
