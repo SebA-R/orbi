@@ -415,6 +415,17 @@
       var hit = opts.find(function (o) { return o.value === s; }) ||
         opts.find(function (o) { return clean(o.textContent).toLowerCase() === s.trim().toLowerCase(); });
       if (!hit) throw PageError(ERR.BAD_REQUEST, "no option matching value");
+      // Uncheck-only, for a dropdown: the AI may move the choice away from
+      // an opt-in option ("Subscribe and save"), never onto one.
+      if (!hit.selected) {
+        var optKind = Protect.classifyLabel(clean(hit.textContent), { checkable: true }) ||
+          Protect.classifyLabel(clean(hit.label), { checkable: true }) ||
+          Protect.classifyLabel(clean(hit.value).replace(/[-_]+/g, " "), { checkable: true });
+        if (optKind) {
+          throw PageError(ERR.LOCKED, "Locked: '" + Mask.maskCardRuns(clean(hit.label || hit.textContent)).replace(/'/g, "\u2019").slice(0, 60) +
+            "' turns on a subscription, saved card, account or one-tap payment. The AI may choose another option, but only the user can choose this one.");
+        }
+      }
       nativeSet(el, hit.value);
       fire(el);
       return { ok: true };
