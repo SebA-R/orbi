@@ -1,6 +1,6 @@
 /* Design variants for the voice console, picked with ?look=<name> (see looks.html).
    Each look only restyles the shared markup; behavior, labels and live regions are identical.
-   The default look ("canvas") is console.css on its own. --level (0..1) is set on <body> by app.js. */
+   The default look ("canvas") is console.css on its own. --level (0..1) is set on the orb by app.js (on <body> for ambient). */
 
 /* Parts only the canvas look uses. */
 [data-look] .orb-ripple,

@@ -1,7 +1,7 @@
 /* Clearcart voice console, "canvas" look (the default).
    Desktop: the orb and its status on the left, the conversation, read-back, receipt and trust card on
    the right. Phones: one column. The orb and edge glow are decorative; state is always also given in
-   text. Motion uses only transform, opacity and filter. --level (0..1) is set on <body> by app.js. */
+   text. Motion uses only transform, opacity and filter. --level (0..1) is set on the orb by app.js. */
 
 :root {
   --bg: #f5f5f7;

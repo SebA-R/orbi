@@ -335,6 +335,9 @@ function put(el, prop, value) {
   if (prop === '--level') el.style.setProperty(prop, value);
   else el.style[prop] = value;
 }
+// --level lives on the orb: writing a custom property inline on <body> makes Chrome lay out the whole
+// page every frame. The ambient look glows from body::before, so it alone keeps it on <body>.
+const levelHost = document.documentElement.dataset.look === 'ambient' ? document.body : els.orb;
 function frame(now) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
@@ -348,7 +351,7 @@ function frame(now) {
   level += (target - level) * (target > level ? 0.35 : 0.08);
   spin += (SPIN[state] - spin) * 0.04;
   if (level < 0.002) level = 0;
-  put(document.body, '--level', reducedMotion.matches ? '0' : level.toFixed(2));
+  put(levelHost, '--level', reducedMotion.matches ? '0' : level.toFixed(2));
   if (reducedMotion.matches) {
     put(orbParts.aura, 'transform', '');
     put(orbParts.ring, 'transform', '');
