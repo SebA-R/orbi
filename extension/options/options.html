@@ -49,6 +49,11 @@
             <label for="speed">Speaking speed</label>
             <span class="speed"><input id="speed" name="speed" type="range" step="0.1" data-setting="speed"><output id="speed-out" for="speed"></output></span>
           </div>
+          <label class="row" for="guided-mode">
+            <span class="row-text"><span id="guided-mode-label">Guided mode</span>
+              <span class="hint" id="guided-mode-hint">Clearcart describes each page and lets you choose. Turn off to let it pick and act on its own.</span></span>
+            <input id="guided-mode" name="guidedMode" class="sw" type="checkbox" role="switch" data-setting="guidedMode" aria-labelledby="guided-mode-label" aria-describedby="guided-mode-hint">
+          </label>
         </div>
         <p class="foot" id="hotkey-hint">Hold Space to talk. Option+Space keeps listening until you press Space. Double-tap Space to stop Clearcart talking.
           With another key, hold it while you speak and let go to send. A separate toggle shortcut can be set at

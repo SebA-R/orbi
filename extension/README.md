@@ -46,7 +46,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 - Always blocked, fixed in code: `chrome:`, `chrome-extension:`, `about:`, `file:`, `data:`, `javascript:` and other non-web pages, addresses with a login in them, and localhost and private network addresses other than the allowed sites (so the agent console is off limits), in any spelling (`[::ffff:127.0.0.1]`, `[::7f00:1]`, `[fec0::]`, `2130706433`) and under loopback DNS names such as `localtest.me` and `127.0.0.1.nip.io`. Because any name can resolve to this computer, `background/netguard.js` also checks the IP each Clearcart tab's page and frames actually came from (`chrome.webRequest`): a tab served from a loopback or private address on an origin that is not an allowed site is refused for every call, and closed if Clearcart opened it.
 - **Only these sites**: the allowed sites, as before.
 - Either way: blocked tabs stay hidden and refused, and the button lock and the agent server's checkout page block (on every site but the store) stay on, and `lock_arm` only arms on an allowed site, so open browsing never widens the unlock.
-- The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever store you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it.
+- The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever store you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it. Guided mode goes the same way (`{ type: "settings", guidedMode }`).
 
 `chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. It latches like Option+Space: Space sends, and a minute without speech stops it. Don't pick the same keys as the hold key.
 
@@ -63,6 +63,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/context.js` | Declared content script (top frame): remembers the element under the mouse and the last one clicked or focused, for `page_context` |
 | `content/indicator.js` | Injected on each call that touches a tab: the "Clearcart is using this tab" pill |
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP`, Option+Space latch, double-tap Space hush |
+| `content/orb-face.js` | The mini orb face (eyes and a smile) that shows the voice state; loaded before `subtitles.js` and by the popup |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `content/frame.js`, `background/frame.js` | Active-tab frame: a faint rotating spectrum ring around the tab Clearcart is acting on during a turn or within 10 s of an agent call (declared content script, top frame; the worker sends `FRAME {on}`) |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |

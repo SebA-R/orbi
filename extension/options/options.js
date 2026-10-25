@@ -1,5 +1,5 @@
 // Options page, grouped like iOS Settings (see options.html): talk key,
-// speech speed, browse mode and site lists, follow tab, Danger mode,
+// speech speed, Guided mode, browse mode and site lists, follow tab, Danger mode,
 // subtitles, quiet other tabs, setup status, the agent URL and the one-time
 // microphone grant (getUserMedia here, on an extension page, so the
 // offscreen document, same origin, inherits the permission).

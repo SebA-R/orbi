@@ -10,8 +10,9 @@ import { JSDOM } from "jsdom";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = fs.readFileSync(path.join(HERE, "..", "..", "content", "subtitles.js"), "utf8");
+const FACE_SRC = fs.readFileSync(path.join(HERE, "..", "..", "content", "orb-face.js"), "utf8");
 
-function setup({ stored = {} } = {}) {
+function setup({ stored = {}, reduce = false } = {}) {
   const dom = new JSDOM("<!doctype html><html><head></head><body><input id=f></body></html>", {
     runScripts: "outside-only",
     url: "http://localhost:4000/",
@@ -49,6 +50,8 @@ function setup({ stored = {} } = {}) {
     },
   };
 
+  window.matchMedia = (q) => ({ matches: reduce && q.includes("prefers-reduced-motion: reduce"), media: q });
+  window.eval(FACE_SRC); // loaded just before subtitles.js, as in the manifest
   window.eval(SRC);
   const send = (msg) => msgListeners.forEach((f) => f(msg, {}, () => {}));
   const host = () => window.document.querySelector("clearcart-subtitles");
@@ -214,7 +217,7 @@ test("a partial line cancels a pending hide", () => {
   assert.ok(t.visible());
 });
 
-test("state dot follows voice.state; active states keep the card up, idle lets it go", () => {
+test("state orb follows voice.state; active states keep the card up, idle lets it go", () => {
   const t = setup();
   t.send({ type: "voice.state", state: "listening" });
   assert.ok(t.visible());
@@ -313,4 +316,138 @@ test("a latched listening state says how to send, and the hint goes when it ends
   assert.equal(t.$(".hint").textContent, "");
   t.send({ type: "voice.state", state: "listening" });
   assert.equal(t.$(".hint").textContent, "", "a hold shows no hint");
+});
+
+// Mini orb face (content/orb-face.js) in the card.
+const MIN = 60_000;
+const face = (t) => t.$(".card > .ccf");
+const happy = (t) => face(t).classList.contains("ccf-happy");
+
+test("the orb face replaces the dot: decorative, inside the card, eyes and a smile", () => {
+  const t = setup();
+  t.send({ type: "voice.state", state: "listening" });
+  const f = face(t);
+  assert.ok(f, "face mounted in the card");
+  assert.equal(t.$(".dot"), null, "old dot gone");
+  assert.equal(f.getAttribute("aria-hidden"), "true");
+  assert.equal(f.querySelectorAll("circle.ccf-eye").length, 2);
+  assert.equal(f.querySelectorAll("path.ccf-m").length, 1);
+  assert.equal(f.querySelectorAll(".ccf-b, [class*=brow]").length, 0, "no eyebrows");
+  assert.equal(f.textContent, "", "no text: the state is said elsewhere");
+});
+
+test("the orb face gets one state class per voice state", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });
+  for (const state of ["listening", "thinking", "speaking", "idle"]) {
+    t.send({ type: "voice.state", state });
+    const states = [...face(t).classList].filter((c) => c.startsWith("ccf--"));
+    assert.deepEqual(states, [`ccf--${state}`], state);
+    assert.equal(face(t).dataset.state, state);
+  }
+  t.send({ type: "voice.state", state: "dancing" });
+  assert.ok(face(t).classList.contains("ccf--idle"), "unknown states ignored");
+});
+
+// The face on its own (as in the popup, which stays visible), on the same clock.
+const bare = (opts) => {
+  const t = setup(opts);
+  const f = t.window.__clearcartOrbFace.create(t.window.document);
+  return { t, f, happy: () => f.el.classList.contains("ccf-happy") };
+};
+
+test("happy moment fires once, only after 20 minutes of continuous idle, and lasts under 600 ms", () => {
+  const { t, f, happy } = bare();
+  f.setState("speaking");
+  f.setState("idle");
+  t.tick(20 * MIN - 1);
+  assert.equal(happy(), false, "not before 20 minutes");
+  t.tick(1);
+  assert.equal(happy(), true, "plays at 20 minutes");
+  t.tick(499);
+  assert.equal(happy(), true);
+  t.tick(1);
+  assert.equal(happy(), false, "over after 500 ms");
+  t.tick(60 * MIN);
+  assert.equal(happy(), false, "plays once, not again");
+});
+
+test("activity resets the idle clock for the happy moment", () => {
+  const a = bare();
+  a.t.tick(15 * MIN);
+  a.f.poke(); // a caption or other activity
+  a.t.tick(15 * MIN);
+  assert.equal(a.happy(), false, "15 + 15 minutes is not 20 of continuous idle");
+  a.t.tick(5 * MIN);
+  assert.equal(a.happy(), true, "20 minutes after the last activity");
+
+  const b = bare();
+  b.t.tick(19 * MIN);
+  b.f.setState("listening");
+  b.f.setState("idle");
+  b.t.tick(19 * MIN);
+  assert.equal(b.happy(), false, "a state change restarts the clock");
+  b.t.tick(MIN);
+  assert.equal(b.happy(), true);
+
+  const c = bare();
+  c.t.tick(19 * MIN);
+  c.f.setState("thinking");
+  c.t.tick(MIN);
+  assert.equal(c.happy(), false, "cancelled when work starts");
+});
+
+test("never plays the happy moment while listening, thinking or speaking", () => {
+  for (const state of ["listening", "thinking", "speaking"]) {
+    const t = setup();
+    t.send({ type: "voice.state", state });
+    t.tick(60 * MIN);
+    assert.equal(happy(t), false, state);
+  }
+});
+
+test("no happy moment and no live motion under reduced motion", () => {
+  const t = setup({ reduce: true });
+  t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: true });
+  t.send({ type: "voice.state", state: "speaking" });
+  t.send({ type: "voice.level", level: 0.9 });
+  assert.equal(face(t).style.getPropertyValue("--ccf-open"), "", "levels ignored");
+  t.send({ type: "voice.state", state: "idle" });
+  t.tick(60 * MIN);
+  assert.equal(happy(t), false);
+  const lone = bare({ reduce: true });
+  lone.t.tick(60 * MIN);
+  assert.equal(lone.happy(), false, "never, even when visible");
+  const root = t.getShadow();
+  const css = [...root.adoptedStyleSheets || []].flatMap((s) => [...s.cssRules].map((r) => r.cssText)).join("\n")
+    || root.querySelector("style")?.textContent || "";
+  assert.match(css, /prefers-reduced-motion: reduce\)\s*\{[^}]*\.ccf[^{]*\{\s*animation: none !important/);
+});
+
+test("a live level drives the swell and the mouth, then falls back to the loop", () => {
+  const t = setup();
+  t.send({ type: "voice.state", state: "listening" });
+  t.send({ type: "voice.level", level: 1 });
+  assert.ok(face(t).classList.contains("ccf-live"));
+  assert.ok(Number(face(t).style.getPropertyValue("--ccf-swell")) > 1);
+  t.tick(300);
+  assert.equal(face(t).classList.contains("ccf-live"), false, "loop again once levels stop");
+  t.send({ type: "voice.state", state: "speaking" });
+  t.send({ type: "voice.level", level: 0.5 });
+  assert.ok(Number(face(t).style.getPropertyValue("--ccf-open")) > 1, "mouth opens from the smile");
+  t.send({ type: "voice.state", state: "thinking" });
+  assert.equal(face(t).style.getPropertyValue("--ccf-open"), "", "reset on state change");
+  t.send({ type: "voice.level", level: 1 });
+  assert.equal(face(t).classList.contains("ccf-live"), false, "no level motion while thinking");
+});
+
+test("the happy moment does not play while the card is hidden", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
+  t.send({ type: "voice.state", state: "speaking" });
+  t.send({ type: "voice.state", state: "idle" });
+  t.tick(11_000); // the card hides after the reading time
+  assert.equal(t.visible(), false);
+  t.tick(20 * MIN);
+  assert.equal(happy(t), false, "nobody can see it");
 });

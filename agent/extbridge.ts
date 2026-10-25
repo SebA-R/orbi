@@ -66,6 +66,7 @@ export interface ExtBridgeEvents {
   connect: [ExtInfo];
   disconnect: [{ reason: string }];
   blocklist: [readonly BlockEntry[]];
+  settings: [{ guidedMode: boolean }];
   danger_mode: [boolean];
 }
 
@@ -76,6 +77,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   private pending = new Map<string, Pending>();
   private counter = 0;
   private entries: readonly BlockEntry[] | null = null;
+  private guided: boolean | null = null;
   private danger = false;
 
   constructor(private log: (line: string) => void = (l) => console.log(l)) {
@@ -95,6 +97,12 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   // reconnect), or null before the first one arrives.
   blocklist(): readonly BlockEntry[] | null {
     return this.entries;
+  }
+
+  // The user's Guided mode setting as the extension last sent it (kept
+  // across a reconnect), or null before the first one arrives.
+  guidedMode(): boolean | null {
+    return this.guided;
   }
 
   // The user's Danger mode setting as the extension last sent it (false
@@ -216,6 +224,11 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
         this.entries = parseBlockLines(m.lines.slice(0, 5000)).entries;
         this.log(`ext: blocked sites list updated (${this.entries.length} entries)`);
         this.emit("blocklist", this.entries);
+      }
+      if (m.type === "settings" && ws === this.current && typeof m.guidedMode === "boolean") {
+        this.guided = m.guidedMode;
+        this.log(`ext: guided mode ${this.guided ? "on" : "off"}`);
+        this.emit("settings", { guidedMode: m.guidedMode });
       }
       if (m.type === "danger_mode" && ws === this.current) {
         this.danger = m.on === true;
