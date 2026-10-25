@@ -125,6 +125,29 @@
         <p class="foot" id="danger-hint">Danger mode is off by default. It saves as soon as you confirm. Clearcart still never sees or types card numbers or passwords, and blocked sites stay blocked.</p>
       </section>
 
+      <section class="group" id="memory" aria-labelledby="memory-h">
+        <h2 id="memory-h">Memory</h2>
+        <div class="card">
+          <label class="row" for="memory-on">
+            <span class="row-text"><span id="memory-on-label">Remember things about me</span>
+              <span class="hint" id="memory-on-hint">Clearcart keeps what you ask it to remember, like your size or favorite store, and the last two hours of your conversation, on this computer only. It never keeps card numbers, passwords, IDs or bank details.</span></span>
+            <input id="memory-on" name="memory" class="sw" type="checkbox" role="switch" data-setting="memory" aria-labelledby="memory-on-label" aria-describedby="memory-on-hint">
+          </label>
+          <div class="row stack">
+            <h3 class="row-title" id="memory-list-label" tabindex="-1">Saved facts</h3>
+            <p class="hint" id="memory-state" role="status" aria-live="polite"></p>
+            <ul id="memory-list" class="facts" aria-labelledby="memory-list-label"></ul>
+          </div>
+          <div class="row">
+            <span class="row-text"><span>Forget everything</span>
+              <span class="hint">Deletes every saved fact and the recent conversation.</span></span>
+            <button type="button" class="btn" id="memory-forget-all">Forget everything</button>
+          </div>
+          <p id="memory-confirm" class="row confirm" hidden><button type="button" class="btn amber" id="memory-forget-yes">Forget everything now</button> <button type="button" class="btn" id="memory-forget-no">Cancel</button></p>
+        </div>
+        <p class="foot">To save something, tell Clearcart "remember that" and what it is. Ask "What do you remember about me?" to hear what is saved.</p>
+      </section>
+
       <section class="group" id="sound" aria-labelledby="sound-h">
         <h2 id="sound-h">Sounds and subtitles</h2>
         <div class="card">

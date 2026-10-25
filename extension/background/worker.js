@@ -148,9 +148,9 @@ let bridge = null;
 // sites too, so send them on every connect and every change.
 const sendBlocklist = () =>
   loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
-// Guided mode shapes the agent's prompt; sent on connect and on change.
+// Guided mode and Memory shape the agent's prompt; sent on connect and on change.
 const sendAgentSettings = () =>
-  loadSettings().then(({ guidedMode }) => bridge?.send({ type: MSG.SETTINGS, guidedMode })).catch(() => {});
+  loadSettings().then(({ guidedMode, memory }) => bridge?.send({ type: MSG.SETTINGS, guidedMode, memory })).catch(() => {});
 
 // Danger mode too, the same way, so the agent says "Danger mode is on." and
 // tells Claude. The extension enforces the lock itself; this only informs.
@@ -174,7 +174,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.allowlist) loadAllowlist();
   if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
   if (changes.blocklist) sendBlocklist();
-  if (changes.guidedMode) sendAgentSettings();
+  if (changes.guidedMode || changes.memory) sendAgentSettings();
   if (changes.watchablePace) watchablePace = changes.watchablePace.newValue !== false;
   if (changes.dangerMode) {
     // Straight from the change, so the very next page call has it.
