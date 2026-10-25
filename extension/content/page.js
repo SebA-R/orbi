@@ -226,9 +226,10 @@
       var t = (el.type || "").toLowerCase();
       if (t !== "checkbox" && t !== "radio" && t !== "submit" && t !== "button" && t !== "reset" && t !== "image" && t !== "hidden") {
         var v = el.value;
-        if (Mask.isPaymentField(el)) parts.push(v ? 'value="' + Mask.MASK + '"' : "empty");
+        if (Mask.isPaymentField(el) || t === "password") parts.push(v ? 'value="' + Mask.MASK + '"' : "empty");
         else if (v) parts.push('value="' + clean(Mask.maskValue(v, null), 120) + '"');
         if (Mask.isPaymentField(el)) parts.push("payment");
+        else if (t === "password") parts.push("password");
       }
     }
     if (tag === "SELECT") {
@@ -387,9 +388,14 @@
     return /^(true|on|yes|1|checked)$/i.test(String(v).trim());
   }
 
+  function isPassword(el) {
+    return !!el && el.tagName === "INPUT" && String(el.type || "").toLowerCase() === "password";
+  }
+
   function formInput(params) {
     var el = elementFor(params.ref);
     if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; payment is entered only by pay_now");
+    if (isPassword(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a password field; Clearcart never types passwords, the user types it themselves");
     if (!("value" in params)) throw PageError(ERR.BAD_REQUEST, "value is required");
     var value = params.value;
     if (typeof value !== "boolean" && Mask.luhn(String(value))) {
@@ -723,7 +729,7 @@
       return { kind: el.isContentEditable ? "other" : "none", payment: false };
     }
     var k = kindOf(el);
-    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el) };
+    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el) };
   }
 
   // ------------------------------------------------------------ dispatcher

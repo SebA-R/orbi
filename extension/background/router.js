@@ -151,6 +151,9 @@ export function createRouter({
     if (focus && focus.payment) {
       throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a payment field; pay_now fills payment fields");
     }
+    if (focus && focus.password) {
+      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a password field; the user types passwords themselves");
+    }
   }
 
   // Clicks the centre of rect r with CDP, or asks the page to .click() the
