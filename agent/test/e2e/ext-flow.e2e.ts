@@ -49,6 +49,7 @@ let store: ChildProcess | null = null;
 let ctx: any;
 let profile = "";
 let extCopy = "";
+let worker: any;
 let bridge: typeof import("../../extbridge.ts").extBridge;
 let pay: typeof import("../../pay.ts");
 let tools: typeof import("../../exttools.ts");
@@ -147,7 +148,7 @@ before(async () => {
     args: [`--disable-extensions-except=${extCopy}`, `--load-extension=${extCopy}`],
   });
   ctx.on("console", (m: any) => logs.push(`[browser] ${m.text()}`));
-  let [worker] = ctx.serviceWorkers();
+  [worker] = ctx.serviceWorkers();
   if (!worker) worker = await ctx.waitForEvent("serviceworker", { timeout: 15_000 });
   worker.on?.("console", (m: any) => logs.push(`[worker] ${m.text()}`));
   await sleep(300);
@@ -181,6 +182,19 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
     assert.equal((await callErr("navigate", { tabId, url })).code, "not_allowed", url);
   }
   assert.equal(await urlOf(tabId), STORE + "/");
+
+  // The extension seeded the suggested blocked sites and sent them over the
+  // bridge; an edit on its side reaches the agent's guard too.
+  const { SUGGESTED_ENTRIES } = await import("../../blocklist.ts");
+  await waitFor(async () => bridge.blocklist()?.length === SUGGESTED_ENTRIES.length, "the seeded blocklist on the agent");
+  await worker.evaluate(() => chrome.storage.local.set({ blocklist: ["# test", "*cetirizine-shop*", "etsy.com"] }));
+  await waitFor(async () => bridge.blocklist()?.map((e) => e.text).join() === "*cetirizine-shop*,etsy.com", "the edited blocklist on the agent");
+  assert.equal((await callErr("navigate", { tabId, url: "https://www.etsy.com/" })).code, "not_allowed");
+  const { browseDenyReason } = await import("../../session.ts");
+  assert.match(browseDenyReason("https://www.etsy.com/") || "", /etsy\.com/);
+  assert.equal(browseDenyReason("https://mail.google.com/"), null, "the extension's list replaced the suggested one");
+  await worker.evaluate((lines: string[]) => chrome.storage.local.set({ blocklist: lines }), [...(await import("../../blocklist.ts")).SUGGESTED_BLOCKLIST]);
+  await waitFor(async () => bridge.blocklist()?.length === SUGGESTED_ENTRIES.length, "the restored blocklist on the agent");
 
   // Search: click the search box by ref, type, press Enter.
   const page = await call<{ tree: string }>("read_page", { tabId, filter: "interactive" });
