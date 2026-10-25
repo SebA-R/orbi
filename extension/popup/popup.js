@@ -23,7 +23,7 @@ const VOICE = {
     : ["Ready", key === "Space" ? "Hold Space to talk, or Option\u00a0+\u00a0Space in a text field." : `Hold ${key} on any page to talk.`],
   listening: (key) => ["Listening", `Let go of ${key} when you're done.`],
   thinking: () => ["Thinking", "Working on your request."],
-  speaking: () => ["Speaking", "Clearcart is answering."],
+  speaking: (key) => ["Speaking", `Clearcart is answering. Hold ${key} to interrupt.`],
 };
 let voiceState = "idle";
 function showVoice(state = voiceState) {
