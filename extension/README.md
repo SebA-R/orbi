@@ -41,7 +41,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 
 - **Open web** (default): any `http`/`https` page except your blocked sites. The options page's Blocked sites section holds them, one entry per line: `chase.com` (that site and its subdomains), `amazon.com/ap` (pages at or under that path; `amazon.*/ap` for any Amazon store), `*bank*` (any address with that word in its name, not counting the ending), `*.gov` (any address with `gov` as one of its parts). Lines starting with `#` are notes. Bad lines are listed and nothing is saved until they are fixed.
 - On install the list is seeded with a suggested list (`SUGGESTED_BLOCKLIST` in `lib/blocklist.js`), grouped with `#` lines: email, password managers, banks and money (plus `*bank*`, `*creditunion*`), government and tax (`*.gov`, `*.gouv`, `*.mil`), health, and account and sign in pages, Amazon's included. Add or remove anything; **Restore suggested list** puts back the suggested entries and keeps yours under `# Your sites`. It is best effort, not a guarantee.
-- Always blocked, fixed in code: `chrome:`, `chrome-extension:`, `about:`, `file:`, `data:`, `javascript:` and other non-web pages, addresses with a login in them, and localhost and private network addresses other than the allowed sites (so the agent console is off limits).
+- Always blocked, fixed in code: `chrome:`, `chrome-extension:`, `about:`, `file:`, `data:`, `javascript:` and other non-web pages, addresses with a login in them, and localhost and private network addresses other than the allowed sites (so the agent console is off limits), in any spelling (`[::ffff:127.0.0.1]`, `[::7f00:1]`, `[fec0::]`, `2130706433`) and under loopback DNS names such as `localtest.me` and `127.0.0.1.nip.io`. Because any name can resolve to this computer, `background/netguard.js` also checks the IP each Clearcart tab's page and frames actually came from (`chrome.webRequest`): a tab served from a loopback or private address on an origin that is not an allowed site is refused for every call and closed.
 - **Only these sites**: the allowed sites, as before.
 - Either way: the Clearcart tab group restriction, the button lock and the agent server's checkout page block (on every site but the store) stay on, and `lock_arm` only arms on an allowed site, so open browsing never widens the unlock.
 - The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever store you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it.
@@ -52,11 +52,11 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 
 | Path | Contents |
 | --- | --- |
-| `manifest.json` | Manifest V3: `storage`, `tabs`, `tabGroups`, `debugger`, `scripting`, `offscreen`; host `<all_urls>` |
+| `manifest.json` | Manifest V3: `storage`, `tabs`, `tabGroups`, `debugger`, `scripting`, `offscreen`, `webRequest` (read only, for the connected-address check); host `<all_urls>` |
 | `background/worker.js` | Service worker: starts the bridge, routes requests, tab and debugger lifecycle, the voice relay |
 | `background/router.js` | Maps each bridge method to tabs/CDP or the page script, with the card guard on `type`/`key` |
-| `background/tabs.js`, `cdp.js`, `allowlist.js` | The Clearcart tab group, navigation, `chrome.debugger` input and screenshots, the browse mode check |
-| `lib/blocklist.js` | Blocked sites: the entry parser, the fixed rules and the suggested list (the agent server imports it too) |
+| `background/tabs.js`, `cdp.js`, `allowlist.js`, `netguard.js` | The Clearcart tab group, navigation, `chrome.debugger` input and screenshots, the browse mode check, the connected-address check |
+| `lib/blocklist.js` | Blocked sites: the entry parser, the fixed rules (local addresses included) and the suggested list (the agent server imports it too) |
 | `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field`, the button lock classifier, its checks and badges |
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP` |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |

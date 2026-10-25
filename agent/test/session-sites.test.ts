@@ -1,15 +1,18 @@
 // Open web browsing in the session: the navigation guard and the tab sweep
 // (session.ts), and the sites prompt (prompt.ts).
 import assert from "node:assert/strict";
+import dns from "node:dns";
 import { test } from "node:test";
 
 import { parseBlockLines } from "../blocklist.ts";
 import { extBridge } from "../extbridge.ts";
 import { STORE_ORIGIN, type SitePolicy } from "../origins.ts";
 import { sitesPrompt } from "../prompt.ts";
-import { browseDenyReason, returnStrays, Session, sweepNote } from "../session.ts";
+import { browseDenyReason, localDnsReason, returnStrays, Session, sweepNote } from "../session.ts";
 
 process.env.CLEARCART_BROWSER = "ext";
+// No real DNS in tests: names with "rebind" point at this computer.
+(dns.promises as any).lookup = async (host: string) => [{ address: /rebind/.test(host) ? "127.0.0.1" : "93.184.215.14", family: 4 }];
 const B = "mcp__browser__";
 const ALLOWLIST: SitePolicy = { mode: "allowlist", allowed: new Set([STORE_ORIGIN]), blocked: new Set(), entries: [] };
 
@@ -115,11 +118,12 @@ test("allowlist mode sweep sends strays straight to the store", async () => {
 
 test("the session sweep over the extension bridge uses the group's tabs only", async () => {
   const calls: Array<[string, any]> = [];
+  let tab10 = "https://mail.google.com/";
   const orig = extBridge.call;
   (extBridge as any).call = async (method: string, params: any) => {
     calls.push([method, params]);
-    if (method === "tabs_context") return { tabs: [{ tabId: 9, url: "https://www.etsy.com/" }, { tabId: 10, url: "https://mail.google.com/" }] };
-    if (method === "navigate") return { url: "https://www.etsy.com/" };
+    if (method === "tabs_context") return { tabs: [{ tabId: 9, url: "https://www.etsy.com/" }, { tabId: 10, url: tab10 }] };
+    if (method === "navigate") return { url: (tab10 = "https://www.etsy.com/") };
     return {};
   };
   try {
@@ -145,4 +149,107 @@ test("sites prompt: open mode allows any store with the real-site rules", () => 
   assert.match(sitesPrompt("allowlist", []), /Only browse the demo store/);
   assert.match(sitesPrompt("allowlist", ["https://www.aritzia.com"]), /also browse https:\/\/www\.aritzia\.com/);
   for (const t of [p, sitesPrompt("allowlist", ["https://x.example"])]) assert.ok(!/\u2014/.test(t), "no em dashes");
+});
+
+const post = (s: Session, tool: string) => (s as any).sweep({ hook_event_name: "PostToolUse", tool_name: B + tool, tool_input: {} }, undefined, {});
+
+// An OCIC-path session whose tab list and navigation are fakes.
+function ocicSession(tabs: Array<{ tabId: number; url?: string }> | (() => never)) {
+  const s = new Session(() => {});
+  const navs: Array<[number, string]> = [];
+  (s as any).listTabs = async () => (typeof tabs === "function" ? tabs() : tabs.map((t) => ({ ...t })));
+  (s as any).navTab = async (tabId: number, url: string) => {
+    navs.push([tabId, url]);
+    const to = url === "back" ? "https://www.etsy.com/" : url;
+    if (typeof tabs !== "function") for (const t of tabs) if (t.tabId === tabId) t.url = to;
+    return to;
+  };
+  return { s, navs };
+}
+
+async function ocic<T>(fn: () => Promise<T>): Promise<T> {
+  process.env.CLEARCART_BROWSER = "";
+  try {
+    return await fn();
+  } finally {
+    process.env.CLEARCART_BROWSER = "ext";
+  }
+}
+
+test("checkout page block covers tabs_create and tabs_create_mcp too", async () => {
+  const s = new Session(() => {});
+  for (const tool of ["tabs_create", "tabs_create_mcp", "navigate"]) {
+    assert.match(denied(await pre(s, tool, { url: "https://www.etsy.com/cart/checkout" })) || "", /^Locked:/, tool);
+    assert.match(denied(await pre(s, tool, { url: "https://www.nordstrom.com/payment" })) || "", /^Locked:/, tool);
+  }
+  assert.equal(denied(await pre(s, "tabs_create_mcp", { url: `${STORE_ORIGIN}/checkout` })), null);
+  assert.equal(denied(await pre(s, "tabs_create_mcp", {})), null);
+});
+
+test("OCIC path: a page tool on a tab a redirect moved to a blocked site is denied and the tab swept", async () => {
+  await ocic(async () => {
+    const tabs = [{ tabId: 5, url: "https://www.etsy.com/" }, { tabId: 6, url: "https://mail.google.com/mail/u/0" }];
+    const { s, navs } = ocicSession(tabs);
+    for (const tool of ["get_page_text", "read_page", "find", "computer", "form_input", "read_console_messages"]) {
+      tabs[1].url = "https://mail.google.com/mail/u/0";
+      assert.match(denied(await pre(s, tool, { tabId: 6, action: "screenshot" })) || "", /^Blocked: that tab is on a site/, tool);
+    }
+    assert.deepEqual(navs.at(-1), [6, "back"]);
+    assert.equal(denied(await pre(s, "get_page_text", { tabId: 5 })), null);
+    assert.equal(denied(await pre(s, "get_page_text", { tabId: 6 })), null, "swept back to an allowed page");
+  });
+});
+
+test("OCIC path: the current-tab check fails closed", async () => {
+  await ocic(async () => {
+    const broken = ocicSession(() => {
+      throw new Error("bridge down");
+    });
+    assert.match(denied(await pre(broken.s, "get_page_text", { tabId: 5 })) || "", /could not check/);
+    const { s } = ocicSession([{ tabId: 5, url: "https://www.etsy.com/" }, { tabId: 7 }]);
+    assert.match(denied(await pre(s, "get_page_text", { tabId: 9 })) || "", /not one of Clearcart's tabs/);
+    assert.match(denied(await pre(s, "get_page_text", { tabId: 7 })) || "", /could not check/);
+    assert.match(denied(await pre(s, "get_page_text", {})) || "", /could not check/, "no tabId: every tab must be known");
+  });
+});
+
+test("names that resolve to this computer are refused on open and on the current tab", async () => {
+  const s = new Session(() => {});
+  assert.match(denied(await pre(s, "navigate", { url: "http://rebind.example:5050/cartesia-token" })) || "", /points to this computer/);
+  assert.match(denied(await pre(s, "tabs_create_mcp", { url: "http://shop.rebind.example/" })) || "", /points to this computer/);
+  assert.equal(denied(await pre(s, "navigate", { url: "https://www.etsy.com/" })), null);
+  const policy: SitePolicy = { mode: "open", allowed: new Set([STORE_ORIGIN]), blocked: new Set() };
+  assert.equal(await localDnsReason(`${STORE_ORIGIN}/`, policy, async () => [{ address: "127.0.0.1" }]), null, "the store is allowed");
+  assert.equal(await localDnsReason("https://gone.example/", policy, async () => { throw new Error("ENOTFOUND"); }), null);
+  assert.match((await localDnsReason("https://lan.example/", policy, async () => [{ address: "93.1.1.1" }, { address: "::ffff:192.168.1.1" }])) || "", /local network/);
+  await ocic(async () => {
+    const { s: o } = ocicSession([{ tabId: 5, url: "http://later.rebind.example/" }]);
+    assert.match(denied(await pre(o, "get_page_text", { tabId: 5 })) || "", /^Blocked/);
+  });
+});
+
+test("the sweep fails closed: an error pauses browser tools until a sweep succeeds", async () => {
+  let down = true;
+  const tabs = [{ tabId: 5, url: "https://www.etsy.com/" }];
+  const { s } = ocicSession(tabs);
+  (s as any).listTabs = async () => {
+    if (down) throw new Error("bridge down");
+    return tabs;
+  };
+  const r = await post(s, "click");
+  assert.match(r.hookSpecificOutput.additionalContext, /paused/);
+  assert.match(denied(await pre(s, "navigate", { url: "https://www.etsy.com/" })) || "", /browser tools are paused/);
+  assert.match(denied(await pre(s, "tabs_context", {})) || "", /paused/);
+  down = false;
+  assert.equal(denied(await pre(s, "navigate", { url: "https://www.etsy.com/" })), null);
+  assert.equal(denied(await pre(s, "click", {})), null);
+});
+
+test("the sweep fails closed when a stray tab will not move", async () => {
+  const s = new Session(() => {});
+  (s as any).listTabs = async () => [{ tabId: 6, url: "https://mail.google.com/" }];
+  (s as any).navTab = async () => null;
+  const r = await post(s, "click");
+  assert.match(r.hookSpecificOutput.additionalContext, /paused/);
+  assert.match(denied(await pre(s, "screenshot", {})) || "", /paused/);
 });

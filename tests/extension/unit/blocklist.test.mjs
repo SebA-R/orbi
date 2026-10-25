@@ -91,3 +91,11 @@ test("the suggested list is valid and covers today's sensitive sites", () => {
     assert.equal(r(u), null, u);
   }
 });
+
+test("IPv4-mapped, compatible and site-local IPv6 and loopback DNS names are local", () => {
+  for (const u of [
+    "http://[::ffff:127.0.0.1]:5050/", "http://[::ffff:192.168.1.1]/", "http://[::7f00:1]/", "http://[fec0::]/",
+    "http://localtest.me:5050/cartesia-token", "http://127.0.0.1.nip.io:5050/",
+  ]) assert.match(blocklistReason(u, SUGGESTED_ENTRIES, new Set([STORE])) || "", /local address/, u);
+  assert.equal(blocklistReason(`${STORE}/`, SUGGESTED_ENTRIES, new Set([STORE])), null);
+});

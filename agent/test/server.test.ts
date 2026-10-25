@@ -2,11 +2,13 @@
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
+import http from "node:http";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
+import { hostAllowed } from "../hostcheck.ts";
 import { FakeExt } from "./fake-ext.ts";
 
 const AGENT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -74,3 +76,52 @@ test("default mode: no /ext endpoint, /session unchanged", async () => {
     child.kill();
   }
 });
+
+// Status of a GET with the given Host header (fetch will not override Host).
+function getStatus(port: number, pathname: string, host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    http.get({ host: "127.0.0.1", port, path: pathname, headers: { Host: host } }, (res) => {
+      res.resume();
+      resolve(res.statusCode || 0);
+    }).once("error", reject);
+  });
+}
+
+// Resolves with the HTTP status of a refused upgrade, or "open".
+function upgradeStatus(port: number, pathname: string, host: string): Promise<number | "open"> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${pathname}`, { headers: { Host: host } });
+    ws.once("open", () => {
+      ws.close();
+      resolve("open");
+    });
+    ws.once("unexpected-response", (_req, res) => resolve(res.statusCode || 0));
+    ws.once("error", () => resolve(0));
+  });
+}
+
+test("hostAllowed: only this computer's names on this port", () => {
+  for (const h of ["localhost:5050", "127.0.0.1:5050", "[::1]:5050", "LOCALHOST:5050"]) assert.ok(hostAllowed(h, 5050), h);
+  for (const h of ["localtest.me:5050", "127.0.0.1.nip.io:5050", "evil.example:5050", "localhost:4000", "localhost", "[::ffff:127.0.0.1]:5050", "", undefined]) {
+    assert.equal(hostAllowed(h as any, 5050), false, String(h));
+  }
+});
+
+for (const [port, env, label] of [[5172, {}, "default mode"], [5173, { CLEARCART_BROWSER: "ext" }, "ext mode"]] as const) {
+  test(`${label}: requests with a foreign Host header are refused (DNS rebinding)`, async () => {
+    const child = await startServer(port, env);
+    try {
+      for (const host of [`localtest.me:${port}`, `127.0.0.1.nip.io:${port}`, `evil.example:${port}`, "localhost:4000"]) {
+        assert.equal(await getStatus(port, "/cartesia-token", host), 403, host);
+        assert.equal(await getStatus(port, "/healthz", host), 403, host);
+        assert.equal(await getStatus(port, "/", host), 403, host);
+        assert.equal(await upgradeStatus(port, "/session", host), 403, host);
+        if (env.CLEARCART_BROWSER) assert.equal(await upgradeStatus(port, "/ext", host), 403, host);
+      }
+      assert.equal(await getStatus(port, "/healthz", `localhost:${port}`), 200);
+      assert.equal(await upgradeStatus(port, "/session", `127.0.0.1:${port}`), "open");
+    } finally {
+      child.kill();
+    }
+  });
+}

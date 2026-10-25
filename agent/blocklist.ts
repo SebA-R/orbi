@@ -21,3 +21,16 @@ export const parseBlockLines: (input: string | readonly unknown[]) => { lines: s
 // than `local`) first, then `entries`.
 export const blocklistReason: (href: string | null | undefined, entries?: readonly BlockEntry[], local?: ReadonlySet<string>) => string | null =
   shared.blocklistReason;
+
+// Host names that point at this computer or the local network by design
+// (localtest.me, 127.0.0.1.nip.io and the like). Matched as the name or any
+// subdomain of it.
+export const LOCAL_DNS: readonly string[] = shared.LOCAL_DNS;
+
+// True when `ip` (IPv4, or IPv6 with or without brackets) is loopback,
+// private, link-local, site-local, unspecified or multicast, including IPv4
+// carried inside IPv6. Anything it cannot parse counts as local.
+export const isLocalIp: (ip: string | null | undefined) => boolean = shared.isLocalIp;
+
+// True when a URL hostname names this computer or the local network.
+export const isLocalHost: (hostname: string | null | undefined) => boolean = shared.isLocalHost;

@@ -132,9 +132,14 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   }
 
   // Routes HTTP upgrades on `server`: /ext here, the paths in `others` to
-  // their own noServer WebSocketServers, anything else gets a 400.
-  attach(server: http.Server, others: Record<string, WebSocketServer> = {}, path = "/ext") {
+  // their own noServer WebSocketServers, anything else gets a 400. `verify`
+  // (the server's Host check) runs first; a refused upgrade gets a 403.
+  attach(server: http.Server, others: Record<string, WebSocketServer> = {}, path = "/ext", verify: (req: http.IncomingMessage) => boolean = () => true) {
     server.on("upgrade", (req, socket, head) => {
+      if (!verify(req)) {
+        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        return;
+      }
       let pathname = "";
       try {
         pathname = new URL(req.url || "/", "http://localhost").pathname;

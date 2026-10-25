@@ -4,6 +4,7 @@
 // the conversation keeps its context across turns. While request_checkout is
 // waiting, the next user_text is routed to it instead of to Claude.
 
+import dns from "node:dns";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -13,6 +14,7 @@ import { callBrowserTool, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
 import { ocicLockNote, ocicLockReason } from "./ocic-lock.ts";
+import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
 import { SITES_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
@@ -105,6 +107,47 @@ export function browseDenyReason(url: string, policy: SitePolicy = sitePolicy())
 
 const BLANK = /^(about:blank|chrome:\/\/newtab)/;
 
+// Tools that act on an existing tab's page. On the Open Claude in Chrome
+// path the guard checks that tab's current URL first (a redirect or page
+// script can move it after navigate was checked). Our extension checks the
+// tab itself (tabs.js resolveAllowedTab).
+const TAB_TOOLS = new Set(["computer", "find", "form_input", "get_page_text", "read_page", "read_console_messages", "set_tab_focus"].map((t) => B + t));
+
+type Tab = { tabId: number; url?: string };
+type Lookup = (host: string) => Promise<Array<{ address: string }>>;
+
+const DNS_TIMEOUT_MS = 1500;
+const DNS_TTL_MS = 60_000;
+const dnsCache = new Map<string, { local: boolean; at: number }>();
+const systemLookup: Lookup = (host) => dns.promises.lookup(host, { all: true });
+
+// Why `url` may not be opened because its host name resolves to this
+// computer or the local network (localtest.me, a DNS rebinding domain), or
+// null. Allowed origins (the store) and IP literals (blocklist.ts judges
+// those) are skipped. A name that does not resolve here passes: the browser
+// uses the same resolver, so it cannot load it either.
+export async function localDnsReason(url: string, policy: SitePolicy = sitePolicy(), lookup: Lookup = systemLookup): Promise<string | null> {
+  const o = originOf(url);
+  if (!o || policy.allowed.has(o)) return null;
+  const host = new URL(url).hostname.toLowerCase();
+  if (host.startsWith("[") || /^[\d.]+$/.test(host)) return null;
+  const hit = dnsCache.get(host);
+  let local = hit && Date.now() - hit.at < DNS_TTL_MS ? hit.local : null;
+  if (local === null) {
+    const addrs = await Promise.race([lookup(host), new Promise<null>((r) => setTimeout(() => r(null), DNS_TIMEOUT_MS).unref?.())]).catch(() => null);
+    if (!addrs) return null;
+    local = addrs.some((a) => isLocalIp(a.address));
+    dnsCache.set(host, { local, at: Date.now() });
+  }
+  return local ? `Blocked: Clearcart does not open ${o} (it points to this computer or the local network). Tell the user if they asked for it.` : null;
+}
+
+function tabIdOf(args: Record<string, unknown>): number | null {
+  if (typeof args.tabId === "number") return args.tabId;
+  if (typeof args.tabId === "string" && /^\d+$/.test(args.tabId)) return Number(args.tabId);
+  return null;
+}
+
 // Tab sweep: any Clearcart-group tab whose page is not allowed (a clicked
 // link, a redirect, history) is sent away from it. Allowlist mode: to the
 // store home page. Open mode: back to the page before, or to the store home
@@ -133,7 +176,8 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
 }
 
 // Button lock for navigation: checkout and payment pages are off limits on
-// every site except the store, where pay_now runs. Both browser paths.
+// every site except the store, where pay_now runs. Both browser paths, for
+// navigate and for tabs_create / tabs_create_mcp with a url.
 export function navigateLockReason(url: string): string | null {
   if (url === "back" || url === "forward") return null;
   if (isCheckoutUrl(url) && originOf(url) !== STORE_ORIGIN) {
@@ -145,11 +189,11 @@ export function navigateLockReason(url: string): string | null {
 // Why the sweep sends a tab away from url, or null: a blocked site, or a
 // checkout page navigate would have refused (a redirect or an in-page link
 // can land there).
-export function strayReason(url: string, policy: SitePolicy = SITE_POLICY): string | null {
+export function strayReason(url: string, policy: SitePolicy = sitePolicy()): string | null {
   return siteBlockReason(url, policy) || navigateLockReason(url);
 }
 
-export function isStrayTab(url: string | undefined, policy: SitePolicy = SITE_POLICY): boolean {
+export function isStrayTab(url: string | undefined, policy: SitePolicy = sitePolicy()): boolean {
   return !!url && !BLANK.test(url) && !!strayReason(url, policy);
 }
 
@@ -224,6 +268,11 @@ export class Session {
   private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false };
   private closed = false;
   private q: Query | null = null;
+  // Set when a tab sweep could not run or could not move a stray tab. Every
+  // browser call is refused until a sweep succeeds (fail closed).
+  private sweepBroken = false;
+  // DNS for localDnsReason; tests replace it.
+  lookup: Lookup = systemLookup;
 
   constructor(private send: (m: ServerMessage) => void) {}
 
@@ -264,17 +313,27 @@ export class Session {
     });
 
     if (name.startsWith(B)) {
+      const checkSites = !process.env.CLEARCART_ALLOW_ANY_SITE;
+      if (checkSites && this.sweepBroken) {
+        const ok = await this.runSweep().then(() => true, () => false);
+        if (!ok) return deny("Blocked: Clearcart could not check which sites its tabs are on, so browser tools are paused. Try again in a moment, and tell the user if it keeps failing.");
+      }
       if (this.state.cardFieldsLive && (extMode() ? EXT_BLOCKED_WHILE_CARD_LIVE : BLOCKED_WHILE_CARD_LIVE).has(name)) {
         return deny("Blocked: card details are in the checkout form. Wait for pay_now to finish.");
       }
       const opens = name === B + "navigate" || ((name === B + "tabs_create" || name === B + "tabs_create_mcp") && args.url != null);
-      if (opens && !process.env.CLEARCART_ALLOW_ANY_SITE) {
-        const blocked = browseDenyReason(String(args.url || ""));
+      if (opens && checkSites) {
+        const url = String(args.url || "");
+        const blocked = browseDenyReason(url) || (url === "back" || url === "forward" ? null : await localDnsReason(url, sitePolicy(), this.lookup));
         if (blocked) return deny(blocked);
       }
-      if (name === B + "navigate") {
+      if (opens) {
         const locked = navigateLockReason(String(args.url || ""));
         if (locked) return deny(locked);
+      }
+      if (checkSites && !extMode() && TAB_TOOLS.has(name)) {
+        const why = await this.tabDenyReason(tabIdOf(args));
+        if (why) return deny(why);
       }
       // Button lock, OCIC path: our own extension enforces it in the
       // extension; here the third-party one gets it from this hook.
@@ -285,8 +344,8 @@ export class Session {
           return deny(locked);
         }
       }
-      if (typeof args.tabId === "number") this.state.lastTabId = args.tabId;
-      else if (typeof args.tabId === "string" && /^\d+$/.test(args.tabId)) this.state.lastTabId = Number(args.tabId);
+      const tabId = tabIdOf(args);
+      if (tabId != null) this.state.lastTabId = tabId;
     }
     return {};
   };
@@ -304,31 +363,83 @@ export class Session {
     return { hookSpecificOutput: { hookEventName: "PostToolUse" as const, additionalContext: note } };
   };
 
-  // After every browser call, send back any MCP-group tab that landed on a
-  // site it may not be on (returnStrays).
+  // The browser's agent tabs (the MCP group, or the Clearcart group on our
+  // extension). Throws when the list cannot be read.
+  async listTabs(): Promise<Tab[]> {
+    if (extMode()) return (await extBridge.call<{ tabs?: Tab[] }>("tabs_context", {}, 10_000))?.tabs || [];
+    return JSON.parse(resultText(await callBrowserTool("tabs_context_mcp", {})).split("\n")[0]).availableTabs || [];
+  }
+
+  // Loads `url` (or "back") in a tab and returns where it ended up. Our
+  // extension's navigate reports that (and refuses a landing it does not
+  // allow); the OCIC one does not, so list again.
+  async navTab(tabId: number, url: string): Promise<string | null> {
+    if (extMode()) return (await extBridge.call<{ url?: string }>("navigate", { url, tabId }))?.url ?? null;
+    await callBrowserTool("navigate", { url, tabId });
+    return (await this.listTabs()).find((t) => t.tabId === tabId)?.url ?? null;
+  }
+
+  // Sends back every agent tab on a site it may not be on (returnStrays) and
+  // checks none is left. Returns how many moved; throws when the tabs cannot
+  // be listed or a stray would not move. Clears sweepBroken on success.
+  private async runSweep(): Promise<number> {
+    const policy = sitePolicy();
+    const n = await returnStrays(await this.listTabs(), (id, url) => this.navTab(id, url), policy);
+    if (n) {
+      const left = (await this.listTabs()).filter((t) => isStrayTab(t.url, policy));
+      if (left.length) throw new Error(`${left.length} tab(s) still on a blocked site`);
+    }
+    this.sweepBroken = false;
+    return n;
+  }
+
+  // OCIC path: why the tab a page tool would act on may not be touched, or
+  // null. Unknown counts as blocked (fail closed). A tab found on a blocked
+  // site is swept right away.
+  private async tabDenyReason(tabId: number | null): Promise<string | null> {
+    let tabs: Tab[];
+    try {
+      tabs = await this.listTabs();
+    } catch {
+      return "Blocked: Clearcart could not check which page that tab is on. Try again in a moment.";
+    }
+    const targets = tabId == null ? tabs : tabs.filter((t) => t.tabId === tabId);
+    if (tabId != null && !targets.length) return `Blocked: tab ${tabId} is not one of Clearcart's tabs. Call tabs_context_mcp for the current tabs.`;
+    const policy = sitePolicy();
+    const bad: Tab[] = [];
+    for (const t of targets) {
+      if (!t.url) return "Blocked: Clearcart could not check which page that tab is on. Try again in a moment.";
+      if (BLANK.test(t.url)) continue;
+      if (siteBlockReason(t.url, policy) || (await localDnsReason(t.url, policy, this.lookup))) bad.push(t);
+    }
+    if (!bad.length) return null;
+    const n = await this.runSweep().catch(() => {
+      this.sweepBroken = true;
+      return -1;
+    });
+    if (n > 0) this.status(`returned ${n} tab(s) from blocked sites`);
+    return `Blocked: that tab is on a site Clearcart does not use (${originOf(bad[0].url) || "unknown"}). ${n >= 0 ? sweepNote(Math.max(n, 1)) : "Browser tools are paused until Clearcart can send it back."}`;
+  }
+
+  // After every browser call, send back any agent tab that landed on a site
+  // it may not be on. Fails closed: if the sweep cannot run, Claude is told
+  // and the guard refuses browser calls until a sweep succeeds.
   private sweep: HookCallback = async (input) => {
     if (input.hook_event_name !== "PostToolUse" || !input.tool_name.startsWith(B)) return {};
     if (process.env.CLEARCART_ALLOW_ANY_SITE) return {};
-    const ext = extMode();
-    type Tab = { tabId: number; url?: string };
-    const list = async (): Promise<Tab[]> =>
-      ext
-        ? (await extBridge.call<{ tabs?: Tab[] }>("tabs_context", {}, 10_000))?.tabs || []
-        : JSON.parse(resultText(await callBrowserTool("tabs_context_mcp", {})).split("\n")[0]).availableTabs || [];
-    // Our extension's navigate reports where the tab ended up (and refuses a
-    // landing it does not allow). The OCIC one does not, so list again.
-    const nav = async (tabId: number, url: string): Promise<string | null> => {
-      if (ext) return (await extBridge.call<{ url?: string }>("navigate", { url, tabId }))?.url ?? null;
-      await callBrowserTool("navigate", { url, tabId });
-      return (await list()).find((t) => t.tabId === tabId)?.url ?? null;
-    };
-    let tabs: Tab[];
+    let n: number;
     try {
-      tabs = await list();
-    } catch {
-      return {};
+      n = await this.runSweep();
+    } catch (e) {
+      this.sweepBroken = true;
+      this.status(`tab sweep failed: ${(e as Error).message}`);
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse" as const,
+          additionalContext: "Clearcart could not check which sites its tabs are on after that call. Browser tools are paused until the check works again; do not rely on what that page showed.",
+        },
+      };
     }
-    const n = await returnStrays(tabs, nav);
     if (!n) return {};
     this.status(`returned ${n} tab(s) from blocked sites`);
     return { hookSpecificOutput: { hookEventName: "PostToolUse" as const, additionalContext: sweepNote(n) } };
