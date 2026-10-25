@@ -138,3 +138,22 @@ test("setupDone counts the four setup checks; the talk key is always done", () =
   assert.equal(setupDone({ site: true, mic: "unknown", agent: null }), 2);
   assert.equal(setupDone({ site: false, mic: "granted", agent: { connected: true } }), 3);
 });
+
+test("popup text keeps 4.5:1 contrast and the switch track 3:1", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("../../../extension/popup/popup.css", import.meta.url), "utf8");
+  const v = (name) => css.match(new RegExp(`--${name}: (#[0-9a-f]{6})`, "i"))[1];
+  const lum = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => { const [x, y] = [lum(v(a)), lum(v(b))].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  for (const [fg, bg] of [["fg", "bg"], ["muted", "bg"], ["fg", "sheet"], ["soft", "fill"], ["fg", "fill"],
+    ["ok-fg", "ok-bg"], ["warn-fg", "warn-bg"], ["wait-fg", "wait-bg"]]) {
+    assert.ok(ratio(fg, bg) >= 4.5, `${fg} on ${bg}: ${ratio(fg, bg).toFixed(2)}`);
+  }
+  assert.ok(ratio("switch-off", "sheet") >= 3, "switch track");
+  assert.ok(ratio("focus", "bg") >= 3 && ratio("focus", "sheet") >= 3, "focus ring");
+  assert.doesNotMatch(css, /@import|url\(\s*["']?https?:/, "no remote fonts or images");
+});
