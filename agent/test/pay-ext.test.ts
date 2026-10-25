@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { ExtBridge, ExtError } from "../extbridge.ts";
-import { payNowExt, type PayState } from "../pay.ts";
+import { alertText, payNowExt, type PayState } from "../pay.ts";
 import { FakeExt } from "./fake-ext.ts";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -57,7 +57,7 @@ function fakeStore(o: StoreOpts = {}) {
         else if (o.outcome === "reject") rejected = true;
         return null;
       case "read_page":
-        return { url, title: "Checkout", tree: rejected ? '- main\n  - alert "Card declined"\n' : "- main\n" };
+        return { url, title: "Checkout", tree: rejected ? '- main [ref_1]\n  - alert [ref_3]\n    - text "Card declined"\n  - textbox "Name on card" [ref_4]\n' : "- main\n" };
       case "clear_payment":
         return { ok: true };
     }
@@ -185,4 +185,10 @@ test("over a real socket: card travels only in fill_payment, bridge logs stay cl
     bridge.close();
     await new Promise<void>((r) => server.close(() => r()));
   }
+});
+
+test("alertText reads named alerts and alerts with text children", () => {
+  assert.equal(alertText("- main\n  - alert \"Card declined\" [ref_2]\n"), "Card declined");
+  assert.equal(alertText("- alert [ref_3]\n  - text \"That card number is not valid.\"\n- textbox \"Name\" [ref_4]"), "That card number is not valid.");
+  assert.equal(alertText("- main\n  - text \"fine\"\n"), "");
 });

@@ -235,6 +235,28 @@ function pageMoney(text: string, label: RegExp): string {
   return m ? `$${m[1]}` : "";
 }
 
+// The text of the first role="alert" in a read_page tree. The page script
+// prints an alert without a name (alerts don't take their name from content)
+// and its text as indented `- text "..."` children:
+//   - alert [ref_3]
+//     - text "That card number is not valid."
+// A named alert (`- alert "..." [ref_3]`) is accepted too.
+export function alertText(tree: string): string {
+  const lines = tree.split("\n");
+  const i = lines.findIndex((l) => /^\s*-\s*alert\b/.test(l));
+  if (i < 0) return "";
+  const named = /^\s*-\s*alert\s+"([^"]+)"/.exec(lines[i])?.[1];
+  if (named) return named;
+  const indent = /^\s*/.exec(lines[i])![0].length;
+  const parts: string[] = [];
+  for (const l of lines.slice(i + 1)) {
+    if (/^\s*/.exec(l)![0].length <= indent) break;
+    const t = /^\s*-\s*text\s+"([^"]*)"/.exec(l)?.[1];
+    if (t) parts.push(t);
+  }
+  return parts.join(" ").trim();
+}
+
 async function extTabUrl(bridge: Pick<ExtBridge, "call">, tabId: number): Promise<string | null> {
   try {
     const info = await bridge.call<{ url?: string }>("tab_info", { tabId }, 10_000);
@@ -354,7 +376,7 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
         // A rejected payment re-renders checkout with a role="alert" banner.
         try {
           const page = await bridge.call<{ tree?: string }>("read_page", { tabId, filter: "all", maxNodes: 400 }, 10_000);
-          const err = /^\s*-\s*alert\s+"([^"]+)"/m.exec(String(page?.tree || ""))?.[1];
+          const err = alertText(String(page?.tree || ""));
           if (err) return { ok: false, error: `The store rejected the payment: ${err.trim()}` };
         } catch {}
       }
