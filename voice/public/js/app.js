@@ -72,19 +72,35 @@ const resumeAudio = () => { if (ctx.state === 'suspended') ctx.resume().catch(()
 addEventListener('keydown', resumeAudio, { capture: true });
 addEventListener('pointerdown', resumeAudio, { capture: true });
 
-function earcon(freqFrom, freqTo) {
-  if (ctx.state !== 'running') return;
-  const t = ctx.currentTime;
-  const osc = ctx.createOscillator();
+// One bell-like note: a sine plus a quiet octave, near-instant attack, soft exponential decay.
+function chimeNote(freq, at, peak = 0.32) {
   const g = ctx.createGain();
-  osc.frequency.setValueAtTime(freqFrom, t);
-  osc.frequency.linearRampToValueAtTime(freqTo, t + 0.09);
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(0.15, t + 0.01);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-  osc.connect(g).connect(ctx.destination);
-  osc.start(t);
-  osc.stop(t + 0.13);
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(peak, at + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.28);
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 5000;
+  g.connect(lp).connect(ctx.destination);
+  for (const [mult, level] of [[1, 1], [2, 0.18]]) {
+    const osc = ctx.createOscillator();
+    const og = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq * mult;
+    og.gain.value = level;
+    osc.connect(og).connect(g);
+    osc.start(at);
+    osc.stop(at + 0.3);
+  }
+}
+
+// Two quick notes: rising when the mic opens, falling when it closes.
+function earcon(kind) {
+  if (ctx.state !== 'running') return;
+  const t = ctx.currentTime + 0.005;
+  const [first, second] = kind === 'start' ? [659.25, 987.77] : [987.77, 659.25]; // E5 and B5
+  chimeNote(first, t);
+  chimeNote(second, t + 0.07);
 }
 
 // ---------- Cartesia token (minted by our server; the API key never reaches the page) ----------
@@ -207,7 +223,7 @@ async function startTalking() {
   speaker.stop(); // barge-in
   resumeAudio();
   setListeningUi(true);
-  earcon(520, 780);
+  earcon('start');
 
   const s = new SttSession({
     getToken,
@@ -250,12 +266,12 @@ function stopTalking() {
   if (!listening) return;
   listening = false;
   setListeningUi(false);
+  earcon('stop'); // right on release, so the user knows the mic heard them let go
   const s = session;
   // Keep a short tail of audio so the last word isn't clipped, then let Cartesia finalize.
   setTimeout(() => {
     if (sinkOwner === s) { mic.sink = null; sinkOwner = null; }
     if (s) s.finish();
-    earcon(700, 440);
   }, 300);
 }
 
