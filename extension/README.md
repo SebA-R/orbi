@@ -9,7 +9,7 @@ Our own Chrome extension (Manifest V3) for Clearcart. It replaces the third-part
 - Knows what you are looking at: with each thing you say, the agent gets the active tab, your text selection and what you are pointing at (see [What you are pointing at](#what-you-are-pointing-at)), so "add this one to my cart" works.
 - Never returns card numbers: page-reading tools mask payment fields and card-like digit runs, `form_input` and typing refuse payment fields and card numbers, and the card is filled by `pay_now` in one `fill_payment` call that answers only `last4`.
 - Button lock: the agent can never press a protected control (place order, buy now, pay, checkout, wallet buttons, subscribe, save card, sign in, sign up, the submit of a card or password form, anything marked `data-clearcart-protected`). Only `pay_now`, after the user's spoken yes, presses the order button once, with a single-use unlock. People are never locked out: the lock checks the agent's tool calls only.
-- Hold **Space** on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab. Recording starts the moment the key goes down, so the first word is kept; the chime and the listening state come on once it has been held for 200 ms. A quick tap is thrown away and does what Space normally does. In text fields Space types a space; hold Option+Space (Alt+Space) there instead. With Space as the talk key, Option+Space works on any page, confirms at once and needs no hold delay.
+- Hold **Space** on any page to talk to the agent; the reply is spoken and shown as subtitles at the bottom of the tab. Recording starts the moment the key goes down, so the first word is kept; the listening sound and state come on once it has been held for 200 ms. A quick tap is thrown away and does what Space normally does. In text fields Space types a space; hold Option+Space (Alt+Space) there instead. With Space as the talk key, Option+Space works on any page, confirms at once and needs no hold delay.
 
 ## Install
 
@@ -64,7 +64,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/indicator.js` | Injected on each call that touches a tab: the "Clearcart is using this tab" pill |
 | `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP`, Option+Space latch, double-tap Space hush |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
-| `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
+| `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, earcons, its own `/session` socket |
 | `options/` | Options page |
 | `setup/`, `popup/` | Setup page (install and update), drawn by `setup/checklist.js`, and the toolbar popup, which follows `VOICE_STATE` and counts the same checks |
 | `lib/setup.js`, `lib/mic-grant.js` | Setup checks, the badge and the onInstalled rule; the microphone grant shared by options and setup |

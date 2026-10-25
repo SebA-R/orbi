@@ -3,7 +3,7 @@
 // installVoiceRelay() at top level (see "Voice and subtitles" in extension/README.md).
 //
 //   content PTT_START {silent, latch} -> ensure offscreen, VOICE_START {settings, silent, latch} to offscreen
-//   content PTT_CONFIRM        -> VOICE_CONFIRM (the key is held: chime, show it)
+//   content PTT_CONFIRM        -> VOICE_CONFIRM (the key is held: listen sound, show it)
 //   content PTT_CANCEL         -> VOICE_CANCEL (a quick tap: drop the audio)
 //   content PTT_STOP           -> VOICE_STOP to offscreen
 //   content PTT_HUSH           -> VOICE_HUSH (double-tap Space while speaking: hard-stop
@@ -53,7 +53,7 @@ export function createVoiceRelay({
       creating = chromeApi.offscreen.createDocument({
         url: OFFSCREEN_PATH,
         reasons: ["USER_MEDIA", "AUDIO_PLAYBACK"],
-        justification: "Hold-to-talk: microphone capture for speech recognition and playback of spoken replies and chimes.",
+        justification: "Hold-to-talk: microphone capture for speech recognition and playback of spoken replies and sound cues.",
       }).catch((err) => {
         // Another caller won the race; that's fine.
         if (!/single offscreen|already exists/i.test(String(err && err.message))) throw err;
