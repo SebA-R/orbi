@@ -16,6 +16,8 @@ On startup the server creates `~/Library/Application Support/Orbi/desktop.token`
 - The token is 32 random bytes as 64 lowercase hex characters, followed by a newline.
 - The file is mode `0600` and the directory is mode `0700`. The server enforces both on every start.
 
+The token keeps out other users, sandboxed apps and web pages. A program running unsandboxed as the same user can read the file, so it is not a defense against that (such a program can already reach `/session` as well).
+
 The helper reads the file fresh on each connect and sends the token, trimmed, in `hello.token`. If the file does not exist yet, the helper retries with backoff. The server compares the token in constant time. A missing or wrong token closes the socket with `4004 unauthorized`, and no welcome is sent. Until an authenticated helper is connected, every desktop tool fails with `not_connected`. The token is never logged.
 
 ## Handshake
@@ -76,7 +78,7 @@ A **target** has this shape:
 
 Details:
 
-- `click {x,y,expectRef}`: right before pressing, the helper hit-tests the point again. If the element there is not `expectRef` (or a descendant of it), it fails with `target_changed` and nothing is pressed.
+- `click {x,y,expectRef}`: the server always sends a ref here, and never clicks a point where the hit test found nothing. Right before pressing, the helper hit-tests the point again. If the element there is not `expectRef` (or a descendant of it), it fails with `target_changed` and nothing is pressed.
 - `type {text, ref}`: the helper focuses `ref` and checks that the focused element is that element, re-checking before each key. A secure field or secure keyboard entry fails with `secure_field`.
 - `key {combo}`: lowercase modifiers `cmd`, `shift`, `alt`, `ctrl` and `fn`, joined with `+`, then one key: `a`-`z`, `0`-`9`, `return`/`enter`, `tab`, `space`, `escape`/`esc`, `delete`/`backspace`, `forwarddelete`, the arrows `up`/`down`/`left`/`right`, `home`, `end`, `pageup`, `pagedown`, `f1`-`f12`, and punctuation. An unknown key is a `bad_request`.
 - `screenshot`: `scale` is PNG pixels per point (point = px / scale), and the capture covers the main display only. Every window of an app in `exclude`, in `blockedApps` or in the helper's own list is left out of the capture, and secure fields are blacked out. `excluded` lists the ids the helper left out, and an app that isn't running counts as excluded. The server refuses the image unless `redacted` is `true` and `excluded` contains every id it sent in `exclude`.

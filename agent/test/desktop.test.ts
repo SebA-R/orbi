@@ -280,7 +280,7 @@ test("tools: Send in Mail after 'send it' presses once", async () => {
 });
 
 test("tools: an unlabeled coordinate click needs a yes; a failed hit test refuses", async () => {
-  const blank = fakeTools({ handler: (m) => (m === "element_at" ? mail(null, "com.apple.Notes", "Notes") : null), answer: "yes" });
+  const blank = fakeTools({ handler: (m) => (m === "element_at" ? mail(el({ ref: "d4", role: "AXGroup" }), "com.apple.Notes", "Notes") : null), answer: "yes" });
   await blank.defs.desktop_click.handler({ x: 10, y: 20 }, {});
   assert.equal(blank.asked.length, 1);
   assert.deepEqual(blank.acted(), ["click"]);

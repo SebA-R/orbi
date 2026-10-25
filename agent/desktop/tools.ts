@@ -295,7 +295,8 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
           if (ref) await bridge.call("click", { ref });
           else if (t.element && !unlabeled(t.element)) await bridge.call("click", { ref: t.element.ref });
           else if (!bridge.helperInfo()?.features.includes("expectRef")) return refuse("Not clicked: this Orbi Desktop version can't check the spot at click time. Update Orbi Desktop, or use desktop_read and click by ref.");
-          else await bridge.call("click", { x, y, expectRef: t.element?.ref ?? null });
+          else if (!t.element) return refuse("Not clicked: Orbi found nothing at that spot to click. Call desktop_read or take a screenshot.");
+          else await bridge.call("click", { x, y, expectRef: t.element.ref });
           const name = t.element ? maskText(t.element.title || t.element.label || "") : "";
           return text({ ok: true, app: t.appName, ...(name ? { clicked: name } : {}) });
         } catch (e) {
@@ -407,7 +408,7 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
           const apps = await bridge.call<any>("apps_list", {});
           const list: any[] = Array.isArray(apps?.apps) ? apps.apps : Array.isArray(apps) ? apps : [];
           if (!list.length) return refuse("Not taken: Orbi could not list the running apps to leave the blocked ones out.");
-          const exclude = [...new Set([...userBlockedApps(), ...list.filter((a) => appBlockReason(a?.bundleId, a?.name ?? a?.appName)).map((a) => String(a.bundleId))])];
+          const exclude = [...new Set([...userBlockedApps(), ...list.filter((a) => typeof a?.bundleId === "string" && a.bundleId && appBlockReason(a?.bundleId, a?.name ?? a?.appName)).map((a) => String(a.bundleId))])];
           const r = await bridge.call<{ png?: string; width?: number; height?: number; scale?: number }>("screenshot", { maxWidth: maxWidth ?? 1280, exclude });
           if (!r || typeof r.png !== "string") return refuse("Not taken: no screenshot data came back.");
           // The helper leaves blocked apps' windows out of the capture and

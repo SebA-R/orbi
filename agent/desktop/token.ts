@@ -1,8 +1,9 @@
 // The shared secret Orbi Desktop proves itself with. The server creates it
 // once; the helper reads it and sends it in hello.token. Only a process
 // that can read this user's file (mode 0600, in a 0700 directory) can be
-// the helper, so another local program can't pose as it, inject speech or
-// read what is typed.
+// the helper: other users, sandboxed apps and web pages can't pose as it.
+// A program running unsandboxed as this same user can read the file, so
+// it does not stop that (such a program can already reach /session too).
 //
 //   ORBI_DESKTOP_TOKEN_FILE set   that file (tests)
 //   otherwise                     ~/Library/Application Support/Orbi/desktop.token
