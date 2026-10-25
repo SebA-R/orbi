@@ -14,6 +14,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 
 import { parseBlockLines, type BlockEntry } from "./blocklist.ts";
 import { extensionOrigins } from "./hostcheck.ts";
+import { parseLocalBaseUrl, parseLocalModel, parseProvider, type Provider } from "./local/config.ts";
 
 // Mirrors extension/lib/protocol.js (the test checks they agree). Kept as a
 // copy because that file is plain JS outside this tsconfig.
@@ -64,12 +65,18 @@ type Pending = { ws: WebSocket; method: string; resolve: (v: any) => void; rejec
 
 export type ExtInfo = { version: string; connectedAt: number };
 
+// The user's agent provider settings as the extension sent them: Claude or
+// a local model, and the local endpoint (local/config.ts). A field is null
+// until the extension sends a good value for it.
+export type ExtProviderSettings = { provider: Provider | null; localBaseUrl: string | null; localModel: string | null; localVision: boolean | null };
+
 export interface ExtBridgeEvents {
   connect: [ExtInfo];
   disconnect: [{ reason: string }];
   blocklist: [readonly BlockEntry[]];
   settings: [{ guidedMode: boolean; memory: boolean | null }];
   danger_mode: [boolean];
+  provider: [ExtProviderSettings];
 }
 
 // The Origin of an /ext upgrade: none (not a browser) or Clearcart's own
@@ -89,6 +96,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   private guided: boolean | null = null;
   private danger = false;
   private memory: boolean | null = null;
+  private agent: ExtProviderSettings = { provider: null, localBaseUrl: null, localModel: null, localVision: null };
 
   constructor(private log: (line: string) => void = (l) => console.log(l)) {
     super();
@@ -120,6 +128,14 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   // never sends it).
   memoryEnabled(): boolean | null {
     return this.memory;
+  }
+
+  // The user's agent provider settings as the extension last sent them
+  // (kept across a reconnect). Each field is null until a good value
+  // arrives (an older extension never sends them); a value that fails its
+  // check is refused and the last good one stays.
+  providerSettings(): ExtProviderSettings {
+    return { ...this.agent };
   }
 
   // The user's Danger mode setting as the extension last sent it (false
@@ -251,11 +267,14 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
         this.log(`ext: blocked sites list updated (${this.entries.length} entries)`);
         this.emit("blocklist", this.entries);
       }
-      if (m.type === "settings" && ws === this.current && typeof m.guidedMode === "boolean") {
-        this.guided = m.guidedMode;
-        if (typeof m.memory === "boolean") this.memory = m.memory;
-        this.log(`ext: guided mode ${this.guided ? "on" : "off"}, memory ${this.memory === false ? "off" : "on"}`);
-        this.emit("settings", { guidedMode: m.guidedMode, memory: this.memory });
+      if (m.type === "settings" && ws === this.current) {
+        if (typeof m.guidedMode === "boolean") {
+          this.guided = m.guidedMode;
+          if (typeof m.memory === "boolean") this.memory = m.memory;
+          this.log(`ext: guided mode ${this.guided ? "on" : "off"}, memory ${this.memory === false ? "off" : "on"}`);
+          this.emit("settings", { guidedMode: m.guidedMode, memory: this.memory });
+        }
+        this.takeProvider(m);
       }
       if (m.type === "danger_mode" && ws === this.current) {
         this.danger = m.on === true;
@@ -277,6 +296,30 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       }
     });
     ws.on("error", () => {});
+  }
+
+  // provider ("claude" or "local"), localBaseUrl (http(s) to localhost,
+  // 127.0.0.1 or [::1] only), localModel (a short plain name) and
+  // localVision from a settings message. Emits "provider" when they change.
+  private takeProvider(m: Record<string, unknown>) {
+    const next = { ...this.agent };
+    const refused: string[] = [];
+    const take = <K extends keyof ExtProviderSettings>(key: K, parse: (v: unknown) => ExtProviderSettings[K] | null) => {
+      if (m[key] === undefined) return;
+      const v = parse(m[key]);
+      if (v === null) refused.push(key);
+      else next[key] = v;
+    };
+    take("provider", parseProvider);
+    take("localBaseUrl", parseLocalBaseUrl);
+    take("localModel", parseLocalModel);
+    take("localVision", (v) => (typeof v === "boolean" ? v : null));
+    if (refused.length) this.log(`ext: refused agent settings: ${refused.join(", ")}`);
+    const keys = Object.keys(next) as Array<keyof ExtProviderSettings>;
+    if (keys.every((k) => next[k] === this.agent[k])) return;
+    this.agent = next;
+    this.log(`ext: agent ${next.provider === "local" ? `local model ${next.localModel ?? "(default)"} at ${next.localBaseUrl ?? "(default)"}` : next.provider ?? "(default)"}`);
+    this.emit("provider", { ...next });
   }
 
   private promote(ws: WebSocket, version: string) {
