@@ -30,6 +30,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 
 import { chat, detectFlavor, LocalModelError, type ChatMessage, type ContentPart, type Flavor, type ToolCall, type ToolSpec } from "./openai.ts";
+import { argsHelp, claimsAction, coerceArgs, looksLikeReasoning, LoopGuard, pageData, repairJson, speakable, type Call } from "./harden.ts";
 
 export const MAX_STEPS = 25;
 // A tool result longer than this is cut before it goes to the model;
@@ -131,6 +132,46 @@ export function stdioToolServer(name: string, command: string, args: string[], t
 
 type Hooks = Partial<Record<"PreToolUse" | "PostToolUse", HookCallbackMatcher[]>>;
 
+// The small-model scaffolding (local/harden.ts) and what it needs to know
+// about the tools. Session.run() passes it on the local provider; without
+// it the loop is the plain stand-in the tests drive.
+export type Scaffold = {
+  // Full tool names left out on top of disallowedTools (fewer tools for a
+  // small model to choose from).
+  drop?: ReadonlySet<string>;
+  // Shorter descriptions by full tool name, and parameters the model is not
+  // shown (the tool's defaults apply; validation is unchanged).
+  describe?: Readonly<Record<string, string>>;
+  hide?: Readonly<Record<string, readonly string[]>>;
+  // Tools whose results are web page data, and tools that act on a page.
+  pageTools: ReadonlySet<string>;
+  actionTools: ReadonlySet<string>;
+  // Arguments filled in before the guard sees the call (defaults a small
+  // model leaves out). Never loosens anything: the guard and the tool's
+  // own checks still run on the result.
+  prepare?: (tool: string, args: Record<string, unknown>, signal: AbortSignal) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  // A note added after a result, telling the model the exact next step.
+  hint?: (tool: string, args: Record<string, unknown>, text: string, isError: boolean, signal: AbortSignal) => string | null | Promise<string | null>;
+  // A call the result names as the one next step (a Locked click names
+  // request_unlock with its ref and label): made at once, through every
+  // gate, as if the model had made it.
+  follow?: (tool: string, args: Record<string, unknown>, text: string) => { tool: string; args: Record<string, unknown> } | null;
+  // The user's turn as the model gets it (page text in the context block
+  // gets the same treatment as other page data).
+  userTurn?: (text: string) => string;
+};
+
+const MAX_NUDGES = 2;
+const KEEP_GOING =
+  "[Orbi note, not from the user] Not spoken: the task is not done yet, so keep going with a tool call now. Click the link or button that leads to what the user asked for, or use find with other words, or read_page to see the page. Ask the user only for a detail only they know.";
+const ONE_AT_A_TIME = "Not run: one tool at a time. Look at the result of the call above first, then make the next call with what it showed.";
+const CLAIM_RETRY =
+  "[Orbi note, not from the user] That reply was not spoken: it says something was done, but no click, form_input or other action happened this turn. Do it now with the tools (find the link or button, then click it), or tell the user plainly that you could not.";
+export const LOOP_STOP = "I kept repeating the same step, so I stopped. Tell me what you'd like me to try instead.";
+export const REPLY_FALLBACK = "Sorry, I didn't get that done. Could you tell me again what you'd like?";
+const REPLY_RETRY =
+  "[Orbi note, not from the user] That reply was not spoken: it read like notes about the user or about tools. Reply now to the user directly, in one or two short sentences, speaking to them as \"you\" and about yourself as \"I\". Say what you did or found, or ask the one thing you need. If there is still work to do, call the tool instead.";
+
 export type LocalOptions = {
   baseUrl: string;
   model: string;
@@ -154,6 +195,7 @@ export type LocalOptions = {
   requestTimeoutMs?: number;
   onStatus?: (text: string) => void;
   fetch?: typeof fetch;
+  scaffold?: Scaffold;
 };
 
 type Offered = { full: string; server: ToolServer; tool: string };
@@ -215,6 +257,12 @@ function looksLikeToolCall(s: string): boolean {
   return t.startsWith("{") && /"(name|function)"\s*:/.test(t) && /"(parameters|arguments)/.test(t);
 }
 
+// ORBI_LOCAL_TRACE=1: every local tool call and its result (cut short) on
+// the server's console, for debugging a local model. Off by default.
+const trace = (line: string) => {
+  if (/^(1|true|on)$/i.test(process.env.ORBI_LOCAL_TRACE ?? "")) console.log(`[local] ${line.replace(/\s+/g, " ").slice(0, 600)}`);
+};
+
 const NOT_RUN = "Not run: the user interrupted.";
 const CUT_OFF = "Interrupted by the user before this finished. It may or may not have happened; check before doing it again.";
 const NO_VISION = "[A screenshot was taken, but this model can't see images. Use read_page, find or get_page_text to read the page.]";
@@ -230,6 +278,24 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // Ollama or plain chat completions, once the server has said.
   private flavor: Flavor | null = null;
   private warnedShort = false;
+  // Scaffold only: refs the model has been shown, and each
+  // offered tool's parameters by full name.
+  private refs = new Set<string>();
+  // What each ref is, as the page named it: 'link "Jackets"'.
+  private refNames = new Map<string, string>();
+  // The controls the last find (or its hint) showed, as 'link "Jackets" [ref_1]'.
+  private lastFound: string[] = [];
+  // The user's words this turn (no context block), and the control the
+  // last result named as the best match for them.
+  private userWords = "";
+  private best: string | null = null;
+  // The page those refs are from (origin and path).
+  private pageUrl = "";
+  private schemas = new Map<string, Record<string, unknown>>();
+  // Scaffold only: the tab the work is on (the user's active tab when they
+  // spoke, then the tab a tool opened or used). A call that leaves tabId out
+  // gets it, so every gate sees which tab it is for.
+  private lastTab: number | null = null;
 
   constructor(private prompt: AsyncIterable<SDKUserMessage>, private o: LocalOptions) {}
 
@@ -252,7 +318,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
 
   private offer() {
     const allowed = new Set(this.o.allowedTools);
-    const refused = new Set(this.o.disallowedTools ?? []);
+    const refused = new Set([...(this.o.disallowedTools ?? []), ...(this.o.scaffold?.drop ?? [])]);
     const all: Array<Offered & { def: LocalTool }> = [];
     for (const [sname, server] of Object.entries(this.o.servers)) {
       for (const def of server.list()) {
@@ -266,7 +332,11 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       const entry = { full: x.full, server: x.server, tool: x.tool };
       this.offered.set(name, entry);
       this.byFull.set(x.full, entry);
-      this.specs.push({ type: "function", function: { name, description: x.def.description, parameters: x.def.parameters } });
+      this.schemas.set(x.full, x.def.parameters);
+      const sc = this.o.scaffold;
+      const description = sc?.describe?.[x.full] ?? x.def.description;
+      const parameters = sc?.hide?.[x.full] ? hideParams(x.def.parameters, sc.hide[x.full]) : x.def.parameters;
+      this.specs.push({ type: "function", function: { name, description, parameters } });
     }
   }
 
@@ -284,7 +354,16 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       yield { type: "system", subtype: "init", session_id: this.sessionId, model: this.o.model, tools: this.specs.map((t) => t.function.name), mcp_servers: await this.mcpServerStatus() } as unknown as SDKMessage;
       for await (const m of this.prompt) {
         if (closed?.aborted) return;
-        this.turns.push([{ role: "user", content: userText(m) }]);
+        const text = userText(m);
+        if (this.o.scaffold) {
+          this.learn(text);
+          // Only from the user's turn (the context block), never page text.
+          this.userWords = text.split(/\n\s*\n/).at(-1)?.trim() ?? "";
+          this.best = null;
+          const active = /Active tab: tab (\d+), (?!an error page)/.exec(text);
+          if (active) this.lastTab = Number(active[1]);
+        }
+        this.turns.push([{ role: "user", content: this.o.scaffold?.userTurn ? this.o.scaffold.userTurn(text) : text }]);
         yield* this.runTurn();
         if (closed?.aborted) return;
       }
@@ -298,6 +377,16 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     const signal = this.o.abortController ? AbortSignal.any([ctl.signal, this.o.abortController.signal]) : ctl.signal;
     const turn = this.turns.at(-1)!;
     const max = this.o.maxSteps ?? MAX_STEPS;
+    const sc = this.o.scaffold;
+    const loops = sc ? new LoopGuard((full) => sc.actionTools.has(full)) : null;
+    let retried = false;
+    // Scaffold: page actions that worked this turn, to catch a reply that
+    // claims one when none happened.
+    let acted = 0;
+    // What those actions were: 'click button "Add to bag"', 'form_input ...'.
+    const didNames: string[] = [];
+    // Scaffold: how often the model was told not to stop yet this turn.
+    let nudged = 0;
     try {
       for (let step = 1; ; step++) {
         if (step > max) {
@@ -338,6 +427,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           return;
         }
         this.checkPromptSize(reply.promptTokens, messages);
+        trace(`model step ${step}: ${JSON.stringify(reply.content).slice(0, 300)} calls=${reply.toolCalls.map((c) => c.function.name).join(",")}`);
         const calls = reply.toolCalls;
         turn.push({ role: "assistant", content: reply.content, ...(calls.length ? { tool_calls: calls } : {}) });
         // A tool call written out as text instead of made is never spoken,
@@ -346,6 +436,49 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         if (!calls.length && looksLikeToolCall(said)) {
           this.o.onStatus?.("local model wrote a tool call as text instead of making it; not spoken");
           said = "Sorry, I got stuck on that. Could you ask me another way?";
+          if (sc && !retried) {
+            retried = true;
+            turn.push({ role: "user", content: "[Orbi note, not from the user] You wrote a tool call as text. Make it as a real tool call instead, or answer the user in plain words." });
+            continue;
+          }
+        }
+        // Scaffold: a final reply is speech. Reasoning, third-person notes
+        // about the user or tool talk is never spoken: the model gets one
+        // more try, then only its plain sentences are kept.
+        if (sc && !calls.length) {
+          said = speakable(said);
+          // A best match found but never used: say exactly what to press.
+          const bestRef = this.best ? /\[(ref_\d+)\]/.exec(this.best)?.[1] : undefined;
+          const bestName = this.best ? /"([^"]*)"/.exec(this.best)?.[1] ?? "" : "";
+          if (said && nudged < MAX_NUDGES && step < max - 1 && bestRef && !/\[locked\]/.test(this.best!) && !didNames.some((d) => sharesWord(d, bestName)) && isRequest(lastWords(turn))) {
+            this.o.onStatus?.(`(not spoken) local reply stopped before using the best match: ${said.slice(0, 120)}`);
+            nudged++;
+            turn.push({ role: "user", content: `[Orbi note, not from the user] Not spoken: you found ${this.best} but did not open it. Call click with ref ${bestRef} now, then carry on with what the user asked: ${JSON.stringify(lastWords(turn).slice(0, 200))}` });
+            continue;
+          }
+          if (said && nudged < MAX_NUDGES && step < max - 1 && (givesUp(said) || (announces(said) && !acted)) && isRequest(lastWords(turn))) {
+            this.o.onStatus?.(`(not spoken) local reply stopped before the task was done: ${said.slice(0, 120)}`);
+            nudged++;
+            const options = this.lastFound.length ? ` The last results showed: ${this.lastFound.slice(0, 12).join(", ")}.` : "";
+            turn.push({ role: "user", content: `${KEEP_GOING}${options} The user asked: ${JSON.stringify(lastWords(turn).slice(0, 200))}` });
+            continue;
+          }
+          if (said && claimsAction(said) && !claimBacked(said, didNames) && !retried && step < max) {
+            this.o.onStatus?.(`(not spoken) local reply claimed an action that did not happen: ${said.slice(0, 120)}`);
+            retried = true;
+            turn.push({ role: "user", content: CLAIM_RETRY });
+            continue;
+          }
+          if (!said || looksLikeReasoning(said)) {
+            this.o.onStatus?.(`(not spoken) local reply read like reasoning: ${reply.content.slice(0, 120)}`);
+            if (!retried && step < max) {
+              retried = true;
+              turn.push({ role: "user", content: REPLY_RETRY });
+              continue;
+            }
+            said = said.split(/(?<=[.!?])\s+/).filter((x) => x && !looksLikeReasoning(x)).join(" ") || REPLY_FALLBACK;
+            turn[turn.length - 1] = { role: "assistant", content: said };
+          }
         }
         yield this.assistant([
           ...(said ? [{ type: "text", text: said }] : []),
@@ -357,11 +490,59 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         }
         // One call at a time, in order, like the SDK runs these tools.
         const images: ContentPart[] = [];
+        let looped = false;
+        // Scaffold: one browser call per step (other tools aside).
+        // A small model that sends several at once guesses the later ones'
+        // refs before it has seen what the first returned.
+        let ran = 0;
         for (const call of calls) {
-          const out = signal.aborted ? { text: NOT_RUN, isError: true, images: [] } : await this.runTool(call, signal);
+          let out: Outcome;
+          const notBrowser = !(this.resolve(call.function.name)?.full ?? "").startsWith("mcp__browser__");
+          if (signal.aborted) out = { text: NOT_RUN, isError: true, images: [] };
+          else if (sc && !notBrowser && ran >= 1) out = { text: ONE_AT_A_TIME, isError: true, images: [] };
+          else if (looped || (loops && loops.check(this.callOf(call)))) {
+            looped = true;
+            out = { text: "Not run: the same step was repeated too many times, so the turn stopped.", isError: true, images: [] };
+          } else {
+            out = await this.runTool(call, signal);
+            if (!notBrowser) ran++;
+            const full = this.resolve(call.function.name)?.full ?? "";
+            if (sc && !out.isError && sc.actionTools.has(full)) {
+              acted++;
+              const ref = this.callOf(call).args.ref;
+              didNames.push(`${full.replace(/^mcp__\w+__/, "")} ${typeof ref === "string" ? (/\(That was the ([^\n]*)\.\)/.exec(out.text)?.[1] ?? "") : ""}`);
+            }
+          }
           turn.push({ role: "tool", tool_call_id: call.id, content: out.text });
           images.push(...out.images);
-          yield { type: "user", parent_tool_use_id: null, session_id: this.sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: out.text, is_error: out.isError }] } } as unknown as SDKMessage;
+          trace(`${call.function.name} ${call.function.arguments} -> ${out.text}`);
+          yield this.toolResult(call.id, out);
+          // Scaffold: the result names one next call (request_unlock for a
+          // Locked control): it is made now, through the same gates.
+          const next = !looped && !signal.aborted && sc?.follow ? sc.follow(this.resolve(call.function.name)?.full ?? "", this.callOf(call).args, out.text) : null;
+          if (next && this.byFull.has(next.tool)) {
+            const t = this.byFull.get(next.tool)!;
+            const id = `call_follow_${randomUUID().slice(0, 8)}`;
+            const fc: ToolCall = { id, type: "function", function: { name: t.full, arguments: JSON.stringify(next.args) } };
+            this.o.onStatus?.(`local: following up with ${t.tool}`);
+            turn.push({ role: "assistant", content: "", tool_calls: [fc] });
+            yield this.assistant([{ type: "tool_use", id, name: t.full, input: next.args }]);
+            const fo = await this.runTool(fc, signal);
+            if (!fo.isError) {
+              acted++;
+              didNames.push(`request_unlock ${String(next.args.label ?? "")}`);
+            }
+            trace(`(follow) ${t.tool} ${fc.function.arguments} -> ${fo.text}`);
+            turn.push({ role: "tool", tool_call_id: id, content: fo.text });
+            yield this.toolResult(id, fo);
+          }
+        }
+        if (looped) {
+          this.o.onStatus?.("local: loop detected, turn stopped");
+          turn.push({ role: "assistant", content: LOOP_STOP });
+          yield this.assistant([{ type: "text", text: LOOP_STOP }]);
+          yield this.result("error_max_turns", step);
+          return;
         }
         if (images.length) this.addImages(turn, images);
         if (signal.aborted) {
@@ -385,13 +566,63 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     this.o.onStatus?.(`local model: the prompt looks cut short (${promptTokens} of about ${approx} tokens). Give the model a context window of 16k tokens or more in your model server.`);
   }
 
+  private toolResult(id: string, out: Outcome): SDKMessage {
+    return { type: "user", parent_tool_use_id: null, session_id: this.sessionId, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: out.text, is_error: out.isError }] } } as unknown as SDKMessage;
+  }
+
+  // The call as the scaffold reads it: its full name and repaired args.
+  private callOf(call: ToolCall): Call {
+    const full = this.resolve(call.function.name)?.full ?? call.function.name;
+    const raw = (this.o.scaffold ? repairJson(call.function.arguments) : parseArgs(call.function.arguments)) ?? {};
+    return { name: full, args: this.o.scaffold ? coerceArgs(raw, this.schemas.get(full)) : raw };
+  }
+
+  // Scaffold: refs and tab ids in text the model was shown.
+  private learn(text: string) {
+    for (const m of text.matchAll(/\bref_\d+\b/g)) this.refs.add(m[0]);
+    const t = text.replace(/\\"/g, '"');
+    for (const m of t.matchAll(/-\s*([A-Za-z]+)\s+"([^"\n]{1,80})"[^\n\[]*\[(ref_\d+)\]/g)) this.refNames.set(m[3], `${m[1]} "${m[2]}"`);
+    for (const m of t.matchAll(/"ref":"(ref_\d+)","role":"([^"]*)","name":"([^"]{1,80})"/g)) this.refNames.set(m[1], `${m[2]} "${m[3]}"`);
+  }
+
   private async runTool(call: ToolCall, signal: AbortSignal): Promise<Outcome> {
     const refuse = (text: string): Outcome => ({ text, isError: true, images: [] });
+    const sc = this.o.scaffold;
     // 1. Only what was offered (allowedTools minus disallowedTools) runs.
     const t = this.resolve(call.function.name);
-    if (!t) return refuse(`Error: No such tool available: ${call.function.name}`);
-    const args = parseArgs(call.function.arguments);
-    if (!args) return refuse("Error: the tool's arguments must be a JSON object.");
+    if (!t) return refuse(`Error: No such tool available: ${call.function.name}${sc ? `. The tools are: ${this.specs.map((s) => s.function.name).join(", ")}.` : ""}`);
+    let args = sc ? repairJson(call.function.arguments) : parseArgs(call.function.arguments);
+    if (!args) return refuse(sc ? argsHelp(t.tool, this.schemas.get(t.full), "they were not a JSON object") : "Error: the tool's arguments must be a JSON object.");
+    if (sc) {
+      const schema = this.schemas.get(t.full);
+      args = coerceArgs(args, schema);
+      // No tab id: the tab the work is on is meant.
+      const takesTab = !!(schema?.properties as Record<string, unknown> | undefined)?.tabId;
+      if (takesTab && args.tabId === undefined && this.lastTab != null) args.tabId = this.lastTab;
+      if (typeof args.ref === "string" && !this.refs.has(args.ref)) {
+        return refuse(`Error: ${args.ref} is not a ref on the page. Call find with a few words of the control's name (for example find with query "create account") to get its ref, then use that ref.`);
+      }
+      // A label that names another control than the ref: the model mixed
+      // up its refs.
+      const named = typeof args.ref === "string" ? this.refNames.get(args.ref) : undefined;
+      if (named && typeof args.label === "string" && args.label.trim() && !sharesWord(named, args.label)) {
+        return refuse(`Error: ${args.ref} is ${named}, not "${args.label}". Call find with query "${args.label.slice(0, 40)}" to get the right ref.`);
+      }
+      if (sc.prepare) {
+        let prepared;
+        try {
+          prepared = await unlessAborted(Promise.resolve(sc.prepare(t.full, args, signal)), signal);
+        } catch (e) {
+          // prepare refuses a call by throwing; its message is the result.
+          return refuse((e as Error).message);
+        }
+        if (prepared === ABORTED) return refuse(NOT_RUN);
+        args = prepared;
+      }
+      if (typeof args.tabId === "number") this.lastTab = args.tabId;
+      const missing = ((schema?.required as string[]) ?? []).filter((k) => args![k] === undefined);
+      if (missing.length) return refuse(argsHelp(t.tool, schema, `${missing.join(", ")} missing`));
+    }
     // 2. The PreToolUse guard decides first.
     const pre = await unlessAborted(this.preToolUse(t.full, args, call.id, signal), signal);
     if (pre === ABORTED || signal.aborted) return refuse(NOT_RUN);
@@ -410,7 +641,51 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     // 4. The PostToolUse hooks, after every call that ran.
     const post = this.postToolUse(t.full, args, res, call.id, signal);
     const notes = await unlessAborted(post, signal);
-    return this.outcome(res, notes === ABORTED ? [] : notes);
+    const out = this.outcome(res, notes === ABORTED ? [] : notes, sc?.pageTools.has(t.full) === true);
+    if (sc && !out.isError && /^mcp__browser__(tabs_create|navigate)$/.test(t.full)) {
+      const opened = /"tabId"\s*:\s*(\d+)/.exec(out.text);
+      if (opened) this.lastTab = Number(opened[1]);
+    }
+    if (sc) {
+      // Validation errors from the tool's own schema, said shorter.
+      if (out.isError && /^Input validation error:/.test(out.text)) out.text = argsHelp(t.tool, this.schemas.get(t.full), out.text.replace(/^Input validation error:\s*/, ""));
+      if (!out.isError && typeof args.ref === "string" && this.refNames.has(args.ref) && /__(click|form_input)$/.test(t.full)) out.text += `\n(That was the ${this.refNames.get(args.ref)}.)`;
+      // A field action on a link: the form is on the page the link opens.
+      const was = typeof args.ref === "string" ? this.refNames.get(args.ref) : undefined;
+      if (out.isError && /__form_input$/.test(t.full) && /not a form field/i.test(out.text) && was && /^(link|button)\b/.test(was)) {
+        out.text += `\n${args.ref} is the ${was}. Click it to open that page, then fill in the form there.`;
+      }
+      const hint = sc.hint ? await unlessAborted(Promise.resolve(sc.hint(t.full, args, out.text, out.isError, signal)).catch(() => null), signal) : null;
+      if (hint && hint !== ABORTED) out.text += `\n${hint}`;
+      // Refs belong to one page: a result from another page starts over.
+      const url = /Now on: (?:"[^"\n]*", )?(\S+)/.exec(out.text)?.[1] ?? /"url":"([^"]+)"/.exec(out.text)?.[1];
+      if (url) {
+        let page = url;
+        try {
+          const u = new URL(url);
+          page = u.origin + u.pathname;
+        } catch {}
+        if (this.pageUrl && page !== this.pageUrl) {
+          this.refs.clear();
+          this.refNames.clear();
+          this.lastFound = [];
+        }
+        this.pageUrl = page;
+      }
+      this.learn(out.text);
+      const t2 = out.text.replace(/\\"/g, '"');
+      const found = [...t2.matchAll(/"ref":"(ref_\d+)","role":"([^"]*)","name":"([^"]{1,60})"(,"locked":true)?/g)].map((m) => `${m[2]} "${m[3]}" [${m[1]}]${m[4] ? " [locked]" : ""}`);
+      const listed = [...t2.matchAll(/-?\s*(link|button|combobox|textbox|checkbox)\s+"([^"\n]{1,60})"[^\n\[]*\[(ref_\d+)\]( \[locked\])?/g)].map((m) => `${m[1]} "${m[2]}" [${m[3]}]${m[4] ? " [locked]" : ""}`);
+      if (found.length || listed.length) {
+        this.lastFound = [...new Set([...found, ...listed])];
+        // The control whose name best fits the user's words, said plainly:
+        // a small model often finds it and then stops.
+        const best = bestMatch(this.userWords, this.lastFound);
+        this.best = best;
+        if (best && !out.text.includes("Best match")) out.text += `\nBest match for what the user asked: ${best}. If that is what they want, use it now.`;
+      }
+    }
+    return out;
   }
 
   private hookInput(event: "PreToolUse" | "PostToolUse", tool: string, args: Record<string, unknown>, id: string, extra: Record<string, unknown> = {}): HookInput {
@@ -473,7 +748,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // An MCP result as the model gets it: the text (cut when long), each
   // image as an image (vision) or a short note, then what the PostToolUse
   // hooks added, never cut.
-  private outcome(res: CallResult, notes: string[]): Outcome {
+  private outcome(res: CallResult, notes: string[], page = false): Outcome {
     const parts: string[] = [];
     const images: ContentPart[] = [];
     for (const b of Array.isArray(res?.content) ? res.content : []) {
@@ -486,7 +761,8 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       } else parts.push(`[${String(b?.type)} content left out]`);
     }
     let text = parts.join("\n").trim() || (res?.isError ? "Error." : "Done.");
-    if (text.length > RESULT_MAX_CHARS) text = `${text.slice(0, RESULT_MAX_CHARS)}\n[Cut here: the result was ${text.length} characters long.]`;
+    if (page && !res?.isError) text = pageData(text);
+    else if (text.length > RESULT_MAX_CHARS) text = `${text.slice(0, RESULT_MAX_CHARS)}\n[Cut here: the result was ${text.length} characters long.]`;
     if (notes.length) text += `\n\n${notes.join("\n\n")}`;
     return { text, isError: !!res?.isError, images };
   }
@@ -527,6 +803,78 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   private result(subtype: "success" | "error_during_execution" | "error_max_turns", steps: number): SDKMessage {
     return { type: "result", subtype, is_error: subtype !== "success", num_turns: steps, session_id: this.sessionId, uuid: randomUUID() } as unknown as SDKMessage;
   }
+}
+
+// Whether two names share a word of three letters or more ("Checkout" and
+// "Proceed to checkout").
+function sharesWord(a: string, b: string): boolean {
+  const words = (s: string) => new Set(s.toLowerCase().replace(/check ?out/g, "checkout").split(/[^a-z0-9]+/).filter((w) => w.length >= 3));
+  const wa = words(a);
+  return [...words(b)].some((w) => wa.has(w) || [...wa].some((x) => x.startsWith(w) || w.startsWith(x)));
+}
+
+// The user's own words in a turn: the last paragraph of its first message
+// (the context block and setting notes come before them).
+function lastWords(turn: ChatMessage[]): string {
+  const first = turn[0];
+  const text = first?.role === "user" && typeof first.content === "string" ? first.content : "";
+  return text.split(/\n\s*\n/).at(-1)?.trim() ?? "";
+}
+
+// A reply that stops before the task is done.
+const GIVES_UP = /\b(couldn'?t|could not|can'?t|cannot|unable to|wasn'?t able|didn'?t find|not find|no .{0,20} found)\b|what should i do|what'?s missing|what would you like me to do/i;
+function givesUp(text: string): boolean {
+  return GIVES_UP.test(text);
+}
+
+// A reply that only says what it is about to do ("Looking for jackets.").
+const ANNOUNCES = /^\s*(looking|searching|opening|finding|checking|going|getting|adding|trying|heading|navigating|clicking|filling|selecting)\b|^\s*(i'?ll|i will|let me|i'?m going to|i am going to)\b/i;
+function announces(text: string): boolean {
+  return ANNOUNCES.test(text);
+}
+
+// Words that ask for something done, not a question or a chat.
+function isRequest(words: string): boolean {
+  const w = words.trim().toLowerCase();
+  if (!w || /\?\s*$/.test(w) || /^(what|why|how|who|where|when|which|is|are|do|does|did|can i|tell me|hi|hello|thanks|thank you)\b/.test(w)) return false;
+  return w.split(/\s+/).length >= 2;
+}
+
+const STOP = new Set("the a an and or to of for in on at it is this that these those me my you your i we our want wanna would like need please can could buy get look looking find open show see click press tap go take put add some any one two all now then just with from".split(" "));
+const words = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w));
+
+// The one link or button among found whose name shares the most words with
+// the user's words (at least one), or null when none does or two tie.
+function bestMatch(userWords: string, found: string[]): string | null {
+  const want = words(userWords);
+  if (!want.length) return null;
+  const scored = found
+    .filter((f) => /^(link|button)\b/.test(f))
+    .map((f) => {
+      const name = words(/"([^"]*)"/.exec(f)?.[1] ?? "");
+      return { f, n: want.filter((w) => name.some((x) => x === w || x.startsWith(w) || w.startsWith(x))).length };
+    })
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n);
+  if (!scored.length || (scored[1] && scored[1].n === scored[0].n)) return null;
+  return scored[0].f;
+}
+
+// Whether this turn's actions back what the reply says happened: adding to
+// a bag needs a press of an "add" control, filling in needs a form_input,
+// anything else needs some action.
+function claimBacked(said: string, did: string[]): boolean {
+  if (/\b(added|add(ed)? (it|them)|in your (bag|cart))\b/i.test(said)) return did.some((d) => /\badd\b/i.test(d));
+  if (/\b(filled|entered|typed)\b/i.test(said)) return did.some((d) => /^(form_input|type)\b/.test(d));
+  return did.length > 0;
+}
+
+// A tool's parameters without the ones in hide (also out of required).
+function hideParams(p: Record<string, unknown>, hide: readonly string[]): Record<string, unknown> {
+  const props = { ...((p.properties as Record<string, unknown>) ?? {}) };
+  for (const h of hide) delete props[h];
+  const required = ((p.required as string[]) ?? []).filter((r) => !hide.includes(r));
+  return { ...p, properties: props, ...(required.length ? { required } : { required: undefined }) };
 }
 
 export function localQuery({ prompt, options }: { prompt: AsyncIterable<SDKUserMessage>; options: LocalOptions }): LocalQuery {

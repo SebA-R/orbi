@@ -97,7 +97,7 @@ $("speed").min = String(SPEED_MIN);
 $("speed").max = String(SPEED_MAX);
 const showSpeed = () => { $("speed-out").textContent = `${Number($("speed").value).toFixed(1)}x`; };
 
-const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no"), chip: $("danger-chip") }, saveSettings);
+const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no"), chip: $("danger-chip"), localNote: $("danger-local") }, saveSettings);
 
 // Model provider: the Local chip names the model and whether the agent
 // server can reach it (POST /local-models). Only the latest check counts.

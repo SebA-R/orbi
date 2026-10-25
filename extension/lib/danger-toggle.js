@@ -6,13 +6,21 @@
 // els: { box, confirm, yes, no, chip? } where box is the checkbox, confirm
 // the hidden element holding the yes and no buttons, and chip an optional
 // header indicator shown while it is on. save(patch) resolves to the saved
-// settings (lib/settings.js saveSettings).
+// settings (lib/settings.js saveSettings). localNote, optional, is shown
+// while Danger mode is on and the agent runs on a local model, which keeps
+// every lock (the worker and the agent server both ignore Danger mode then).
+export const DANGER_LOCAL_NOTE = "Danger mode is off while using a local model. Locks and the spoken yes stay on.";
 export function bindDangerToggle(els, save) {
-  const { box, confirm, yes, no, chip } = els;
+  const { box, confirm, yes, no, chip, localNote } = els;
+  let provider = "claude";
   const show = (on) => {
     box.checked = on === true;
     confirm.hidden = true;
     if (chip) chip.hidden = on !== true;
+    if (localNote) {
+      localNote.textContent = DANGER_LOCAL_NOTE;
+      localNote.hidden = !(on === true && provider === "local");
+    }
   };
   box.addEventListener("change", async () => {
     if (box.checked) {
@@ -32,5 +40,10 @@ export function bindDangerToggle(els, save) {
     confirm.hidden = true;
     box.focus();
   });
-  return { fill: (settings) => show(settings.dangerMode) };
+  return {
+    fill: (settings) => {
+      provider = settings.provider;
+      show(settings.dangerMode);
+    },
+  };
 }

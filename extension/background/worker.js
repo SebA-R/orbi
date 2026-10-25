@@ -121,8 +121,12 @@ const voice = installVoiceRelay({
 // Danger mode, cached from chrome.storage.local and kept current by
 // onChanged below. Starts off, so a page call before the first load is
 // locked as usual.
+// On a local model Danger mode lifts nothing: small models are easier to
+// steer with page text, so every lock stays (the agent server does the same
+// for the spoken yes and the checkout page block).
 let dangerMode = false;
-const dangerReady = loadSettings().then((s) => { dangerMode = s.dangerMode; }).catch(() => { dangerMode = false; });
+let providerLocal = false;
+const dangerReady = loadSettings().then((s) => { dangerMode = s.dangerMode; providerLocal = s.provider === "local"; }).catch(() => { dangerMode = false; });
 // Follow: the tab Orbi acts on comes to the front (follow.js). A tab or
 // window the user picks themselves pauses that until their next turn.
 const follow = createFollower();
@@ -136,7 +140,7 @@ const paceReady = loadSettings().then((s) => { watchablePace = s.watchablePace; 
 const router = createRouter({
   follow,
   onAgentTab: frame.onAgentTab,
-  dangerMode: () => dangerReady.then(() => dangerMode),
+  dangerMode: () => dangerReady.then(() => dangerMode && !providerLocal),
   watchable: () => paceReady.then(() => watchablePace),
 });
 // A paced click, typing or scroll stops when the user barges in, switches
@@ -217,6 +221,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     showCursor = changes.showCursor.newValue !== false;
     if (!showCursor) cursor.hide();
   }
+  if (changes.provider) providerLocal = changes.provider.newValue === "local";
   if (changes.dangerMode) {
     // Straight from the change, so the very next page call has it.
     dangerMode = changes.dangerMode.newValue === true;

@@ -22,6 +22,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
+import { envProviderSettings } from "./local/config.ts";
 
 const require = createRequire(import.meta.url);
 const EXT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "extension", "content");
@@ -57,9 +58,15 @@ const PROTECT_SRC = fs.readFileSync(path.join(EXT, "protect.js"), "utf8");
 // CLEARCART_BROWSE_MODE: CLEARCART_DANGER_MODE=1. Off unless set. While on,
 // the button lock is off (every click, key and form_input goes through);
 // password typing is still refused, and masking and the blocklist do not
-// change.
+// change. Never on a local model (CLEARCART_PROVIDER=local): every lock
+// stays, as on the extension path.
 export function ocicDangerMode(): boolean {
-  return /^(1|true|on|yes)$/i.test(process.env.CLEARCART_DANGER_MODE?.trim() || "");
+  if (!/^(1|true|on|yes)$/i.test(process.env.CLEARCART_DANGER_MODE?.trim() || "")) return false;
+  try {
+    return envProviderSettings().provider !== "local";
+  } catch {
+    return false;
+  }
 }
 
 // The classifier inside the page, on a private global object so the page's

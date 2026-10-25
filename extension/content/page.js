@@ -457,9 +457,16 @@
     if (tag === "SELECT") {
       var s = String(value);
       var opts = Array.prototype.slice.call(el.options);
+      // Spacing, case and punctuation aside: "Nomad Taupe black" picks
+      // "Nomad Taupe/Black".
+      var loose = function (t) { return clean(t).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); };
       var hit = opts.find(function (o) { return o.value === s; }) ||
-        opts.find(function (o) { return clean(o.textContent).toLowerCase() === s.trim().toLowerCase(); });
-      if (!hit) throw PageError(ERR.BAD_REQUEST, "no option matching value");
+        opts.find(function (o) { return clean(o.textContent).toLowerCase() === s.trim().toLowerCase(); }) ||
+        opts.find(function (o) { return loose(o.textContent) === loose(s) && loose(s) !== ""; });
+      if (!hit) {
+        var names = opts.slice(0, 15).map(function (o) { return clean(Mask.maskValue(o.textContent, null), 40); }).filter(Boolean);
+        throw PageError(ERR.BAD_REQUEST, "no option matching value" + (names.length ? ". The options are: " + names.join(", ") : ""));
+      }
       // Uncheck-only, for a dropdown: the AI may move the choice away from
       // an opt-in option ("Subscribe and save"), never onto one.
       // Danger mode lifts this too.

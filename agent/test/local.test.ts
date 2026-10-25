@@ -100,6 +100,8 @@ function localSession(modelUrl: string, setup?: (s: Session) => void) {
   const s = new Session((m) => sent.push(m));
   s.pageContext = null;
   s.lookup = async (host) => [{ address: /rebind/.test(host) ? "127.0.0.1" : "93.184.215.14" }];
+  // The plain loop: local-harden.test.ts covers the small-model scaffolding.
+  s.scaffoldLocal = false;
   setup?.(s);
   const done = s.run();
   return {

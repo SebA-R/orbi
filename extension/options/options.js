@@ -69,7 +69,7 @@ const readSimple = () => Object.fromEntries([...simple.keys()].map((k) => [k, re
 const simpleDefaults = () => Object.fromEntries([...simple.keys()].map((k) => [k, DEFAULTS[k]]));
 
 // Saves on its own (not with the Save button), after the confirm press.
-const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no") }, saveSettings);
+const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no"), localNote: $("danger-local") }, saveSettings);
 
 // The note under Speak replies: subtitles off too, or voice off on the
 // server (the switch is locked then). From the switches as they stand.
@@ -520,10 +520,10 @@ async function refreshSetup() {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   const keys = [...simple.keys()].filter((k) => k in changes);
-  if (!keys.length && !changes.dangerMode) return;
+  if (!keys.length && !changes.dangerMode && !changes.provider) return;
   loadSettings().then((s) => {
     for (const k of keys) writeSetting(k, s[k]);
-    if (changes.dangerMode) danger.fill(s);
+    if (changes.dangerMode || changes.provider) danger.fill(s);
     showSpeed();
     showSpeakNote();
   });
