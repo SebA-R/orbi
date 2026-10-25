@@ -448,6 +448,64 @@
     ".b.opt{background:#92400e}" +
     "@media (prefers-color-scheme: dark){.b{background:#f3f4f6;color:#111827}.b.opt{background:#fcd34d;color:#422006}}";
 
+  // Grayed-out look for every control and field the AI is locked out of:
+  // a data attribute on the page's own element plus one stylesheet. Visual
+  // only. Nothing sets disabled, aria-disabled, inert or pointer-events, so
+  // a person (and their screen reader) can still press or type as before.
+  var MARK = "data-clearcart-locked";
+  var MARK_STYLE_ID = "clearcart-lock-style";
+  var MARK_CSS = "[" + MARK + "]{filter:grayscale(1)!important;opacity:.45!important;" +
+    "outline:2px dashed #6b7280!important;outline-offset:2px!important}";
+  // Elements pay_now has been unlocked to press: no longer grayed.
+  var released = typeof WeakSet === "function" ? new WeakSet() : null;
+
+  // Card, password and other fields of a card or password form.
+  function lockedFields(doc) {
+    var out = [];
+    var kinds = new Map();
+    var fields = doc.querySelectorAll("input,textarea,select");
+    for (var i = 0; i < fields.length && out.length < 200; i++) {
+      var f = fields[i];
+      var form = f.form;
+      if (form && !kinds.has(form)) kinds.set(form, formKind(form));
+      if (isPaymentInput(f) || inputType(f) === "password" || (form && kinds.get(form))) out.push(f);
+    }
+    return out;
+  }
+
+  // Sets the attribute on exactly the elements in want and clears it
+  // everywhere else (re-rendered or unlocked controls).
+  function markLocked(doc, want) {
+    if (!doc.getElementById(MARK_STYLE_ID)) {
+      var style = doc.createElement("style");
+      style.id = MARK_STYLE_ID;
+      style.textContent = MARK_CSS;
+      (doc.head || doc.documentElement).appendChild(style);
+    }
+    var keep = new Set();
+    for (var i = 0; i < want.length; i++) {
+      if (released && released.has(want[i])) continue;
+      keep.add(want[i]);
+      if (!want[i].hasAttribute(MARK)) want[i].setAttribute(MARK, "");
+    }
+    var old = doc.querySelectorAll("[" + MARK + "]");
+    for (var j = 0; j < old.length; j++) if (!keep.has(old[j])) old[j].removeAttribute(MARK);
+  }
+
+  function clearMarks(doc) {
+    var old = doc.querySelectorAll("[" + MARK + "]");
+    for (var i = 0; i < old.length; i++) old[i].removeAttribute(MARK);
+    var style = doc.getElementById(MARK_STYLE_ID);
+    if (style && style.parentNode) style.parentNode.removeChild(style);
+  }
+
+  // The single-use press: the target stops looking locked.
+  function release(el) {
+    if (!el) return;
+    if (released) released.add(el);
+    el.removeAttribute(MARK);
+  }
+
   var badgeState = null;
 
   function visibleRect(el) {
@@ -470,19 +528,29 @@
     if (badgeState === st) badgeState = null;
   }
 
+  // Removes badges, marks and the stylesheet, for when the extension that
+  // drew them is disabled or reloaded.
+  function teardown(st) {
+    stop(st);
+    if (st.host.parentNode) st.host.parentNode.removeChild(st.host);
+    clearMarks(st.doc);
+  }
+
   function paint() {
     var st = badgeState;
     if (!st) return;
     st.pending = false;
     if (!st.host.isConnected) return stop(st);
+    if (st.alive && !st.alive()) return teardown(st);
     var doc = st.doc;
     var layer = st.layer;
     while (layer.firstChild) layer.removeChild(layer.firstChild);
     var view = doc.defaultView;
     var vh = (view && view.innerHeight) || 0;
     var vw = (view && view.innerWidth) || 0;
-    var locks = listLocks(doc, 60);
-    for (var i = 0; i < locks.length; i++) {
+    var locks = listLocks(doc);
+    markLocked(doc, locks.filter(function (x) { return blocks(x.lock); }).map(function (x) { return x.el; }).concat(lockedFields(doc)));
+    for (var i = 0; i < locks.length && i < 60; i++) {
       var r = visibleRect(locks[i].el);
       if (!r || r.bottom < 0 || r.right < 0 || (vh && r.top > vh) || (vw && r.left > vw)) continue;
       var b = doc.createElement("span");
@@ -505,14 +573,16 @@
     else setTimeout(paint, 16);
   }
 
-  // Draws (and keeps drawing) the badges for doc. Idempotent. Returns the
-  // number of badges on screen.
-  function showBadges(doc) {
+  // Draws (and keeps drawing) the badges and grayed-out marks for doc.
+  // Idempotent. Returns the number of badges on screen. opts.alive is
+  // checked on every repaint (scroll, resize, DOM change); once it returns
+  // false, everything drawn is removed.
+  function showBadges(doc, opts) {
     doc = doc || root.document;
     if (!doc || !doc.documentElement || !doc.createElement) return 0;
     if (badgeState && badgeState.doc === doc && badgeState.host.isConnected) {
       paint();
-      return badgeState.count;
+      return badgeState ? badgeState.count : 0;
     }
     if (badgeState) stop(badgeState);
     var old = doc.getElementById(HOST_ID);
@@ -530,7 +600,7 @@
     shadow.appendChild(style);
     shadow.appendChild(layer);
     doc.documentElement.appendChild(host);
-    badgeState = { doc: doc, host: host, layer: layer, pending: false, count: 0 };
+    badgeState = { doc: doc, host: host, layer: layer, pending: false, count: 0, alive: opts && opts.alive };
     var view = doc.defaultView;
     if (view && view.addEventListener) {
       view.addEventListener("scroll", schedule, { passive: true, capture: true });
@@ -565,7 +635,9 @@
     message: message,
     listLocks: listLocks,
     showBadges: showBadges,
+    release: release,
     BADGE_HOST_ID: HOST_ID,
+    LOCKED_ATTR: MARK,
   };
   root.ClearcartProtect = api;
   if (typeof module === "object" && module && module.exports) module.exports = api;
