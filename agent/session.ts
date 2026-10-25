@@ -12,7 +12,8 @@ import { z } from "zod";
 import { callBrowserTool, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
-import { ALLOWED_ORIGINS, allowedSite, EXTRA_SITES, STORE_ORIGIN } from "./origins.ts";
+import { ocicLockNote, ocicLockReason } from "./ocic-lock.ts";
+import { ALLOWED_ORIGINS, allowedSite, EXTRA_SITES, isCheckoutUrl, originOf, STORE_ORIGIN } from "./origins.ts";
 import { payNow, type PayState } from "./pay.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
 
@@ -25,7 +26,7 @@ const BROWSER_SERVER =
 // store). pay_now stays store-only.
 
 const SITES_PROMPT = EXTRA_SITES.length
-  ? `\n\nOther sites\n- You may also browse ${EXTRA_SITES.join(", ")}. On those sites stop once the item is in the cart and the cart page is open: never start checkout, never log in or create an account, never enter an address, card or other personal details, and decline marketing sign-ups and non-essential cookies. If a CAPTCHA, bot check or access-denied page appears, do not try to get around it; tell the user.`
+  ? `\n\nOther sites\n- You may also browse ${EXTRA_SITES.join(", ")}. On those sites stop once the item is in the cart and the cart page is open: never start checkout (checkout, payment and sign-in buttons are locked there, and checkout pages will not open), never log in or create an account, never enter an address, card or other personal details, and decline marketing sign-ups and non-essential cookies. If a CAPTCHA, bot check or access-denied page appears, do not try to get around it; tell the user.`
   : "";
 
 const B = "mcp__browser__";
@@ -33,9 +34,12 @@ const C = "mcp__clearcart__";
 
 // Tools Claude never gets. execute_code is the big one: its sandbox can call
 // every browser tool from inside one call, which would step around the
-// per-tool guard below.
-const DISALLOWED_BROWSER = [
+// per-tool guard below. javascript_tool would let page script press a
+// locked button (button lock); pay_now still uses it over our own bridge
+// client, which Claude cannot reach.
+export const DISALLOWED_BROWSER = [
   "execute_code",
+  "javascript_tool",
   "gif_creator",
   "read_network_requests",
   "file_upload",
@@ -53,7 +57,7 @@ const DISALLOWED_BROWSER = [
   "update_plan",
 ].map((t) => B + t);
 
-const ALLOWED = [
+export const ALLOWED = [
   "tabs_context_mcp",
   "tabs_create_mcp",
   "tabs_close_mcp",
@@ -63,7 +67,6 @@ const ALLOWED = [
   "form_input",
   "get_page_text",
   "read_page",
-  "javascript_tool",
   "read_console_messages",
   "set_tab_focus",
 ].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now"]);
@@ -84,6 +87,23 @@ const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
 
 function extPrompt(prompt: string): string {
   return prompt.replace("calling tabs_context_mcp with createIfEmpty true", "calling tabs_context, and tabs_create if the group has no tabs");
+}
+
+// Button lock for navigation: checkout and payment pages are off limits on
+// every site except the store, where pay_now runs. Both browser paths.
+export function navigateLockReason(url: string): string | null {
+  if (url === "back" || url === "forward") return null;
+  if (isCheckoutUrl(url) && originOf(url) !== STORE_ORIGIN) {
+    return "Locked: Clearcart does not open checkout or payment pages on this site. Stop at the cart and tell the user.";
+  }
+  return null;
+}
+
+// Text of an MCP tool result as the PostToolUse hook receives it.
+function responseText(r: unknown): string {
+  if (typeof r === "string") return r;
+  const items = Array.isArray(r) ? r : Array.isArray((r as any)?.content) ? (r as any).content : [];
+  return items.filter((c: any) => c && c.type === "text").map((c: any) => String(c.text ?? "")).join("\n");
 }
 
 export type ServerMessage =
@@ -184,10 +204,36 @@ export class Session {
           return deny(`Blocked: Clearcart only browses ${[...ALLOWED_ORIGINS].join(", ")}.`);
         }
       }
+      if (name === B + "navigate") {
+        const locked = navigateLockReason(String(args.url || ""));
+        if (locked) return deny(locked);
+      }
+      // Button lock, OCIC path: our own extension enforces it in the
+      // extension; here the third-party one gets it from this hook.
+      if (!extMode()) {
+        const locked = await ocicLockReason(name.slice(B.length), args);
+        if (locked) {
+          this.status(`locked: ${name.slice(B.length)}`);
+          return deny(locked);
+        }
+      }
       if (typeof args.tabId === "number") this.state.lastTabId = args.tabId;
       else if (typeof args.tabId === "string" && /^\d+$/.test(args.tabId)) this.state.lastTabId = Number(args.tabId);
     }
     return {};
+  };
+
+  // OCIC path: after read_page or find, name the locked refs for Claude and
+  // draw the lock badges in the tab. Our own extension does both itself.
+  private lockNotes: HookCallback = async (input) => {
+    if (input.hook_event_name !== "PostToolUse" || !input.tool_name.startsWith(B) || extMode()) return {};
+    const note = await ocicLockNote(
+      input.tool_name.slice(B.length),
+      (input.tool_input || {}) as Record<string, unknown>,
+      responseText((input as any).tool_response)
+    ).catch(() => null);
+    if (!note) return {};
+    return { hookSpecificOutput: { hookEventName: "PostToolUse" as const, additionalContext: note } };
   };
 
   // After every browser call, any MCP-group tab that left the store (a clicked
@@ -338,7 +384,7 @@ export class Session {
         // Anything not in allowedTools is denied without prompting; the
         // PreToolUse guard gates the allowed ones per call.
         permissionMode: "dontAsk",
-        hooks: { PreToolUse: [{ hooks: [this.guard] }], PostToolUse: [{ hooks: [this.sweep] }] },
+        hooks: { PreToolUse: [{ hooks: [this.guard] }], PostToolUse: [{ hooks: [this.sweep, this.lockNotes] }] },
         stderr: (d) => {
           if (process.env.CLEARCART_DEBUG) process.stderr.write(`[claude] ${d}`);
         },
