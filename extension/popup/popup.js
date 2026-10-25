@@ -96,6 +96,7 @@ function fill(s) {
   danger.fill(s);
   $("follow-tab").checked = s.followTab;
   $("watchable-pace").checked = s.watchablePace;
+  $("show-cursor").checked = s.showCursor;
   $("guided-mode").checked = s.guidedMode;
   showSpeed();
   showVoice();
@@ -113,6 +114,7 @@ $("sounds").addEventListener("change", () => save({ sounds: $("sounds").checked 
 $("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));
 $("follow-tab").addEventListener("change", () => save({ followTab: $("follow-tab").checked }));
 $("watchable-pace").addEventListener("change", () => save({ watchablePace: $("watchable-pace").checked }));
+$("show-cursor").addEventListener("change", () => save({ showCursor: $("show-cursor").checked }));
 $("guided-mode").addEventListener("change", () => save({ guidedMode: $("guided-mode").checked }));
 
 // Links
