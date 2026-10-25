@@ -31,17 +31,24 @@ export async function requestSiteAccess(chromeApi = globalThis.chrome) {
 export const micState = micPermission;
 
 // GET /healthz on the configured agent server. voice is null when unknown.
+// cartesia: whether the server has a Cartesia key (false: basic voice),
+// null when unknown (not reachable, or a server from before basic voice).
 export async function agentHealth(agentUrl, fetchFn = globalThis.fetch, timeoutMs = 3000) {
   const url = `${endpoints(agentUrl).http}/healthz`;
+  const none = { connected: false, voice: null, cartesia: null, url };
   try {
     const res = await fetchFn(url, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok) return { connected: false, voice: null, url };
+    if (!res.ok) return none;
     const body = await res.json();
-    return { connected: body?.ok === true, voice: typeof body?.voice === "boolean" ? body.voice : null, url };
+    const bool = (v) => (typeof v === "boolean" ? v : null);
+    return { connected: body?.ok === true, voice: bool(body?.voice), cartesia: bool(body?.cartesia), url };
   } catch {
-    return { connected: false, voice: null, url };
+    return none;
   }
 }
+
+// Basic voice: the server is up and has no Cartesia key (voice on).
+export const basicVoice = (health) => !!health && health.connected === true && health.voice !== false && health.cartesia === false;
 
 // What the badge and the update check care about: the two grants only the
 // user can give. A mic state the worker can't read ("unknown") is not

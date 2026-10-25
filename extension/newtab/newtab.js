@@ -9,6 +9,8 @@
 // box and the setting: with "Use the Orbi new tab page" off it forwards
 // to Chrome's own new tab page.
 import { loadSettings } from "../lib/settings.js";
+import { agentHealth, basicVoice } from "../lib/setup.js";
+import { mountTypeBox } from "../lib/typebox.js";
 import { startVoice } from "./voice.js";
 
 export const CHROME_NTP = "chrome://new-tab-page/";
@@ -58,6 +60,10 @@ function start() {
   });
 
   $("settings").addEventListener("click", (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
+
+  // Basic voice (no Cartesia key): the "Type to Orbi" box.
+  const typeBox = mountTypeBox($("type-form"));
+  agentHealth(settings.agentUrl).then((h) => typeBox.show(basicVoice(h)), () => {});
 
   document.documentElement.dataset.ready = "true";
 }
