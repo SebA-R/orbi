@@ -32,6 +32,7 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | Blocked sites | the suggested list | never opened in open web mode; one entry per line, see [Which sites](#which-sites) |
 | Hold-to-talk key | Space | also Option+Space, Ctrl+Shift+Space or F9 |
 | Speech speed | 1 | 0.6 to 2 |
+| Speak replies | on | off: replies are not spoken (no Cartesia speech is requested) and show whole in the subtitles; you can still talk. Separate from the server's `CLEARCART_VOICE=false`, which locks this switch |
 | Subtitles | on | |
 | Quiet other tabs while talking | on | fades out and mutes audible tabs while you talk and Clearcart answers |
 | Use the Clearcart new tab page | on | off: new tabs forward to `chrome://new-tab-page/`, see [New tab page](#new-tab-page) |
