@@ -119,7 +119,6 @@ export const RT = Object.freeze({
   VOICE_ERROR: "voice.error",
   TTS_SPEAK: "tts.speak",
   TTS_STOP: "tts.stop",
-  CHIME: "chime",
   SUBTITLE: "subtitle",
   FRAME: "frame",
   SETTINGS_CHANGED: "settings.changed",

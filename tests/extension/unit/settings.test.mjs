@@ -96,6 +96,13 @@ test("parseOriginLines takes one site per line and reports bad lines", () => {
   assert.deepEqual(r.bad, ["javascript:alert(1)", "https://me:pw@shop.example"]);
 });
 
+test("sounds defaults on and keeps a stored false", () => {
+  assert.equal(DEFAULTS.sounds, true);
+  assert.equal(normalize({}).sounds, true);
+  assert.equal(normalize({ sounds: false }).sounds, false);
+  assert.equal(normalize({ sounds: "off" }).sounds, true);
+});
+
 test("guidedMode defaults on, keeps booleans only, and round-trips through storage", async () => {
   assert.equal(DEFAULTS.guidedMode, true);
   assert.equal(normalize({}).guidedMode, true);
