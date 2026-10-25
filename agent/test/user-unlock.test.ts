@@ -110,6 +110,13 @@ test("matcher: stated intent is a direct ask, hedges and questions are not", () 
     [false, "I'd like to check out but first add socks", "checkout", "Checkout"],
     [false, "I want to check out", "account", "Sign in"],
     [false, "I'd like to subscribe", "checkout", "Checkout"],
+    [false, "I want to check out, once the pants are in the cart", "checkout", "Checkout"],
+    [false, "I want to check out, in a minute", "checkout", "Checkout"],
+    [false, "You can check out, I guess", "checkout", "Checkout"],
+    [false, "Yeah right, I'd like to check out", "checkout", "Checkout"],
+    [false, "I need login help", "account", "Log in"],
+    [false, "I'd like to subscribe to fewer emails", "subscription", "Subscribe"],
+    [false, "I want to join the chat", "subscription", "Join Prime"],
   ];
   for (const [want, t, c, l] of rows) assert.equal(isDirectAsk(t, c, l), want, `${t} -> ${l}`);
 });
@@ -127,6 +134,13 @@ test("isUnlockYes: a yes may say more, a no or hedge never counts, paying stays 
     [false, "ok"],
     [false, "yes if it's under 50"],
     [false, "yes, the other one"],
+    [false, "yes, what does it cost"],
+    [false, "yes, after you add the socks"],
+    [false, "yes, in a minute"],
+    [false, "yes I'm kidding"],
+    [false, "yeah right"],
+    [false, "yes, that's way too expensive"],
+    [false, "yes, sign me up"],
   ];
   for (const [want, t] of rows) assert.equal(isUnlockYes(t, "checkout", "Checkout"), want, t);
   assert.equal(isExplicitYes("yes, that's what I just said."), false, "the pay read-back is unchanged");
