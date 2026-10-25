@@ -175,8 +175,12 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   const ctxInfo = await call<{ tabs: Array<{ tabId: number; url: string }> }>("tabs_context");
   assert.ok(ctxInfo.tabs.some((t) => t.tabId === tabId));
 
-  // Origins outside the allowlist are refused by the extension itself.
-  assert.equal((await callErr("navigate", { tabId, url: "https://example.com/" })).code, "not_allowed");
+  // Open web mode (the default): blocked sites, the agent console and other
+  // local ports are refused by the extension itself, before the tab moves.
+  for (const url of ["https://mail.google.com/", "https://www.chase.com/", `http://localhost:${AGENT_PORT}/`, "http://localhost:4301/", "chrome://settings"]) {
+    assert.equal((await callErr("navigate", { tabId, url })).code, "not_allowed", url);
+  }
+  assert.equal(await urlOf(tabId), STORE + "/");
 
   // Search: click the search box by ref, type, press Enter.
   const page = await call<{ tree: string }>("read_page", { tabId, filter: "interactive" });
