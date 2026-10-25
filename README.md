@@ -37,7 +37,13 @@ Why `npx` clones the repo: npx keeps its copy in a cache folder that npm can cle
 
 ## Demo
 
-**Demo video:** _link coming soon_
+<p align="center">
+  <a href="https://youtu.be/5xZLOtxJtp4">
+    <img src="https://img.youtube.com/vi/5xZLOtxJtp4/maxresdefault.jpg" alt="Orbi demo video: Just say it." width="820"/>
+  </a>
+  <br/>
+  <sub><em>Watch the demo: <a href="https://youtu.be/5xZLOtxJtp4">Orbi: Just say it.</a> (Cal Hacks 13)</em></sub>
+</p>
 
 ## Features
 
