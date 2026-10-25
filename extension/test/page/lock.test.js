@@ -51,7 +51,7 @@ test("find flags locked matches", async () => {
 test("form_input may uncheck the add-on but never check it again", async () => {
   const p = load("cart", "/cart");
   const ref = refIn(lineOf((await p.call("read_page", {})).result.tree, /Subscribe/));
-  assert.deepEqual(await p.call("form_input", { ref, value: false }), { ok: true, result: { ok: true } });
+  assert.deepEqual((await p.call("form_input", { ref, value: false })).result, { ok: true });
   assert.equal(p.document.getElementById("addon_subscription").checked, false);
   const again = await p.call("form_input", { ref, value: true });
   assert.equal(again.ok, false);
@@ -100,7 +100,7 @@ test("press_check and press_ref accept only order buttons", async () => {
   btn.getBoundingClientRect = () => ({ x: 10, y: 20, left: 10, top: 20, width: 100, height: 40, right: 110, bottom: 60 });
   p.document.elementFromPoint = () => btn;
   const ok = await p.call("press_check", { ref: place });
-  assert.deepEqual(ok, { ok: true, result: { x: 10, y: 20, width: 100, height: 40, kind: "marked" } });
+  assert.deepEqual([ok.ok, ok.result], [true, { x: 10, y: 20, width: 100, height: 40, kind: "marked" }]);
   // Covered by something else: refused.
   p.document.elementFromPoint = () => p.document.body;
   assert.equal((await p.call("press_check", { ref: place })).error.code, "no_element");

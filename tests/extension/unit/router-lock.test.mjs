@@ -234,7 +234,7 @@ test("typing into a password field is refused before CDP", async () => {
   const calls = [];
   const router = createRouter({
     chromeApi: { scripting: { executeScript: async () => {} }, tabs: { sendMessage: async (_t, m) => (calls.push(m.method), m.method === "focused_field" ? { ok: true, result: { kind: "other", payment: false, password: true } } : { ok: true, result: { ok: true } }) } },
-    tabs: { resolveAllowedTab: async () => 7, tabInfo: async () => ({ url: "https://www.etsy.com/signin" }) },
+    tabs: { resolveAllowedTab: async () => 7, assertPageAllowed: async () => {}, tabInfo: async () => ({ url: "https://www.etsy.com/signin" }) },
     cdp: { type: async () => calls.push("cdp.type"), key: async () => calls.push("cdp.key") },
   });
   await assert.rejects(router.route("type", { text: "hunter2" }), { code: "payment_field" });
