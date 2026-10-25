@@ -3,6 +3,7 @@
 // worker only tells it the current blocklist).
 
 import { SUGGESTED_BLOCKLIST, parseBlockLines } from "./blocklist.js";
+import { MSG } from "./protocol.js";
 
 export const HOTKEYS = Object.freeze({
   Space: "Space (hold to talk; Option + Space keeps listening until you press Space)",
@@ -65,7 +66,16 @@ export const DEFAULTS = Object.freeze({
   // Clearcart's own pointer on the page while it clicks, types and scrolls
   // (content/cursor.js). Purely visual.
   showCursor: true,
+  // Which model drives the agent: "claude", or "local" for an
+  // OpenAI-compatible server on this computer (Ollama, LM Studio) at
+  // localBaseUrl running localModel. The agent server restarts the
+  // conversation when this changes.
+  provider: "claude",
+  localBaseUrl: "http://localhost:11434/v1",
+  localModel: "llama3.1:8b",
 });
+
+export const PROVIDERS = Object.freeze(["claude", "local"]);
 
 export const DANGER_MODE_COPY = "Danger mode. Clearcart acts on its own with no locks, including placing orders without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
 
@@ -104,6 +114,40 @@ export function normalizeAgentUrl(value) {
   }
 }
 
+// The local model server gets the page text the agent reads, so like the
+// agent URL it may only be on this machine: http(s), a loopback host, no
+// login, no query or fragment. Returns origin + path (no trailing slash).
+export function normalizeLocalBaseUrl(value) {
+  if (typeof value !== "string" || value.length > 300) return null;
+  try {
+    const u = new URL(value.trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    if (!LOOPBACK.has(u.hostname)) return null;
+    if (u.username || u.password || u.search || u.hash) return null;
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return null;
+  }
+}
+
+// A model name as Ollama and LM Studio write them ("llama3.1:8b",
+// "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"): letters, digits
+// and . _ : / - only, up to 128 characters.
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,127}$/;
+export function normalizeLocalModel(value) {
+  if (typeof value !== "string") return null;
+  const v = value.trim();
+  return MODEL_NAME.test(v) ? v : null;
+}
+
+// The agent settings message (worker to server), and the storage keys that
+// re-send it when they change.
+export const AGENT_SETTING_KEYS = Object.freeze(["guidedMode", "memory", "provider", "localBaseUrl", "localModel"]);
+export function agentSettingsMessage(s) {
+  const { guidedMode, memory, provider, localBaseUrl, localModel } = normalize(s);
+  return { type: MSG.SETTINGS, guidedMode, memory, provider, localBaseUrl, localModel };
+}
+
 export function normalizeOrigin(value) {
   try {
     const u = new URL(String(value).trim());
@@ -139,6 +183,11 @@ export function normalize(raw = {}) {
   if (typeof raw.newTabPage === "boolean") out.newTabPage = raw.newTabPage;
   if (typeof raw.memory === "boolean") out.memory = raw.memory;
   if (typeof raw.errorPages === "boolean") out.errorPages = raw.errorPages;
+  if (PROVIDERS.includes(raw.provider)) out.provider = raw.provider;
+  const base = raw.localBaseUrl != null && normalizeLocalBaseUrl(raw.localBaseUrl);
+  if (base) out.localBaseUrl = base;
+  const model = raw.localModel != null && normalizeLocalModel(raw.localModel);
+  if (model) out.localModel = model;
   // Only a stored true turns it on.
   out.dangerMode = raw.dangerMode === true;
   return out;
@@ -161,7 +210,36 @@ export function parseOriginLines(text) {
 export function endpoints(agentUrl) {
   const base = normalizeAgentUrl(agentUrl) || DEFAULTS.agentUrl;
   const http = base.replace(/^ws/, "http");
-  return { ext: `${base}/ext`, session: `${base}/session`, http, token: `${http}/cartesia-token` };
+  return { ext: `${base}/ext`, session: `${base}/session`, http, token: `${http}/cartesia-token`, localModels: `${http}/local-models` };
+}
+
+// The agent server's view of the local model server (GET /local-models).
+// Returns { state, models }: "ok" (reachable, with its model names),
+// "down" (the server says the local model is not reachable, or the agent
+// server itself is not), or "missing" (an agent server without
+// /local-models, 404: the picker falls back to free text).
+export async function localModels(agentUrl, fetchFn = globalThis.fetch, timeoutMs = 4000) {
+  let res;
+  try {
+    res = await fetchFn(endpoints(agentUrl).localModels, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+  } catch {
+    return { state: "down", models: [] };
+  }
+  if (res.status === 404) return { state: "missing", models: [] };
+  let body = null;
+  try { body = await res.json(); } catch {}
+  const list = Array.isArray(body) ? body : body?.models ?? body?.data;
+  if (!res.ok || body?.ok === false || body?.error || !Array.isArray(list)) return { state: "down", models: [] };
+  const names = list.map((m) => normalizeLocalModel(typeof m === "string" ? m : m?.id ?? m?.name ?? m?.model)).filter(Boolean);
+  return { state: "ok", models: [...new Set(names)].slice(0, 200) };
+}
+
+// The popup chip: "llama3.1:8b, connected", or why not.
+export function localStatusText(model, result) {
+  if (!result || result.state === "missing") return model;
+  if (result.state === "down") return "Local model not reachable";
+  if (result.models.length && !result.models.includes(model)) return `${model} is not installed on the local server`;
+  return `${model}, connected`;
 }
 
 const KEYS = Object.keys(DEFAULTS);
