@@ -84,6 +84,9 @@ export const ERR = Object.freeze({
   LOCKED: "locked",
   TIMEOUT: "timeout",
   NOT_CONNECTED: "not_connected",
+  // A watchable-pace action stopped early: the user barged in, switched
+  // tabs, or the page went away (background/actor.js).
+  INTERRUPTED: "interrupted",
   INTERNAL: "internal",
 });
 
