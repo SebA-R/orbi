@@ -107,6 +107,7 @@ export function createVoiceRelay({
       remember(msg);
       toTab(msg);
       if (msg.type === RT.VOICE_STATE) ducker.onState(msg.state);
+      if (msg.type === RT.VOICE_ERROR) ducker.onError?.();
       if (msg.type === RT.VOICE_ERROR && msg.code === "mic_blocked" && !openedOptions) {
         openedOptions = true;
         chromeApi.runtime.openOptionsPage?.();
@@ -120,8 +121,9 @@ export function createVoiceRelay({
         toOffscreen(async () => ({ type: RT.VOICE_START, settings: await getSettings(), ...(msg.silent ? { silent: true } : {}) }));
         return true;
       case RT.PTT_CONFIRM:
+        // Ducking waits for the offscreen doc's "listening" state, so a turn
+        // that never starts (mic blocked or failed) mutes nothing.
         toOffscreen({ type: RT.VOICE_CONFIRM }, { create: false });
-        ducker.duck(); // the key is really held; a quick tap never gets here
         return true;
       case RT.PTT_CANCEL:
         toOffscreen({ type: RT.VOICE_CANCEL }, { create: false });

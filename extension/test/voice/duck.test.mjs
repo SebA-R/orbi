@@ -70,10 +70,13 @@ const TABS = [
   { id: 3, audible: false },             // silent tab
 ];
 
-test("PTT_CONFIRM fades and mutes only audible tabs the user hasn't muted", async () => {
-  const { relay, ducker, state } = make(TABS);
+test("listening fades and mutes only audible tabs the user hasn't muted", async () => {
+  const { relay, ducker, state, voiceState } = make(TABS);
   relay.onMessage({ type: RT.PTT_START, silent: true }, { tab: { id: 3 } });
   relay.onMessage({ type: RT.PTT_CONFIRM }, { tab: { id: 3 } });
+  await ducker.idle();
+  assert.equal(state.updates.length, 0, "PTT_CONFIRM alone ducks nothing");
+  voiceState("listening");
   await ducker.idle();
   assert.deepEqual(state.injected.map((i) => [i.tabId, i.allFrames, i.down, i.func]), [[1, true, true, fadeMedia]]);
   assert.deepEqual(state.updates, [{ id: 1, muted: true }]);
@@ -93,7 +96,7 @@ test("a quick tap (PTT_START silent, then PTT_CANCEL) never ducks", async () => 
 
 test("restores after idle plus the grace, only the tabs we ducked, and a new turn cancels it", async () => {
   const { relay, ducker, state, timers, voiceState } = make(TABS);
-  relay.onMessage({ type: RT.PTT_CONFIRM });
+  voiceState("listening");
   voiceState("thinking");
   voiceState("speaking");
   await ducker.idle();
@@ -116,7 +119,7 @@ test("restores after idle plus the grace, only the tabs we ducked, and a new tur
 
 test("a tab whose mute the user changed meanwhile keeps the user's choice", async () => {
   const { relay, ducker, state, timers, voiceState, byId, userMutes } = make([{ id: 1, audible: true }, { id: 4, audible: true }]);
-  relay.onMessage({ type: RT.PTT_CONFIRM });
+  voiceState("listening");
   await ducker.idle();
   userMutes(1, false); // unmuted by hand
   userMutes(4, true);  // muted again by hand
@@ -129,17 +132,59 @@ test("a tab whose mute the user changed meanwhile keeps the user's choice", asyn
 });
 
 test("an injection failure (chrome:// page) still mutes the tab", async () => {
-  const { relay, ducker, state } = make([{ id: 5, audible: true }], { failInject: [5] });
-  relay.onMessage({ type: RT.PTT_CONFIRM });
+  const { ducker, state, voiceState } = make([{ id: 5, audible: true }], { failInject: [5] });
+  voiceState("listening");
   await ducker.idle();
   assert.deepEqual(state.updates, [{ id: 5, muted: true }]);
 });
 
 test("with the setting off nothing is ducked", async () => {
-  const { relay, ducker, state, voiceState } = make(TABS, { quietTabs: false });
-  relay.onMessage({ type: RT.PTT_CONFIRM });
+  const { ducker, state, voiceState } = make(TABS, { quietTabs: false });
+  voiceState("listening");
   voiceState("speaking");
   await ducker.idle();
   assert.equal(state.injected.length, 0);
   assert.equal(state.updates.length, 0);
+});
+
+test("a blocked or failed mic leaves no tab muted", async () => {
+  const { relay, ducker, state } = make(TABS);
+  relay.onMessage({ type: RT.PTT_START, silent: true }, { tab: { id: 3 } });
+  relay.onMessage({ type: RT.PTT_CONFIRM }, { tab: { id: 3 } });
+  // The controller settles to idle (already its state, so no VOICE_STATE) and reports the error.
+  relay.onMessage({ from: "offscreen", type: RT.VOICE_ERROR, code: "mic_failed", message: "x" });
+  await relay.idle();
+  await ducker.idle();
+  assert.equal(state.updates.length, 0);
+  assert.equal(state.injected.length, 0);
+});
+
+test("VOICE_ERROR restores right away, without the grace", async () => {
+  const { relay, ducker, state, timers, voiceState } = make(TABS);
+  voiceState("speaking");
+  await ducker.idle();
+  state.updates.length = 0;
+  relay.onMessage({ from: "offscreen", type: RT.VOICE_ERROR, message: "x" });
+  await ducker.idle();
+  assert.deepEqual(state.updates, [{ id: 1, muted: false }]);
+  assert.ok(!timers.hasGrace());
+  assert.deepEqual(state.session[STORE_KEY], []);
+});
+
+test("backstop: a duck with no non-idle state in force restores after BACKSTOP_MS", async () => {
+  const { ducker, state, timers, voiceState } = make(TABS);
+  ducker.duck();
+  await ducker.idle();
+  state.updates.length = 0;
+  timers.fireGrace(2000);
+  await ducker.idle();
+  assert.deepEqual(state.updates, [{ id: 1, muted: false }]);
+
+  // A real turn keeps the duck past the backstop.
+  voiceState("listening");
+  await ducker.idle();
+  state.updates.length = 0;
+  timers.fireGrace(2000);
+  await ducker.idle();
+  assert.deepEqual(state.updates, []);
 });
