@@ -9,6 +9,8 @@
 //   (needs `npm install` in tests/extension for Playwright)
 //
 // Ports: store 4300, agent 5300 (override with E2E_STORE_PORT / E2E_AGENT_PORT).
+// The browser loads a temp copy of extension/ whose default agent URL is the
+// test's agent, so the test extension never connects to a live agent on :5050.
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -46,6 +48,7 @@ const results: string[] = [];
 let store: ChildProcess | null = null;
 let ctx: any;
 let profile = "";
+let extCopy = "";
 let bridge: typeof import("../../extbridge.ts").extBridge;
 let pay: typeof import("../../pay.ts");
 let tools: typeof import("../../exttools.ts");
@@ -130,11 +133,18 @@ before(async () => {
   await waitFor(() => fetch(`http://localhost:${AGENT_PORT}/healthz`).then((r) => r.ok), "the agent server");
 
   const { chromium } = await import(pathToFileURL(PW).href);
+  extCopy = fs.mkdtempSync(path.join(os.tmpdir(), "clearcart-e2e-ext-"));
+  fs.cpSync(EXT_DIR, extCopy, { recursive: true, filter: (p) => !p.split(path.sep).includes("test") && !p.includes("node_modules") });
+  const settingsFile = path.join(extCopy, "lib", "settings.js");
+  const settingsSrc = fs.readFileSync(settingsFile, "utf8");
+  const patched = settingsSrc.replace('agentUrl: "ws://localhost:5050"', `agentUrl: "ws://localhost:${AGENT_PORT}"`);
+  assert.notEqual(patched, settingsSrc, "default agent URL not found in settings.js");
+  fs.writeFileSync(settingsFile, patched);
   profile = fs.mkdtempSync(path.join(os.tmpdir(), "clearcart-e2e-profile-"));
   ctx = await chromium.launchPersistentContext(profile, {
     channel: "chromium",
     headless: !process.env.HEADED,
-    args: [`--disable-extensions-except=${EXT_DIR}`, `--load-extension=${EXT_DIR}`],
+    args: [`--disable-extensions-except=${extCopy}`, `--load-extension=${extCopy}`],
   });
   ctx.on("console", (m: any) => logs.push(`[browser] ${m.text()}`));
   let [worker] = ctx.serviceWorkers();
@@ -152,6 +162,7 @@ before(async () => {
 after(async () => {
   await ctx?.close().catch(() => {});
   if (profile) fs.rmSync(profile, { recursive: true, force: true });
+  if (extCopy) fs.rmSync(extCopy, { recursive: true, force: true });
   store?.kill();
   // The in-process agent server keeps the event loop alive.
   setTimeout(() => process.exit(process.exitCode ?? 0), 200).unref();
@@ -216,6 +227,24 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   await tools.clickRef(bridge, addr.ref, tabId);
   assert.equal((await callErr("type", { tabId, text: `card ${CARD.number}` })).code, "payment_field");
   await call("type", { tabId, text: "1 Test Lane, Berkeley, CA 94704" });
+
+  // Button lock: Claude's own tools cannot press Place order, by ref, by
+  // coordinates or with Enter from a checkout field.
+  const defs = Object.fromEntries(tools.extToolDefinitions(bridge).map((d) => [d.name, d]));
+  const place = await findOne(tabId, "Place order", (m) => m.role === "button");
+  assert.equal((place as any).locked, true);
+  const viaTool: any = await defs.click.handler({ tabId, ref: place.ref }, {});
+  results.push(`click tool ${JSON.stringify(viaTool)}`);
+  assert.equal(viaTool.isError, true);
+  assert.match(viaTool.content[0].text, /^Locked: 'Place order/);
+  const r0 = await call<{ x: number; y: number; width: number; height: number }>("rect", { tabId, ref: place.ref });
+  assert.equal((await callErr("click", { tabId, x: r0.x + r0.width / 2, y: r0.y + r0.height / 2 })).code, "locked");
+  // Enter in the address textarea is a new line, so press it from the name field.
+  const cardName = await findOne(tabId, "name on card", (m) => /text/.test(m.role));
+  await tools.clickRef(bridge, cardName.ref, tabId);
+  assert.equal((await callErr("key", { tabId, key: "Enter" })).code, "locked");
+  assert.match((await call<{ tree: string }>("read_page", { tabId, filter: "all" })).tree, /Place order[^\n]*\[locked\]/);
+  assert.match(await urlOf(tabId), /\/checkout$/, "no order was placed by the attempts");
 
   // pay_now over the extension, with a stand-in vault.
   const state = {
