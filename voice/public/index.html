@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clearcart Voice</title>
+  <link rel="stylesheet" href="css/console.css">
+</head>
+<body>
+  <a class="skip" href="#talk">Skip to talk button</a>
+  <header>
+    <h1>Clearcart</h1>
+    <p id="connection" class="connection" data-state="connecting">Connecting to your shopping assistant…</p>
+  </header>
+
+  <main>
+    <section aria-labelledby="talk-heading" class="talk-area">
+      <h2 id="talk-heading" class="visually-hidden">Talk</h2>
+      <button id="talk" type="button" class="talk" aria-pressed="false" aria-describedby="talk-help" autofocus>
+        <span class="talk-label">Hold Space to talk</span>
+      </button>
+      <p id="talk-help" class="help">
+        Hold the Space bar while you speak and let go when you are done. Or press Enter to start
+        listening and press it again to send. Escape stops Clearcart talking.
+      </p>
+      <div class="live-transcript">
+        <h3>You are saying</h3>
+        <p id="partial" class="partial" aria-live="off">…</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="settings-heading" class="settings">
+      <h2 id="settings-heading">Settings</h2>
+      <div class="field">
+        <label for="speed">Speaking speed</label>
+        <input id="speed" type="range" min="0.6" max="2" step="0.1" value="1" aria-describedby="speed-help">
+        <output id="speed-value" for="speed">1.0×</output>
+        <p id="speed-help" class="help">Use the arrow keys. Takes effect on the next reply. Above 1.5 the voice gets a little higher.</p>
+      </div>
+      <div class="field">
+        <input id="announce" type="checkbox" checked>
+        <label for="announce">Also send replies to my screen reader</label>
+      </div>
+      <div class="buttons">
+        <button id="stop-speaking" type="button">Stop talking <kbd>Esc</kbd></button>
+        <button id="replay" type="button" disabled>Repeat last reply</button>
+      </div>
+    </section>
+
+    <section aria-labelledby="receipt-heading" id="receipt" class="receipt" hidden tabindex="-1">
+      <h2 id="receipt-heading">Order placed</h2>
+      <dl>
+        <dt>Item</dt><dd id="receipt-item"></dd>
+        <dt>Total</dt><dd id="receipt-total"></dd>
+        <dt>Card</dt><dd id="receipt-card"></dd>
+      </dl>
+    </section>
+
+    <section aria-labelledby="convo-heading" class="conversation">
+      <h2 id="convo-heading">Conversation</h2>
+      <ol id="conversation" class="turns"></ol>
+    </section>
+
+    <details class="events">
+      <summary>Event log</summary>
+      <ol id="events"></ol>
+    </details>
+  </main>
+
+  <!-- Screen reader announcements. Agent replies are polite; problems are assertive. -->
+  <div id="sr-agent" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+  <div id="sr-alert" class="visually-hidden" aria-live="assertive" aria-atomic="true"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

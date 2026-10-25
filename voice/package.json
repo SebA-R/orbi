@@ -1,0 +1,14 @@
+{
+  "name": "clearcart-voice",
+  "private": true,
+  "type": "module",
+  "description": "Clearcart voice console (static files in public/) and a standalone dev server.",
+  "scripts": {
+    "start": "node dev-server.mjs",
+    "dev": "node dev-server.mjs"
+  },
+  "engines": { "node": ">=20.12" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,109 @@
+:root {
+  --bg: #fbfaf7;
+  --fg: #1a1a1a;
+  --muted: #555;
+  --card: #ffffff;
+  --line: #d6d3cc;
+  --accent: #0b5cad;
+  --accent-fg: #ffffff;
+  --live: #b3261e;
+  --ok: #1f6f3a;
+  --focus: #f2b705;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121212;
+    --fg: #f2f2f2;
+    --muted: #b8b8b8;
+    --card: #1d1d1d;
+    --line: #3a3a3a;
+    --accent: #6fb1ff;
+    --accent-fg: #0a0a0a;
+    --live: #ff8a80;
+    --ok: #7fd89a;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 1.25rem/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header, main { max-width: 52rem; margin: 0 auto; padding: 0 16px; }
+header { padding-top: 1.5rem; }
+h1 { margin: 0; font-size: 2.25rem; }
+h2 { font-size: 1.4rem; margin: 0 0 .75rem; }
+h3 { font-size: 1rem; margin: 0; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+section { margin: 1.5rem 0; }
+
+:focus-visible { outline: 4px solid var(--focus); outline-offset: 3px; }
+
+.skip { position: absolute; left: -9999px; }
+.skip:focus { left: 16px; top: 8px; background: var(--card); padding: .5rem 1rem; z-index: 1; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.connection { margin: .25rem 0 0; color: var(--muted); }
+.connection[data-state="open"] { color: var(--ok); }
+.connection[data-state="closed"] { color: var(--live); font-weight: 600; }
+
+.talk {
+  display: block;
+  width: 100%;
+  min-height: 11rem;
+  border: 4px solid var(--accent);
+  border-radius: 1.5rem;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 2rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.talk[aria-pressed="true"] {
+  background: var(--live);
+  border-color: var(--live);
+  color: #fff;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .talk[aria-pressed="true"] { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 .75rem color-mix(in srgb, var(--live) 25%, transparent); } }
+}
+.talk[data-speaking="true"]:not([aria-pressed="true"]) { border-style: dashed; }
+
+.help { color: var(--muted); font-size: 1rem; }
+.live-transcript { background: var(--card); border: 1px solid var(--line); border-radius: .75rem; padding: .75rem 1rem; }
+.partial { margin: .25rem 0 0; min-height: 1.5em; }
+
+.settings { background: var(--card); border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; }
+.field { margin-bottom: 1rem; }
+.field label { font-weight: 600; margin-right: .5rem; }
+input[type="range"] { width: min(100%, 22rem); vertical-align: middle; }
+input[type="checkbox"] { width: 1.5rem; height: 1.5rem; vertical-align: middle; margin-right: .5rem; }
+output { font-variant-numeric: tabular-nums; margin-left: .5rem; }
+.buttons { display: flex; flex-wrap: wrap; gap: .75rem; }
+.buttons button {
+  font: inherit; font-size: 1.1rem; padding: .6rem 1.1rem; border-radius: .6rem;
+  border: 2px solid var(--fg); background: transparent; color: var(--fg); cursor: pointer;
+}
+.buttons button:disabled { opacity: .5; cursor: default; }
+kbd { font-size: .85em; border: 1px solid var(--line); border-radius: .25rem; padding: 0 .3rem; }
+
+.receipt { border: 3px solid var(--ok); border-radius: .75rem; padding: 1rem; background: var(--card); }
+.receipt dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
+.receipt dt { font-weight: 600; }
+.receipt dd { margin: 0; }
+
+.turns { list-style: none; padding: 0; margin: 0; }
+.turns li { padding: .6rem 0; border-bottom: 1px solid var(--line); }
+.turns .who { font-weight: 700; margin-right: .4rem; }
+.turns .agent .who { color: var(--accent); }
+
+.events { margin: 1.5rem 0 3rem; font-size: .95rem; color: var(--muted); }
+.events ol { padding-left: 1.25rem; font-family: ui-monospace, Menlo, monospace; font-size: .85rem; }
+.events summary { cursor: pointer; font-size: 1.1rem; }
