@@ -4,6 +4,7 @@
 // extension runs them and answers. Written against the standard WebSocket
 // API so it runs unchanged in the service worker and in Node tests.
 
+import { Backoff } from "./backoff.js";
 import { MSG, TIMING, hello, parseMessage } from "./protocol.js";
 
 const HELLO_TIMEOUT_MS = 5_000;
@@ -21,17 +22,47 @@ export class BridgeClient {
     this.wanted = false;
     this.helloTimer = null;
     this.beatTimer = null;
+    this.retryTimer = null;
     this.lastSeen = 0;
+    this.backoff = new Backoff({ min: this.timing.BACKOFF_MIN_MS, max: this.timing.BACKOFF_MAX_MS });
   }
 
   start() {
     this.wanted = true;
-    if (!this.ws) this.connect();
+    if (!this.ws && !this.retryTimer) this.connect();
   }
 
   stop() {
     this.wanted = false;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.ws?.close(1000, "stopped");
+  }
+
+  // Called when the worker wakes up (alarm, startup): reconnect right away
+  // instead of waiting out a long backoff.
+  ensureConnected() {
+    if (!this.wanted || this.ws) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.connect();
+  }
+
+  setUrl(url) {
+    if (url === this.url) return;
+    this.url = url;
+    this.backoff.reset();
+    if (this.ws) this.drop(this.ws, "url changed");
+    else this.ensureConnected();
+  }
+
+  scheduleReconnect() {
+    if (!this.wanted || this.retryTimer) return;
+    const delay = this.backoff.next();
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.wanted && !this.ws) this.connect();
+    }, delay);
   }
 
   setState(state) {
@@ -47,6 +78,7 @@ export class BridgeClient {
     } catch (e) {
       this.log.warn(`bridge: cannot open ${this.url}: ${e.message}`);
       this.setState("closed");
+      this.scheduleReconnect();
       return;
     }
     this.ws = ws;
@@ -71,6 +103,7 @@ export class BridgeClient {
       clearInterval(this.beatTimer);
       this.ws = null;
       this.setState("closed");
+      this.scheduleReconnect();
     };
   }
 
@@ -86,6 +119,7 @@ export class BridgeClient {
     if (m.type === MSG.WELCOME) {
       clearTimeout(this.helloTimer);
       this.log.info(`bridge: connected to ${m.server || "agent server"} (protocol ${m.protocol})`);
+      this.backoff.reset();
       this.setState("open");
       this.startHeartbeat();
     } else if (m.type === MSG.PING) {
@@ -105,7 +139,7 @@ export class BridgeClient {
       if (this.ws !== ws) return clearInterval(this.beatTimer);
       if (Date.now() - this.lastSeen > this.timing.DEAD_AFTER_MS) {
         this.log.warn("bridge: no traffic from the agent server, reconnecting");
-        this.drop(ws);
+        this.drop(ws, "heartbeat timeout");
         return;
       }
       this.send({ type: MSG.PING, t: Date.now() });
@@ -113,9 +147,9 @@ export class BridgeClient {
   }
 
   // Close and forget a socket now, without waiting for the close handshake.
-  drop(ws) {
+  drop(ws, reason) {
     try {
-      ws.close(4001, "heartbeat timeout");
+      ws.close(4001, reason);
     } catch {}
     ws.onclose?.({ code: 4001 });
   }

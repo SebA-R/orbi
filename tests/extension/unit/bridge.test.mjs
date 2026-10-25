@@ -85,3 +85,51 @@ test("drops a silent link after DEAD_AFTER_MS", async () => {
   const { c } = await openClient({ timing: { HEARTBEAT_MS: 20, DEAD_AFTER_MS: 80 } });
   await waitFor(() => c.state === "closed", 2000);
 });
+
+const FAST = { BACKOFF_MIN_MS: 20, BACKOFF_MAX_MS: 100 };
+
+test("reconnects with backoff after the server drops it", async () => {
+  const { wss, sock, c } = await openClient({ timing: FAST });
+  const second = once(wss, "connection");
+  sock.terminate();
+  const [sock2] = await second;
+  await once(sock2, "message");
+  sock2.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+  await waitFor(() => c.state === "open");
+});
+
+test("keeps retrying until the server comes up, and stop() ends retries", async () => {
+  const probe = new WebSocketServer({ port: 0 });
+  await once(probe, "listening");
+  const port = probe.address().port;
+  await new Promise((r) => probe.close(r));
+
+  const { c } = client(`ws://127.0.0.1:${port}/ext`, { timing: FAST });
+  c.start();
+  await new Promise((r) => setTimeout(r, 150)); // a few failed attempts
+  assert.equal(c.state, "closed");
+
+  const wss = new WebSocketServer({ port });
+  cleanups.push(() => new Promise((r) => { for (const s of wss.clients) s.terminate(); wss.close(r); }));
+  const [sock] = await once(wss, "connection");
+  await once(sock, "message");
+  sock.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+  await waitFor(() => c.state === "open");
+
+  c.stop();
+  await waitFor(() => c.state === "closed");
+  let reconnected = false;
+  wss.on("connection", () => { reconnected = true; });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(reconnected, false);
+});
+
+test("setUrl moves the client to a new server", async () => {
+  const { c } = await openClient({ timing: FAST });
+  const { wss: other, url } = await server();
+  c.setUrl(url);
+  const [sock] = await once(other, "connection");
+  await once(sock, "message");
+  sock.send(JSON.stringify({ type: "welcome", protocol: 1 }));
+  await waitFor(() => c.state === "open");
+});
