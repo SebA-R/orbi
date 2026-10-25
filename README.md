@@ -2,7 +2,7 @@
 
 ![The Clearcart voice console, listening](docs/images/console-listening-dark.jpg)
 
-**Talk to the web.** Clearcart is a voice-controlled web agent for anyone. Hold Space and say what you want: it navigates, searches, reads and summarizes pages, fills in forms when you ask, clicks, and shops when you ask, in your own Chrome. **Guided mode** is made for blind and low-vision users: Clearcart describes each page, reads out the choices and lets you pick. When it shops, the AI agent never has access to your card: it can't see it, read it or type it, and nothing is bought without your spoken yes.
+**Talk to the web.** Clearcart is a voice-controlled web agent for anyone. Hold Space and say what you want: it navigates, searches, reads and summarizes pages, fills in forms when you ask, clicks, and shops when you ask, in your own Chrome. **Guided mode** is made for blind and low-vision users: Clearcart describes each page, reads out the choices and lets you pick. When it shops, the AI agent never has access to your card: you pick a saved card in Chrome's own list, the agent can't see, read or type it, and nothing is bought without your spoken yes to the exact total.
 
 ![Clearcart on aritzia.com: a sold-out size is caught, captions show both sides of the conversation](docs/images/demo-loop.gif)
 
@@ -13,22 +13,22 @@
 1. **Hold Space and talk.** The voice console streams your speech to Cartesia Ink 2 speech-to-text.
 2. **Claude works out the steps.** Each finished turn goes to a Claude agent (Claude Agent SDK, `claude-sonnet-5-5`).
 3. **Browser tools do the clicking.** The agent opens sites, searches, reads pages, fills in forms when asked, closes pop-ups without accepting them and adds to the cart through the Clearcart extension (or Open Claude in Chrome).
-4. **When it shops: a read-back, then a spoken yes.** Before paying, Clearcart reads back the item and the total. Only an explicit "yes" confirms the order.
-5. **The agent never touches the card.** The card is filled in automatically by Clearcart's payment step, not by the AI. The agent has no tool that can read the card, and while the card is in the form it can't screenshot, read or type into the page. All it gets back is "paid, card ending 1111".
+4. **You pick the card in Chrome.** On the payment step Clearcart opens Chrome's own list of saved cards on the card number box and asks you to pick one (Chrome may ask for your fingerprint or security code first). The card never passes through Clearcart.
+5. **A read-back, then a spoken yes.** Clearcart reads the item, quantity and the exact total from the page back to you. Only an explicit "yes" lets it press Place order, once. While a card is in the form, the agent can't screenshot the page, click, type or press keys there, and card fields read as masked.
 6. **Spoken receipt.** Cartesia Sonic reads the order back, and the console shows a receipt card.
 
 ## Button lock
 
 Clearcart's AI can never press the button that spends your money. Place order, Buy now, Pay, Checkout, Apple Pay, Google Pay, PayPal and similar wallet buttons, Subscribe, Save card, Sign in and Sign up are locked for the agent, along with the submit of any form that holds card or password fields. Pre-checked add-on and subscription boxes may be unchecked, never checked. Add to cart, quantity and remove stay open, so shopping works as before.
 
-- **Enforced in code, not just asked for.** Every agent click (by element or by screen position), Enter or Space key, typed newline and form change is checked against the page before it is sent, and refused if it would press a locked control. If the check cannot run, the action is refused. Checkout and payment pages open only when you ask to check out, or on a pay site you set up.
-- **One way through.** Only Clearcart's own pay code presses the order button, once, after your spoken yes, on a pay site (none unless you add them), with the total you heard. The AI cannot unlock anything.
+- **Enforced in code, not just asked for.** Every agent click (by element or by screen position), Enter or Space key, typed newline and form change is checked against the page before it is sent, and refused if it would press a locked control. If the check cannot run, the action is refused. Checkout and payment pages open only when you ask to check out.
+- **One way through.** Only Clearcart's own pay code presses the order button, once, after your spoken yes to the exact total read from the page. A second press needs a new yes, and Danger mode never unlocks paying. The AI cannot unlock anything.
 - **Only the AI is locked out.** You can always press any button yourself. Locked controls and card fields look grayed out, with a small "Locked for AI" padlock, for sighted helpers and the demo video. Both are visual only: nothing is disabled, clicks go through, and what a screen reader says does not change.
 - **Still prompt-only:** on real stores the checkout, wallet and sign-in buttons are locked, but not typing other personal details (an address, for example) is only an instruction to the model. Details and limits are in [`extension/README.md`](extension/README.md#button-lock) and [`agent/README.md`](agent/README.md#button-lock).
 
 ## Which sites it browses
 
-By default Clearcart browses the open web: any site you name, such as a news site, a recipe site or a store like Etsy, Aritzia or Nordstrom. It never opens the blocked sites you keep in the extension's options. On install that list is filled with suggested sensitive sites (email, password managers, banks, brokerages and crypto exchanges, government and tax, health portals, Google, Apple, Microsoft and Amazon account pages), which you can edit or restore. Browser and extension pages, addresses with a login in them, and other ports on this computer and other devices on your network are always blocked, however the address is written and even when a normal-looking name points there (the extension checks the address each page actually came from). It only ever drives tabs in its own "Clearcart" tab group, never your other tabs, and on real stores it stops at the cart: the button lock and the checkout page block stay on, and open browsing does not make any site a pay site.
+By default Clearcart browses the open web: any site you name, such as a news site, a recipe site or a store like Etsy, Aritzia or Nordstrom. It never opens the blocked sites you keep in the extension's options. On install that list is filled with suggested sensitive sites (email, password managers, banks, brokerages and crypto exchanges, government and tax, health portals, Google, Apple, Microsoft and Amazon account pages), which you can edit or restore. Browser and extension pages, addresses with a login in them, and other ports on this computer and other devices on your network are always blocked, however the address is written and even when a normal-looking name points there (the extension checks the address each page actually came from). It only ever drives tabs in its own "Clearcart" tab group, never your other tabs, and it stops at the cart until you ask to check out: the button lock and the checkout page block stay on.
 
 To limit it to a fixed list instead, set `CLEARCART_BROWSE_MODE=allowlist` for the agent (with `CLEARCART_ALLOWED_ORIGINS`) and pick "Only these sites" in the extension's options. `CLEARCART_BLOCKED_ORIGINS` adds blocked origins on the agent side. Details are in [`agent/README.md`](agent/README.md) and [`extension/README.md`](extension/README.md#which-sites).
 
@@ -81,8 +81,7 @@ These runs used real retail sites, but they are **AI-to-AI simulations**: a sepa
 - **Voice:** Cartesia Ink 2 speech-to-text (`/stt/turns/websocket`) and Cartesia Sonic text-to-speech (`/tts/websocket`)
 - **Agent:** Claude via the Claude Agent SDK (TypeScript), model `claude-sonnet-5-5`
 - **Browser automation:** the third-party extension Open Claude in Chrome, plus our own add-ons
-- **Payment vault:** the card is stored in the macOS Keychain and filled in automatically by Clearcart's payment step. The agent never has access to it (a Touch ID prompt is planned, not built yet)
-- **Payments:** the Visa Acceptance sandbox
+- **Payments:** Chrome's own saved cards (Google Pay and on-device cards). Clearcart opens the list; you pick
 
 ## Layout
 
@@ -91,19 +90,17 @@ These runs used real retail sites, but they are **AI-to-AI simulations**: a sepa
 | `agent/` | Claude Agent SDK voice agent server |
 | `voice/` | Cartesia STT/TTS client |
 | `extension-addons/` | Our changes on top of Open Claude in Chrome (side panel, payment fill, redaction) |
-| `vault/` | Keychain card reader and test card setup script |
 | `docs/` | Design notes and documentation; `docs/demo/` has the demo video, credits and raw runs |
 | `vendor/open-claude-in-chrome/` | Git submodule for Open Claude in Chrome (third-party) |
 
 ## Setup
 
-Needs macOS (for the Keychain), Node 20 or newer and Chrome.
+Needs Node 20 or newer and Chrome.
 
 1. **Clone with the submodule:** `git clone --recurse-submodules <repo>`, then install the Open Claude in Chrome extension from `vendor/open-claude-in-chrome/`.
 2. **Keys:** copy `.env.example` to `.env` and fill in `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` (the `VISA_ACCEPTANCE_*` keys are for the sandbox). `.env` is gitignored.
-3. **Vault:** run `./vault/setup-test-card.sh` once. It stores the published Visa test card in your login Keychain.
-4. **Agent and voice console:** `cd agent && npm install && npm start`, then open http://localhost:5050 and hold Space to talk. See [`agent/README.md`](agent/README.md) for options.
-5. **Voice only (optional):** `cd voice && npm install && npm start` runs the console against an echo agent at http://localhost:5051.
+3. **Agent and voice console:** `cd agent && npm install && npm start`, then open http://localhost:5050 and hold Space to talk. See [`agent/README.md`](agent/README.md) for options.
+4. **Voice only (optional):** `cd voice && npm install && npm start` runs the console against an echo agent at http://localhost:5051.
 
 ## Third-party code and credits
 
