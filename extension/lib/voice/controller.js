@@ -184,6 +184,12 @@ export class VoiceController {
     this.#settle();
   }
 
+  // Says the current state again: a restarted worker asks (VOICE_SYNC), so
+  // ducking and captions pick up a turn already in progress.
+  announce() {
+    this.emit({ type: RT.VOICE_STATE, state: this.state });
+  }
+
   onSpeakingChange(on) {
     this.speaking = on;
     if (on) this.awaitingReply = false;

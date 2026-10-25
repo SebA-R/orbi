@@ -113,6 +113,57 @@ function fakeTimers() {
   };
 }
 
+test("two tabs pressing at once share one turn: one offscreen document, one STT session, one mic start", async () => {
+  const f = fakeChrome();
+  const relay = createVoiceRelay({ chromeApi: f.chromeApi, getSettings: async () => SETTINGS, ducker: { onState() {}, onError() {} } });
+  const v = voice((m) => relay.onMessage({ ...m, from: "offscreen" }));
+  f.setOffscreen(offscreenFor(v.controller));
+  relay.onMessage({ type: RT.PTT_START, silent: true }, { tab: { id: 1 }, frameId: 0 });
+  relay.onMessage({ type: RT.PTT_START, silent: true }, { tab: { id: 2 }, frameId: 3 }); // an iframe in another tab
+  relay.onMessage({ type: RT.PTT_CONFIRM }, { tab: { id: 1 }, frameId: 0 });
+  await relay.idle();
+  assert.equal(f.state.created, 1);
+  assert.equal(v.stts.length, 1, "never a second listener");
+  assert.equal(v.mic.starts, 1);
+  assert.equal(v.controller.state, "listening");
+  relay.onMessage({ type: RT.PTT_STOP }, { tab: { id: 1 }, frameId: 0 });
+  await relay.idle();
+  v.stts[0].h.onFinal("buy the advil");
+  assert.deepEqual(v.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "buy the advil" }]);
+});
+
+test("worker restart mid-turn: the new worker asks the open document for its state and keeps other tabs quiet", async () => {
+  // Tab 1 was ducked by the old worker; the offscreen document is still listening.
+  for (const live of [true, false]) {
+    const f = fakeChrome({ hasDoc: true, tabs: [{ id: 1, audible: true, ours: true }] });
+    f.state.session.duckedTabs = [1];
+    const timers = fakeTimers();
+    const getSettings = async () => SETTINGS;
+    const ducker = createDucker({ chromeApi: f.chromeApi, getSettings, timers });
+    let relay = null; // the new worker's relay, once it starts
+    const v = voice((m) => relay?.onMessage({ ...m, from: "offscreen" }));
+    if (live) await v.controller.start();
+    f.setOffscreen(offscreenFor(v.controller));
+    relay = installVoiceRelay({ chromeApi: f.chromeApi, getSettings, ducker });
+    await relay.idle();
+    await sleep(0);
+    await ducker.idle();
+    assert.deepEqual(f.state.toDoc, [RT.VOICE_SYNC], "asks, never creates a document");
+    assert.equal(f.state.created, 0);
+    timers.fire(600); // recover()'s grace restore
+    await ducker.idle();
+    const unmuted = f.state.updates.some((u) => u.id === 1 && u.muted === false);
+    assert.equal(unmuted, !live, live ? "a live turn keeps tab 1 quiet" : "an idle document lets tab 1 come back");
+    if (live) {
+      // The hold that started before the restart still ends the one turn.
+      f.state.listeners.message({ type: RT.PTT_STOP }, { tab: { id: 1 } });
+      await relay.idle();
+      assert.equal(v.controller.listening, false);
+      assert.equal(f.state.created, 0);
+    }
+  }
+});
+
 test("standby moved: speech stops and a turn still listening ends unsent", async () => {
   const emitted = [];
   const v = voice((m) => emitted.push(m));

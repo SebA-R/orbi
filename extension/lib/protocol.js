@@ -115,6 +115,8 @@ export const RT = Object.freeze({
   SUBTITLE: "subtitle",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
+  // worker -> offscreen: say your VOICE_STATE again (a restarted worker asks).
+  VOICE_SYNC: "voice.sync",
 });
 
 export class BridgeError extends Error {
