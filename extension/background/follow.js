@@ -24,8 +24,8 @@ export const ACT_METHODS = new Set([
   "click_ref",
   "press_protected",
   "press_unlocked",
-  "fill_payment",
-  "clear_payment",
+  // Chrome shows its saved cards only in the tab that has focus.
+  "card_autofill",
 ]);
 
 // After Clearcart itself activates or closes a tab, Chrome's events for that

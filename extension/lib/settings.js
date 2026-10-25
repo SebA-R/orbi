@@ -59,8 +59,8 @@ export const SPEED_MAX = 2;
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-// The bridge drives the user's tabs and carries card values for pay_now,
-// so it may only point at this machine.
+// The bridge drives the user's tabs and reads their pages, so it may only
+// point at this machine.
 export function normalizeAgentUrl(value) {
   try {
     const u = new URL(String(value).trim());

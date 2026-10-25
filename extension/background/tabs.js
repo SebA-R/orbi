@@ -21,10 +21,11 @@
 
 import { BridgeError, ERR } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
-import { assertAllowed, blockReason, isAllowed, isPaySite } from "./allowlist.js";
+import { assertAllowed, blockReason, isAllowed } from "./allowlist.js";
 import { assertNetSafe, flagOf } from "./netguard.js";
 
-export { isPaySite };
+// The router's lock_arm checks the site again with it.
+export { isAllowed };
 
 // The tab group earlier versions made. Only used to undo it (ungroupLegacy).
 export const LEGACY_GROUP_TITLE = "Clearcart";

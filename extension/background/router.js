@@ -15,6 +15,14 @@
 // for that control) with a single-use nonce from lock_arm, INTERNAL methods
 // the agent server calls and Claude never sees.
 //
+// Cards: the user picks a saved card in Chrome's own list (card_autofill
+// opens it with a real click on the card number field; Chrome takes the
+// pick only from the user). While a card is or may be in the page (card
+// fields with a value or filled by Chrome, or card frames Clearcart cannot
+// see into), the agent's clicks, typing, keys and form changes on that
+// page are refused and so are screenshots: only press_protected, after the
+// user's yes, acts on it. No key at all goes into a card field.
+//
 // Follow: a call that acts on a tab (follow.js ACT_METHODS, and tabs_create)
 // brings that tab to the front first, unless the setting is off or the user
 // switched away themselves this turn. Reads never switch.
@@ -87,9 +95,8 @@ export const PAGE_METHODS = new Set([
   "form_input",
   "rect",
   "click_ref",
-  "read_fields",
-  "fill_payment",
-  "clear_payment",
+  "card_state",
+  "order_buttons",
 ]);
 
 const NO_RECEIVER = /Receiving end does not exist|Could not establish connection/i;
@@ -267,16 +274,40 @@ export function createRouter({
   // focused field.
   async function guardType(tabId, text) {
     if (containsCardNumber(text)) {
-      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type a card number; pay_now fills payment fields");
+      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type a card number; the user picks the card in Chrome's own list");
     }
     const focus = await pageCall(tabId, "focused_field");
     if (focus && focus.payment) {
-      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a payment field; pay_now fills payment fields");
+      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a payment field; the user picks the card in Chrome's own list");
     }
     if (focus && focus.password) {
       throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a password field; the user types passwords themselves");
     }
     return focus;
+  }
+
+  // Is a card in this tab's page, or may one be (content/page.js
+  // card_state live)? Fails closed: a page that cannot answer counts as
+  // yes. A tab that moved to a blocked site still throws NOT_ALLOWED.
+  async function cardLive(tabId) {
+    let s;
+    try {
+      s = await pageCall(tabId, "card_state");
+    } catch (e) {
+      if (e && e.code === ERR.NOT_ALLOWED) throw e;
+      return true;
+    }
+    return !s || s.live !== false;
+  }
+
+  const CARD_LIVE =
+    "Locked: a card is in this page's payment form, or the page has card fields Clearcart cannot see into. " +
+    "Clearcart only reads this page now: the user fills it in, and pay_now places the order after their yes.";
+
+  // Hands off a page that holds a card: no agent click, typing, key or
+  // form change there.
+  async function assertNoCard(tabId) {
+    if (await cardLive(tabId)) throw new BridgeError(ERR.LOCKED, CARD_LIVE);
   }
 
   // A paced check that ran in a different document than the one the action
@@ -382,8 +413,11 @@ export function createRouter({
   }
 
   // The pay flow's half of the unlock: a nonce bound to this tab and its
-  // current origin, which must be a pay site (the allowlist setting). Open
-  // web browsing lets Claude read many more sites, never unlock on them.
+  // current origin, on a site the user's settings let Clearcart use (the
+  // tab was resolved that way already; checked again here, failing closed).
+  // The agent server asks for one only after the user's spoken yes to the
+  // exact total (agent/unlock.ts), and its nonce only works with
+  // press_protected, which presses one order button.
   //
   // scope "user" is the user-directed unlock (request_unlock on the server):
   // any allowed site, but its nonce only works with press_unlocked, which
@@ -393,8 +427,8 @@ export function createRouter({
     const info = await tabs.tabInfo({ tabId });
     const origin = originOf(info && info.url);
     if (!origin) throw new BridgeError(ERR.NOT_ALLOWED, "tab has no origin to unlock");
-    if (scope === "order" && (typeof tabs.isPaySite !== "function" || !(await tabs.isPaySite(info.url)))) {
-      throw new BridgeError(ERR.LOCKED, "Locked: this site is not a Clearcart pay site");
+    if (scope === "order" && (typeof tabs.isAllowed !== "function" || !(await tabs.isAllowed(info.url)))) {
+      throw new BridgeError(ERR.LOCKED, "Locked: this page is on a site Clearcart does not use");
     }
     for (const [n, a] of armed) if (a.expires <= now()) armed.delete(n);
     const nonce = newNonce();
@@ -485,6 +519,23 @@ export function createRouter({
     return { ok: true, via: "cdp" };
   }
 
+  // The pay hand-off (agent pick_card): a real click on the page's card
+  // number field opens Chrome's own list of saved cards there, for the user
+  // to pick from. Chrome takes a pick only from the user: keys and clicks
+  // from the extension (an untrusted DevTools client) never choose a card,
+  // and nothing here reads one. The click goes through the same checks as
+  // Claude's own click on a ref. Answers only whether the field was found,
+  // filled already, and focused after the click.
+  async function cardAutofill(tabId, epoch) {
+    const f = await pageCall(tabId, "card_field");
+    const frames = Number(f && f.frames) || 0;
+    if (!f || !f.found) return { found: false, frames };
+    if (f.filled) return { found: true, filled: true, focused: false, frames };
+    await clickAt(tabId, { ref: f.ref }, epoch);
+    const focus = await pageCall(tabId, "focused_field");
+    return { found: true, filled: false, focused: !!focus && focus.kind === "cc-number", frames };
+  }
+
   async function route(method, params = {}) {
     params = params || {};
     // An interrupt or turn end from here on stops this call's paced action,
@@ -533,6 +584,10 @@ export function createRouter({
     const tabId = await tabs.resolveAllowedTab(params.tabId);
     indicate(tabId);
     if (ACT_METHODS.has(method)) await follow.to(tabId);
+    // A page that holds a card is read only for the agent.
+    if (method === "click" || method === "type" || method === "key" || method === "form_input" || method === "click_ref" || method === "press_unlocked") {
+      await assertNoCard(tabId);
+    }
     switch (method) {
       case "click":
         return clickAt(tabId, params, epoch);
@@ -549,6 +604,12 @@ export function createRouter({
       case "key": {
         // Parse first: a spec CDP would not send is refused before any check.
         const parsed = parseKey(params.key);
+        // No key at all in a card field: Chrome's saved-card list there
+        // answers to arrows and Enter, and only the user picks from it.
+        const focus = await pageCall(tabId, "focused_field");
+        if (focus && focus.payment) {
+          throw new BridgeError(ERR.PAYMENT_FIELD, "refusing a key press in a payment field; the user picks the card in Chrome's own list");
+        }
         // A single printable key is typing too.
         if (parsed.text && !/[\r\n]/.test(parsed.text)) await guardType(tabId, parsed.text);
         const act = activationOf(params.key);
@@ -574,11 +635,18 @@ export function createRouter({
         }
         return { ok: true };
       case "screenshot": {
+        // A picture of the page would show a card the page holds.
+        const NO_SHOT = "refusing a screenshot: a card is or may be on this page. Use get_page_text or find instead.";
+        if (await cardLive(tabId)) throw new BridgeError(ERR.PAYMENT_FIELD, NO_SHOT);
         const shot = await cdp.screenshot({ tabId });
         // The tab may have moved to a blocked site while it was captured.
         await recheck(tabId);
+        // A card picked while it was captured: drop the picture.
+        if (await cardLive(tabId)) throw new BridgeError(ERR.PAYMENT_FIELD, NO_SHOT);
         return shot;
       }
+      case "card_autofill":
+        return cardAutofill(tabId, epoch);
     }
     if (PAGE_METHODS.has(method)) return pageCall(tabId, method, params);
     throw new BridgeError(ERR.UNKNOWN_METHOD, `unknown method: ${method}`);

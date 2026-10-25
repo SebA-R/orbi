@@ -8,8 +8,8 @@
 // localhost rule (that is how a local test page opens), not past the
 // user's blocked sites.
 //
-// Pay sites (isPaySite) are the allowlist in both modes: open browsing does
-// not let the pay flow arm an unlock anywhere new.
+// The pay flow may arm its unlock on any allowed site, and only after the
+// user's spoken yes to the exact total (agent/unlock.ts, router.js lockArm).
 
 import { loadSettings, normalizeOrigin } from "../lib/settings.js";
 import { blocklistReason, parseBlockLines } from "../lib/blocklist.js";
@@ -30,11 +30,6 @@ export function blockReason(url, settings) {
 
 export async function isAllowed(url) {
   return !blockReason(url, await loadSettings());
-}
-
-export async function isPaySite(url) {
-  const origin = normalizeOrigin(url);
-  return !!origin && (await allowedOrigins()).includes(origin);
 }
 
 // Throws BridgeError(ERR.NOT_ALLOWED) unless the settings allow this url.

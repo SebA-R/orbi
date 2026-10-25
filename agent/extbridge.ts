@@ -5,8 +5,9 @@
 // time: a newer hello replaces the older socket (newest wins), so a reloaded
 // service worker takes over without waiting for the old socket to time out.
 //
-// Request params can hold card values (fill_payment), so nothing here ever
-// logs params or results; only method names and error codes.
+// No card value ever crosses the bridge (the user picks the card in
+// Chrome's own list). Nothing here logs params or results all the same;
+// only method names and error codes.
 
 import { EventEmitter } from "node:events";
 import type http from "node:http";
@@ -35,7 +36,7 @@ export const TOOLS = [
   "scroll",
   "screenshot",
 ] as const;
-export const INTERNAL = ["tab_info", "agent_tabs", "page_context", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref", "lock_arm", "press_protected", "press_unlocked", "lock_info", "actions_stop"] as const;
+export const INTERNAL = ["tab_info", "agent_tabs", "page_context", "card_autofill", "card_state", "order_buttons", "rect", "click_ref", "lock_arm", "press_protected", "press_unlocked", "lock_info", "actions_stop"] as const;
 export const ERR = {
   BAD_REQUEST: "bad_request",
   UNKNOWN_METHOD: "unknown_method",
