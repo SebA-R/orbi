@@ -2,7 +2,9 @@
 // messages between content scripts and it. The worker only has to call
 // installVoiceRelay() at top level (see "Voice and subtitles" in extension/README.md).
 //
-//   content PTT_START          -> ensure offscreen, VOICE_START {settings} to offscreen
+//   content PTT_START {silent} -> ensure offscreen, VOICE_START {settings, silent} to offscreen
+//   content PTT_CONFIRM        -> VOICE_CONFIRM (the key is held: chime, show it)
+//   content PTT_CANCEL         -> VOICE_CANCEL (a quick tap: drop the audio)
 //   content PTT_STOP           -> VOICE_STOP to offscreen
 //   command "toggle-listening" -> PTT_TOGGLE {settings} to offscreen
 //   content/popup TTS_STOP     -> TTS_STOP to offscreen
@@ -101,7 +103,13 @@ export function createVoiceRelay({ chromeApi = globalThis.chrome, getSettings = 
     switch (msg.type) {
       case RT.PTT_START:
         if (sender.tab && sender.tab.id != null) lastTabId = sender.tab.id;
-        toOffscreen(async () => ({ type: RT.VOICE_START, settings: await getSettings() }));
+        toOffscreen(async () => ({ type: RT.VOICE_START, settings: await getSettings(), ...(msg.silent ? { silent: true } : {}) }));
+        return true;
+      case RT.PTT_CONFIRM:
+        toOffscreen({ type: RT.VOICE_CONFIRM }, { create: false });
+        return true;
+      case RT.PTT_CANCEL:
+        toOffscreen({ type: RT.VOICE_CANCEL }, { create: false });
         return true;
       case RT.PTT_STOP:
         toOffscreen({ type: RT.VOICE_STOP }, { create: false });

@@ -135,3 +135,14 @@ test("installVoiceRelay registers message, command, storage and tab listeners", 
   installVoiceRelay({ chromeApi, getSettings: async () => SETTINGS });
   assert.deepEqual(Object.keys(state.listeners).sort(), ["activated", "command", "message", "storage"]);
 });
+
+test("PTT_START silent, PTT_CONFIRM and PTT_CANCEL reach the offscreen doc in order", async () => {
+  const { relay, state } = make();
+  relay.onMessage({ type: RT.PTT_START, silent: true }, { tab: { id: 7 } });
+  relay.onMessage({ type: RT.PTT_CONFIRM }, { tab: { id: 7 } });
+  relay.onMessage({ type: RT.PTT_CANCEL }, { tab: { id: 7 } });
+  await relay.idle();
+  assert.deepEqual(state.runtimeSent.map((m) => [m.type, m.silent]), [
+    [RT.VOICE_START, true], [RT.VOICE_CONFIRM, undefined], [RT.VOICE_CANCEL, undefined],
+  ]);
+});
