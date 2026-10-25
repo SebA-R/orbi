@@ -422,6 +422,8 @@ test("an input inside an open or closed shadow root counts as typing", () => {
   assert.equal(isTextEntry({ tagName: "DIV", getAttribute: (n) => (n === "role" ? "textbox" : null) }), true);
   assert.equal(isTextEntry({ tagName: "X-CARD", getAttribute: (n) => (n === "contenteditable" ? "" : null) }), true);
   assert.equal(isTextEntry({ tagName: "YT-ICON-BUTTON" }), false);
+  assert.equal(isTextEntry({ tagName: "APP-SEARCH-RESULTS" }), false);
+  assert.equal(isTextEntry({ tagName: "MY-FILE-INPUT" }), false);
   const btn = key("Space", {}, { target: { tagName: "X-CARD", shadowRoot: { activeElement: { tagName: "BUTTON" } } } });
   d.onKeyDown(btn);
   assert.equal(btn.prevented, true);
@@ -451,6 +453,12 @@ test("a hold in an iframe ends on a release in the top frame, never a latch", ()
   assert.deepEqual(sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
   top.d.onKeyUp(key("Space")); // only once
   assert.equal(sent.length, 3);
+  // Not for a keyup in a text field, nor after this frame lost focus.
+  top.d.setVoiceState("listening", false);
+  top.d.onKeyUp(key("Space", {}, { target: { tagName: "TEXTAREA" } }));
+  top.d.cancel();
+  top.d.onKeyUp(key("Space"));
+  assert.equal(sent.length, 3);
   // The frame's blur (focus left it) also ends its side; a second stop is a no-op in the controller.
   frame.d.cancel();
   assert.equal(frame.d.held, false);
@@ -475,4 +483,17 @@ test("IME composition never triggers talk or ends a latch", () => {
   d.onKeyDown(key("Space", {}, { isComposing: true }));
   assert.equal(d.latched, true);
   assert.deepEqual(sent, ["ptt.start"]);
+});
+
+test("synthetic key events from the page never talk", () => {
+  const { install } = load();
+  const listeners = {};
+  const win = { addEventListener: (t, fn) => { (listeners[t] ||= []).push(fn); } };
+  const doc = { visibilityState: "visible", addEventListener: () => {} };
+  const messages = [];
+  install({ win, doc, chromeApi: { runtime: { sendMessage: (m) => { messages.push(m); } } } });
+  const fire = (t, e) => listeners[t].forEach((fn) => fn(e));
+  fire("keydown", key("Space", { altKey: true }, { isTrusted: false }));
+  fire("keyup", key("Space", { altKey: true }, { isTrusted: false }));
+  assert.deepEqual(messages, []);
 });

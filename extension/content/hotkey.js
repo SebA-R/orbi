@@ -28,6 +28,7 @@
 // work inside text fields too. Releasing the key (or one of its modifiers)
 // sends PTT_STOP. Key repeat is ignored. Only the hotkey is preventDefault-ed.
 // A key press that is part of an IME composition is never a hotkey.
+// Synthetic key events (isTrusted false) from page scripts are ignored.
 //
 // Shadow DOM and frames: "is the user typing?" looks at the focused element
 // through open shadow roots (and closed ones, through chrome.dom where the
@@ -72,7 +73,8 @@
   // Custom elements that are text fields by name (sl-input, md-outlined-text-field,
   // vaadin-text-field, lightning-textarea, x-editor...), for a focused host
   // whose shadow root can't be read or holds no focused field.
-  const EDITABLE_TAG = /(^|-)(input|textarea|text-?field|textbox|editor|search|searchbox|search-input|combobox|autocomplete|composer)(-|$)/i;
+  const EDITABLE_TAG = /-(input|textarea|text-?field|textbox|searchbox|search-input|combobox|autocomplete|editor|composer)$/i;
+  const NOT_EDITABLE_TAG = /-(file|checkbox|radio|toggle|switch|range|color|slider)-input$/i;
 
   function matches(spec, e) {
     return e.code === spec.code
@@ -123,7 +125,7 @@
     if (EDITABLE_ROLES.has(role)) return true;
     const editable = attr(el, "contenteditable");
     if (editable != null && String(editable).toLowerCase() !== "false") return true;
-    return tag.includes("-") && EDITABLE_TAG.test(tag);
+    return EDITABLE_TAG.test(tag) && !NOT_EDITABLE_TAG.test(tag);
   }
 
   // Is the key event e typed into a text field, here or in a shadow root?
@@ -279,8 +281,10 @@
           // The press began in another frame of this tab and focus moved
           // here before the release: still a release. Only for a hold that
           // is listening; a latch stays on.
-          if (!latched && voiceState === "listening" && specs.some((s) => !s.latch && releasesHold(s, e))) {
-            if (specs.some((s) => e.code === s.code)) consume(e);
+          // Only the talk key itself, never in a text field or an IME.
+          if (!latched && voiceState === "listening" && !e.isComposing && specs.some((s) => !s.latch && e.code === s.code)
+            && !isTyping(e, dom)) {
+            consume(e);
             voiceState = "idle";
             send(RT.PTT_STOP);
           }
@@ -294,6 +298,9 @@
       // see the keyup. A latch is hands-free, so it stays on.
       cancel() {
         swallowUp = null;
+        // Focus left: a listening hold reported here is over or another
+        // window's, and this frame may stop hearing the state, so forget it.
+        if (voiceState === "listening" && !latched) voiceState = "idle";
         if (held) release();
         flushPending();
       },
@@ -333,12 +340,14 @@
     // as Orbi Preview, registered first in this frame) is left to it, so
     // one press never opens two mics. Never while ours is held or latched:
     // that press may be the one that ends it.
+    // Only the user's own keys: a page's synthetic events never talk.
     const onDown = (e) => {
+      if (e.isTrusted === false) return;
       if (orphaned()) return detach();
       if (e.defaultPrevented && !detector.held && !detector.latched) return;
       detector.onKeyDown(e);
     };
-    const onUp = (e) => { if (orphaned()) return detach(); detector.onKeyUp(e); };
+    const onUp = (e) => { if (e.isTrusted === false) return; if (orphaned()) return detach(); detector.onKeyUp(e); };
     const detach = () => {
       detector.cancel();
       win.removeEventListener("keydown", onDown, true);
