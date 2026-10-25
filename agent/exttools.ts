@@ -106,31 +106,31 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "read_page",
-      'Accessibility tree of the page as indented lines like - button "Add to bag" [ref_12]. Use the refs with click and form_input. Lines ending in [locked] are controls you can never press (order, checkout, payment, subscribe, sign in); [uncheck only] boxes may only be turned off.',
+      'Accessibility tree of the page as indented lines like - button "Add to bag" [ref_12]. Use the refs with click and form_input. Lines ending in [locked] are controls your click tools cannot press (checkout, sign in, sign up, subscribe, order, pay, wallets): if the user wants one, call request_unlock with its ref and label, never for Place order, Buy now, Pay or wallets. [uncheck only] boxes you may turn off; turning one on also goes through request_unlock.',
       { tabId, filter: z.enum(["interactive", "all"]).optional(), maxNodes: z.number().int().positive().max(2000).optional() },
       pass("read_page")
     ),
     tool(
       "find",
-      "Find elements by visible text, role or label. Returns { matches: [{ ref, role, name, locked?, uncheckOnly? }] }.",
+      "Find elements by visible text, role or label. Returns { matches: [{ ref, role, name, locked?, uncheckOnly? }] }. locked and uncheckOnly mean the same as [locked] and [uncheck only] in read_page: use request_unlock with the ref if the user wants it.",
       { tabId, query: z.string(), limit: z.number().int().positive().max(100).optional() },
       pass("find")
     ),
     tool(
       "get_page_text",
-      "Readable text of the page, main content first. Returns { url, title, text }.",
+      "Readable text of the page, main content first. Returns { url, title, text, locked? }. locked lists the page's locked controls as [{ ref, name, uncheckOnly?, userOnly? }], the same as [locked] in read_page; userOnly ones (Place order, Buy now, Pay, wallets) never go through request_unlock.",
       { tabId, maxChars: z.number().int().positive().max(100_000).optional() },
       pass("get_page_text")
     ),
     tool(
       "form_input",
-      "Set the value of a form field (text, select, checkbox) by ref. Payment fields and locked controls are refused; [uncheck only] boxes may be set to false.",
+      "Set the value of a form field (text, select, checkbox) by ref. Payment and password fields are refused. Locked controls are refused with a message naming the ref and the next step; [uncheck only] boxes may be set to false.",
       { tabId, ref: z.string(), value: z.union([z.string(), z.number(), z.boolean()]) },
       pass("form_input")
     ),
     tool(
       "click",
-      "Click an element by ref (preferred), or at viewport coordinates x, y. Clicks on locked controls are refused.",
+      "Click an element by ref (preferred), or at viewport coordinates x, y. A click that would press a locked control is refused with a message starting Locked: that names the control and its ref and says the next step (usually request_unlock with that ref if the user wants it). Nothing is pressed then; do not retry it.",
       {
         tabId,
         ref: z.string().optional().describe("Element ref from read_page or find, e.g. ref_12"),
@@ -153,10 +153,10 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
         }
       }
     ),
-    tool("type", "Type text into the focused element.", { tabId, text: z.string() }, pass("type")),
+    tool("type", "Type text into the focused element. A newline that would submit a locked form is refused like a locked click.", { tabId, text: z.string() }, pass("type")),
     tool(
       "key",
-      'Press one key, e.g. "Enter", "Tab", "Escape", "ArrowDown".',
+      'Press one key, e.g. "Enter", "Tab", "Escape", "ArrowDown". Enter or Space that would press or submit a locked control is refused like a locked click.',
       { tabId, key: z.string() },
       pass("key")
     ),
