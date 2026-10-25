@@ -7,9 +7,13 @@
 // blocks every page-reading browser tool.
 
 import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
-import { getCard, last4 } from "../vault/index.ts";
+import { getCard, last4, type Card } from "../vault/index.ts";
+import { extBridge, extMode, type ExtBridge } from "./extbridge.ts";
+import { clickRef } from "./exttools.ts";
 
-export const STORE_ORIGIN = "http://localhost:4000";
+// CLEARCART_STORE_ORIGIN moves the demo store (tests run one on a spare port).
+// Read at import, so set it on the command line rather than in .env.
+export const STORE_ORIGIN = new URL(process.env.CLEARCART_STORE_ORIGIN || "http://localhost:4000").origin;
 const CHECKOUT_PREFIX = `${STORE_ORIGIN}/checkout`;
 
 // Parsed comparison, so tricks like http://localhost:4000@evil.example/ fail.
@@ -81,6 +85,7 @@ const CLEAR_FIELDS = `(() => {
 })()`;
 
 export async function payNow(state: PayState): Promise<PayResult> {
+  if (extMode()) return payNowExt(state);
   const c = state.confirmation;
   if (!c || c.state !== "confirmed") {
     return { ok: false, error: "No confirmed checkout. Call request_checkout and get an explicit yes first." };
@@ -201,6 +206,187 @@ export async function payNow(state: PayState): Promise<PayResult> {
     if (state.cardFieldsLive) {
       // Not on the order page: wipe whatever card values are still in the form.
       const cleared = await evalInTab(tabId, CLEAR_FIELDS).then(() => true, () => false);
+      if (cleared) state.cardFieldsLive = false;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CLEARCART_BROWSER=ext: the same pay_now over the Clearcart extension.
+//
+// The card goes to the page in one fill_payment call over our own bridge
+// socket; the extension sets the fields by autocomplete kind and answers
+// { ok, last4 } without echoing anything. Our code then clicks #place-order
+// (find + rect + CDP click, or a DOM click_ref) and waits for /order/:id.
+// Errors from fill_payment are reduced to their code so nothing the page or
+// extension says about the card can reach Claude.
+
+export type ExtPayDeps = {
+  bridge?: Pick<ExtBridge, "call">;
+  getCard?: () => Promise<Card>;
+  orderTimeoutMs?: number;
+  pollMs?: number;
+};
+
+const CARD_KINDS = ["cc-name", "cc-number", "cc-exp", "cc-csc"];
+
+function pageMoney(text: string, label: RegExp): string {
+  const m = label.exec(text);
+  return m ? `$${m[1]}` : "";
+}
+
+// The text of the first role="alert" in a read_page tree. The page script
+// prints an alert without a name (alerts don't take their name from content)
+// and its text as indented `- text "..."` children:
+//   - alert [ref_3]
+//     - text "That card number is not valid."
+// A named alert (`- alert "..." [ref_3]`) is accepted too.
+export function alertText(tree: string): string {
+  const lines = tree.split("\n");
+  const i = lines.findIndex((l) => /^\s*-\s*alert\b/.test(l));
+  if (i < 0) return "";
+  const named = /^\s*-\s*alert\s+"([^"]+)"/.exec(lines[i])?.[1];
+  if (named) return named;
+  const indent = /^\s*/.exec(lines[i])![0].length;
+  const parts: string[] = [];
+  for (const l of lines.slice(i + 1)) {
+    if (/^\s*/.exec(l)![0].length <= indent) break;
+    const t = /^\s*-\s*text\s+"([^"]*)"/.exec(l)?.[1];
+    if (t) parts.push(t);
+  }
+  return parts.join(" ").trim();
+}
+
+async function extTabUrl(bridge: Pick<ExtBridge, "call">, tabId: number): Promise<string | null> {
+  try {
+    const info = await bridge.call<{ url?: string }>("tab_info", { tabId }, 10_000);
+    return typeof info?.url === "string" ? info.url : null;
+  } catch {
+    return null;
+  }
+}
+
+async function findCheckoutTabExt(bridge: Pick<ExtBridge, "call">, preferred: number | null): Promise<number | null> {
+  if (preferred != null && onStore(await extTabUrl(bridge, preferred), "/checkout")) return preferred;
+  try {
+    const ctx = await bridge.call<{ tabs?: Array<{ tabId: number; url?: string }> }>("tabs_context", {}, 10_000);
+    const hits = (ctx?.tabs || []).filter((t) => onStore(t.url, "/checkout"));
+    if (hits.length === 1) return hits[0].tabId;
+  } catch {}
+  return null;
+}
+
+async function pageText(bridge: Pick<ExtBridge, "call">, tabId: number): Promise<string> {
+  try {
+    const r = await bridge.call<{ text?: string }>("get_page_text", { tabId, maxChars: 20_000 }, 15_000);
+    return String(r?.text || "");
+  } catch {
+    return "";
+  }
+}
+
+async function clickPlaceOrder(bridge: Pick<ExtBridge, "call">, tabId: number): Promise<void> {
+  const r = await bridge.call<{ matches?: Array<{ ref: string; role?: string; name?: string }> }>("find", { tabId, query: "Place order", limit: 10 });
+  const matches = (r?.matches || []).filter((m) => /place order/i.test(m.name || ""));
+  const btn = matches.find((m) => m.role === "button") || matches[0];
+  if (!btn) throw new Error("no place-order button");
+  await clickRef(bridge, btn.ref, tabId);
+}
+
+export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise<PayResult> {
+  const bridge = deps.bridge ?? extBridge;
+  const readCard = deps.getCard ?? getCard;
+  const pollMs = deps.pollMs ?? 400;
+
+  const c = state.confirmation;
+  if (!c || c.state !== "confirmed") {
+    return { ok: false, error: "No confirmed checkout. Call request_checkout and get an explicit yes first." };
+  }
+
+  const tabId = await findCheckoutTabExt(bridge, state.lastTabId);
+  if (tabId == null) {
+    return { ok: false, error: `The current tab is not the checkout page. Navigate to ${CHECKOUT_PREFIX} first.` };
+  }
+
+  // The amount on the page must match what the user said yes to.
+  const pageTotal = pageMoney(await pageText(bridge, tabId), /Order total\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i);
+  if (Math.abs(money(pageTotal) - money(c.total)) > 0.005) {
+    c.state = "used";
+    return {
+      ok: false,
+      error: `The checkout total is ${pageTotal || "unknown"}, but the user confirmed ${c.total}. Call request_checkout again with the page total.`,
+    };
+  }
+
+  let fields: Array<{ kind?: string; filled?: boolean }> = [];
+  try {
+    fields = (await bridge.call<{ fields?: typeof fields }>("read_fields", { tabId }, 10_000))?.fields || [];
+  } catch {}
+  const kinds = new Set(fields.map((f) => f.kind));
+  if (!CARD_KINDS.every((k) => kinds.has(k))) {
+    return { ok: false, error: "Could not find the checkout fields on the page." };
+  }
+  // Like the default path: only fill the address when it is empty.
+  const addressFilled = fields.some((f) => f.kind === "address" && f.filled);
+
+  let card: Card;
+  try {
+    card = await readCard();
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  const four = last4(card.number);
+  c.state = "used";
+
+  state.cardFieldsLive = true;
+  try {
+    let filled: { ok?: boolean; last4?: string } | null = null;
+    try {
+      filled = await bridge.call("fill_payment", {
+        tabId,
+        card: { name: card.name, number: card.number, exp: card.exp, csc: card.csc },
+        ...(addressFilled ? {} : { address: DEFAULT_ADDRESS }),
+      });
+    } catch (e) {
+      const code = (e as { code?: string }).code || "error";
+      return { ok: false, error: `Could not fill the checkout fields (${code}).` };
+    }
+    if (!filled || filled.ok !== true) {
+      return { ok: false, error: "Could not fill the checkout fields on the page." };
+    }
+
+    try {
+      await clickPlaceOrder(bridge, tabId);
+    } catch {
+      return { ok: false, error: "Could not press Place order on the checkout page." };
+    }
+
+    const deadline = Date.now() + (deps.orderTimeoutMs ?? 20_000);
+    await sleep(Math.min(600, pollMs));
+    while (Date.now() < deadline) {
+      const href = await extTabUrl(bridge, tabId);
+      if (onStore(href, "/order/")) {
+        state.cardFieldsLive = false;
+        const text = await pageText(bridge, tabId);
+        const total = pageMoney(text, /Total charged\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i) || c.total;
+        const shown = /ending in\s*(\d{4})/i.exec(text)?.[1];
+        const receipt = { item: c.item, total, last4: shown || filled.last4 || four };
+        return { ok: true, last4: receipt.last4, receipt };
+      } else if (onStore(href, "/checkout")) {
+        // A rejected payment re-renders checkout with a role="alert" banner.
+        try {
+          const page = await bridge.call<{ tree?: string }>("read_page", { tabId, filter: "all", maxNodes: 400 }, 10_000);
+          const err = alertText(String(page?.tree || ""));
+          if (err) return { ok: false, error: `The store rejected the payment: ${err.trim()}` };
+        } catch {}
+      }
+      await sleep(pollMs);
+    }
+    return { ok: false, error: "The order page did not load in time. Check the page before trying again." };
+  } finally {
+    if (state.cardFieldsLive) {
+      // Not on the order page: wipe whatever card values are still in the form.
+      const cleared = await bridge.call("clear_payment", { tabId }, 10_000).then(() => true, () => false);
       if (cleared) state.cardFieldsLive = false;
     }
   }

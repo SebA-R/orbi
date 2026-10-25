@@ -19,6 +19,10 @@ Needs `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` in the repo-root `.env`, the st
 | `CLEARCART_DEBUG=1` | off | print the Claude Code subprocess stderr |
 | `CLEARCART_ALLOW_ANY_SITE=1` | off | allow `navigate` outside localhost:4000 |
 | `CLEARCART_ALLOWED_ORIGINS` | store only | comma-separated extra origins `navigate` and the tab sweep accept (parsed-origin match; set on the command line, it is read before `.env` loads). The agent is told to stop at the cart on those sites; `pay_now` stays store-only |
+| `CLEARCART_STORE_ORIGIN` | `http://localhost:4000` | where the demo store runs (`pay_now`, the prompt and the tab sweep use it); set on the command line, e.g. for a test store on a spare port |
+| `CLEARCART_BROWSER=ext` | off | drive the browser through the Clearcart extension instead of Open Claude in Chrome: adds the `/ext` WebSocket (`extbridge.ts`), gives Claude the 12 extension tools as the in-process `browser` MCP server (`exttools.ts`), and `pay_now` fills the card with one `fill_payment` bridge call then clicks `#place-order`. Unset, nothing changes |
+
+Tests: `npm test` (fake extension over a real socket; the server test uses ports 5170 and 5171).
 
 ## Files
 

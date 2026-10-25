@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "Clearcart",
+  "version": "0.1.0",
+  "description": "Voice shopping for screen reader users: lets the Clearcart agent shop on allowlisted stores, with hold-to-talk and subtitles.",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA310Vc8zUcQUrmBkXvtyspB5+zVbw750v5Q7XbHuv3APMh/X9YNsxPgI6sb3fSmBdRe2d5z4j5xHnVNcsJv6UdcnFYZIX9utU5ajB6BWPax0qLfWprnblpkoMcTaZUvWdwrJn1+ttleFYEwRaAPqGeizgOMxWSMkUK9B9NbxXPFpk7S1IHpI2pVB4pjf+htIeExwLZb9CLccqR+NcDsZW4uh8YegLMhS/vYEBRjVHu6KnYpduIAcZuDJJzd+4cavnr7AXfDBn9EWXoUn/DibmYVwOfV/wTX/mHP825QkFzojwDWzwzvQgin0MDJpzZDo+KN+4eFrmGWLHGL//2uBVlwIDAQAB",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Clearcart",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background/worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "tabs",
+    "tabGroups",
+    "debugger",
+    "scripting",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "http://localhost/*"
+  ],
+  "options_page": "options/options.html",
+  "commands": {
+    "toggle-listening": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Space",
+        "mac": "MacCtrl+Shift+Space"
+      },
+      "description": "Start or stop listening (toggle, for when holding a key is hard)"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/hotkey.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/subtitles.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

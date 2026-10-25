@@ -1,0 +1,14 @@
+{
+  "name": "clearcart-ext-subtitles-tests",
+  "private": true,
+  "type": "module",
+  "description": "Tests for extension/content/subtitles.js: jsdom unit tests and Playwright screenshots in an isolated Chromium.",
+  "scripts": {
+    "test": "node --test unit.test.mjs",
+    "screenshots": "node --test screenshots.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0",
+    "playwright": "^1.64.1"
+  }
+}

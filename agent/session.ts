@@ -6,10 +6,12 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type HookCallback, type HookJSONOutput, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
 import { callBrowserTool, resultText } from "./bridge.ts";
+import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
+import { createExtToolsServer } from "./exttools.ts";
 import { payNow, STORE_ORIGIN, type PayState } from "./pay.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
 
@@ -93,6 +95,18 @@ const ALLOWED = [
 const BLOCKED_WHILE_CARD_LIVE = new Set(
   ["computer", "read_page", "get_page_text", "find", "form_input", "javascript_tool", "read_console_messages"].map((t) => B + t)
 );
+
+// CLEARCART_BROWSER=ext: Claude's browser tools are the Clearcart extension's
+// TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
+// key and scroll stand in for "computer" in the card-live block list.
+const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "request_checkout", C + "pay_now"]);
+const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
+  ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
+);
+
+function extPrompt(prompt: string): string {
+  return prompt.replace("calling tabs_context_mcp with createIfEmpty true", "calling tabs_context, and tabs_create if the group has no tabs");
+}
 
 export type ServerMessage =
   | { type: "agent_text"; text: string }
@@ -183,7 +197,7 @@ export class Session {
     });
 
     if (name.startsWith(B)) {
-      if (this.state.cardFieldsLive && BLOCKED_WHILE_CARD_LIVE.has(name)) {
+      if (this.state.cardFieldsLive && (extMode() ? EXT_BLOCKED_WHILE_CARD_LIVE : BLOCKED_WHILE_CARD_LIVE).has(name)) {
         return deny("Blocked: card details are in the checkout form. Wait for pay_now to finish.");
       }
       if (name === B + "navigate" && !process.env.CLEARCART_ALLOW_ANY_SITE) {
@@ -203,6 +217,7 @@ export class Session {
   private sweep: HookCallback = async (input) => {
     if (input.hook_event_name !== "PostToolUse" || !input.tool_name.startsWith(B)) return {};
     if (process.env.CLEARCART_ALLOW_ANY_SITE) return {};
+    if (extMode()) return this.sweepExt();
     let tabs: Array<{ tabId: number; url?: string }> = [];
     try {
       tabs = JSON.parse(resultText(await callBrowserTool("tabs_context_mcp", {})).split("\n")[0]).availableTabs || [];
@@ -222,6 +237,29 @@ export class Session {
       },
     };
   };
+
+  // The same sweep over the extension bridge: tabs_context lists the
+  // Clearcart group, navigate sends strays home.
+  private async sweepExt(): Promise<HookJSONOutput> {
+    let tabs: Array<{ tabId: number; url?: string }> = [];
+    try {
+      tabs = (await extBridge.call<{ tabs?: typeof tabs }>("tabs_context", {}, 10_000))?.tabs || [];
+    } catch {
+      return {};
+    }
+    const strays = tabs.filter((t) => t.url && !allowedSite(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
+    for (const t of strays) {
+      await extBridge.call("navigate", { url: STORE_ORIGIN + "/", tabId: t.tabId }).catch(() => {});
+    }
+    if (!strays.length) return {};
+    this.status(`returned ${strays.length} tab(s) to the store`);
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse" as const,
+        additionalContext: `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
+      },
+    };
+  }
 
   private tools() {
     const requestCheckout = tool(
@@ -282,11 +320,12 @@ export class Session {
   }
 
   async run() {
+    const ext = extMode();
     const q = (this.q = query({
       prompt: this.input,
       options: {
         model: MODEL,
-        systemPrompt: SYSTEM_PROMPT + SITES_PROMPT,
+        systemPrompt: (ext ? extPrompt(SYSTEM_PROMPT) : SYSTEM_PROMPT) + SITES_PROMPT,
         cwd: HERE,
         tools: [],
         settingSources: [],
@@ -294,10 +333,12 @@ export class Session {
         persistSession: false,
         abortController: this.abort,
         mcpServers: {
-          browser: { type: "stdio", command: process.execPath, args: [BROWSER_SERVER], alwaysLoad: true, timeout: 90_000 },
+          browser: ext
+            ? createExtToolsServer()
+            : { type: "stdio", command: process.execPath, args: [BROWSER_SERVER], alwaysLoad: true, timeout: 90_000 },
           clearcart: this.tools(),
         },
-        allowedTools: ALLOWED,
+        allowedTools: ext ? EXT_ALLOWED : ALLOWED,
         disallowedTools: DISALLOWED_BROWSER,
         // Anything not in allowedTools is denied without prompting; the
         // PreToolUse guard gates the allowed ones per call.

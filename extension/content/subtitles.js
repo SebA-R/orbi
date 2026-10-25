@@ -1,0 +1,293 @@
+// Clearcart subtitles: a quiet caption card at the bottom of every tab that
+// shows what the user said and what the agent is saying.
+//
+// Declared in the manifest as a classic content script (no ES imports), so
+// the runtime message types it needs are inlined from lib/protocol.js RT.
+//
+// The card is purely visual. Screen reader users already hear the agent, so
+// the host is aria-hidden and inert, takes no pointer events and never
+// receives focus. It lives in a closed shadow root with its own reset so page
+// CSS cannot reach it, and it is only added to the page on the first message.
+
+(() => {
+  "use strict";
+
+  const FLAG = "__clearcartSubtitles";
+  if (globalThis[FLAG]) return; // idempotent if injected twice
+  globalThis[FLAG] = true;
+
+  const RT = { SUBTITLE: "subtitle", VOICE_STATE: "voice.state", SETTINGS_CHANGED: "settings.changed" };
+  const HIDE_AFTER_MS = 6000;
+  const MAX_CHARS = 600;
+  const STATES = new Set(["idle", "listening", "thinking", "speaking"]);
+
+  const CSS = `
+:host { all: initial !important; }
+* { box-sizing: border-box; }
+.wrap {
+  --ink: #1d1d1f; --muted: #6e6e73;
+  --card: rgb(255 255 255 / .74); --edge: rgb(0 0 0 / .08);
+  --shadow: 0 10px 40px rgb(30 34 60 / .14), 0 1px 3px rgb(30 34 60 / .08);
+  --s1: #2e8bff; --s2: #b65cff; --s3: #ff4d7a; --s4: #ffa14a;
+  --ease: cubic-bezier(.25, .8, .25, 1);
+  position: fixed; left: 50%; bottom: 28px;
+  width: max-content; max-width: min(720px, calc(100vw - 32px));
+  transform: translate(-50%, 8px) scale(.985);
+  opacity: 0; visibility: hidden;
+  transition: opacity .32s var(--ease), transform .42s var(--ease), visibility 0s linear .42s;
+  pointer-events: none; user-select: none; -webkit-user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased; color: var(--ink); text-align: left;
+}
+.wrap.on {
+  opacity: 1; visibility: visible; transform: translate(-50%, 0) scale(1);
+  transition: opacity .32s var(--ease), transform .42s var(--ease), visibility 0s;
+}
+.card {
+  position: relative; display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 20px 15px 16px; border-radius: 22px;
+  background: var(--card); border: 1px solid var(--edge); box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(28px) saturate(180%); backdrop-filter: blur(28px) saturate(180%);
+}
+.dot {
+  flex: none; width: 9px; height: 9px; margin-top: 7px; border-radius: 50%;
+  background: var(--muted); opacity: .45;
+  transition: background-color .3s var(--ease), opacity .3s var(--ease);
+}
+.wrap[data-state="listening"] .dot { background: var(--s1); opacity: 1; animation: breathe 1.6s ease-in-out infinite; }
+.wrap[data-state="thinking"] .dot {
+  background: conic-gradient(from 0deg, var(--s1), var(--s2), var(--s3), var(--s4), var(--s1));
+  opacity: 1; animation: spin 1.4s linear infinite;
+}
+.wrap[data-state="speaking"] .dot {
+  background: linear-gradient(135deg, var(--s2), var(--s3));
+  opacity: 1; animation: pulse .9s ease-in-out infinite alternate;
+}
+.lines { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.user {
+  font-size: 13.5px; line-height: 1.4; font-weight: 400; letter-spacing: -.005em; color: var(--muted);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.agent {
+  font-size: 21px; line-height: 1.36; font-weight: 500; letter-spacing: -.018em; color: var(--ink);
+  max-height: calc(21px * 1.36 * 3); overflow: hidden; overflow-wrap: anywhere;
+}
+.user:empty, .agent:empty { display: none; }
+.w { display: inline; animation: word-in .46s var(--ease) both; animation-delay: calc(var(--i, 0) * 55ms); }
+@keyframes word-in {
+  from { opacity: 0; filter: blur(7px); transform: translateY(3px); }
+  to { opacity: 1; filter: blur(0); transform: none; }
+}
+@keyframes breathe { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.72); opacity: .6; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { from { transform: scale(.8); } to { transform: scale(1.15); } }
+@media (prefers-color-scheme: dark) {
+  .wrap {
+    --ink: #f5f5f7; --muted: #a1a1a6;
+    --card: rgb(28 28 30 / .72); --edge: rgb(255 255 255 / .1);
+    --shadow: 0 12px 44px rgb(0 0 0 / .55), 0 1px 3px rgb(0 0 0 / .4);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wrap, .wrap.on { transform: translate(-50%, 0); }
+  .w { animation-name: fade-in; animation-duration: .2s; animation-delay: 0s; }
+  .wrap[data-state] .dot { animation: none; transform: none; }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+}
+@media (forced-colors: active) {
+  .card { background: Canvas; border-color: CanvasText; }
+  .agent { color: CanvasText; } .user { color: GrayText; }
+}
+`;
+
+  const ui = {
+    host: null, wrap: null, user: null, agent: null,
+    enabled: true, state: "idle",
+    agentWords: [], agentFinal: false, userFinal: false, lastSpeaker: null,
+    hideTimer: 0,
+  };
+
+  function mount() {
+    if (ui.host && ui.host.isConnected) return true;
+    const root = document.documentElement;
+    if (!root) return false;
+    const host = document.createElement("clearcart-subtitles");
+    host.setAttribute("aria-hidden", "true");
+    host.setAttribute("inert", "");
+    host.setAttribute("translate", "no");
+    const hs = host.style;
+    for (const [k, v] of [
+      ["all", "initial"], ["position", "fixed"], ["inset", "0"], ["display", "block"],
+      ["pointer-events", "none"], ["z-index", "2147483647"], ["contain", "layout style"],
+    ]) hs.setProperty(k, v, "important");
+
+    const shadow = host.attachShadow({ mode: "closed" });
+    let adopted = false;
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(CSS);
+      shadow.adoptedStyleSheets = [sheet]; // not subject to page style-src CSP
+      adopted = true;
+    } catch {}
+    if (!adopted) {
+      const style = document.createElement("style");
+      style.textContent = CSS;
+      shadow.append(style);
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "wrap";
+    wrap.dataset.state = ui.state;
+    const card = document.createElement("div");
+    card.className = "card";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const lines = document.createElement("div");
+    lines.className = "lines";
+    const user = document.createElement("div");
+    user.className = "user";
+    const agent = document.createElement("div");
+    agent.className = "agent";
+    lines.append(user, agent);
+    card.append(dot, lines);
+    wrap.append(card);
+    shadow.append(wrap);
+    root.append(host);
+    Object.assign(ui, { host, wrap, user, agent });
+    return true;
+  }
+
+  function show() {
+    if (!ui.enabled || !mount()) return;
+    ui.wrap.classList.add("on");
+  }
+
+  function hide() {
+    clearTimeout(ui.hideTimer);
+    ui.hideTimer = 0;
+    if (ui.wrap) ui.wrap.classList.remove("on");
+    // Next appearance starts from a clean card.
+    ui.agentWords = [];
+    ui.lastSpeaker = null;
+    if (ui.agent) ui.agent.textContent = "";
+    if (ui.user) ui.user.textContent = "";
+  }
+
+  function scheduleHide() {
+    clearTimeout(ui.hideTimer);
+    ui.hideTimer = setTimeout(hide, HIDE_AFTER_MS);
+  }
+
+  function cancelHide() {
+    clearTimeout(ui.hideTimer);
+    ui.hideTimer = 0;
+  }
+
+  function words(text) {
+    return text.split(/\s+/).filter(Boolean);
+  }
+
+  // Streams the agent line: words already on screen stay put, only new ones
+  // blur in, staggered. A line that does not extend the current one replaces it.
+  function renderAgent(text) {
+    const next = words(text);
+    const prev = ui.agentWords;
+    let keep = 0;
+    while (keep < prev.length && keep < next.length && prev[keep] === next[keep]) keep++;
+    // Each word is a span plus a space. A partial may change its last word,
+    // so everything after the common prefix is redrawn.
+    while (ui.agent.childNodes.length > keep * 2) ui.agent.lastChild.remove();
+    const frag = document.createDocumentFragment();
+    for (let i = keep; i < next.length; i++) {
+      const span = document.createElement("span");
+      span.className = "w";
+      span.style.setProperty("--i", String(i - keep));
+      span.textContent = next[i];
+      frag.append(span, document.createTextNode(" "));
+    }
+    ui.agent.append(frag);
+    ui.agentWords = next;
+    ui.agent.scrollTop = ui.agent.scrollHeight; // keep the newest line in view
+  }
+
+  function onSubtitle({ speaker, text, final }) {
+    if (speaker !== "user" && speaker !== "agent") return;
+    if (typeof text !== "string") return;
+    text = text.replace(/\s+/g, " ").trim().slice(-MAX_CHARS);
+    if (!ui.enabled || !mount()) return;
+    final = final === true;
+
+    if (speaker === "user") {
+      // A new user turn clears the previous agent answer.
+      if (ui.lastSpeaker === "agent" || ui.userFinal) {
+        ui.agentWords = [];
+        ui.agent.textContent = "";
+      }
+      ui.user.textContent = text;
+      ui.userFinal = final;
+    } else {
+      if (ui.agentFinal) {
+        // Previous agent line is done; this is a new one.
+        ui.agentWords = [];
+        ui.agent.textContent = "";
+      }
+      renderAgent(text);
+      ui.agentFinal = final;
+    }
+    ui.lastSpeaker = speaker;
+    if (!text && !ui.user.textContent && !ui.agent.textContent) return scheduleHide();
+    show();
+    if (final) scheduleHide();
+    else cancelHide();
+  }
+
+  function onState(state) {
+    if (!STATES.has(state)) return;
+    ui.state = state;
+    if (ui.wrap) ui.wrap.dataset.state = state;
+    if (!ui.enabled) return;
+    if (state === "idle") {
+      if (ui.wrap && ui.wrap.classList.contains("on") && !ui.hideTimer) scheduleHide();
+      return;
+    }
+    show();
+    if (ui.wrap) ui.wrap.dataset.state = state;
+    cancelHide();
+  }
+
+  function setEnabled(on) {
+    ui.enabled = on !== false;
+    if (!ui.enabled) {
+      hide();
+      if (ui.host) ui.host.remove();
+      ui.host = ui.wrap = ui.user = ui.agent = null;
+    }
+  }
+
+  const chromeApi = globalThis.chrome;
+  if (chromeApi && chromeApi.runtime && chromeApi.runtime.onMessage) {
+    chromeApi.runtime.onMessage.addListener((msg) => {
+      if (!msg || typeof msg !== "object") return;
+      if (msg.type === RT.SUBTITLE) onSubtitle(msg);
+      else if (msg.type === RT.VOICE_STATE) onState(msg.state);
+      else if (msg.type === RT.SETTINGS_CHANGED && msg.settings && "subtitles" in msg.settings) {
+        setEnabled(msg.settings.subtitles);
+      }
+      // No response: never hold the message channel open.
+    });
+  }
+
+  const storage = chromeApi && chromeApi.storage;
+  if (storage && storage.local) {
+    try {
+      Promise.resolve(storage.local.get("subtitles"))
+        .then((v) => { if (v && v.subtitles === false) setEnabled(false); })
+        .catch(() => {});
+    } catch {}
+  }
+  if (storage && storage.onChanged) {
+    storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes.subtitles) setEnabled(changes.subtitles.newValue);
+    });
+  }
+})();

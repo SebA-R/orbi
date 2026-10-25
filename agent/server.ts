@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 
+import { extBridge, extMode } from "./extbridge.ts";
 import { Session, type ServerMessage } from "./session.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -15,6 +16,9 @@ const ROOT = path.resolve(HERE, "..");
 dotenv.config({ path: path.join(ROOT, ".env"), quiet: true });
 
 const PORT = Number(process.env.AGENT_PORT || 5050);
+// CLEARCART_BROWSER=ext: the Clearcart extension connects to /ext and drives
+// the browser. Unset: today's open-claude-in-chrome path, no /ext endpoint.
+const EXT = extMode();
 const PUBLIC_DIR = path.join(ROOT, "voice", "public");
 // AGENT_MODE=echo answers every user_text with an agent_text echo and never
 // starts Claude. Useful for testing the voice console alone.
@@ -86,12 +90,18 @@ async function cartesiaToken(res: http.ServerResponse) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && url.pathname === "/cartesia-token") return void cartesiaToken(res);
-  if (req.method === "GET" && url.pathname === "/healthz") return json(res, 200, { ok: true, echo: ECHO });
+  if (req.method === "GET" && url.pathname === "/healthz") {
+    if (EXT) return json(res, 200, { ok: true, echo: ECHO, browser: "ext", extension: extBridge.connected() });
+    return json(res, 200, { ok: true, echo: ECHO });
+  }
   if (req.method === "GET" || req.method === "HEAD") return serveStatic(url.pathname, res);
   res.writeHead(405).end();
 });
 
-const wss = new WebSocketServer({ server, path: "/session" });
+// Two WebSocket paths on one server need noServer mode plus a router: a
+// server-attached WebSocketServer answers 400 to every path but its own.
+const wss = EXT ? new WebSocketServer({ noServer: true }) : new WebSocketServer({ server, path: "/session" });
+if (EXT) extBridge.attach(server, { "/session": wss });
 
 wss.on("connection", (ws: WebSocket) => {
   const send = (m: ServerMessage) => {
@@ -124,6 +134,6 @@ wss.on("connection", (ws: WebSocket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Clearcart agent on http://localhost:${PORT} (WebSocket /session${ECHO ? ", echo mode" : ""})`);
+  console.log(`Clearcart agent on http://localhost:${PORT} (WebSocket /session${EXT ? ", /ext" : ""}${ECHO ? ", echo mode" : ""})`);
   if (!fs.existsSync(PUBLIC_DIR)) console.log(`note: ${PUBLIC_DIR} does not exist yet`);
 });
