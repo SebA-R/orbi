@@ -4,6 +4,7 @@
 import { HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SETUP_PATH, SETUP_STEPS, agentHealth, hasSiteAccess, keyName, micState, setupDone, updateBadge } from "../lib/setup.js";
+import { bindDangerToggle } from "../lib/danger-toggle.js";
 
 const $ = (id) => document.getElementById(id);
 const openTab = (path) => {
@@ -66,6 +67,8 @@ $("speed").min = String(SPEED_MIN);
 $("speed").max = String(SPEED_MAX);
 const showSpeed = () => { $("speed-out").textContent = `${Number($("speed").value).toFixed(1)}x`; };
 
+const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no"), chip: $("danger-chip") }, saveSettings);
+
 function fill(s) {
   settings = s;
   const radio = document.querySelector(`input[name="browseMode"][value="${s.browseMode}"]`);
@@ -74,6 +77,7 @@ function fill(s) {
   $("speed").value = String(s.speed);
   $("subtitles").checked = s.subtitles;
   $("quiet-tabs").checked = s.quietTabs;
+  danger.fill(s);
   $("follow-tab").checked = s.followTab;
   showSpeed();
   showVoice();

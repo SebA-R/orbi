@@ -31,7 +31,14 @@ export const DEFAULTS = Object.freeze({
   quietTabs: true,
   // Bring the user to the tab Clearcart acts on (background/follow.js).
   followTab: true,
+  // Danger mode: Clearcart presses sign in and sign up without asking
+  // (content/protect.js says what it lifts). Off unless the user turns it
+  // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
+  // masking, the blocklist and the CAPTCHA hand-off never change with it.
+  dangerMode: false,
 });
+
+export const DANGER_MODE_COPY = "Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.";
 
 export const SPEED_MIN = 0.6;
 export const SPEED_MAX = 2;
@@ -78,6 +85,8 @@ export function normalize(raw = {}) {
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
   if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
+  // Only a stored true turns it on.
+  out.dangerMode = raw.dangerMode === true;
   return out;
 }
 
