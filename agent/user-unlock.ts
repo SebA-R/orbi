@@ -8,7 +8,7 @@
 // controls never unlock this way.
 //
 // What never unlocks here: placing an order, buy now, pay, wallets, marked
-// controls, and the submit of a card form. Those go only through request_checkout and pay_now
+// controls, and the submit of a card form. Those go only through pick_card, request_checkout and pay_now
 // (unlock.ts). Passwords and card numbers are never typed by Claude: fields
 // stay masked and refused, and a sign in is pressed only after the user has
 // filled the password themselves.
@@ -304,7 +304,7 @@ export function decideUnlock(
       default:
         return {
           kind: "refuse",
-          message: `'${label}' places the order or pays. Only request_checkout and pay_now can do that, after the user's yes, and only on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.`,
+          message: `'${label}' places the order or pays. Only pay_now can press it, once, after pick_card and the user's yes to request_checkout. Never call request_unlock for it.`,
         };
     }
   }

@@ -1,7 +1,7 @@
 // Claude's browser tools when CLEARCART_BROWSER=ext: an in-process MCP server
 // named "browser" (tools appear as mcp__browser__<name>) whose every tool is
 // one or two calls over the extension bridge. Only the TOOLS from
-// extension/lib/protocol.js are exposed; INTERNAL methods (fill_payment,
+// extension/lib/protocol.js are exposed; INTERNAL methods (card_autofill,
 // lock_arm, press_protected and friends) stay reachable from our own code
 // only. Clicks, keys and form_input on protected controls are refused by the
 // extension itself (button lock), whatever arguments Claude sends.

@@ -292,4 +292,4 @@ export async function ocicLockNote(tool: string, args: Record<string, unknown>, 
 
 // What to do about a locked control, after the list.
 export const LOCK_NEXT =
-  "If the user wants one of them (go to checkout, sign in, sign up, subscribe, save a card), call request_unlock with its label; it asks the user itself when needed. Never call request_unlock for Place order, Buy now, Pay or wallet buttons: paying goes only through request_checkout and pay_now.";
+  "If the user wants one of them (go to checkout, sign in, sign up, subscribe, save a card), call request_unlock with its label; it asks the user itself when needed. Never call request_unlock for Place order, Buy now, Pay or wallet buttons: paying goes only through pick_card, request_checkout and pay_now.";

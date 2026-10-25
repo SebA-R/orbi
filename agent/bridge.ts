@@ -4,8 +4,8 @@
 // attached client onto the one native-messaging link (see
 // open-claude-in-chrome/host/endpoint.js and native-host.js). Claude's browser
 // tools come from a server-hybrid.js child the SDK spawns; this module is a
-// second, separate client used only by our own code (pay_now), so the values
-// it sends never pass through Claude's context.
+// second, separate client used only by our own code (the lock checks and the
+// tab sweep), so what it sends never passes through Claude's context.
 
 import fs from "node:fs";
 import net from "node:net";
