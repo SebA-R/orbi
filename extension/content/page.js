@@ -32,8 +32,9 @@
     return e;
   }
 
-  function Locked(lock) {
-    return PageError(ERR.LOCKED, Protect.message(lock));
+  // Throws ERR.LOCKED with the message for Claude when lock is set.
+  function refuse(lock) {
+    if (lock) throw PageError(ERR.LOCKED, Protect.message(lock));
   }
 
   // Lock marker for read_page and find: only on the control itself (or the
@@ -397,7 +398,7 @@
     if (el.disabled) throw PageError(ERR.BAD_REQUEST, "element is disabled");
     // Locked controls: an uncheck-only box may be turned off, nothing else.
     var lk = Protect.lockOf(el);
-    if (lk && !(lk.optin && (!truthy(value) || lk.checked))) throw Locked(lk);
+    if (lk && !(lk.optin && (!truthy(value) || lk.checked))) refuse(lk);
     var tag = el.tagName;
     if (tag === "INPUT" && (el.type === "checkbox" || el.type === "radio")) {
       var want = truthy(value);
@@ -443,8 +444,7 @@
 
   function clickRef(params) {
     var el = elementFor(params.ref);
-    var lk = Protect.lockInChain(el);
-    if (lk) throw Locked(lk);
+    refuse(Protect.lockInChain(el));
     if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", behavior: "instant" });
     if (typeof el.focus === "function") el.focus();
     el.click();
@@ -466,27 +466,20 @@
   // neither may whatever is on top of its centre, which is where the click
   // will land.
   function guardRef(params) {
-    var el = elementFor(params.ref);
-    var lk = Protect.lockInChain(el);
-    if (lk) throw Locked(lk);
+    refuse(Protect.lockInChain(elementFor(params.ref)));
     var r = rect(params);
-    if (r.width > 0 && r.height > 0) {
-      var hit = Protect.lockAt(document, r.x + r.width / 2, r.y + r.height / 2);
-      if (hit) throw Locked(hit);
-    }
+    if (r.width > 0 && r.height > 0) refuse(Protect.lockAt(document, r.x + r.width / 2, r.y + r.height / 2));
     return r;
   }
 
   function guardPoint(params) {
     var p = point(params);
-    var lk = Protect.lockAt(document, p.x, p.y);
-    if (lk) throw Locked(lk);
+    refuse(Protect.lockAt(document, p.x, p.y));
     return { ok: true };
   }
 
   function guardKey(params) {
-    var lk = Protect.lockForKey(document, String(params.key == null ? "" : params.key));
-    if (lk) throw Locked(lk);
+    refuse(Protect.lockForKey(document, String(params.key == null ? "" : params.key)));
     return { ok: true };
   }
 
