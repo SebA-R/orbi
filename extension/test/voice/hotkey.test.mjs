@@ -398,3 +398,102 @@ test("install learns the voice state from runtime messages and a hidden tab forg
   listeners["doc:visibilitychange"].forEach((fn) => fn());
   assert.deepEqual(messages, ["voice.state.query"], "visible again: ask for the state");
 });
+
+test("an input inside an open or closed shadow root counts as typing", () => {
+  const { createHoldDetector, isTextEntry } = load();
+  const input = { tagName: "INPUT", type: "text" };
+  const openHost = { tagName: "SL-INPUT", shadowRoot: { activeElement: input } };
+  const closedHost = { tagName: "MY-FIELD", shadowRoot: null };
+  const dom = { openOrClosedShadowRoot: (el) => (el === closedHost ? { activeElement: input } : null) };
+  const sent = [];
+  const d = createHoldDetector({ hotkey: "Space", send: (t) => sent.push(t), dom, setTimer: () => 0, clearTimer: () => {} });
+  // Open root: composedPath()[0] is the inner input; the host alone also resolves.
+  for (const e of [
+    key("Space", {}, { target: openHost, composedPath: () => [input, openHost] }),
+    key("Space", {}, { target: openHost }),
+    key("Space", {}, { target: closedHost, composedPath: () => [closedHost] }),
+  ]) {
+    d.onKeyDown(e);
+    assert.equal(e.prevented, false);
+  }
+  assert.deepEqual(sent, []);
+  // An opaque custom element: typing only if it looks like a field.
+  assert.equal(isTextEntry({ tagName: "VAADIN-TEXT-FIELD" }), true);
+  assert.equal(isTextEntry({ tagName: "DIV", getAttribute: (n) => (n === "role" ? "textbox" : null) }), true);
+  assert.equal(isTextEntry({ tagName: "X-CARD", getAttribute: (n) => (n === "contenteditable" ? "" : null) }), true);
+  assert.equal(isTextEntry({ tagName: "YT-ICON-BUTTON" }), false);
+  assert.equal(isTextEntry({ tagName: "APP-SEARCH-RESULTS" }), false);
+  assert.equal(isTextEntry({ tagName: "MY-FILE-INPUT" }), false);
+  const btn = key("Space", {}, { target: { tagName: "X-CARD", shadowRoot: { activeElement: { tagName: "BUTTON" } } } });
+  d.onKeyDown(btn);
+  assert.equal(btn.prevented, true);
+  assert.deepEqual(sent, ["ptt.start"]);
+});
+
+test("a hold in an iframe ends on a release in the top frame, never a latch", () => {
+  const sent = [];
+  const make = () => {
+    const timers = [];
+    const d = load().createHoldDetector({
+      hotkey: "Space", send: (t) => sent.push(t),
+      setTimer: (fn) => { timers.push(fn); return timers.length - 1; }, clearTimer: () => {},
+    });
+    return { d, fire: () => timers.splice(0).forEach((fn) => fn()) };
+  };
+  const frame = make();
+  const top = make();
+  frame.d.onKeyDown(key("Space", {}, { target: { tagName: "DIV" } }));
+  frame.fire();
+  // The worker broadcasts the state to every frame of the tab.
+  frame.d.setVoiceState("listening", false);
+  top.d.setVoiceState("listening", false);
+  const up = key("Space");
+  top.d.onKeyUp(up);
+  assert.equal(up.prevented, true);
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+  top.d.onKeyUp(key("Space")); // only once
+  assert.equal(sent.length, 3);
+  // Not for a keyup in a text field, nor after this frame lost focus.
+  top.d.setVoiceState("listening", false);
+  top.d.onKeyUp(key("Space", {}, { target: { tagName: "TEXTAREA" } }));
+  top.d.cancel();
+  top.d.onKeyUp(key("Space"));
+  assert.equal(sent.length, 3);
+  // The frame's blur (focus left it) also ends its side; a second stop is a no-op in the controller.
+  frame.d.cancel();
+  assert.equal(frame.d.held, false);
+  // A latch is hands-free: a stray keyup elsewhere leaves it on.
+  sent.length = 0;
+  top.d.setVoiceState("listening", true);
+  top.d.onKeyUp(key("Space"));
+  assert.deepEqual(sent, []);
+});
+
+test("IME composition never triggers talk or ends a latch", () => {
+  const { d, sent } = detector("Space");
+  const composing = key("Space", {}, { target: { tagName: "DIV" }, isComposing: true });
+  d.onKeyDown(composing);
+  const ime = key("Space", {}, { target: { tagName: "DIV" }, keyCode: 229 });
+  d.onKeyDown(ime);
+  assert.equal(composing.prevented, false);
+  assert.equal(ime.prevented, false);
+  assert.deepEqual(sent, []);
+  d.onKeyDown(key("Space", { altKey: true }));
+  assert.equal(d.latched, true);
+  d.onKeyDown(key("Space", {}, { isComposing: true }));
+  assert.equal(d.latched, true);
+  assert.deepEqual(sent, ["ptt.start"]);
+});
+
+test("synthetic key events from the page never talk", () => {
+  const { install } = load();
+  const listeners = {};
+  const win = { addEventListener: (t, fn) => { (listeners[t] ||= []).push(fn); } };
+  const doc = { visibilityState: "visible", addEventListener: () => {} };
+  const messages = [];
+  install({ win, doc, chromeApi: { runtime: { sendMessage: (m) => { messages.push(m); } } } });
+  const fire = (t, e) => listeners[t].forEach((fn) => fn(e));
+  fire("keydown", key("Space", { altKey: true }, { isTrusted: false }));
+  fire("keyup", key("Space", { altKey: true }, { isTrusted: false }));
+  assert.deepEqual(messages, []);
+});

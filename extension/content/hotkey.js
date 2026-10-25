@@ -27,6 +27,17 @@
 // hold-to-talk: they can't be a typing key, so they confirm straight away and
 // work inside text fields too. Releasing the key (or one of its modifiers)
 // sends PTT_STOP. Key repeat is ignored. Only the hotkey is preventDefault-ed.
+// A key press that is part of an IME composition is never a hotkey.
+// Synthetic key events (isTrusted false) from page scripts are ignored.
+//
+// Shadow DOM and frames: "is the user typing?" looks at the focused element
+// through open shadow roots (and closed ones, through chrome.dom where the
+// content script has it). The manifest runs this script in every frame, so
+// each frame has its own detector and the key goes to whichever has focus;
+// they all talk to the worker's one voice controller, which ignores a second
+// start while listening. Focus leaving a frame mid-hold blurs it, which ends
+// that hold. As a backstop, a talk-key keyup in a frame that did not see the
+// press ends a hold (not a latch) another frame of this tab left open.
 //
 // Content scripts declared in the manifest can't be ES modules, so this file
 // is self-contained. RT values must match lib/protocol.js.
@@ -58,6 +69,12 @@
   const NON_TEXT_INPUTS = new Set(["button", "submit", "reset", "checkbox", "radio", "image", "range", "color", "file"]);
   const PRESSABLE_INPUTS = new Set(["button", "submit", "reset", "checkbox", "radio", "image"]);
   const PRESSABLE_ROLES = new Set(["button", "checkbox", "switch", "radio", "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "option"]);
+  const EDITABLE_ROLES = new Set(["textbox", "searchbox", "combobox"]);
+  // Custom elements that are text fields by name (sl-input, md-outlined-text-field,
+  // vaadin-text-field, lightning-textarea, x-editor...), for a focused host
+  // whose shadow root can't be read or holds no focused field.
+  const EDITABLE_TAG = /-(input|textarea|text-?field|textbox|searchbox|search-input|combobox|autocomplete|editor|composer)$/i;
+  const NOT_EDITABLE_TAG = /-(file|checkbox|radio|toggle|switch|range|color|slider)-input$/i;
 
   function matches(spec, e) {
     return e.code === spec.code
@@ -73,13 +90,47 @@
     return false;
   }
 
+  function attr(el, name) {
+    try { return typeof el.getAttribute === "function" ? el.getAttribute(name) : null; } catch { return null; }
+  }
+
+  // el's shadow root: open, or closed through chrome.dom (content scripts only).
+  function shadowRootOf(el, dom) {
+    try { if (el.shadowRoot) return el.shadowRoot; } catch {}
+    if (dom && typeof dom.openOrClosedShadowRoot === "function") {
+      try { return dom.openOrClosedShadowRoot(el) || null; } catch {}
+    }
+    return null;
+  }
+
+  // The element that really has focus, from el down through shadow roots.
+  function deepFocus(el, dom) {
+    for (let i = 0; el && i < 32; i++) {
+      const root = shadowRootOf(el, dom);
+      const inner = root && root.activeElement;
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+
   // Where a plain Space should type a space instead of talking.
   function isTextEntry(el) {
     if (!el || !el.tagName) return false;
     if (el.isContentEditable) return true;
-    const tag = el.tagName.toUpperCase();
+    const tag = String(el.tagName).toUpperCase();
     if (tag === "TEXTAREA" || tag === "SELECT") return true;
-    return tag === "INPUT" && !NON_TEXT_INPUTS.has(String(el.type || "text").toLowerCase());
+    if (tag === "INPUT") return !NON_TEXT_INPUTS.has(String(el.type || "text").toLowerCase());
+    const role = String(attr(el, "role") || "").trim().split(/\s+/)[0].toLowerCase();
+    if (EDITABLE_ROLES.has(role)) return true;
+    const editable = attr(el, "contenteditable");
+    if (editable != null && String(editable).toLowerCase() !== "false") return true;
+    return EDITABLE_TAG.test(tag) && !NOT_EDITABLE_TAG.test(tag);
+  }
+
+  // Is the key event e typed into a text field, here or in a shadow root?
+  function isTyping(e, dom) {
+    return isTextEntry(deepFocus(targetOf(e), dom));
   }
 
   // What a Space press would have activated, if anything.
@@ -102,7 +153,7 @@
   function createHoldDetector({
     hotkey = "Space", send, onTap = () => {},
     setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
-    doubleTapMs = DOUBLE_TAP_MS,
+    doubleTapMs = DOUBLE_TAP_MS, dom = null,
   }) {
     let specs = [];
     let spec = null; // the spec of the current hold
@@ -171,6 +222,8 @@
         if (state === "listening") { if (isLatched) latched = true; } else latched = false;
       },
       onKeyDown(e) {
+        // Space confirms or spaces an IME candidate: never ours.
+        if (e.isComposing || e.keyCode === 229) return;
         if (latched) {
           if (!endsLatch(e)) return;
           consume(e);
@@ -183,7 +236,7 @@
         const hit = held ? (matches(spec, e) ? spec : null) : specs.find((s) => matches(s, e));
         if (!hit) return;
         spec = hit;
-        if (spec.confirmMs && !held && isTextEntry(targetOf(e))) { flushPending(); return; }
+        if (spec.confirmMs && !held && isTyping(e, dom)) { flushPending(); return; }
         consume(e);
         if (e.repeat || held) return;
         if (spec.latch) {
@@ -224,7 +277,20 @@
           consume(e);
           return;
         }
-        if (!held || !releasesHold(spec, e)) return;
+        if (!held) {
+          // The press began in another frame of this tab and focus moved
+          // here before the release: still a release. Only for a hold that
+          // is listening; a latch stays on.
+          // Only the talk key itself, never in a text field or an IME.
+          if (!latched && voiceState === "listening" && !e.isComposing && specs.some((s) => !s.latch && e.code === s.code)
+            && !isTyping(e, dom)) {
+            consume(e);
+            voiceState = "idle";
+            send(RT.PTT_STOP);
+          }
+          return;
+        }
+        if (!releasesHold(spec, e)) return;
         if (e.code === spec.code) consume(e);
         release(e);
       },
@@ -232,6 +298,9 @@
       // see the keyup. A latch is hands-free, so it stays on.
       cancel() {
         swallowUp = null;
+        // Focus left: a listening hold reported here is over or another
+        // window's, and this frame may stop hearing the state, so forget it.
+        if (voiceState === "listening" && !latched) voiceState = "idle";
         if (held) release();
         flushPending();
       },
@@ -256,12 +325,13 @@
       }
     };
     // A quick tap of plain Space: do what Space would have done.
+    const dom = chromeApi && chromeApi.dom;
     const onTap = () => {
-      const el = doc.activeElement;
+      const el = deepFocus(doc.activeElement, dom);
       if (isPressable(el)) el.click();
       else win.scrollBy({ top: win.innerHeight * 0.85, behavior: "smooth" });
     };
-    const detector = createHoldDetector({ send, onTap });
+    const detector = createHoldDetector({ send, onTap, dom });
     // After an extension reload this copy is orphaned (runtime.id goes away)
     // and the worker injects a fresh one, so this copy steps aside.
     const myId = chromeApi.runtime && chromeApi.runtime.id;
@@ -270,12 +340,14 @@
     // as Orbi Preview, registered first in this frame) is left to it, so
     // one press never opens two mics. Never while ours is held or latched:
     // that press may be the one that ends it.
+    // Only the user's own keys: a page's synthetic events never talk.
     const onDown = (e) => {
+      if (e.isTrusted === false) return;
       if (orphaned()) return detach();
       if (e.defaultPrevented && !detector.held && !detector.latched) return;
       detector.onKeyDown(e);
     };
-    const onUp = (e) => { if (orphaned()) return detach(); detector.onKeyUp(e); };
+    const onUp = (e) => { if (e.isTrusted === false) return; if (orphaned()) return detach(); detector.onKeyUp(e); };
     const detach = () => {
       detector.cancel();
       win.removeEventListener("keydown", onDown, true);
@@ -310,7 +382,7 @@
   }
 
   if (typeof globalThis.__clearcartHotkeyTest === "object") {
-    Object.assign(globalThis.__clearcartHotkeyTest, { createHoldDetector, install, isTextEntry, isPressable, SPECS, RT, CONFIRM_MS, DOUBLE_TAP_MS });
+    Object.assign(globalThis.__clearcartHotkeyTest, { createHoldDetector, install, isTextEntry, isPressable, deepFocus, isTyping, SPECS, RT, CONFIRM_MS, DOUBLE_TAP_MS });
   } else if (globalThis.chrome && globalThis.chrome.runtime && globalThis.chrome.runtime.id) {
     install();
   }
