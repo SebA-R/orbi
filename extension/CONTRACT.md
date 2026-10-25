@@ -22,7 +22,7 @@ Existing base (read it, don't change it): `lib/protocol.js` (MSG, TOOLS, INTERNA
 
 ```js
 // allowlist.js
-export async function allowedOrigins(): Promise<string[]>   // from settings, default ["http://localhost:4000"]
+export async function allowedOrigins(): Promise<string[]>   // from settings, default [] (none until the user adds some)
 export async function assertAllowed(url: string): Promise<void> // throws BridgeError(ERR.NOT_ALLOWED) unless new URL(url).origin is allowed
 export function blockReason(url, settings): string | null      // browseMode "open": lib/blocklist.js fixed rules + settings.blocklist entries; "allowlist": origin in settings.allowlist
 export async function isPaySite(url: string): Promise<boolean>  // origin in the allowlist, in both modes; lock_arm needs it
