@@ -24,7 +24,9 @@
   globalThis[FLAG] = true;
 
   const RT = { SUBTITLE: "subtitle", VOICE_STATE: "voice.state", SETTINGS_CHANGED: "settings.changed" };
-  const HIDE_AFTER_MS = 6000;
+  const HIDE_AFTER_MS = 5000; // after the last words, once nothing is being said
+  const STALE_MS = 30000;     // hard cap: hide 30 s after the last update, even if a state never returns to idle
+  const FADE_MS = 700;        // matches the .wrap fade-out transition
   const MAX_CHARS = 600;
   const STATES = new Set(["idle", "listening", "thinking", "speaking"]);
 
@@ -43,9 +45,10 @@
   --ease: cubic-bezier(.25, .8, .25, 1);
   position: fixed !important; left: 50% !important; bottom: 28px !important; z-index: 2147483647 !important;
   width: max-content; max-width: min(720px, calc(100vw - 32px));
-  transform: translate(-50%, 8px) scale(.985);
+  transform: translate(-50%, 10px) scale(.97);
   opacity: 0; visibility: hidden;
-  transition: opacity .32s var(--ease), transform .42s var(--ease), visibility 0s linear .42s;
+  --fade: cubic-bezier(.4, 0, .2, 1);
+  transition: opacity .6s var(--fade), transform .7s var(--fade), visibility 0s linear .7s;
   pointer-events: none; user-select: none; -webkit-user-select: none;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased; color: var(--ink); text-align: left;
@@ -116,6 +119,8 @@
     enabled: true, state: "idle",
     agentWords: [], agentFinal: false, userFinal: false, lastSpeaker: null,
     hideTimer: 0,
+    staleTimer: 0,
+    clearTimer: 0,
   };
 
   function mount() {
@@ -208,21 +213,43 @@
     watcher.observe(root, { childList: true });
   }
 
+  // A fade-out was about to empty the card: empty it now, so the old words
+  // don't come back with the new ones.
+  function flushPendingClear() {
+    if (!ui.clearTimer) return;
+    clearTimeout(ui.clearTimer);
+    ui.clearTimer = 0;
+    clearText();
+  }
+
   function show() {
     if (!ui.enabled || !mount()) return;
+    flushPendingClear();
+    clearTimeout(ui.staleTimer);
+    ui.staleTimer = setTimeout(hide, STALE_MS);
     ui.wrap.classList.add("on");
     raise();
   }
 
-  function hide() {
-    clearTimeout(ui.hideTimer);
-    ui.hideTimer = 0;
-    if (ui.wrap) ui.wrap.classList.remove("on");
-    // Next appearance starts from a clean card.
+  function clearText() {
     ui.agentWords = [];
     ui.lastSpeaker = null;
     if (ui.agent) ui.agent.textContent = "";
     if (ui.user) ui.user.textContent = "";
+  }
+
+  // Fade out first, then empty the card, so the words don't vanish mid-fade.
+  function hide() {
+    clearTimeout(ui.hideTimer);
+    clearTimeout(ui.staleTimer);
+    ui.hideTimer = 0;
+    if (ui.wrap) ui.wrap.classList.remove("on");
+    clearTimeout(ui.clearTimer);
+    ui.clearTimer = setTimeout(() => {
+      ui.clearTimer = 0;
+      if (ui.wrap && ui.wrap.classList.contains("on")) return;
+      clearText();
+    }, FADE_MS);
   }
 
   function scheduleHide() {
@@ -267,6 +294,7 @@
     if (typeof text !== "string") return;
     text = text.replace(/\s+/g, " ").trim().slice(-MAX_CHARS);
     if (!ui.enabled || !mount()) return;
+    flushPendingClear(); // before the new text goes in
     final = final === true;
 
     if (speaker === "user") {
