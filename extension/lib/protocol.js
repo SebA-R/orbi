@@ -27,7 +27,8 @@ export const MSG = Object.freeze({
   PING: "ping",
   PONG: "pong",
   BLOCKLIST: "blocklist",
-  // { type: "settings", guidedMode, memory }: agent behavior settings, worker to agent.
+  // { type: "settings", guidedMode, memory, provider, localBaseUrl, localModel }:
+  // agent behavior settings, worker to agent (lib/settings.js agentSettingsMessage).
   SETTINGS: "settings",
   DANGER_MODE: "danger_mode",
 });

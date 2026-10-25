@@ -2,9 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  DEFAULTS, endpoints, loadSettings, migrateSettings, MIGRATIONS_KEY, normalize, normalizeAgentUrl, normalizeOrigin, parseOriginLines,
-  RETIRED_ALLOWED, saveSettings, seedBlocklist,
+  AGENT_SETTING_KEYS, DEFAULTS, agentSettingsMessage, endpoints, loadSettings, localModels, localStatusText, migrateSettings, MIGRATIONS_KEY, normalize,
+  normalizeAgentUrl, normalizeLocalBaseUrl, normalizeLocalModel, normalizeOrigin, parseOriginLines, RETIRED_ALLOWED, saveSettings, seedBlocklist,
 } from "../../../extension/lib/settings.js";
+import { readFileSync } from "node:fs";
 import { SUGGESTED_BLOCKLIST } from "../../../extension/lib/blocklist.js";
 
 function memoryStorage(init = {}) {
@@ -62,6 +63,7 @@ test("endpoints derive the bridge, session and token URLs", () => {
     session: "ws://localhost:5150/session",
     http: "http://localhost:5150",
     token: "http://localhost:5150/cartesia-token",
+    localModels: "http://localhost:5150/local-models",
   });
 });
 
@@ -143,4 +145,63 @@ test("an update takes the old default allowed site out of stored settings, once"
   assert.equal(await migrateSettings(fresh), false);
   assert.deepEqual(Object.keys(fresh.data), [MIGRATIONS_KEY]);
   assert.equal("allowlist" in fresh.data, false);
+});
+
+test("provider settings default to Claude with the Ollama address", () => {
+  assert.equal(DEFAULTS.provider, "claude");
+  assert.equal(DEFAULTS.localBaseUrl, "http://localhost:11434/v1");
+  assert.equal(DEFAULTS.localModel, "llama3.1:8b");
+  const n = normalize({ provider: "openai", localModel: "bad name; rm -rf", localBaseUrl: 5 });
+  assert.equal(n.provider, "claude");
+  assert.equal(n.localModel, "llama3.1:8b");
+  assert.equal(n.localBaseUrl, "http://localhost:11434/v1");
+  assert.equal(normalize({ provider: "local" }).provider, "local");
+  assert.equal(normalizeLocalModel("lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"), "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF");
+  assert.equal(normalizeLocalModel("<img src=x>"), null);
+  assert.equal(normalizeLocalModel("a/../../x"), null);
+  assert.equal(normalizeLocalModel("a//b"), null);
+  assert.equal(normalizeLocalModel("a".repeat(129)), null);
+});
+
+test("local model address must be http(s) on a loopback host", () => {
+  assert.equal(normalizeLocalBaseUrl("http://localhost:11434/v1/"), "http://localhost:11434/v1");
+  assert.equal(normalizeLocalBaseUrl("http://127.0.0.1:1234/v1"), "http://127.0.0.1:1234/v1");
+  assert.equal(normalizeLocalBaseUrl("http://[::1]:1234"), "http://[::1]:1234");
+  assert.equal(normalizeLocalBaseUrl("https://localhost"), "https://localhost");
+  for (const bad of [
+    "http://evil.example/v1", "http://localhost.evil.example/v1", "http://192.168.1.5:11434/v1", "http://10.0.0.1",
+    "ftp://localhost/v1", "file:///etc/passwd", "javascript:alert(1)", "ws://localhost:11434",
+    "http://user:pw@localhost:11434/v1", "http://localhost@evil.example/v1", "http://localhost:11434/v1?x=1",
+    "http://localhost:11434/v1#x", "http://localhost//evil.example", "localhost:11434", "", "nonsense",
+  ]) assert.equal(normalizeLocalBaseUrl(bad), null, bad);
+  assert.equal(normalize({ localBaseUrl: "http://evil.example/v1" }).localBaseUrl, DEFAULTS.localBaseUrl);
+  assert.equal(normalize({ localBaseUrl: "http://127.0.0.1:1234/v1" }).localBaseUrl, "http://127.0.0.1:1234/v1");
+});
+
+test("the worker sends the provider fields in the settings message and on change", () => {
+  assert.deepEqual(agentSettingsMessage({ provider: "local", localModel: "qwen2.5:7b", guidedMode: false }), {
+    type: "settings", guidedMode: false, memory: true, provider: "local", localBaseUrl: "http://localhost:11434/v1", localModel: "qwen2.5:7b",
+  });
+  assert.deepEqual(agentSettingsMessage({ localBaseUrl: "http://evil.example" }).localBaseUrl, DEFAULTS.localBaseUrl);
+  for (const k of ["guidedMode", "memory", "provider", "localBaseUrl", "localModel"]) assert.ok(AGENT_SETTING_KEYS.includes(k), k);
+  const src = readFileSync(new URL("../../../extension/background/worker.js", import.meta.url), "utf8");
+  assert.match(src, /bridge\?\.send\(agentSettingsMessage\(s\)\)/);
+  assert.match(src, /AGENT_SETTING_KEYS\.some\(\(k\) => changes\[k\]\)\) sendAgentSettings\(\)/);
+});
+
+test("local model list: ok, down, and missing on an older server", async () => {
+  const reply = (status, body) => async (url) => {
+    assert.equal(url, "http://localhost:5050/local-models");
+    return { ok: status < 400, status, json: async () => body };
+  };
+  assert.deepEqual(await localModels("ws://localhost:5050", reply(200, { models: ["llama3.1:8b", { id: "qwen2.5:7b" }, "<b>"] })),
+    { state: "ok", models: ["llama3.1:8b", "qwen2.5:7b"] });
+  assert.deepEqual(await localModels("ws://localhost:5050", reply(200, { data: [{ id: "x" }] })), { state: "ok", models: ["x"] });
+  assert.equal((await localModels("ws://localhost:5050", reply(404, {}))).state, "missing");
+  assert.equal((await localModels("ws://localhost:5050", reply(502, { error: "ECONNREFUSED" }))).state, "down");
+  assert.equal((await localModels("ws://localhost:5050", reply(200, { ok: false, error: "x" }))).state, "down");
+  assert.equal((await localModels("ws://localhost:5050", async () => { throw new Error("refused"); })).state, "down");
+  assert.equal(localStatusText("llama3.1:8b", { state: "ok", models: ["llama3.1:8b"] }), "llama3.1:8b, connected");
+  assert.equal(localStatusText("llama3.1:8b", { state: "down", models: [] }), "Local model not reachable");
+  assert.equal(localStatusText("llama3.1:8b", { state: "missing", models: [] }), "llama3.1:8b");
 });

@@ -12,7 +12,7 @@ import { createFollower } from "./follow.js";
 import { createErrorPages, FILTER as ERROR_FILTER } from "./errpage.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
-import { endpoints, loadSettings, migrateSettings, seedBlocklist } from "../lib/settings.js";
+import { AGENT_SETTING_KEYS, agentSettingsMessage, endpoints, loadSettings, migrateSettings, seedBlocklist } from "../lib/settings.js";
 import { MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 import { installFrame } from "./frame.js";
@@ -180,9 +180,10 @@ let bridge = null;
 // sites too, so send them on every connect and every change.
 const sendBlocklist = () =>
   loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
-// Guided mode and Memory shape the agent's prompt; sent on connect and on change.
+// Guided mode, Memory and the model provider shape the agent; sent on
+// connect and on change.
 const sendAgentSettings = () =>
-  loadSettings().then(({ guidedMode, memory }) => bridge?.send({ type: MSG.SETTINGS, guidedMode, memory })).catch(() => {});
+  loadSettings().then((s) => bridge?.send(agentSettingsMessage(s))).catch(() => {});
 
 // Danger mode too, the same way, so the agent says "Danger mode is on." and
 // tells Claude. The extension enforces the click lock itself; the server
@@ -207,7 +208,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.allowlist) loadAllowlist();
   if (changes.agentUrl) startBridge().catch((e) => log.warn(`bridge restart failed: ${e.message}`));
   if (changes.blocklist) sendBlocklist();
-  if (changes.guidedMode || changes.memory) sendAgentSettings();
+  if (AGENT_SETTING_KEYS.some((k) => changes[k])) sendAgentSettings();
   if (changes.watchablePace) watchablePace = changes.watchablePace.newValue !== false;
   if (changes.showCursor) {
     showCursor = changes.showCursor.newValue !== false;

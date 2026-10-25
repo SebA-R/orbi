@@ -34,6 +34,17 @@
     <section class="sheet" aria-label="Settings">
       <span class="handle" aria-hidden="true"></span>
       <div class="row">
+        <span id="provider-label">Model</span>
+        <div class="seg" role="radiogroup" aria-labelledby="provider-label">
+          <label>Claude<input type="radio" name="provider" value="claude"></label>
+          <label>Local<input type="radio" name="provider" value="local"></label>
+        </div>
+      </div>
+      <div class="local-line" id="local-line" hidden>
+        <span class="local-chip" id="local-chip" data-state="wait" role="status"></span>
+      </div>
+      <p id="provider-note" class="note info" role="status" hidden></p>
+      <div class="row">
         <span id="mode-label">Browse</span>
         <div class="seg" role="radiogroup" aria-labelledby="mode-label">
           <label>Open web<input type="radio" name="browseMode" value="open"></label>

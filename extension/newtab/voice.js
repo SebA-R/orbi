@@ -69,6 +69,8 @@ export function startVoice(settings) {
   // or was just switched to, the same as a website's content scripts.
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === RT.VOICE_STATE) show(msg.state);
+    // Lip-sync on the heard words; the face skips a word it already played.
+    else if (msg && (msg.type === RT.SUBTITLE || msg.type === RT.SUBTITLE_WORD)) face?.caption(msg);
   });
   document.addEventListener("visibilitychange", () => { if (document.hidden) show("idle"); });
   // A tab opened with Command + T may load after the worker's tab-switch

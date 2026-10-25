@@ -38,6 +38,41 @@
     </header>
 
     <form id="form" novalidate>
+      <section class="group" id="model" aria-labelledby="model-h">
+        <h2 id="model-h">Model</h2>
+        <div class="card">
+          <div class="row">
+            <span class="row-text"><span id="provider-label">Model provider</span>
+              <span class="hint" id="provider-hint">Switching starts a new conversation.</span></span>
+            <div class="seg" role="radiogroup" aria-labelledby="provider-label" aria-describedby="provider-hint">
+              <label>Claude<input type="radio" name="provider" value="claude" id="provider-claude" data-setting="provider"></label>
+              <label>Local<input type="radio" name="provider" value="local" id="provider-local" data-setting="provider"></label>
+            </div>
+          </div>
+          <div class="row stack">
+            <label for="local-base-url">Local server address</label>
+            <input id="local-base-url" name="localBaseUrl" class="field mono" type="text" spellcheck="false" autocomplete="off" aria-describedby="local-base-url-hint local-base-url-error">
+            <p class="error" id="local-base-url-error" hidden></p>
+            <p class="hint" id="local-base-url-hint">Must be on this computer, for example http://localhost:11434/v1 for Ollama or http://localhost:1234/v1 for LM Studio.</p>
+          </div>
+          <div class="row stack">
+            <label for="local-model">Local model</label>
+            <input id="local-model" name="localModel" class="field mono" type="text" spellcheck="false" autocomplete="off" aria-describedby="local-model-hint local-model-error">
+            <p class="error" id="local-model-error" hidden></p>
+            <span class="label-line" id="local-pick-line" hidden><label for="local-model-pick">Installed models</label>
+              <select id="local-model-pick" class="sel"></select></span>
+            <p class="hint" id="local-model-hint">The model name as your local server lists it, for example llama3.1:8b.</p>
+          </div>
+          <div class="row">
+            <span class="row-text"><span>Connection</span>
+              <span class="hint strong" id="local-test-status" role="status" aria-live="polite"></span></span>
+            <span class="row-end"><span class="tag" id="local-state" data-state="wait">Not checked</span>
+              <button type="button" class="btn" id="local-test">Test connection</button></span>
+          </div>
+        </div>
+        <p class="foot">Works with Ollama or LM Studio running on this computer. Local models are less capable than Claude and may not handle complex pages.</p>
+      </section>
+
       <section class="group" id="voice" aria-labelledby="voice-h">
         <h2 id="voice-h">Voice and talk keys</h2>
         <div class="card">
