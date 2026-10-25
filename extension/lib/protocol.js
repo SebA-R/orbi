@@ -9,6 +9,8 @@
 //   ext -> server  { type: "blocklist", lines } after welcome and whenever
 //                  the user saves it (the options page's blocked sites).
 //                  One way: the server cannot change extension settings.
+//   ext -> server  { type: "danger_mode", on } the same way, for the user's
+//                  Danger mode setting (the extension enforces it itself).
 //   either way     { type: "ping", t } answered by { type: "pong", t }
 //
 // Runtime messages (inside the extension, chrome.runtime / chrome.tabs
@@ -25,6 +27,7 @@ export const MSG = Object.freeze({
   PING: "ping",
   PONG: "pong",
   BLOCKLIST: "blocklist",
+  DANGER_MODE: "danger_mode",
 });
 
 // Tools the agent may expose to Claude.

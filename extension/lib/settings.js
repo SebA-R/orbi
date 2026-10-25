@@ -29,7 +29,14 @@ export const DEFAULTS = Object.freeze({
   // Fade out and mute other tabs' audio while the user talks and while
   // Clearcart answers (lib/voice/duck.js).
   quietTabs: true,
+  // Danger mode: Clearcart presses sign in and sign up without asking
+  // (content/protect.js says what it lifts). Off unless the user turns it
+  // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
+  // masking, the blocklist and the CAPTCHA hand-off never change with it.
+  dangerMode: false,
 });
+
+export const DANGER_MODE_COPY = "Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.";
 
 export const SPEED_MIN = 0.6;
 export const SPEED_MAX = 2;
@@ -75,6 +82,8 @@ export function normalize(raw = {}) {
   if (raw.speed != null && Number.isFinite(speed)) out.speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, speed));
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
+  // Only a stored true turns it on.
+  out.dangerMode = raw.dangerMode === true;
   return out;
 }
 
