@@ -95,14 +95,14 @@ test("speak off: no TTS is requested, no Sonic socket, no speech token", async (
   assert.equal(r.speaker.speaking, false);
 });
 
-test("speak off: the reply shows whole at once, with no karaoke, so subtitles.js times its reading", async () => {
+test("speak off: the reply shows whole at once, with no karaoke, and a second line adds to it", async () => {
   const r = rig({ speak: false });
   await ask(r, "cheapest allergy pills");
   r.c.onAgentMessage({ type: "agent_text", text: TEXT });
   r.c.onAgentMessage({ type: "agent_text", text: "Want me to add it?" });
   assert.deepEqual(r.subs(), [
     { type: RT.SUBTITLE, speaker: "agent", text: TEXT, final: true },
-    { type: RT.SUBTITLE, speaker: "agent", text: "Want me to add it?", final: true },
+    { type: RT.SUBTITLE, speaker: "agent", text: `${TEXT} Want me to add it?`, final: true },
   ]);
   assert.equal(r.emitted.filter((m) => m.type === RT.SUBTITLE_WORD).length, 0);
 });
