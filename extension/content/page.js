@@ -781,9 +781,11 @@
     return Promise.resolve()
       .then(function () { return call(msg.method, msg.params); })
       .then(
-        function (result) { return { ok: true, result: result === undefined ? null : result }; },
+        // href: which document answered, so the worker can drop a reply
+        // from a page that moved to a blocked site. Never passed to Claude.
+        function (result) { return { ok: true, result: result === undefined ? null : result, href: location.href }; },
         function (e) {
-          return { ok: false, error: { code: (e && e.code) || ERR.INTERNAL, message: String((e && e.message) || "failed") } };
+          return { ok: false, error: { code: (e && e.code) || ERR.INTERNAL, message: String((e && e.message) || "failed") }, href: location.href };
         }
       );
   }

@@ -117,12 +117,26 @@ export function createRouter({
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
 
+  // Loads the page script into the tab's top frame. Answers the documentId
+  // it went into (Chrome reports it), so the call that follows reaches that
+  // document and no later one.
   async function inject(tabId, files = PAGE_FILES) {
+    let results;
     try {
-      await chromeApi.scripting.executeScript({ target: { tabId }, files });
+      results = await chromeApi.scripting.executeScript({ target: { tabId }, files });
     } catch (e) {
       throw new BridgeError(ERR.INTERNAL, `could not load the page script: ${msgOf(e)}`);
     }
+    const top = Array.isArray(results) ? results.find((x) => x && x.frameId === 0) || results[0] : null;
+    return (top && top.documentId) || null;
+  }
+
+  // After a read: the page that answered (or, without its address, the
+  // tab's current one) must still be allowed, else the result is dropped.
+  // Fails closed without the check.
+  async function recheck(tabId, url) {
+    if (typeof tabs.assertPageAllowed !== "function") throw new BridgeError(ERR.INTERNAL, "page check unavailable");
+    await tabs.assertPageAllowed(tabId, url);
   }
 
   // Shows the "Clearcart is using this tab" pill. Best effort, at most once
@@ -179,8 +193,8 @@ export function createRouter({
     return collectContext();
   }
 
-  async function send(tabId, msg) {
-    return chromeApi.tabs.sendMessage(tabId, msg, { frameId: 0 });
+  async function send(tabId, msg, documentId) {
+    return chromeApi.tabs.sendMessage(tabId, msg, documentId ? { documentId } : { frameId: 0 });
   }
 
   function pageCall(tabId, method, params = {}) {
@@ -190,21 +204,25 @@ export function createRouter({
   async function pageCallWith(tabId, method, params, files) {
     const { tabId: _drop, ...rest } = params || {};
     const msg = { type: RT.PAGE_CALL, method, params: rest };
-    await inject(tabId, files);
+    let doc = await inject(tabId, files);
     let reply;
     try {
-      reply = await send(tabId, msg);
+      reply = await send(tabId, msg, doc);
     } catch (e) {
       if (!NO_RECEIVER.test(msgOf(e))) throw new BridgeError(ERR.INTERNAL, `page call failed: ${msgOf(e)}`);
-      // The document changed between inject and send: inject again, once.
-      await inject(tabId, files);
+      // The document changed between inject and send. The new one may be
+      // somewhere blocked: check the tab again before injecting, once.
+      await tabs.resolveAllowedTab(tabId, { peek: true });
+      doc = await inject(tabId, files);
       try {
-        reply = await send(tabId, msg);
+        reply = await send(tabId, msg, doc);
       } catch (e2) {
         throw new BridgeError(ERR.INTERNAL, `page call failed: ${msgOf(e2)}`);
       }
     }
     if (!reply || typeof reply !== "object") throw new BridgeError(ERR.INTERNAL, "no reply from the page script");
+    // reply.href is the address of the document that answered.
+    await recheck(tabId, typeof reply.href === "string" ? reply.href : undefined);
     if (!reply.ok) throw new BridgeError(reply.error?.code || ERR.INTERNAL, reply.error?.message || `${method} failed`);
     return reply.result;
   }
@@ -336,8 +354,12 @@ export function createRouter({
       case "scroll":
         await cdp.scroll({ tabId, x: params.x, y: params.y, dx: params.dx, dy: params.dy });
         return { ok: true };
-      case "screenshot":
-        return cdp.screenshot({ tabId });
+      case "screenshot": {
+        const shot = await cdp.screenshot({ tabId });
+        // The tab may have moved to a blocked site while it was captured.
+        await recheck(tabId);
+        return shot;
+      }
     }
     if (PAGE_METHODS.has(method)) return pageCall(tabId, method, params);
     throw new BridgeError(ERR.UNKNOWN_METHOD, `unknown method: ${method}`);

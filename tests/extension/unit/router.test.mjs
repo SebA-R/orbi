@@ -26,6 +26,7 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
   const tabs = {
     resolveAllowedTab: async (id) => (calls.push(["resolve", id]), id ?? 7),
     tabsContext: async () => ({ tabs: [], groupId: 1 }),
+    assertPageAllowed: async () => {},
   };
   const cdp = {
     click: async (o) => {
@@ -122,6 +123,7 @@ function contextFakes({ blocked = false, page = { selection: "Blue mug", pointin
     },
     markDriven: async (id) => calls.push(["driven", id]),
     tabsClose: async ({ tabId }) => (calls.push(["close", tabId]), { ok: true }),
+    assertPageAllowed: async () => {},
   };
   const cdp = { click: async () => {}, scroll: async () => {}, type: async () => {}, key: async () => {} };
   return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
@@ -167,4 +169,88 @@ test("page_context uses the snapshot taken when the user started talking, once",
   assert.equal((await router.route("page_context", {})).selection, "at talk start");
   assert.equal((await router.route("page_context", {})).selection, "later");
   assert.equal(calls.filter((c) => c[0] === "page").length, 2);
+});
+
+// Time of check: a read reaches only the document that was checked, and is
+// dropped when the page moved to a blocked site.
+
+function tocFakes({ failFirstSend = false, replyHref = "https://www.etsy.com/c/mugs", blockedAfter = false, blockedOnRetry = false } = {}) {
+  const calls = [];
+  let docs = 0;
+  let sends = 0;
+  let resolves = 0;
+  const chromeApi = {
+    scripting: {
+      executeScript: async (o) => {
+        if (o.files.includes("content/indicator.js")) return [];
+        calls.push(["inject", o.target]);
+        return [{ frameId: 0, documentId: `doc-${++docs}`, result: null }];
+      },
+    },
+    tabs: {
+      sendMessage: async (tabId, msg, opts) => {
+        sends++;
+        calls.push(["send", msg.method, opts]);
+        if (failFirstSend && sends === 1) throw new Error("Could not establish connection. Receiving end does not exist.");
+        return { ok: true, result: { url: "https://www.etsy.com/c/mugs", tree: "secret page text" }, href: replyHref };
+      },
+    },
+  };
+  const tabs = {
+    resolveAllowedTab: async (id, opts) => {
+      resolves++;
+      calls.push(["resolve", id, opts]);
+      if (blockedOnRetry && resolves > 1) throw Object.assign(new Error("tab 3 is on a blocked site"), { code: "not_allowed" });
+      return id ?? 3;
+    },
+    assertPageAllowed: async (id, url) => {
+      calls.push(["recheck", id, url]);
+      if (blockedAfter || /mail\.google/.test(String(url))) throw Object.assign(new Error(`tab ${id} moved to a blocked site; the result was dropped`), { code: "not_allowed" });
+    },
+  };
+  const cdp = { screenshot: async () => ({ data: "JPEG", mimeType: "image/jpeg" }) };
+  return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
+}
+
+test("page calls are pinned to the documentId that was injected and checked", async () => {
+  const { calls, router } = tocFakes();
+  await router.route("read_page", { tabId: 3 });
+  assert.deepEqual(calls.find((c) => c[0] === "send")[2], { documentId: "doc-1" });
+  assert.deepEqual(calls.find((c) => c[0] === "recheck"), ["recheck", 3, "https://www.etsy.com/c/mugs"]);
+});
+
+test("a reply from a document on a blocked site is dropped", async () => {
+  const { router } = tocFakes({ replyHref: "https://mail.google.com/mail/u/0/" });
+  await assert.rejects(router.route("get_page_text", { tabId: 3 }), (e) => e.code === "not_allowed" && !/secret|google/.test(e.message));
+});
+
+test("the NO_RECEIVER retry checks the tab again before injecting into the new document", async () => {
+  const ok = tocFakes({ failFirstSend: true });
+  await ok.router.route("read_page", { tabId: 3 });
+  const sends = ok.calls.filter((c) => c[0] === "send").map((c) => c[2]);
+  assert.deepEqual(sends, [{ documentId: "doc-1" }, { documentId: "doc-2" }]);
+  const injects = ok.calls.map((c, i) => [c[0], i]).filter((c) => c[0] === "inject").map((c) => c[1]);
+  const recheckAt = ok.calls.findIndex((c, i) => c[0] === "resolve" && i > injects[0] && c[2]?.peek);
+  assert.ok(recheckAt > injects[0] && recheckAt < injects[1], "tab rechecked between the two injects");
+
+  const moved = tocFakes({ failFirstSend: true, blockedOnRetry: true });
+  await assert.rejects(moved.router.route("read_page", { tabId: 3 }), { code: "not_allowed" });
+  assert.equal(moved.calls.filter((c) => c[0] === "inject").length, 1, "nothing injected into the blocked page");
+});
+
+test("a screenshot is dropped when the tab moved to a blocked site while it was taken", async () => {
+  const ok = tocFakes();
+  assert.equal((await ok.router.route("screenshot", { tabId: 3 })).data, "JPEG");
+  assert.deepEqual(ok.calls.find((c) => c[0] === "recheck"), ["recheck", 3, undefined]);
+  const moved = tocFakes({ blockedAfter: true });
+  await assert.rejects(moved.router.route("screenshot", { tabId: 3 }), { code: "not_allowed" });
+});
+
+test("a tabs module without the page recheck fails closed", async () => {
+  const chromeApi = {
+    scripting: { executeScript: async () => [{ frameId: 0, documentId: "d" }] },
+    tabs: { sendMessage: async () => ({ ok: true, result: { text: "x" }, href: "https://www.etsy.com/" }) },
+  };
+  const router = createRouter({ chromeApi, tabs: { resolveAllowedTab: async () => 3 }, cdp: {} });
+  await assert.rejects(router.route("get_page_text", { tabId: 3 }), { code: "internal" });
 });
