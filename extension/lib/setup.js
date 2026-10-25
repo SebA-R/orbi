@@ -108,7 +108,7 @@ export function talkKeyHelp(hotkey) {
     return "Hold Space to talk. Option+Space keeps listening until you press Space, and works in text fields too. "
       + "Double-tap Space to stop Clearcart talking.";
   }
-  return `Hold ${name}, wait for the chime, speak, then let go. It works in text fields too.`;
+  return `Hold ${name} until Clearcart is listening (a short rising tone), speak, then let go. It works in text fields too.`;
 }
 
 export const allReady = ({ site, mic, agent }) => site === true && mic === "granted" && agent?.connected === true;
