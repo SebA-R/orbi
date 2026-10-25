@@ -24,11 +24,21 @@ function key(code, mods = {}, extra = {}) {
   return e;
 }
 
-function detector(hotkey) {
+function detector(hotkey = "Alt+Space") {
   const { createHoldDetector } = load();
   const sent = [];
-  const d = createHoldDetector({ hotkey, send: (t) => sent.push(t) });
-  return { d, sent };
+  const extras = [];
+  const timers = [];
+  const taps = [];
+  const d = createHoldDetector({
+    hotkey,
+    send: (t, extra) => { sent.push(t); extras.push(extra); },
+    onTap: (e) => taps.push(e.code),
+    setTimer: (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length - 1; },
+    clearTimer: (i) => { timers[i].cleared = true; },
+  });
+  const fire = () => { for (const t of timers) if (!t.cleared) { t.cleared = true; t.fn(); } };
+  return { d, sent, extras, timers, taps, fire };
 }
 
 test("Alt+Space hold sends one start and one stop", () => {
@@ -104,12 +114,14 @@ test("configurable hotkeys: Ctrl+Shift+Space and F9", () => {
   assert.deepEqual(sent, ["ptt.start", "ptt.stop", "ptt.start", "ptt.stop"]);
 });
 
-test("switching hotkey mid-hold stops first; unknown names fall back to Alt+Space", () => {
+test("switching hotkey mid-hold stops first; unknown names fall back to Space", () => {
   const { d, sent } = detector("Alt+Space");
   d.onKeyDown(key("Space", { altKey: true }));
   d.setHotkey("bogus");
   assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
   d.onKeyDown(key("Space", { altKey: true }));
+  assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
+  d.onKeyDown(key("Space"));
   assert.deepEqual(sent, ["ptt.start", "ptt.stop", "ptt.start"]);
 });
 
@@ -138,4 +150,76 @@ test("install wires window listeners, sends runtime messages, follows storage ch
   doc.visibilityState = "hidden";
   listeners["doc:visibilitychange"].forEach((fn) => fn());
   assert.deepEqual(messages.map((m) => m.type), ["ptt.start", "ptt.stop", "ptt.start", "ptt.stop"]);
+});
+
+test("plain Space starts recording silently on touch and confirms once held", () => {
+  const { d, sent, extras, timers, taps, fire } = detector("Space");
+  const down = key("Space", {}, { target: { tagName: "DIV" } });
+  d.onKeyDown(down);
+  assert.equal(down.prevented, true);
+  assert.deepEqual(sent, ["ptt.start"]);
+  assert.equal(JSON.stringify(extras[0]), "{\"silent\":true}");
+  assert.equal(timers[0].ms, 200);
+  fire();
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm"]);
+  d.onKeyUp(key("Space"));
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+  assert.deepEqual(taps, []);
+});
+
+test("a quick Space tap cancels the recording and replays the tap", () => {
+  const { d, sent, timers, taps, fire } = detector("Space");
+  d.onKeyDown(key("Space", {}, { target: { tagName: "BUTTON" } }));
+  d.onKeyUp(key("Space"));
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel"]);
+  assert.equal(timers[0].cleared, true);
+  assert.deepEqual(taps, ["Space"]);
+  fire(); // a late timer must not confirm a finished tap
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel"]);
+});
+
+test("plain Space types normally in text fields but modifier hotkeys still talk", () => {
+  const { d, sent } = detector("Space");
+  for (const target of [
+    { tagName: "INPUT", type: "text" }, { tagName: "INPUT", type: "search" }, { tagName: "TEXTAREA" },
+    { tagName: "DIV", isContentEditable: true }, { tagName: "SELECT" },
+  ]) {
+    const e = key("Space", {}, { target });
+    d.onKeyDown(e);
+    assert.equal(e.prevented, false, target.tagName);
+  }
+  assert.deepEqual(sent, []);
+  const checkbox = key("Space", {}, { target: { tagName: "INPUT", type: "checkbox" } });
+  d.onKeyDown(checkbox);
+  assert.equal(checkbox.prevented, true);
+  const alt = detector("Alt+Space");
+  alt.d.onKeyDown(key("Space", { altKey: true }, { target: { tagName: "TEXTAREA" } }));
+  assert.deepEqual(alt.sent, ["ptt.start"]);
+  assert.equal(alt.extras[0], undefined);
+});
+
+test("leaving the page mid-hold cancels before confirm and stops after it", () => {
+  const a = detector("Space");
+  a.d.onKeyDown(key("Space"));
+  a.d.cancel();
+  assert.deepEqual(a.sent, ["ptt.start", "ptt.cancel"]);
+  assert.deepEqual(a.taps, []);
+  const b = detector("Space");
+  b.d.onKeyDown(key("Space"));
+  b.fire();
+  b.d.cancel();
+  assert.deepEqual(b.sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+});
+
+test("isPressable and isTextEntry classify focus targets", () => {
+  const { isPressable, isTextEntry } = load();
+  const role = (r) => ({ tagName: "DIV", getAttribute: (n) => (n === "role" ? r : null) });
+  assert.equal(isPressable({ tagName: "BUTTON" }), true);
+  assert.equal(isPressable({ tagName: "INPUT", type: "checkbox" }), true);
+  assert.equal(isPressable(role("button")), true);
+  assert.equal(isPressable(role("region")), false);
+  assert.equal(isPressable({ tagName: "A" }), false);
+  assert.equal(isTextEntry({ tagName: "INPUT" }), true);
+  assert.equal(isTextEntry({ tagName: "INPUT", type: "radio" }), false);
+  assert.equal(isTextEntry(null), false);
 });

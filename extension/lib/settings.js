@@ -2,6 +2,7 @@
 // worker can write them; the agent server cannot change any of this.
 
 export const HOTKEYS = Object.freeze({
+  Space: "Space (hold it; a quick tap still scrolls or presses)",
   "Alt+Space": "Option + Space (Alt + Space)",
   "Ctrl+Shift+Space": "Control + Shift + Space",
   F9: "F9",
@@ -10,7 +11,7 @@ export const HOTKEYS = Object.freeze({
 export const DEFAULTS = Object.freeze({
   agentUrl: "ws://localhost:5050",
   allowlist: Object.freeze(["http://localhost:4000"]),
-  hotkey: "Alt+Space",
+  hotkey: "Space",
   speed: 1,
   subtitles: true,
 });
