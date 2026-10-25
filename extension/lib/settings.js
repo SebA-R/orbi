@@ -8,9 +8,17 @@ export const HOTKEYS = Object.freeze({
   F9: "F9",
 });
 
+// browseMode "open": any web site except the blocklist (lib/blocklist.js
+// plus `blocklist`). "allowlist": only the `allowlist` origins. In both
+// modes the allowlist sites are the only ones where the pay flow may arm an
+// unlock; open browsing never widens that.
+export const BROWSE_MODES = Object.freeze(["open", "allowlist"]);
+
 export const DEFAULTS = Object.freeze({
   agentUrl: "ws://localhost:5050",
   allowlist: Object.freeze(["http://localhost:4000"]),
+  browseMode: "open",
+  blocklist: Object.freeze([]),
   hotkey: "Space",
   speed: 1,
   subtitles: true,
@@ -46,18 +54,34 @@ export function normalizeOrigin(value) {
 }
 
 export function normalize(raw = {}) {
-  const out = { ...DEFAULTS, allowlist: [...DEFAULTS.allowlist] };
+  const out = { ...DEFAULTS, allowlist: [...DEFAULTS.allowlist], blocklist: [...DEFAULTS.blocklist] };
   const url = raw.agentUrl != null && normalizeAgentUrl(raw.agentUrl);
   if (url) out.agentUrl = url;
   if (Array.isArray(raw.allowlist)) {
     const list = [...new Set(raw.allowlist.map(normalizeOrigin).filter(Boolean))];
     if (list.length) out.allowlist = list;
   }
+  if (BROWSE_MODES.includes(raw.browseMode)) out.browseMode = raw.browseMode;
+  if (Array.isArray(raw.blocklist)) out.blocklist = [...new Set(raw.blocklist.map(normalizeOrigin).filter(Boolean))];
   if (typeof raw.hotkey === "string" && Object.hasOwn(HOTKEYS, raw.hotkey)) out.hotkey = raw.hotkey;
   const speed = Number(raw.speed);
   if (raw.speed != null && Number.isFinite(speed)) out.speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, speed));
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   return out;
+}
+
+// Parses the options page's one-origin-per-line text. Returns the origins
+// and the lines that are not a plain http(s) origin (paths are dropped,
+// logins in the address are refused).
+export function parseOriginLines(text) {
+  const origins = [];
+  const bad = [];
+  for (const line of String(text ?? "").split(/[\n,]/).map((l) => l.trim()).filter(Boolean)) {
+    const o = normalizeOrigin(/^[a-z][a-z0-9+.-]*:/i.test(line) ? line : `https://${line}`);
+    if (o) origins.push(o);
+    else bad.push(line);
+  }
+  return { origins: [...new Set(origins)], bad };
 }
 
 export function endpoints(agentUrl) {
