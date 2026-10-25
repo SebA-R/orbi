@@ -12,7 +12,7 @@ import { z } from "zod";
 import { callBrowserTool, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
-import { onStore, payNow, STORE_ORIGIN, type PayState } from "./pay.ts";
+import { payNow, STORE_ORIGIN, type PayState } from "./pay.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -247,7 +247,7 @@ export class Session {
     } catch {
       return {};
     }
-    const strays = tabs.filter((t) => t.url && !onStore(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
+    const strays = tabs.filter((t) => t.url && !allowedSite(t.url) && !/^(about:blank|chrome:\/\/newtab)/.test(t.url));
     for (const t of strays) {
       await extBridge.call("navigate", { url: STORE_ORIGIN + "/", tabId: t.tabId }).catch(() => {});
     }
@@ -256,7 +256,7 @@ export class Session {
     return {
       hookSpecificOutput: {
         hookEventName: "PostToolUse" as const,
-        additionalContext: `A tab left ${STORE_ORIGIN} and was sent back to the store home page. Only browse ${STORE_ORIGIN}.`,
+        additionalContext: `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...ALLOWED_ORIGINS].join(", ")}.`,
       },
     };
   }
