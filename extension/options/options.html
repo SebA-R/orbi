@@ -90,6 +90,7 @@
             <input id="speak-replies" name="speakReplies" class="sw" type="checkbox" role="switch" data-setting="speakReplies" aria-labelledby="speak-replies-label" aria-describedby="speak-replies-hint speak-replies-note">
           </label>
           <p class="hint warn" id="speak-replies-note" role="status" hidden></p>
+          <p class="hint" id="basic-voice-note" role="status" hidden><strong>Basic voice (no Cartesia key).</strong> Chrome's built-in voice reads Orbi's replies, and Chrome's speech recognition hears you (it sends your voice to Google). Subtitles follow word by word where the voice allows. If talking doesn't work, type to Orbi in the toolbar popup or on the new tab page. For Orbi's natural voice, add a Cartesia key with <code>npm run setup</code> and restart the agent server.</p>
           <label class="row" for="guided-mode">
             <span class="row-text"><span id="guided-mode-label">Guided mode</span>
               <span class="hint" id="guided-mode-hint">Made for blind and low-vision users: Orbi describes each page, reads out choices and lets you pick. Off by default.</span></span>
