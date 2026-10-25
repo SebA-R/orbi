@@ -1,9 +1,7 @@
 import { BROWSE_MODE, EXTRA_SITES, type BrowseMode } from "./origins.ts";
+import type { SearchEngine } from "./search-engines.ts";
 
-// The user's Search engine setting (extension/lib/settings.js). "default"
-// is Chrome's own engine, which the agent cannot reach, so it uses Google.
-export const SEARCH_ENGINES = ["google", "bing", "duckduckgo", "default"] as const;
-export type SearchEngine = (typeof SEARCH_ENGINES)[number];
+export { SEARCH_ENGINES, type SearchEngine } from "./search-engines.ts";
 const SEARCH_URLS: Record<SearchEngine, string> = {
   google: "https://www.google.com/search?q=<words>",
   bing: "https://www.bing.com/search?q=<words>",
