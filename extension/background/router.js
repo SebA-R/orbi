@@ -146,7 +146,8 @@ export function createRouter({
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
-  // tabId -> documentId of the last page call's answer.
+  // tabId -> { doc, href }: the documentId and address of the last page
+  // call's answer.
   const docs = new Map();
 
   // Loads the page script into the tab's top frame. Answers the documentId
@@ -262,7 +263,7 @@ export function createRouter({
     }
     if (!reply || typeof reply !== "object") throw new BridgeError(ERR.INTERNAL, "no reply from the page script");
     // The document that answered, for the watchable-pace checks.
-    if (doc) docs.set(tabId, doc);
+    docs.set(tabId, { doc: doc || null, href: typeof reply.href === "string" ? reply.href.split("#")[0] : null });
     // reply.href is the address of the document that answered.
     await recheck(tabId, typeof reply.href === "string" ? reply.href : undefined);
     if (!reply.ok) throw new BridgeError(reply.error?.code || ERR.INTERNAL, reply.error?.message || `${method} failed`);
@@ -291,8 +292,12 @@ export function createRouter({
   // A paced check that ran in a different document than the one the action
   // started in: the page changed under it, so stop.
   function sameDoc(tabId, start) {
-    const doc = docs.get(tabId);
-    if (start && doc && doc !== start) {
+    const now = docs.get(tabId);
+    // The same document when Chrome names both; without a documentId, the
+    // same address (the page script always sends its href).
+    if (!start || !now) return;
+    const same = start.doc && now.doc ? start.doc === now.doc : start.href == null || now.href == null || start.href === now.href;
+    if (!same) {
       throw Object.assign(new BridgeError(ERR.INTERRUPTED, "stopped: the page changed"), { noFallback: true });
     }
   }
@@ -326,13 +331,14 @@ export function createRouter({
   // recheck answers a rect, checked in the same document as the start.
   // beforeFallback runs before a paced click falls back to the DOM, for
   // checks the DOM method does not make itself.
-  async function clickCentre(tabId, r, ref, domMethod, recheck, beforeFallback) {
+  async function clickCentre(tabId, r, ref, domMethod, recheck, beforeFallback, epoch) {
     const p = centre(r);
     const watch = await paced();
     const start = docs.get(tabId);
     try {
       if (watch) {
         await actor.click(tabId, p, {
+          epoch,
           size: Math.min(r.width, r.height),
           rect: boxOf(r),
           recheck: recheck && (async () => {
@@ -354,19 +360,20 @@ export function createRouter({
     }
   }
 
-  async function clickAt(tabId, params) {
+  async function clickAt(tabId, params, epoch) {
     if (params.ref != null && (params.x == null || params.y == null)) {
       // guard_ref checks the element and whatever covers its centre, and
       // answers its rect like "rect" does.
       const r = visibleRect(await pageCall(tabId, "guard_ref", { ref: params.ref }), params.ref);
       const recheck = async () => visibleRect(await pageCall(tabId, "guard_ref", { ref: params.ref }), params.ref);
-      return clickCentre(tabId, r, params.ref, "click_ref", recheck);
+      return clickCentre(tabId, r, params.ref, "click_ref", recheck, undefined, epoch);
     }
     const guard = () => pageCall(tabId, "guard_point", { x: params.x, y: params.y });
     await guard();
     if (await paced()) {
       const start = docs.get(tabId);
       await actor.click(tabId, { x: point(params.x, "x"), y: point(params.y, "y") }, {
+        epoch,
         recheck: async () => {
           await guard();
           sameDoc(tabId, start);
@@ -422,14 +429,14 @@ export function createRouter({
   // At watchable pace the pointer approaches the button's rect first and
   // press_check (which takes the lock marker off) runs on arrival, right
   // before the press.
-  async function pressProtected(tabId, params) {
+  async function pressProtected(tabId, params, epoch) {
     await spend(tabId, params.nonce, "order");
     const check = () => pageCall(tabId, "press_check", { ref: params.ref });
     if (!(await paced())) return clickCentre(tabId, await check(), params.ref, "press_ref");
     const r = visibleRect(await pageCall(tabId, "rect", { ref: params.ref }), params.ref);
     // press_ref does not check visibility or cover itself: a fallback after
     // a CDP failure runs press_check first, as the unpaced press does.
-    return clickCentre(tabId, r, params.ref, "press_ref", check, check);
+    return clickCentre(tabId, r, params.ref, "press_ref", check, check, epoch);
   }
 
   // Brings the tab a navigate call will use to the front, when it is one
@@ -451,7 +458,7 @@ export function createRouter({
   // then re-resolves it and hit-tests the click point right before the CDP
   // click (press_hit_user). The lock marker comes off only after the press
   // (press_done_user), so the page gets no early signal to swap controls.
-  async function pressUnlocked(tabId, params) {
+  async function pressUnlocked(tabId, params, epoch) {
     await spend(tabId, params.nonce, "user");
     const target = { ref: params.ref, label: params.label, cls: params.cls };
     const r = await pageCall(tabId, "press_check_user", target);
@@ -463,6 +470,7 @@ export function createRouter({
       if (watch) {
         // Checked again on arrival: the control and the point it is at now.
         await actor.click(tabId, { x, y }, {
+          epoch,
           size: Math.min(r.width, r.height),
           rect: boxOf(r),
           recheck: async () => {
@@ -489,6 +497,9 @@ export function createRouter({
 
   async function route(method, params = {}) {
     params = params || {};
+    // An interrupt or turn end from here on stops this call's paced action,
+    // even one that arrives during the checks before the actor starts it.
+    const epoch = actor.epoch();
     switch (method) {
       case "tabs_context":
         return tabs.tabsContext();
@@ -534,15 +545,15 @@ export function createRouter({
     if (ACT_METHODS.has(method)) await follow.to(tabId);
     switch (method) {
       case "click":
-        return clickAt(tabId, params);
+        return clickAt(tabId, params, epoch);
       case "type": {
-        const focus = await guardType(tabId, params.text);
+        await guardType(tabId, params.text);
         const start = docs.get(tabId);
         // A typed newline can submit the focused field's form.
         if (/[\r\n]/.test(String(params.text ?? ""))) await pageCall(tabId, "guard_key", { key: "Enter" });
         if (typeof params.text !== "string") throw new BridgeError(ERR.BAD_REQUEST, "text must be a string");
         // Always key by key at a typist's cadence, whatever the setting.
-        if (params.text) await actor.type(tabId, params.text, { focus: keysFor(focus), check: (ch) => guardChar(tabId, ch, start) });
+        if (params.text) await actor.type(tabId, params.text, { epoch, check: (ch) => guardChar(tabId, ch, start) });
         return { ok: true };
       }
       case "key": {
@@ -558,15 +569,15 @@ export function createRouter({
       case "lock_arm":
         return lockArm(tabId, params.scope ?? "order");
       case "press_unlocked":
-        return pressUnlocked(tabId, params);
+        return pressUnlocked(tabId, params, epoch);
       case "lock_info":
         return pageCall(tabId, "lock_info", { ref: params.ref });
       case "press_protected":
-        return pressProtected(tabId, params);
+        return pressProtected(tabId, params, epoch);
       case "scroll":
         if (await paced()) {
           const at = { x: point(params.x, "x"), y: point(params.y, "y"), dx: point(params.dx ?? 0, "dx"), dy: point(params.dy ?? 0, "dy") };
-          await actor.scroll(tabId, at);
+          await actor.scroll(tabId, at, { epoch });
         } else {
           await cdp.scroll({ tabId, x: params.x, y: params.y, dx: params.dx, dy: params.dy });
           actor.notePointer(tabId, Number(params.x), Number(params.y));

@@ -57,9 +57,16 @@ export function createActor({
   let activations = 0;
   const activeIn = new Map();
 
-  async function begin(tabId) {
+  // Bumped by abortAll. A caller passes the epoch it read when its call
+  // began, so an abort during its own checks, before the run exists here,
+  // still stops it.
+  let stopEpoch = 0;
+  let lastAbort = "the user interrupted";
+
+  async function begin(tabId, epoch) {
     const run = { tabId, kind: null, windowId: null, aborted: null, wake: new Set() };
     runs.add(run);
+    if (epoch != null && epoch !== stopEpoch) stop(run, lastAbort);
     const seen = activations;
     try {
       run.windowId = await tabWindow(tabId);
@@ -105,10 +112,15 @@ export function createActor({
 
   const startFor = (tabId, to) => pointers.get(tabId) || entryPoint(to, rng);
 
-  async function within(tabId, fn) {
-    const run = await begin(tabId);
+  async function within(tabId, fn, epoch) {
+    const run = await begin(tabId, epoch);
     try {
       return await fn(run);
+    } catch (e) {
+      // A stopped plan fails as stopped, whatever CDP said (a navigating
+      // or closing tab rejects the event in flight), and never falls back.
+      if (run.aborted && !(e && e.noFallback)) throw interrupted(run.aborted);
+      throw e;
     } finally {
       runs.delete(run);
     }
@@ -119,7 +131,7 @@ export function createActor({
   // (the target moved), which gets one last small move.
   // `rect` is the target's box, for the press event; recheck may answer
   // { x, y, rect }.
-  function click(tabId, to, { size, rect = null, recheck = async () => undefined } = {}) {
+  function click(tabId, to, { size, rect = null, recheck = async () => undefined, epoch } = {}) {
     return within(tabId, async (run) => {
       const plan = planClick(startFor(tabId, to), to, rng, { size });
       await travel(run, plan.path, "click");
@@ -133,16 +145,17 @@ export function createActor({
       } catch (e) {
         throw Object.assign(e, { noFallback: true });
       }
-      live(run);
-      if (at.x !== to.x || at.y !== to.y) {
-        await mouse(tabId, { type: "mouseMoved", x: at.x, y: at.y, button: "none", buttons: 0 });
-        emit(tabId, at.x, at.y, "click", "move");
-        live(run);
-      }
-      const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
-      // From here on nothing falls back to a DOM click: the press may have
+      // From here on nothing falls back to a DOM click: the checks already
+      // ran (press_check took the lock marker off), and the press may have
       // reached the page even if the call failed.
       try {
+        live(run);
+        if (at.x !== to.x || at.y !== to.y) {
+          await mouse(tabId, { type: "mouseMoved", x: at.x, y: at.y, button: "none", buttons: 0 });
+          emit(tabId, at.x, at.y, "click", "move");
+          live(run);
+        }
+        const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
         await mouse(tabId, { ...base, type: "mousePressed", buttons: 1 });
         emit(tabId, at.x, at.y, "click", "press", box ? { rect: { x: box.x, y: box.y, width: box.width, height: box.height } } : {});
         // Released even when stopped mid-hold; the press already happened.
@@ -153,19 +166,19 @@ export function createActor({
         throw Object.assign(e, { noFallback: true });
       }
       return at;
-    });
+    }, epoch);
   }
 
-  function hover(tabId, to, { size } = {}) {
+  function hover(tabId, to, { size, epoch } = {}) {
     return within(tabId, async (run) => {
       const plan = planHover(startFor(tabId, to), to, rng, { size });
       await travel(run, plan.path, "hover");
       await sleep(run, plan.dwellMs);
-    });
+    }, epoch);
   }
 
   // Glides the pointer to (x, y), then sends the scroll as eased wheel steps.
-  function scroll(tabId, { x, y, dx = 0, dy = 0 }) {
+  function scroll(tabId, { x, y, dx = 0, dy = 0 }, { epoch } = {}) {
     return within(tabId, async (run) => {
       const to = { x, y };
       const plan = planHover(startFor(tabId, to), to, rng, { min: 120, max: 380 });
@@ -175,32 +188,32 @@ export function createActor({
         await mouse(tabId, { type: "mouseWheel", x, y, deltaX: step.dx, deltaY: step.dy });
         emit(tabId, x, y, "scroll", "wheel");
       }
-    });
+    }, epoch);
   }
 
   // Types text a key at a time, always at a typist's cadence (long text
   // just goes faster). check(ch) runs for every character and answers
   // { keys } (true: the focus is a plain text field) or throws to stop.
-  // In a text field a character is rawKeyDown, the check, a char event
-  // that types it, keyUp. Characters with no key (emoji, IME text,
-  // newlines), or a focus that is not a text field, go in with insertText.
-  // `focus` is the caller's check from just before (answers like check).
-  function type(tabId, text, { check = async () => ({ keys: false }), focus: first = { keys: false } } = {}) {
+  // It runs right before each key goes down, so no key event reaches a
+  // focus that moved during the gap (a button a Space would press, a card
+  // field), and again after the keydown, since a page handler may move the
+  // focus then. In a text field a character is rawKeyDown, the check, a
+  // char event that types it, keyUp. Characters with no key (emoji, IME
+  // text, newlines), or a focus that is not a text field, go in with
+  // insertText.
+  function type(tabId, text, { check = async () => ({ keys: false }), epoch } = {}) {
     return within(tabId, async (run) => {
       run.kind = "type";
-      let last = first;
       let spent = 0;
       for (const k of planTyping(text, rng)) {
         // Time spent checking and holding counts toward the next gap.
         await sleep(run, k.gapMs - spent);
         const t0 = now();
-        // Key events only when the last check found a plain text field, so
-        // no key goes to a button, a select or the page.
-        const key = last && last.keys ? keyFor(k.ch) : null;
+        const before = await check(k.ch);
+        live(run);
+        const key = before && before.keys ? keyFor(k.ch) : null;
         if (!key) {
-          last = await check(k.ch);
-          live(run);
-          // No key for it (emoji, IME text, newline) or not a text field.
+          // No key for it, or not a text field: no key event at all.
           await cdp.send(tabId, "Input.insertText", { text: k.ch });
           spent = now() - t0;
           continue;
@@ -208,12 +221,10 @@ export function createActor({
         const ev = { key: key.key, code: key.code, windowsVirtualKeyCode: key.vk, modifiers: key.shift ? MOD_SHIFT : 0 };
         await cdp.send(tabId, "Input.dispatchKeyEvent", { ...ev, type: "rawKeyDown" });
         try {
-          // Checked after the keydown: a page handler may have moved the
-          // focus (into a card field, say) and the character must not follow.
-          last = await check(k.ch);
+          const after = await check(k.ch);
           live(run);
           const char = { ...ev, type: "char", text: k.ch, unmodifiedText: k.ch };
-          if (last && last.keys) await cdp.send(tabId, "Input.dispatchKeyEvent", char);
+          if (after && after.keys) await cdp.send(tabId, "Input.dispatchKeyEvent", char);
           else await cdp.send(tabId, "Input.insertText", { text: k.ch });
         } finally {
           // A key that went down comes up, stopped or not.
@@ -223,10 +234,12 @@ export function createActor({
         spent = now() - t0;
       }
       return { via: "keys" };
-    });
+    }, epoch);
   }
 
   function abortAll(reason = "the user interrupted") {
+    stopEpoch++;
+    lastAbort = reason;
     for (const run of runs) stop(run, reason);
   }
 
@@ -241,6 +254,9 @@ export function createActor({
     type,
     abortAll,
     abortTab,
+    // Read when a call begins; pass it as { epoch } to stop on any abortAll
+    // after that.
+    epoch: () => stopEpoch,
     // Listener bodies for the worker.
     onTabActivated({ tabId, windowId } = {}) {
       activeIn.set(windowId, { tabId, n: ++activations });
