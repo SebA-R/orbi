@@ -79,18 +79,28 @@ test("cueLength covers the last note", () => {
   assert.equal(cueLength("nope"), 0);
 });
 
-test("createChime: sounds off means silence, on resumes and plays", () => {
+test("createChime: sounds off means silence, on plays", () => {
   let on = false;
-  let resumed = 0;
   const { ctx, oscs } = stubCtx();
-  const chime = createChime({ ctx, sounds: () => on, resume: () => { resumed++; } });
+  const chime = createChime({ ctx, sounds: () => on });
   for (const name of Object.keys(CUES)) assert.equal(chime(name), false);
   assert.equal(oscs.length, 0);
-  assert.equal(resumed, 0);
   on = true;
   assert.equal(chime("sent"), true);
-  assert.equal(resumed, 1);
   assert.equal(oscs.length, 1);
+});
+
+test("createChime: a suspended context is resumed, then the cue plays", async () => {
+  const { ctx, oscs } = stubCtx("suspended");
+  let resumed = 0;
+  ctx.resume = async () => { resumed++; ctx.state = "running"; };
+  const chime = createChime({ ctx });
+  assert.equal(chime("closed"), true);
+  assert.equal(resumed, 1);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(oscs.length, 2, "closed: fundamental and octave");
+  const off = createChime({ ctx: stubCtx("suspended").ctx, sounds: () => false });
+  assert.equal(off("closed"), false);
 });
 
 function linkRig() {

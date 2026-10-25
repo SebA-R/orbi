@@ -39,7 +39,7 @@ const ctx = new AudioContext();
 const resumeAudio = () => { if (ctx.state === "suspended") ctx.resume().catch(() => {}); };
 
 // Every earcon goes through here; "Play sounds" off means silence.
-const chime = createChime({ ctx, sounds: () => settings.sounds, resume: resumeAudio });
+const chime = createChime({ ctx, sounds: () => settings.sounds });
 // The agent link: closed once it has stayed down 2 s, listen at 0.6 when back.
 const linkCue = linkCues({ play: chime });
 

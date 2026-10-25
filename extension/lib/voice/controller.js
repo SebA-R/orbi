@@ -42,9 +42,9 @@ export class VoiceController {
   constructor({
     createStt, speaker, mic, chime, agent, emit,
     setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (t) => clearTimeout(t),
-    resumeAudio = () => {}, log = () => {},
+    resumeAudio = () => {}, log = () => {}, now = () => Date.now(),
   }) {
-    Object.assign(this, { createStt, speaker, mic, chime, agent, emit, setTimer, clearTimer, resumeAudio, log });
+    Object.assign(this, { createStt, speaker, mic, chime, agent, emit, setTimer, clearTimer, resumeAudio, log, now });
     this.listening = false;
     this.session = null;
     this.awaitingReply = false;
@@ -57,6 +57,7 @@ export class VoiceController {
     this.turn = null; // this session's held phrases while latched: { latched, open, parts }
     this.latchTimer = null;
     this.errorPending = false; // the mic failed before a silent start was confirmed
+    this.listenUntil = 0; // now() when the last listen cue ends; the error buzz waits for it
   }
 
   #setState(state, force = false) {
@@ -158,7 +159,7 @@ export class VoiceController {
       }),
       onError: (message) => {
         this.emit({ type: RT.VOICE_ERROR, message });
-        gate(() => this.chime("error"))();
+        gate(() => this.#errorCue())();
       },
       onClosed: () => {
         if (this.session === s) this.session = null;
@@ -194,9 +195,12 @@ export class VoiceController {
       this.#endLatch();
       this.#setState(this.speaking ? STATES.SPEAKING : this.awaitingReply ? STATES.THINKING : STATES.IDLE, true); // the page may think it latched
       const blocked = err && err.name === "NotAllowedError";
-      // A tap's silent start stays quiet; the buzz waits for the hold.
-      if (confirmed) this.chime("error");
-      else this.errorPending = true;
+      // A tap's silent start stays quiet; the buzz waits for the hold. A
+      // late failure from an older, dropped press makes no sound at all.
+      if (this.turn === turn) {
+        if (confirmed) this.#errorCue();
+        else this.errorPending = true;
+      }
       this.emit({
         type: RT.VOICE_ERROR,
         code: blocked ? "mic_blocked" : "mic_failed",
@@ -218,11 +222,19 @@ export class VoiceController {
     if (!this.listening || this.confirmed) return;
     this.confirmed = true;
     const cut = this.#bargeIn();
-    this.chime("listen", cut ? { when: cueLength("cut") } : undefined);
+    const when = cut ? cueLength("cut") : 0;
+    this.chime("listen", when ? { when } : undefined);
+    this.listenUntil = this.now() + (when + cueLength("listen")) * 1000;
     this.#setState(STATES.LISTENING);
     const held = this.held;
     this.held = [];
     for (const replay of held) replay();
+  }
+
+  // The error buzz, after any listen cue still playing so they don't overlap.
+  #errorCue() {
+    const wait = Math.max(0, this.listenUntil - this.now()) / 1000;
+    this.chime("error", wait ? { when: wait } : undefined);
   }
 
   #endLatch() {

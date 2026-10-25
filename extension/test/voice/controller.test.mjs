@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { RT } from "../../lib/protocol.js";
 import { VoiceController, TAIL_MS, LATCH_IDLE_MS } from "../../lib/voice/controller.js";
+import { cueLength } from "../../lib/voice/chime.js";
 import { AgentSession } from "../../lib/voice/agent-session.js";
 import { createTokenSource } from "../../lib/voice/token.js";
 
@@ -498,4 +499,29 @@ test("cues: an STT error buzzes (after the hold is confirmed)", async () => {
   assert.deepEqual(cues(r.log), ["listen", "error"]);
   r.stt.h.onError("again");
   assert.deepEqual(cues(r.log), ["listen", "error", "error"]);
+});
+
+test("cues: the error buzz waits for a listen cue still playing", async () => {
+  const calls = [];
+  const r = rig({ micFails: "NotAllowedError" });
+  r.c.now = () => 1000;
+  r.c.chime = (k, o) => calls.push([k, o?.when ?? 0]);
+  await r.c.start({ latch: true }); // confirms at once, then the mic fails
+  assert.deepEqual(calls.map(([k]) => k), ["listen", "error"]);
+  assert.ok(Math.abs(calls[1][1] - cueLength("listen")) < 1e-9);
+});
+
+test("cues: a late mic failure from a dropped tap makes no sound for the next press", async () => {
+  const r = rig();
+  let fail;
+  r.mic.start = () => new Promise((_, rej) => { fail = rej; });
+  const first = r.c.start({ silent: true });
+  r.c.cancel();
+  r.mic.start = async () => {};
+  await r.c.start({ silent: true });
+  const e = new Error("busy"); e.name = "NotReadableError";
+  fail(e);
+  await first;
+  r.c.confirm();
+  assert.deepEqual(cues(r.log), [], "no error buzz for the new press");
 });

@@ -111,11 +111,15 @@ export function linkCues({ play, delayMs = 2000, setTimer = (fn, ms) => setTimeo
 }
 
 // The offscreen document's chime(name, opts): plays nothing while
-// sounds() is false (the "Play sounds" setting).
-export function createChime({ ctx, sounds = () => true, resume = () => {} }) {
+// sounds() is false (the "Play sounds" setting). A suspended context is
+// resumed first, and the cue plays once it runs (resume() is async).
+export function createChime({ ctx, sounds = () => true }) {
   return (name, opts) => {
-    if (!sounds()) return false;
-    resume();
+    if (!sounds() || !CUES[name]) return false;
+    if (ctx.state === "suspended" && ctx.resume) {
+      ctx.resume().then(() => playCue(ctx, name, opts), () => {});
+      return true;
+    }
     return playCue(ctx, name, opts);
   };
 }
