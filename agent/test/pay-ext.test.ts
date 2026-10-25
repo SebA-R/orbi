@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { ExtBridge, ExtError } from "../extbridge.ts";
 import { alertText, payNowExt, type PayState } from "../pay.ts";
+import { UnlockGate } from "../unlock.ts";
 import { FakeExt } from "./fake-ext.ts";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -20,6 +21,8 @@ type StoreOpts = {
   fields?: Array<{ kind: string; filled: boolean }>;
   onFill?: (params: any) => any;
   outcome?: "order" | "reject" | "stuck";
+  // What the extension does with press_protected.
+  press?: "ok" | "locked";
 };
 
 // A fake extension driving a fake store tab 7.
@@ -53,9 +56,15 @@ function fakeStore(o: StoreOpts = {}) {
       case "rect":
         return { x: 10, y: 20, width: 100, height: 40 };
       case "click":
+        // The extension refuses agent clicks on the locked Place order.
+        throw new ExtError("locked", "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
+      case "lock_arm":
+        return { nonce: `nonce-${calls.filter((c) => c.method === "lock_arm").length}`, expiresInMs: 30_000 };
+      case "press_protected":
+        if (o.press === "locked") throw new ExtError("locked", "Locked: no valid unlock for this press");
         if ((o.outcome ?? "order") === "order") url = "http://localhost:4000/order/abc";
         else if (o.outcome === "reject") rejected = true;
-        return null;
+        return { ok: true, via: "cdp" };
       case "read_page":
         return { url, title: "Checkout", tree: rejected ? '- main [ref_1]\n  - alert [ref_3]\n    - text "Card declined"\n  - textbox "Name on card" [ref_4]\n' : "- main\n" };
       case "clear_payment":
@@ -74,7 +83,7 @@ function noCard(value: unknown) {
   assert.ok(!s.includes(CARD.csc + '"') && !s.includes(CARD.exp), "card details leaked");
 }
 
-test("happy path: fill_payment, click place order at the centre, receipt", async () => {
+test("happy path: fill_payment, press place order through the unlock, receipt", async () => {
   const s = fakeStore();
   const state = confirmed();
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
@@ -86,7 +95,11 @@ test("happy path: fill_payment, click place order at the centre, receipt", async
   assert.deepEqual(fill.params.card, CARD);
   assert.equal(fill.params.tabId, 7);
   assert.ok(fill.params.address, "fills the empty address");
-  assert.deepEqual(s.calls.find((c) => c.method === "click")!.params, { tabId: 7, x: 60, y: 40 });
+  assert.ok(!s.calls.some((c) => c.method === "click"), "no plain click on the locked button");
+  const arm = s.calls.findIndex((c) => c.method === "lock_arm");
+  const press = s.calls.findIndex((c) => c.method === "press_protected");
+  assert.ok(arm > s.calls.findIndex((c) => c.method === "fill_payment") && press === arm + 1, "fill, arm, press");
+  assert.deepEqual(s.calls[press].params, { tabId: 7, ref: "ref_9", nonce: "nonce-1" });
   assert.ok(!s.calls.some((c) => c.method === "clear_payment"));
 });
 
@@ -191,4 +204,35 @@ test("alertText reads named alerts and alerts with text children", () => {
   assert.equal(alertText("- main\n  - alert \"Card declined\" [ref_2]\n"), "Card declined");
   assert.equal(alertText("- alert [ref_3]\n  - text \"That card number is not valid.\"\n- textbox \"Name\" [ref_4]"), "That card number is not valid.");
   assert.equal(alertText("- main\n  - text \"fine\"\n"), "");
+});
+
+test("the extension refusing the press stops payment and clears the form", async () => {
+  const s = fakeStore({ press: "locked" });
+  const state = confirmed();
+  const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
+  assert.deepEqual(r, { ok: false, error: "Could not press Place order on the checkout page." });
+  assert.ok(s.calls.some((c) => c.method === "clear_payment"));
+  assert.equal(state.cardFieldsLive, false);
+});
+
+test("the gate refuses an origin off the allowlist before any card is read", async () => {
+  const s = fakeStore();
+  let read = false;
+  const gate = new UnlockGate({ isAllowed: () => false });
+  const r = await payNowExt(confirmed(), { ...fast, gate, getCard: async () => ((read = true), { ...CARD }), bridge: s.bridge as any });
+  assert.equal(r.ok, false);
+  assert.match((r as any).error, /allowlist/);
+  assert.equal(read, false);
+  assert.ok(!s.calls.some((c) => c.method === "fill_payment" || c.method === "lock_arm"));
+});
+
+test("a grant spent elsewhere cannot press", async () => {
+  const s = fakeStore();
+  // A gate whose grants are expired by the time the press comes.
+  let t = 0;
+  const gate = new UnlockGate({ now: () => (t += 70_000) });
+  const r = await payNowExt(confirmed(), { ...fast, gate, bridge: s.bridge as any });
+  assert.equal(r.ok, false);
+  assert.ok(!s.calls.some((c) => c.method === "press_protected" || c.method === "lock_arm"));
+  assert.ok(s.calls.some((c) => c.method === "clear_payment"));
 });

@@ -9,11 +9,11 @@
 import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 import { getCard, last4, type Card } from "../vault/index.ts";
 import { extBridge, extMode, type ExtBridge } from "./extbridge.ts";
-import { clickRef } from "./exttools.ts";
+import { pressProtectedExt, unlockGate, type Grant, type UnlockGate } from "./unlock.ts";
 
-// CLEARCART_STORE_ORIGIN moves the demo store (tests run one on a spare port).
-// Read at import, so set it on the command line rather than in .env.
-export const STORE_ORIGIN = new URL(process.env.CLEARCART_STORE_ORIGIN || "http://localhost:4000").origin;
+import { STORE_ORIGIN } from "./origins.ts";
+
+export { STORE_ORIGIN };
 const CHECKOUT_PREFIX = `${STORE_ORIGIN}/checkout`;
 
 // Parsed comparison, so tricks like http://localhost:4000@evil.example/ fail.
@@ -126,6 +126,14 @@ export async function payNow(state: PayState): Promise<PayResult> {
     } catch {}
   }
 
+  // Button lock: the grant is the only thing that lets our code press the
+  // protected #place-order (see unlock.ts). Issued while the yes is fresh.
+  const issued = unlockGate.issue({ confirmation: c, tabId, href: await tabHref(tabId), pageTotal });
+  if (!issued.ok) {
+    c.state = "used";
+    return { ok: false, error: issued.error };
+  }
+
   let card;
   try {
     card = await getCard();
@@ -158,6 +166,10 @@ export async function payNow(state: PayState): Promise<PayResult> {
   setTimeout(() => btn.click(), 50);
   return "submitted";
 })()`;
+
+  if (!unlockGate.consume(issued.grant, { tabId, href: await tabHref(tabId) })) {
+    return { ok: false, error: "The checkout page changed before payment. Check the page and confirm again." };
+  }
 
   state.cardFieldsLive = true;
   try {
@@ -223,6 +235,7 @@ export async function payNow(state: PayState): Promise<PayResult> {
 
 export type ExtPayDeps = {
   bridge?: Pick<ExtBridge, "call">;
+  gate?: UnlockGate;
   getCard?: () => Promise<Card>;
   orderTimeoutMs?: number;
   pollMs?: number;
@@ -285,16 +298,19 @@ async function pageText(bridge: Pick<ExtBridge, "call">, tabId: number): Promise
   }
 }
 
-async function clickPlaceOrder(bridge: Pick<ExtBridge, "call">, tabId: number): Promise<void> {
+// #place-order is locked for every agent tool; only the grant plus the
+// extension's lock_arm nonce gets one press through press_protected.
+async function clickPlaceOrder(bridge: Pick<ExtBridge, "call">, tabId: number, grant: Grant, gate: UnlockGate): Promise<void> {
   const r = await bridge.call<{ matches?: Array<{ ref: string; role?: string; name?: string }> }>("find", { tabId, query: "Place order", limit: 10 });
   const matches = (r?.matches || []).filter((m) => /place order/i.test(m.name || ""));
   const btn = matches.find((m) => m.role === "button") || matches[0];
   if (!btn) throw new Error("no place-order button");
-  await clickRef(bridge, btn.ref, tabId);
+  await pressProtectedExt(bridge, grant, { tabId, ref: btn.ref }, gate);
 }
 
 export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise<PayResult> {
   const bridge = deps.bridge ?? extBridge;
+  const gate = deps.gate ?? unlockGate;
   const readCard = deps.getCard ?? getCard;
   const pollMs = deps.pollMs ?? 400;
 
@@ -329,6 +345,13 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
   // Like the default path: only fill the address when it is empty.
   const addressFilled = fields.some((f) => f.kind === "address" && f.filled);
 
+  // Button lock: issue the grant while the yes is fresh (see unlock.ts).
+  const issued = gate.issue({ confirmation: c, tabId, href: await extTabUrl(bridge, tabId), pageTotal });
+  if (!issued.ok) {
+    c.state = "used";
+    return { ok: false, error: issued.error };
+  }
+
   let card: Card;
   try {
     card = await readCard();
@@ -356,7 +379,7 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
     }
 
     try {
-      await clickPlaceOrder(bridge, tabId);
+      await clickPlaceOrder(bridge, tabId, issued.grant, gate);
     } catch {
       return { ok: false, error: "Could not press Place order on the checkout page." };
     }
