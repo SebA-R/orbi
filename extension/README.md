@@ -54,7 +54,7 @@ The agent server sends `{ type: "request", id, method, params }` and the worker 
 
 - `tabs_context`, `tabs_create`, `navigate` (`"back"`/`"forward"` too), `tab_info` → `tabs.js`.
 - `click`, `type`, `key`, `scroll`, `screenshot` → `cdp.js`. `click` with a `ref` clicks the centre of the page's `rect` and falls back to `click_ref` if CDP can't attach. `type` and single-character `key` are refused (`payment_field`) when the text holds a Luhn-valid 13-19 digit run or the focused element is a card field.
-- Page methods inject `content/mask.js` then `content/page.js` with `chrome.scripting` (idempotent; refs stay stable for the document's life), send `PAGE_CALL` to the top frame and retry once on "Receiving end does not exist".
+- Page methods inject `content/mask.js`, `content/protect.js` and `content/page.js` with `chrome.scripting` (idempotent; refs stay stable for the document's life), send `PAGE_CALL` to the top frame and retry once on "Receiving end does not exist".
 - Only the 12 `TOOLS` are exposed to Claude. `INTERNAL` methods (`tab_info`, `read_fields`, `fill_payment`, `clear_payment`, `rect`, `click_ref`, `lock_arm`, `press_protected`) are called only by the server's own code.
 
 ### Button lock
