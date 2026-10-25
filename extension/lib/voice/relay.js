@@ -1,6 +1,6 @@
 // Worker-side voice wiring: owns the offscreen document's lifecycle and routes
 // messages between content scripts and it. The worker only has to call
-// installVoiceRelay() at top level (see offscreen/WIRING-voice.md).
+// installVoiceRelay() at top level (see "Voice and subtitles" in extension/README.md).
 //
 //   content PTT_START          -> ensure offscreen, VOICE_START {settings} to offscreen
 //   content PTT_STOP           -> VOICE_STOP to offscreen

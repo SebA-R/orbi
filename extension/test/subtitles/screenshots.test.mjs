@@ -1,7 +1,7 @@
 // Screenshots of the subtitles overlay in an isolated Playwright Chromium
 // (never the user's Chrome). The manifest is not ours to edit, so this copies
-// extension/ to a temp dir and adds the content_scripts entry from
-// content/WIRING-subtitles.md to the copy. Fake messages come from the worker
+// extension/ to a temp dir and adds
+// the subtitles content_scripts entry to the copy. Fake messages come from the worker
 // via chrome.tabs.sendMessage, exactly as the real relay will send them.
 //
 // Run: npm run screenshots (from this folder). Output: ./screenshots/*.png
