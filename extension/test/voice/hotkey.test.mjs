@@ -115,11 +115,11 @@ test("configurable hotkeys: Ctrl+Shift+Space and F9", () => {
 });
 
 test("switching hotkey mid-hold stops first; unknown names fall back to Space", () => {
-  const { d, sent } = detector("Alt+Space");
-  d.onKeyDown(key("Space", { altKey: true }));
+  const { d, sent } = detector("Ctrl+Shift+Space");
+  d.onKeyDown(key("Space", { ctrlKey: true, shiftKey: true }));
   d.setHotkey("bogus");
   assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
-  d.onKeyDown(key("Space", { altKey: true }));
+  d.onKeyDown(key("Space", { ctrlKey: true, shiftKey: true }));
   assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
   d.onKeyDown(key("Space"));
   assert.deepEqual(sent, ["ptt.start", "ptt.stop", "ptt.start"]);
@@ -222,4 +222,23 @@ test("isPressable and isTextEntry classify focus targets", () => {
   assert.equal(isTextEntry({ tagName: "INPUT" }), true);
   assert.equal(isTextEntry({ tagName: "INPUT", type: "radio" }), false);
   assert.equal(isTextEntry(null), false);
+});
+
+test("with Space as the talk key, Option+Space also talks, even in text fields", () => {
+  const { d, sent, extras } = detector("Space");
+  const down = key("Space", { altKey: true }, { target: { tagName: "INPUT", type: "search" } });
+  d.onKeyDown(down);
+  assert.equal(down.prevented, true);
+  assert.deepEqual(sent, ["ptt.start"]);
+  assert.equal(extras[0], undefined); // confirms at once, no silent start
+  d.onKeyUp(key("AltLeft"));
+  assert.deepEqual(sent, ["ptt.start", "ptt.stop"]);
+  // Plain Space still types in the same field afterwards.
+  const plain = key("Space", {}, { target: { tagName: "INPUT", type: "search" } });
+  d.onKeyDown(plain);
+  assert.equal(plain.prevented, false);
+  // Other talk keys get no extra: F9 ignores Option+Space.
+  const f9 = detector("F9");
+  f9.d.onKeyDown(key("Space", { altKey: true }));
+  assert.deepEqual(f9.sent, []);
 });

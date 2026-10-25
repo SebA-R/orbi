@@ -5,6 +5,7 @@
 import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, normalizeAgentUrl, parseOriginLines } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/blocklist.js";
+import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -118,35 +119,19 @@ els.restore.addEventListener("click", () => {
   els.form.requestSubmit();
 });
 
-async function micPermission() {
-  try {
-    const p = await navigator.permissions.query({ name: "microphone" });
-    return p.state;
-  } catch {
-    return "unknown";
-  }
-}
-
 async function showMicState() {
   const state = await micPermission();
-  if (state === "granted") els.micStatus.textContent = "Microphone allowed.";
-  else if (state === "denied") els.micStatus.textContent = "Microphone blocked. Allow it in Chrome's site settings for this extension, then press Grant microphone again.";
-  else els.micStatus.textContent = "Microphone not granted yet.";
+  els.micStatus.textContent = micStateMessage(state);
   return state;
 }
 
 els.grant.addEventListener("click", async () => {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    for (const t of stream.getTracks()) t.stop();
-    say(els.micStatus, "Microphone allowed. You can close this page and hold the talk key on any page.");
-  } catch (err) {
-    say(els.micStatus, err && err.name === "NotAllowedError"
-      ? "Microphone blocked. Allow it in Chrome's site settings for this extension, then try again."
-      : `Could not open the microphone: ${err && err.message}`);
-  }
+  say(els.micStatus, (await grantMic()).message);
 });
 
 fill(await loadSettings());
 await showMicState();
+// The popup's "Blocked sites" link and the setup page's talk key link land here.
+const target = { "#blocked-sites": els.blocklist, "#hotkey": els.hotkey }[location.hash];
+if (target) { target.scrollIntoView({ block: "center" }); target.focus(); }
 document.documentElement.dataset.ready = "true";

@@ -146,3 +146,81 @@ test("PTT_START silent, PTT_CONFIRM and PTT_CANCEL reach the offscreen doc in or
     [RT.VOICE_START, true], [RT.VOICE_CONFIRM, undefined], [RT.VOICE_CANCEL, undefined],
   ]);
 });
+
+test("switching tabs carries the current caption and state to the new tab", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  relay.onMessage({ type: RT.VOICE_STATE, state: "speaking", from: "offscreen" });
+  relay.onMessage({ type: RT.SUBTITLE, speaker: "user", text: "reorder my pills", final: true, from: "offscreen" });
+  relay.onMessage({ type: RT.SUBTITLE, speaker: "agent", text: "Three options.", final: false, from: "offscreen" });
+  await relay.idle();
+  state.tabSent.length = 0;
+  await relay.onTabActivated({ tabId: 8 });
+  assert.deepEqual(state.tabSent.map((x) => [x.tabId, x.m.type, x.m.text || x.m.state]), [
+    [8, RT.VOICE_STATE, "speaking"], [8, RT.SUBTITLE, "reorder my pills"], [8, RT.SUBTITLE, "Three options."],
+  ]);
+  assert.ok(state.tabSent.every((x) => !("from" in x.m)));
+  relay.onMessage({ type: RT.SUBTITLE, speaker: "agent", text: "Three options. Which one?", final: true, from: "offscreen" });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(state.tabSent.at(-1).tabId, 8, "later lines go to the new tab");
+});
+
+test("an old idle caption does not follow to a new tab", async () => {
+  const { relay, state } = make();
+  relay.onMessage({ type: RT.VOICE_STATE, state: "idle", from: "offscreen" });
+  await new Promise((r) => setTimeout(r, 0));
+  state.tabSent.length = 0;
+  const real = Date.now;
+  Date.now = () => real() + 6000;
+  try {
+    await relay.onTabActivated({ tabId: 12 });
+  } finally {
+    Date.now = real;
+  }
+  assert.deepEqual(state.tabSent, []);
+});
+
+test("a new turn drops the last turn's lines, and stale lines never replay even while active", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  const off = (m) => relay.onMessage({ ...m, from: "offscreen" });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  off({ type: RT.VOICE_STATE, state: "speaking" });
+  off({ type: RT.SUBTITLE, speaker: "agent", text: "Old answer.", final: true });
+  off({ type: RT.VOICE_STATE, state: "idle" });
+  off({ type: RT.VOICE_STATE, state: "listening" }); // new turn
+  await relay.idle();
+  state.tabSent.length = 0;
+  await relay.onTabActivated({ tabId: 8 });
+  assert.deepEqual(state.tabSent.map((x) => x.m.text || x.m.state), ["listening"]);
+
+  off({ type: RT.SUBTITLE, speaker: "user", text: "reorder", final: false });
+  await new Promise((r) => setTimeout(r, 0));
+  state.tabSent.length = 0;
+  const real = Date.now;
+  Date.now = () => real() + 6000;
+  try {
+    await relay.onTabActivated({ tabId: 9 });
+  } finally {
+    Date.now = real;
+  }
+  assert.deepEqual(state.tabSent.map((x) => x.m.text || x.m.state), ["listening"], "state yes, 6 s old line no");
+});
+
+test("a replayed line is skipped once a newer live line for that speaker has gone out", async () => {
+  const { relay, state, chromeApi } = make({ activeTab: 3 });
+  const off = (m) => relay.onMessage({ ...m, from: "offscreen" });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  off({ type: RT.VOICE_STATE, state: "speaking" });
+  off({ type: RT.SUBTITLE, speaker: "agent", text: "Three", final: false });
+  await relay.idle();
+  state.tabSent.length = 0;
+  const send = chromeApi.tabs.sendMessage;
+  let first = true;
+  chromeApi.tabs.sendMessage = async (tabId, m) => {
+    await send(tabId, m);
+    if (first) { first = false; off({ type: RT.SUBTITLE, speaker: "agent", text: "Three options.", final: false }); }
+  };
+  await relay.onTabActivated({ tabId: 8 });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(state.tabSent.map((x) => x.m.text || x.m.state), ["speaking", "Three options."]);
+});
