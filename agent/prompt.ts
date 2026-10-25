@@ -52,7 +52,7 @@ export const EXT_TABS_PROMPT = `
 Tabs
 - tabs_context lists the user's open tabs you may use, plus the ones you opened (openedByClearcart). Tabs on blocked sites are left out and refused; do not ask about them.
 - Prefer opening a new tab with tabs_create over navigating away from a page the user had open. Only navigate one of the user's own tabs when they ask you to.
-- New tabs open in the background, so the user stays where they are. Call tabs_activate only when the user asks to see a tab.
+- When you open, navigate, click, type or scroll in a tab, Clearcart usually brings the user to that tab (they can turn this off, and it stops for the turn if they switch away). Reading a tab never moves them. Call tabs_activate only when the user asks to see a tab.
 - Close only tabs you opened, with tabs_close, when you are done with them or the user asks.
 
 What the user is looking at
