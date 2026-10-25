@@ -36,13 +36,16 @@
     a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
     .frame { position: relative; aspect-ratio: 16 / 10; border-radius: 16px; overflow: hidden; box-shadow: 0 0 0 1px var(--hairline), 0 20px 50px -30px rgb(0 0 0 / .35); background: var(--surface); }
     .frame iframe { position: absolute; top: 0; left: 0; width: 1280px; height: 800px; border: 0; transform-origin: 0 0; }
+    main.phone { grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); }
+    main.phone .frame { aspect-ratio: 390 / 844; border-radius: 28px; }
+    main.phone .frame iframe { width: 390px; height: 844px; }
   </style>
 </head>
 <body>
   <header>
     <div>
       <h1>Clearcart looks</h1>
-      <p>Five directions for the voice console. Each one is the real console; open it live and hold Space.</p>
+      <p>Six directions for the voice console. Each one is the real console; open it live and hold Space.</p>
     </div>
     <div class="controls">
       <fieldset id="state">
@@ -51,7 +54,13 @@
         <label><input type="radio" name="state" value="listening" checked><span>Listening</span></label>
         <label><input type="radio" name="state" value="thinking"><span>Thinking</span></label>
         <label><input type="radio" name="state" value="speaking"><span>Speaking</span></label>
+        <label><input type="radio" name="state" value="confirm"><span>Say yes</span></label>
         <label><input type="radio" name="state" value="receipt"><span>Receipt</span></label>
+      </fieldset>
+      <fieldset id="size">
+        <legend>Screen</legend>
+        <label><input type="radio" name="size" value="desktop" checked><span>Desktop</span></label>
+        <label><input type="radio" name="size" value="phone"><span>Phone</span></label>
       </fieldset>
       <fieldset id="theme">
         <legend>Theme</legend>
@@ -65,7 +74,8 @@
 
   <script>
     const LOOKS = [
-      ['aurora', 'Aurora', 'Spectrum orb with a glass core and a glowing screen edge. Closest to Siri and Apple Intelligence. (Current default.)'],
+      ['canvas', 'Canvas', 'Glass orb with a spectrum halo and conic ring, split desktop layout, read-back and receipt cards. (Current default.)'],
+      ['aurora', 'Aurora', 'The previous default: four-color spectrum orb and a spinning glow around the screen edge.'],
       ['halo', 'Halo', 'Monochrome ring and dot. Color appears only while listening, with ripples. Linear and Vercel restraint.'],
       ['liquid', 'Liquid', 'A soft blue cloud sphere that drifts and swells with the voice. Closest to ChatGPT voice mode.'],
       ['bars', 'Bars', 'Five bars on a quiet disc act as a level meter. The most literal: you see your own voice.'],
@@ -77,7 +87,7 @@
       const art = document.createElement('article');
       art.innerHTML = `
         <div class="frame"><iframe title="${name} preview" inert loading="eager"></iframe></div>
-        <h2>${name} <a href="./?look=${id}" target="_blank" rel="noopener">Open live &#8599;</a></h2>
+        <h2>${name} <a href="./${id === 'canvas' ? '' : `?look=${id}`}" target="_blank" rel="noopener">Open live &#8599;</a></h2>
         <p>${desc}</p>`;
       grid.append(art);
       frames.push([id, art.querySelector('iframe')]);
@@ -87,13 +97,19 @@
       const state = value('state'), theme = value('theme');
       for (const [id, f] of frames) {
         // A dead agent socket keeps previews from opening real agent sessions.
-        f.src = `./?look=${id}&demo=${state}&theme=${theme}&agent=ws://127.0.0.1:9/preview`;
+        const look = id === 'canvas' ? '' : `look=${id}&`;
+        f.src = `./?${look}demo=${state}&theme=${theme}&agent=ws://127.0.0.1:9/preview`;
       }
     }
     function fit() {
-      for (const [, f] of frames) f.style.transform = `scale(${f.parentElement.clientWidth / 1280})`;
+      const w = value('size') === 'phone' ? 390 : 1280;
+      for (const [, f] of frames) f.style.transform = `scale(${f.parentElement.clientWidth / w})`;
     }
-    document.querySelectorAll('input').forEach((i) => i.addEventListener('change', load));
+    document.querySelectorAll('input[name="state"], input[name="theme"]').forEach((i) => i.addEventListener('change', load));
+    document.querySelectorAll('input[name="size"]').forEach((i) => i.addEventListener('change', () => {
+      grid.classList.toggle('phone', value('size') === 'phone');
+      fit();
+    }));
     new ResizeObserver(fit).observe(grid);
     load();
     fit();

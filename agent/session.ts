@@ -113,12 +113,27 @@ export type ServerMessage =
   | { type: "status"; text: string }
   | { type: "receipt"; item: string; total: string; last4: string };
 
-const NEGATIVE = /\b(no|nope|not|don'?t|do not|stop|wait|cancel|change|hold on|never mind|nevermind)\b/i;
-const AFFIRMATIVE = /^(yes|yeah|yep|yup|yes please|confirm|confirmed|go ahead|pay|pay now|do it|place the order)\b/i;
+// The whole answer must be a yes: affirmative phrases plus polite filler and
+// nothing else, so "yes, but two of them", "do it later" or "pay attention"
+// are not a yes. Longer phrases first so "pay now" is not read as "pay".
+const AFFIRMATIVE = ["place the order", "place order", "go ahead", "pay now", "do it", "confirmed", "confirm", "yes", "yeah", "yep", "yup", "pay"];
+const FILLER = ["thank you", "all right", "please", "thanks", "okay", "ok", "alright", "sure"];
 
 export function isExplicitYes(text: string): boolean {
-  const t = text.trim().toLowerCase().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim();
-  return AFFIRMATIVE.test(t) && !NEGATIVE.test(t);
+  let rest = ` ${text.toLowerCase().replace(/[^a-z\s]/g, " ").replace(/\s+/g, " ").trim()} `;
+  let affirmed = false;
+  for (let progress = true; progress && rest.trim(); ) {
+    progress = false;
+    for (const [phrase, strong] of [...AFFIRMATIVE.map((p) => [p, true] as const), ...FILLER.map((p) => [p, false] as const)]) {
+      if (rest.startsWith(` ${phrase} `)) {
+        rest = rest.slice(phrase.length + 1);
+        affirmed ||= strong;
+        progress = true;
+        break;
+      }
+    }
+  }
+  return affirmed && !rest.trim();
 }
 
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -367,6 +382,11 @@ export class Session {
       },
     }));
 
+    // Text-only messages are held until the turn ends: the SDK can send the
+    // text and the tool call of one step as separate messages, so a tool call
+    // that follows turns the held text into thinking aloud.
+    let held: string[] = [];
+    const unspoken = (text: string) => this.status(`(not spoken) ${text.slice(0, 120)}`);
     try {
       for await (const m of q) {
         if (m.type === "system" && m.subtype === "init") {
@@ -377,13 +397,19 @@ export class Session {
           // Only a message with no tool calls is a reply to the user. Text next
           // to tool calls is the model thinking aloud: log it, never speak it.
           const working = blocks.some((b) => b.type === "tool_use");
+          if (working) {
+            held.forEach(unspoken);
+            held = [];
+          }
           for (const block of blocks) {
             if (block.type === "text" && block.text?.trim()) {
-              if (working) this.status(`(not spoken) ${block.text.trim().slice(0, 120)}`);
-              else this.say(block.text.trim());
+              if (working) unspoken(block.text.trim());
+              else held.push(block.text.trim());
             } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
           }
         } else if (m.type === "result") {
+          if (held.length) this.say(held.join(" "));
+          held = [];
           if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
         }
       }
