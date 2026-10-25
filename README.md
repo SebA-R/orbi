@@ -110,3 +110,7 @@ This project was started at Cal Hacks 13.0 (October 24-25, 2026). All of the cod
 ## Secrets
 
 Never commit API keys. Copy `.env.example` to `.env` and put your keys there. `.env` is gitignored.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Third-party code listed above keeps its own license.
