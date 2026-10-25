@@ -533,8 +533,23 @@
     return { ok: true };
   }
 
+  // Kind of the element that has keyboard focus, so the worker can refuse
+  // CDP typing into a card field. Never returns the value.
+  function focusedField() {
+    var el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    if (!el || el === document.body || el === document.documentElement) return { kind: "none", payment: false };
+    var tag = el.tagName;
+    if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
+      return { kind: el.isContentEditable ? "other" : "none", payment: false };
+    }
+    var k = kindOf(el);
+    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el) };
+  }
+
   // ------------------------------------------------------------ dispatcher
   var METHODS = {
+    focused_field: focusedField,
     read_page: readPage,
     find: find,
     get_page_text: getPageText,
