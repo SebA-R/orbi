@@ -114,6 +114,9 @@ export function createRouter({
   cdp = cdpModule,
   now = () => Date.now(),
   newNonce = () => globalThis.crypto.randomUUID(),
+  // Danger mode from the user's settings (worker.js). Read for every page
+  // call; any failure or non-true answer is off.
+  dangerMode = async () => false,
 } = {}) {
   // lock_arm nonces: nonce -> { tabId, origin, expires }. Single use.
   const armed = new Map();
@@ -204,7 +207,8 @@ export function createRouter({
 
   async function pageCallWith(tabId, method, params, files) {
     const { tabId: _drop, ...rest } = params || {};
-    const msg = { type: RT.PAGE_CALL, method, params: rest };
+    const danger = await Promise.resolve().then(dangerMode).then((v) => v === true, () => false);
+    const msg = { type: RT.PAGE_CALL, method, params: rest, dangerMode: danger };
     let doc = await inject(tabId, files);
     let reply;
     try {

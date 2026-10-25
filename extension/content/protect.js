@@ -171,6 +171,37 @@
     }
   }
 
+  // Danger mode, the user's setting (off by default, lib/settings.js
+  // dangerMode): the lock and gray-out come off the controls it lifts, so
+  // Clearcart presses them without asking. It lifts only sign in and sign
+  // up (unlock class "account"). Everything that buys, pays, starts
+  // checkout, subscribes or saves a card stays locked, as do frames, hidden
+  // components and marked controls, so the spoken yes to request_checkout
+  // still comes before anything is bought. Masking of card and password
+  // fields does not depend on it. Set by whoever runs this classifier from
+  // the extension's own settings (the worker, per page call); the page and
+  // the agent cannot set it.
+  var DANGER_LIFTS = { account: 1 };
+  var danger = false;
+
+  function dangerLifts(lock, el) {
+    return !!lock && !!DANGER_LIFTS[unlockClass(lock, el)];
+  }
+
+  // Returns true when this lock stays on: always when Danger mode is off.
+  function keep(lock, el) {
+    return !(danger && dangerLifts(lock, el));
+  }
+
+  function setDangerMode(on) {
+    var next = on === true;
+    if (next !== danger) {
+      danger = next;
+      if (badgeState) schedule();
+    }
+    return danger;
+  }
+
   // Same control name, loosely: equal after normalize, or one a long prefix
   // of the other (labels are clipped to 60 characters).
   function sameLabel(a, b) {
@@ -444,7 +475,8 @@
     }
     if (!kind && isSubmit(el)) kind = formKind(el.form);
     if (!kind) return null;
-    return { kind: kind, label: clip(label || kind), optin: checkable, checked: checked };
+    var lock = { kind: kind, label: clip(label || kind), optin: checkable, checked: checked };
+    return keep(lock, el) ? lock : null;
   }
 
   // Does activating this lock's element do something the AI may not do?
@@ -603,7 +635,11 @@
   function lockForSubmit(form) {
     if (!form) return null;
     var fk = formKind(form);
-    if (fk) return { kind: fk, label: clip(formLabel(form) || "this form"), optin: false, checked: false };
+    if (fk) {
+      var fl = { kind: fk, label: clip(formLabel(form) || "this form"), optin: false, checked: false };
+      // A card form always locks; a password form only while it is kept.
+      if (fk !== "account" || keep(fl)) return fl;
+    }
     var subs = submitsOf(form);
     for (var i = 0; i < subs.length; i++) {
       var l = lockOf(subs[i]);
@@ -870,6 +906,9 @@
     isCheckoutNav: isCheckoutNav,
     unlockClass: unlockClass,
     sameLabel: sameLabel,
+    dangerLifts: dangerLifts,
+    setDangerMode: setDangerMode,
+    dangerMode: function () { return danger; },
     passwordState: passwordState,
     isPasswordField: isPasswordField,
     watchPasswords: watchPasswords,
