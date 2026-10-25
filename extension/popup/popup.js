@@ -48,10 +48,17 @@ $("all-settings").addEventListener("click", (e) => { e.preventDefault(); chrome.
 $("blocked-sites").addEventListener("click", (e) => { e.preventDefault(); openTab("options/options.html#blocked-sites"); });
 
 fill(await loadSettings());
+// Focus the summary right away; the health check can take up to 3 s.
+list.summary.textContent = "Checking setup.";
+list.summary.focus();
 // No announcement here: moving focus below already reads the state.
 await list.refresh();
 chrome.permissions.onAdded.addListener(() => list.refresh());
 
-// First focus: the first step still needed, or the summary when all is done.
-(list.firstNeeded() || list.summary).focus();
+// Then the first step still needed, unless the user has already moved on.
+const needed = list.firstNeeded();
+if (document.activeElement === list.summary) {
+  if (needed) needed.focus();
+  else { list.summary.blur(); list.summary.focus(); } // re-read the final summary
+}
 document.documentElement.dataset.ready = "true";
