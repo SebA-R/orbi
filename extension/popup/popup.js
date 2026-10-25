@@ -51,6 +51,7 @@ function showVoice(state = voiceState) {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.from !== "offscreen") return;
   if (msg.type === RT.VOICE_STATE) showVoice(msg.state);
+  else if (msg.type === RT.SUBTITLE || msg.type === RT.SUBTITLE_WORD) face?.caption(msg); // lip-sync
   else if (msg.type === "voice.level") face?.setLevel(msg.level); // optional, not sent yet
 });
 

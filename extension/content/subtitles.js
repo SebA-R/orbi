@@ -605,8 +605,11 @@
   if (chromeApi && chromeApi.runtime && chromeApi.runtime.onMessage) {
     chromeApi.runtime.onMessage.addListener((msg) => {
       if (!msg || typeof msg !== "object") return;
-      if (msg.type === RT.SUBTITLE) onSubtitle(msg);
-      else if (msg.type === RT.SUBTITLE_WORD) onWord(msg);
+      if (msg.type === RT.SUBTITLE || msg.type === RT.SUBTITLE_WORD) {
+        if (msg.type === RT.SUBTITLE) onSubtitle(msg);
+        else onWord(msg);
+        if (ui.face) ui.face.caption(msg); // lip-sync on the heard words
+      }
       else if (msg.type === RT.VOICE_STATE) onState(msg.state, msg.latched);
       else if (msg.type === RT.VOICE_LEVEL) { if (ui.face) ui.face.setLevel(msg.level); }
       else if (msg.type === RT.SETTINGS_CHANGED && msg.settings && "subtitles" in msg.settings) {
