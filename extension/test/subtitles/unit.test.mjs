@@ -467,3 +467,15 @@ test("the happy moment does not play while the card is hidden", () => {
   t.tick(20 * MIN);
   assert.equal(happy(t), false, "nobody can see it");
 });
+
+test("clicking the page fades the card out early, then clears it", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
+  assert.ok(t.visible());
+  t.window.document.body.dispatchEvent(new t.window.Event("pointerdown", { bubbles: true }));
+  assert.equal(t.visible(), false);
+  t.tick(700);
+  assert.equal(t.$(".agent").textContent, "", "card is cleared once the fade ends");
+  t.send({ type: "subtitle", speaker: "agent", text: "Next.", final: true });
+  assert.ok(t.visible(), "the next line shows again");
+});

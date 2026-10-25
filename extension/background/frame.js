@@ -12,7 +12,7 @@
 import { RT } from "../lib/protocol.js";
 
 export const FRAME_FILES = ["content/frame.js"];
-// Matches the "Clearcart is using this tab" pill (content/indicator.js).
+// How long the frame stays up after the last agent call on a text-only turn.
 export const HOLD_MS = 10_000;
 // Voice states that mean a turn is in progress; anything else counts as idle.
 const ACTIVE = new Set(["listening", "thinking", "speaking"]);

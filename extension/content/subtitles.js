@@ -359,6 +359,12 @@
     }
   }
 
+  // A click anywhere on the page (the card itself takes no clicks) fades the
+  // card out early, like dismissing a toast.
+  document.addEventListener("pointerdown", () => {
+    if (ui.wrap && ui.wrap.classList.contains("on")) hide();
+  }, { capture: true, passive: true });
+
   const chromeApi = globalThis.chrome;
   if (chromeApi && chromeApi.runtime && chromeApi.runtime.onMessage) {
     chromeApi.runtime.onMessage.addListener((msg) => {
