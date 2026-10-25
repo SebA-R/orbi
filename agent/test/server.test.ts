@@ -58,7 +58,7 @@ test("CLEARCART_BROWSER=ext: /ext and /session share the server", async () => {
     await ext.open();
     assert.equal(ext.welcome.server, "clearcart-agent");
     const health = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
-    assert.deepEqual(health, { ok: true, echo: true, voice: false, cartesia: false, browser: "ext", extension: true });
+    assert.deepEqual(health, { ok: true, echo: true, voice: false, cartesia: false, browser: "ext", extension: true, desktop: false });
     assert.equal(await sessionEcho(port), "You said: hi");
     ext.close();
   } finally {
