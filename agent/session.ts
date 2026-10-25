@@ -569,7 +569,7 @@ export class Session {
     return {};
   };
 
-  // OCIC path: after read_page or find, name the locked refs for Claude and
+  // OCIC path: after read_page, find or get_page_text, name the locked controls for Claude and
   // draw the lock badges in the tab. Our own extension does both itself.
   private lockNotes: HookCallback = async (input) => {
     if (input.hook_event_name !== "PostToolUse" || !input.tool_name.startsWith(B) || extMode()) return {};
@@ -852,7 +852,7 @@ export class Session {
         : d.cls === "account"
           ? " Never type a password or card number; the user types those themselves."
           : "";
-    return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""}${next}`);
+    return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""} Do not click it again; another press needs another request_unlock.${next}`);
   }
 
   private tools() {
@@ -904,7 +904,7 @@ export class Session {
 
     const requestUnlockTool = tool(
       "request_unlock",
-      "Press a [locked] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card, or a marked control. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_now. Returns what happened.",
+      "Press a [locked] or [uncheck only] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card. Use it whenever the task needs a locked control or a click comes back Locked, with the ref and label it names; do not give up, retry the click or look for a workaround. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_now. Returns what happened.",
       {
         tabId: z.number().int().optional().describe("Tab id of the page with the control. Default: the last tab used."),
         ref: z.string().optional().describe("The control's ref from read_page or find, e.g. ref_12"),

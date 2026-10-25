@@ -26,12 +26,13 @@ import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 const require = createRequire(import.meta.url);
 const EXT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "extension", "content");
 
-export type Lock = { kind: string; label: string; optin: boolean; checked: boolean };
+// cls: Protect.unlockClass worked out in the page, next to the element.
+export type Lock = { kind: string; label: string; optin: boolean; checked: boolean; cls?: string | null };
 type ProtectApi = {
   classifyLabel(label: string, opts?: { checkable?: boolean }): string | null;
   normalize(s: string): string;
   isActivationKey(k: string): boolean;
-  message(l: Lock): string;
+  message(l: Lock, ref?: string | null): string;
   blocks(l: Lock): boolean;
   unlockClass(l: Lock | null, el?: unknown): string | null;
   sameLabel(a: string, b: string): boolean;
@@ -79,7 +80,7 @@ const defaultDeps: Deps = {
   readRef: async (tabId, ref) => resultText(await callBrowserTool("read_page", { tabId, ref_id: ref, filter: "all" })),
 };
 
-const LOCK_JSON = "function J(l){ return l ? { kind: l.kind, label: l.label, optin: !!l.optin, checked: !!l.checked } : null; }";
+const LOCK_JSON = "function J(l){ return l ? { kind: l.kind, label: l.label, optin: !!l.optin, checked: !!l.checked, cls: l.cls !== undefined ? l.cls : P.unlockClass(l, l.el) } : null; }";
 
 const CLICKS = new Set(["left_click", "right_click", "double_click", "triple_click", "left_click_drag", "left_mouse_down", "left_mouse_up", "diag_input"]);
 
@@ -115,14 +116,19 @@ export function parseRefLine(text: string): { role: string; name: string; type: 
 
 const CHECKABLE_ROLES = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio", "option", "tab"]);
 
-type PageLock = { name: string; kind: string; optin: boolean; checked: boolean };
+// name: the full accessible name, for matching refs; label: the lock's
+// clipped, masked label; hidden: not shown on the page.
+type PageLock = { name: string; label?: string; hidden?: boolean; kind: string; optin: boolean; checked: boolean; cls?: string | null };
 
 // The page's locked controls with their full accessible names.
 async function pageLocks(deps: Deps, tabId: number): Promise<PageLock[]> {
   const r = await deps.evalInTab<PageLock[]>(
     tabId,
     pageScript(`return P.listLocks(document, 300).map(function (x) {
-  return { name: P.labelOf(x.el), kind: x.lock.kind, optin: !!x.lock.optin, checked: !!x.lock.checked };
+  var el = x.el, cs = null;
+  try { cs = getComputedStyle(el); } catch (e) {}
+  var hidden = !!(el.hidden || (el.closest && el.closest("[hidden],[aria-hidden=true]")) || (cs && (cs.display === "none" || cs.visibility === "hidden")));
+  return { name: P.labelOf(el), label: x.lock.label, hidden: hidden, kind: x.lock.kind, optin: !!x.lock.optin, checked: !!x.lock.checked, cls: P.unlockClass(x.lock, el) };
 });`, dangerOf(deps))
   );
   if (!Array.isArray(r)) throw new Error("no lock list");
@@ -148,12 +154,20 @@ async function refLock(deps: Deps, tabId: number, ref: string, out?: { role?: st
   const checkable = CHECKABLE_ROLES.has(info.role) || info.type === "checkbox" || info.type === "radio";
   const kind = Protect.classifyLabel(info.name, { checkable });
   const label = info.name.slice(0, 60);
-  const byName = kind ? { kind, label, optin: checkable, checked: false } : null;
+  const byName: Lock | null = kind ? { kind, label, optin: checkable, checked: false } : null;
   // Danger mode lifts sign in and sign up by name; the page's own list
   // (checked below, with the same mode) still has anything else.
-  if (byName && !(dangerOf(deps) && Protect.dangerLifts(byName))) return byName;
+  if (byName && !(dangerOf(deps) && Protect.dangerLifts(byName))) {
+    // Locked by name whatever the page says; the page, which sees the
+    // element, says whether it unlocks on request (a card form's submit or
+    // a marked control never does). Unknown: judge by name alone.
+    const seen = await pageLocks(deps, tabId).catch(() => null);
+    const same = seen?.find((l) => sameName(l.name, info.name));
+    byName.cls = same ? same.cls ?? null : Protect.unlockClass(byName);
+    return byName;
+  }
   const hit = (await pageLocks(deps, tabId)).find((l) => sameName(l.name, info.name));
-  return hit ? { kind: hit.kind, label: hit.name.slice(0, 60), optin: hit.optin, checked: hit.checked } : null;
+  return hit ? { kind: hit.kind, label: hit.name.slice(0, 60), optin: hit.optin, checked: hit.checked, cls: hit.cls } : null;
 }
 
 // Runs a P.lockAt or P.lockForKey call in the page.
@@ -186,8 +200,9 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
         }
         if (!points.length && args.ref != null) {
           // Name it if it is locked, so Claude stops trying; else ask for a coordinate.
-          const l = typeof args.ref === "string" ? await refLock(deps, tabId, args.ref).catch(() => null) : null;
-          return l && Protect.blocks(l) ? Protect.message(l) : REF_CLICK;
+          const ref = typeof args.ref === "string" ? args.ref : null;
+          const l = ref ? await refLock(deps, tabId, ref).catch(() => null) : null;
+          return l && Protect.blocks(l) ? Protect.message(l, ref) : REF_CLICK;
         }
         return null;
       }
@@ -216,11 +231,11 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
       const l = await refLock(deps, tabId, args.ref, seen);
       if (/^password$/i.test(seen.type || "")) return PASSWORD;
       // Unchecking an opt-in is fine; anything else on a locked control is not.
-      if (l && !(l.optin && falsy(args.value))) return Protect.message(l);
+      if (l && !(l.optin && falsy(args.value))) return Protect.message(l, args.ref);
       // A dropdown is uncheck-only too: never choose an opt-in option.
       const value = String(args.value ?? "");
       const opt = /^(combobox|listbox|select)$/i.test(seen.role || "") ? Protect.classifyLabel(value, { checkable: true }) : null;
-      if (opt) return `Locked: '${value.slice(0, 60)}' turns on a subscription, saved card, account or one-tap payment. Only the user can choose it.`;
+      if (opt) return `Locked: '${value.slice(0, 60)}' turns on a subscription, saved card, account or one-tap payment, so nothing was changed. Only the user can choose it; tell them if they want it.`;
       return null;
     }
     return null;
@@ -229,10 +244,11 @@ export async function ocicLockReason(tool: string, args: Record<string, unknown>
   }
 }
 
-// After read_page or find: a note naming the locked refs, so Claude knows
-// not to try them, and the lock badges drawn in the tab.
+// After read_page, find or get_page_text: a note naming the locked
+// controls (by ref where the output has refs), what to do about them, and
+// the lock badges drawn in the tab.
 export async function ocicLockNote(tool: string, args: Record<string, unknown>, output: string, deps: Deps = defaultDeps): Promise<string | null> {
-  if (tool !== "read_page" && tool !== "find") return null;
+  if (tool !== "read_page" && tool !== "find" && tool !== "get_page_text") return null;
   const tabId = tabIdOf(args);
   let page: PageLock[] = [];
   if (Number.isFinite(tabId)) {
@@ -243,23 +259,37 @@ export async function ocicLockNote(tool: string, args: Record<string, unknown>, 
   }
   const locked: string[] = [];
   const uncheck: string[] = [];
-  const re = /(?:^|\s)(?:\[(ref_\d+)\]\s+)?(\S+)\s+"((?:[^"\\]|\\.)*)"(?:\s+\[(ref_\d+)\])?/;
-  for (const line of output.split("\n")) {
-    const m = re.exec(line);
-    const ref = m && (m[1] || m[4]);
-    if (!m || !ref) continue;
-    const role = m[2];
-    const name = m[3];
-    const checkable = CHECKABLE_ROLES.has(role) || /type="(checkbox|radio)"/.test(line);
-    const kind = Protect.classifyLabel(name, { checkable });
-    const keptByName = !!kind && !(dangerOf(deps) && Protect.dangerLifts({ kind, label: name, optin: checkable, checked: false }));
-    const hit = keptByName ? { optin: checkable } : page.find((l) => sameName(l.name, name));
-    if (!hit) continue;
-    (hit.optin ? uncheck : locked).push(`${ref} "${name.slice(0, 60)}"`);
+  if (tool === "get_page_text") {
+    // No refs in page text: name the page's own locked controls.
+    for (const l of page) {
+      if (locked.length + uncheck.length >= 40) break;
+      const label = typeof l.label === "string" ? l.label : "";
+      if (l.hidden !== false || !label || !Protect.blocks({ kind: l.kind, label, optin: l.optin, checked: l.checked })) continue;
+      (l.optin ? uncheck : locked).push(JSON.stringify(label.slice(0, 60)) + (l.cls ? "" : " (only the user can press it)"));
+    }
+  } else {
+    const re = /(?:^|\s)(?:\[(ref_\d+)\]\s+)?(\S+)\s+"((?:[^"\\]|\\.)*)"(?:\s+\[(ref_\d+)\])?/;
+    for (const line of output.split("\n")) {
+      const m = re.exec(line);
+      const ref = m && (m[1] || m[4]);
+      if (!m || !ref) continue;
+      const role = m[2];
+      const name = m[3];
+      const checkable = CHECKABLE_ROLES.has(role) || /type="(checkbox|radio)"/.test(line);
+      const kind = Protect.classifyLabel(name, { checkable });
+      const keptByName = !!kind && !(dangerOf(deps) && Protect.dangerLifts({ kind, label: name, optin: checkable, checked: false }));
+      const hit = keptByName ? { optin: checkable } : page.find((l) => sameName(l.name, name));
+      if (!hit) continue;
+      (hit.optin ? uncheck : locked).push(`${ref} "${name.slice(0, 60)}"`);
+    }
   }
   if (!locked.length && !uncheck.length) return null;
   const parts: string[] = [];
-  if (locked.length) parts.push(`Locked controls, never press or submit them: ${locked.join(", ")}.`);
-  if (uncheck.length) parts.push(`Uncheck only (you may turn these off, never on): ${uncheck.join(", ")}.`);
-  return `Button lock: ${parts.join(" ")} Clearcart presses an order button itself only after the user says yes to request_checkout.`;
+  if (locked.length) parts.push(`Locked controls, your click tools cannot press or submit them: ${locked.join(", ")}.`);
+  if (uncheck.length) parts.push(`Uncheck only (you may turn these off; turning one on needs the user's permission): ${uncheck.join(", ")}.`);
+  return `Button lock: ${parts.join(" ")} ${LOCK_NEXT}`;
 }
+
+// What to do about a locked control, after the list.
+export const LOCK_NEXT =
+  "If the user wants one of them (go to checkout, sign in, sign up, subscribe, save a card), call request_unlock with its label; it asks the user itself when needed. Never call request_unlock for Place order, Buy now, Pay or wallet buttons: paying goes only through request_checkout and pay_now.";
