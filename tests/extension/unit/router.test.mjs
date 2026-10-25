@@ -8,8 +8,7 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
   let sends = 0;
   const chromeApi = {
     scripting: {
-      executeScript: async (o) =>
-        calls.push(o.files.includes("content/indicator.js") ? ["indicator", o.target.tabId] : ["inject", o.target.tabId, o.files]),
+      executeScript: async (o) => calls.push(["inject", o.target.tabId, o.files]),
     },
     tabs: {
       sendMessage: async (tabId, msg) => {
@@ -51,7 +50,6 @@ test("containsCardNumber finds Luhn-valid 13-19 digit runs only", () => {
 test("page methods inject mask.js, protect.js, then page.js and pass params without tabId", async () => {
   const { calls, router } = fakes();
   await router.route("find", { tabId: 3, query: "sweater" });
-  calls.splice(0, calls.length, ...calls.filter((c) => c[0] !== "indicator"));
   assert.deepEqual(calls[0], ["resolve", 3]);
   assert.deepEqual(calls[1], ["inject", 3, ["content/mask.js", "content/protect.js", "content/page.js"]]);
   assert.deepEqual(calls[2], ["page", 3, "find", { query: "sweater" }]);
@@ -129,10 +127,10 @@ function contextFakes({ blocked = false, page = { selection: "Blue mug", pointin
   return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
 }
 
-test("tab-bound calls show the indicator; clicking or typing never marks a user tab sweepable", async () => {
+test("tab-bound calls inject no tab pill; clicking or typing never marks a user tab sweepable", async () => {
   const { calls, router } = fakes();
   await router.route("click", { tabId: 4, x: 1, y: 2 });
-  assert.ok(calls.some((c) => c[0] === "indicator" && c[1] === 4));
+  assert.ok(!calls.some((c) => c[0] === "inject" && c[2].some((f) => f.includes("indicator"))));
   const b = contextFakes();
   await b.router.route("click", { tabId: 5, x: 1, y: 2 });
   await b.router.route("type", { tabId: 5, text: "mug" });
@@ -161,6 +159,17 @@ test("page_context: a blocked active tab gives only { blocked: true } and nothin
   assert.ok(!calls.some((c) => c[0] === "inject" || c[0] === "page"));
 });
 
+test("page_context: a new tab page is an empty new tab, not a blocked site, and nothing is read from it", async () => {
+  const calls = [];
+  const r = createRouter({
+    chromeApi: { scripting: { executeScript: async () => calls.push(["inject"]) }, tabs: { sendMessage: async () => calls.push(["page"]) } },
+    tabs: { activeTab: async () => ({ id: 30, title: "Clearcart", url: "chrome://newtab/" }), onNewTab: (t) => t.url === "chrome://newtab/", resolveAllowedTab: async () => { throw new Error("no"); } },
+    cdp: {},
+  });
+  assert.deepEqual(await r.route("page_context", {}), { active: { tabId: 30, title: "New Tab", url: "chrome://newtab/", newTab: true } });
+  assert.deepEqual(calls, []);
+});
+
 test("page_context uses the snapshot taken when the user started talking, once", async () => {
   const page = { selection: "at talk start", pointing: null };
   const { calls, router } = contextFakes({ page });
@@ -182,7 +191,6 @@ function tocFakes({ failFirstSend = false, replyHref = "https://www.etsy.com/c/m
   const chromeApi = {
     scripting: {
       executeScript: async (o) => {
-        if (o.files.includes("content/indicator.js")) return [];
         calls.push(["inject", o.target]);
         return [{ frameId: 0, documentId: `doc-${++docs}`, result: null }];
       },

@@ -45,6 +45,12 @@ test("normalize falls back to defaults for bad values", () => {
   assert.deepEqual(normalize({ allowlist: ["http://localhost:4100/", "http://localhost:4100"] }).allowlist, ["http://localhost:4100"]);
 });
 
+test("the Clearcart new tab page is on by default; only a stored boolean changes it", () => {
+  assert.equal(DEFAULTS.newTabPage, true);
+  assert.equal(normalize({ newTabPage: "no" }).newTabPage, true);
+  assert.equal(normalize({ newTabPage: false }).newTabPage, false);
+});
+
 test("endpoints derive the bridge, session and token URLs", () => {
   assert.deepEqual(endpoints("ws://localhost:5150"), {
     ext: "ws://localhost:5150/ext",

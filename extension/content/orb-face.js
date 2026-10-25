@@ -1,5 +1,7 @@
-// Clearcart mini orb face: the small status orb with two eyes and a smile
-// ("3. Eyes and mouth" from the Mini Orb Faces board, smiling at rest).
+// Clearcart mini orb face: the small status orb. At rest it shows two eyes
+// and a gentle smile ("3. Eyes and mouth" from the Mini Orb Faces board);
+// while listening, thinking or speaking the face fades out and the bare orb
+// carries the state (the faceless set from the Mini Orb States board).
 //
 // A classic script with no imports, so it can load as a content script ahead
 // of subtitles.js and as a plain <script> in the popup. It defines
@@ -10,11 +12,12 @@
 // same root, ideally a closed shadow root. The state is always said in text
 // elsewhere; the face never carries meaning on its own.
 //
-// States (Mini Orb States board, recommended set):
+// States (Mini Orb States board, recommended faceless set):
 //   idle       I1 slow breathing, smiling
-//   listening  L1 voice swell, from the mic level when one is fed in
-//   thinking   T1 inner spectrum swirl, eyes up and to the side
-//   speaking   S2 talking mouth, opening from the smile with the TTS level
+//   listening  L1 voice swell, from the mic level when one is fed in, no face
+//   thinking   T1 inner spectrum swirl, no face
+//   speaking   S1 cadence pulse, from the TTS level when one is fed in, no face
+// The face fades out and back in over 150 ms (class ccf-noface off idle).
 // After 20 minutes of continuous idle it plays one squint-smile blink (Happy
 // board H1, 500 ms), then waits for the next activity. Under
 // prefers-reduced-motion nothing moves and the happy moment never plays.
@@ -31,9 +34,9 @@
   const REDUCE = "(prefers-reduced-motion: reduce)";
 
   // Face geometry in a 100 x 100 box (1 unit = 0.26 px at 26 px). Eyes are
-  // face 3's dots. The mouth is a filled crescent halfway between face 3's flat
-  // mouth (top sag 0, bottom sag 7) and the Happy board smile (sag 8).
-  const SMILE = "M39.5 60Q50 66 60.5 60Q50 78 39.5 60Z";
+  // face 3's dots. The mouth is a thin, shallow crescent (top sag 2, bottom
+  // sag 6), so it reads as a friendly smile rather than a grin.
+  const SMILE = "M40.5 60Q50 64 59.5 60Q50 72 40.5 60Z";
 
   // Transforms and animations are never !important: an important declaration
   // beats animations, and keyframes drop important values.
@@ -45,10 +48,10 @@
   64% { transform: scale(1.02); } 78% { transform: scale(1.08); } 90%, 100% { transform: scale(1); }
 }
 @keyframes ccf-spin { to { transform: rotate(360deg); } }
-@keyframes ccf-talk {
-  0% { transform: scaleY(1); } 8% { transform: scaleY(2.1); } 17% { transform: scaleY(1.3); }
-  27% { transform: scaleY(1.8); } 38% { transform: scaleY(1); } 47% { transform: scaleY(2.2); }
-  58% { transform: scaleY(1.3); } 67% { transform: scaleY(1.7); } 78%, 100% { transform: scaleY(1); }
+@keyframes ccf-cadence {
+  0% { transform: scale(1); } 7% { transform: scale(1.08); } 18% { transform: scale(1.01); }
+  27% { transform: scale(1.06); } 38% { transform: scale(1); } 47% { transform: scale(1.09); }
+  58% { transform: scale(1.02); } 67% { transform: scale(1.05); } 78%, 100% { transform: scale(1); }
 }
 @keyframes ccf-squint { 0%, 100% { transform: scaleY(1); } 35%, 65% { transform: scaleY(.3); } }
 @keyframes ccf-grin { 0%, 100% { transform: scaleX(1); } 35%, 65% { transform: scaleX(1.12); } }
@@ -76,27 +79,27 @@
   position: absolute !important; inset: 0 !important; display: block !important;
   width: 100% !important; height: 100% !important; overflow: visible !important;
 }
-.ccf-f { transform: translate(0, 0); transition: transform .22s ease-out; }
+.ccf-f { opacity: 1; transition: opacity .15s ease-out; }
+.ccf.ccf-noface .ccf-f { opacity: 0; }
 .ccf-eye, .ccf-m { fill: #22264f !important; stroke: none; }
 .ccf-m { stroke: #22264f !important; stroke-width: 1.4px; stroke-linejoin: round; }
 .ccf-eye, .ccf-m { transform-box: fill-box; }
 .ccf-eye { transform-origin: center; }
-.ccf-m { transform-origin: 50% 0; transform: scaleY(var(--ccf-open, 1)); }
+.ccf-m { transform-origin: 50% 0; }
 
 .ccf.ccf--idle { animation: ccf-breathe 4s ease-in-out infinite; }
 .ccf.ccf--listening { animation: ccf-voice 1.6s linear infinite; }
 .ccf.ccf--listening.ccf-live { animation: none; transition: transform .08s ease-out; }
 .ccf.ccf--thinking .ccf-sw { opacity: .6; animation: ccf-spin 3.2s linear infinite; }
-.ccf.ccf--thinking .ccf-f { transform: translate(5px, -4px); }
-.ccf.ccf--speaking .ccf-m { animation: ccf-talk 1.4s linear infinite; }
-.ccf.ccf--speaking.ccf-live .ccf-m { animation: none; transition: transform .06s linear; }
+.ccf.ccf--speaking { animation: ccf-cadence 1.4s linear infinite; }
+.ccf.ccf--speaking.ccf-live { animation: none; transition: transform .06s ease-out; }
 .ccf.ccf-happy .ccf-eye { animation: ccf-squint ${HAPPY_MS}ms ease-in-out; }
 .ccf.ccf-happy .ccf-m { animation: ccf-grin ${HAPPY_MS}ms ease-in-out; }
 
 @media (prefers-reduced-motion: reduce) {
   .ccf, .ccf *, .ccf.ccf-live, .ccf.ccf-live * { animation: none !important; transition: none !important; }
   .ccf.ccf--listening { transform: scale(1.08); }
-  .ccf.ccf--speaking .ccf-m { transform: scaleY(1.5); }
+  .ccf.ccf--speaking { transform: scale(1.04); }
 }
 @media (forced-colors: active) {
   .ccf { background: CanvasText !important; box-shadow: none !important; forced-color-adjust: none; }
@@ -167,7 +170,6 @@
       smooth = 0;
       el.classList.remove("ccf-live");
       el.style.removeProperty("--ccf-swell");
-      el.style.removeProperty("--ccf-open");
     }
 
     function setState(next) {
@@ -176,6 +178,7 @@
       state = next;
       el.classList.add(`ccf--${state}`);
       el.dataset.state = state;
+      el.classList.toggle("ccf-noface", state !== "idle"); // the face is for rest only
       endLive();
       armHappy(); // a state change is activity
     }
@@ -191,8 +194,7 @@
       const v = Math.min(1, Math.max(0, level));
       smooth += (v - smooth) * (v > smooth ? 0.6 : 0.25);
       el.classList.add("ccf-live");
-      if (state === "listening") el.style.setProperty("--ccf-swell", String(1 + smooth * 0.14));
-      else el.style.setProperty("--ccf-open", String(1 + smooth * 1.2));
+      el.style.setProperty("--ccf-swell", String(1 + smooth * (state === "listening" ? 0.14 : 0.09)));
       clearTimeout(liveTimer);
       liveTimer = setTimeout(endLive, LEVEL_HOLD_MS);
     }

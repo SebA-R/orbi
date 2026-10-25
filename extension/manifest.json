@@ -31,12 +31,16 @@
     "debugger",
     "scripting",
     "offscreen",
-    "webRequest"
+    "webRequest",
+    "search"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "options_page": "options/options.html",
+  "chrome_url_overrides": {
+    "newtab": "newtab/newtab.html"
+  },
   "commands": {
     "toggle-listening": {
       "suggested_key": {
