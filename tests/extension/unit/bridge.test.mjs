@@ -72,6 +72,32 @@ async function openClient(opts = {}) {
   return { wss, url, c, states, sock };
 }
 
+test("answers requests through onRequest with results and error codes", async () => {
+  const onRequest = async (method, params) => {
+    if (method === "echo") return { got: params.x };
+    const e = new Error("nope");
+    e.code = "not_allowed";
+    throw e;
+  };
+  const { sock } = await openClient({ onRequest });
+  const got = [];
+  sock.on("message", (raw) => got.push(JSON.parse(String(raw))));
+  sock.send(JSON.stringify({ type: "request", id: 1, method: "echo", params: { x: 7 } }));
+  sock.send(JSON.stringify({ type: "request", id: 2, method: "navigate", params: {} }));
+  await waitFor(() => got.filter((m) => m.type === "response").length === 2);
+  assert.deepEqual(got.find((m) => m.id === 1), { type: "response", id: 1, ok: true, result: { got: 7 } });
+  assert.deepEqual(got.find((m) => m.id === 2), { type: "response", id: 2, ok: false, error: { code: "not_allowed", message: "nope" } });
+});
+
+test("reports unknown_method when there is no request handler", async () => {
+  const { sock } = await openClient();
+  const got = [];
+  sock.on("message", (raw) => got.push(JSON.parse(String(raw))));
+  sock.send(JSON.stringify({ type: "request", id: "a", method: "find", params: {} }));
+  await waitFor(() => got.some((m) => m.type === "response"));
+  assert.equal(got.find((m) => m.type === "response").error.code, "unknown_method");
+});
+
 test("pings on the heartbeat interval and answers server pings", async () => {
   const { sock } = await openClient({ timing: { HEARTBEAT_MS: 30, DEAD_AFTER_MS: 5000 } });
   const got = [];

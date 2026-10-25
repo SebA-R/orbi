@@ -5,18 +5,19 @@
 // API so it runs unchanged in the service worker and in Node tests.
 
 import { Backoff } from "./backoff.js";
-import { MSG, TIMING, hello, parseMessage } from "./protocol.js";
+import { ERR, MSG, TIMING, errorResponse, hello, okResponse, parseMessage } from "./protocol.js";
 
 const HELLO_TIMEOUT_MS = 5_000;
 
 export class BridgeClient {
-  constructor({ url, version = "0", log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, timing = {} }) {
+  constructor({ url, version = "0", log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, onRequest = null, timing = {} }) {
     this.url = url;
     this.timing = { ...TIMING, ...timing };
     this.version = version;
     this.log = log;
     this.WebSocketImpl = WebSocketImpl;
     this.onState = onState;
+    this.onRequest = onRequest;
     this.ws = null;
     this.state = "idle"; // idle | connecting | open | closed
     this.wanted = false;
@@ -124,7 +125,27 @@ export class BridgeClient {
       this.startHeartbeat();
     } else if (m.type === MSG.PING) {
       this.send({ type: MSG.PONG, t: m.t });
+    } else if (m.type === MSG.REQUEST) {
+      this.answer(m);
     }
+  }
+
+  // Runs one server request through onRequest(method, params) and replies on
+  // the socket it came in on. Errors carry their ERR code; anything else is
+  // reported as internal.
+  async answer({ id, method, params }) {
+    const ws = this.ws;
+    let reply;
+    if (!this.onRequest) {
+      reply = errorResponse(id, ERR.UNKNOWN_METHOD, `no handler for ${method}`);
+    } else {
+      try {
+        reply = okResponse(id, await this.onRequest(method, params));
+      } catch (e) {
+        reply = errorResponse(id, e?.code || ERR.INTERNAL, e?.message || "failed");
+      }
+    }
+    if (this.ws === ws) this.send(reply);
   }
 
   // Keepalive. Chrome 116+ resets the service worker's idle timer on
