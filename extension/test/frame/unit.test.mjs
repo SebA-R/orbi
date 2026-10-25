@@ -73,13 +73,13 @@ test("show mounts an aria-hidden, inert, click-through host in a closed shadow r
 
 test("the ring is the B1 recipe at half speed, still under reduced motion", () => {
   const css = SRC;
-  assert.match(css, /@property --a \{ syntax: "<angle>"; inherits: false; initial-value: 0deg; \}/);
-  assert.match(css, /conic-gradient\(from var\(--a\), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b\)/);
+  assert.match(css, /@property --clearcart-frame-a \{ syntax: "<angle>"; inherits: false; initial-value: 0deg; \}/);
+  assert.match(css, /conic-gradient\(from var\(--clearcart-frame-a\), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b\)/);
   assert.match(css, /padding: 2px;/);
   assert.match(css, /mask-composite: exclude;/);
   assert.match(css, /opacity: \.45;/);
   assert.match(css, /animation: turn 6s linear infinite;/);
-  assert.match(css, /@keyframes turn \{ from \{ --a: 0deg; \} to \{ --a: 360deg; \} \}/);
+  assert.match(css, /@keyframes turn \{ from \{ --clearcart-frame-a: 0deg; \} to \{ --clearcart-frame-a: 360deg; \} \}/);
   assert.match(css, /prefers-reduced-motion: reduce\) \{\s*\.ring, \.ring\.on \{ animation: none; \}/);
   assert.match(css, /transition: opacity \.3s ease/);
 });

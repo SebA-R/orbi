@@ -25,13 +25,23 @@
   const RT = { FRAME: "frame" };
   const FADE_MS = 300;
 
+  // The ring angle. An @property inside a shadow root is not registered by
+  // Chrome, so it is also registered for the document (a name no page uses);
+  // without that the angle would not animate.
+  const ANGLE = "--clearcart-frame-a";
+  function registerAngle() {
+    try {
+      globalThis.CSS?.registerProperty?.({ name: ANGLE, syntax: "<angle>", inherits: false, initialValue: "0deg" });
+    } catch {} // already registered (an earlier injection or the page)
+  }
+
   const CSS = `
-@property --a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+@property --clearcart-frame-a { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 :host { all: initial !important; pointer-events: none !important; }
 .ring {
   position: fixed; inset: 0; box-sizing: border-box;
   padding: 2px;
-  background: conic-gradient(from var(--a), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b);
+  background: conic-gradient(from var(--clearcart-frame-a), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
@@ -46,7 +56,7 @@
   transition: opacity .3s ease, visibility 0s;
   animation-play-state: running;
 }
-@keyframes turn { from { --a: 0deg; } to { --a: 360deg; } }
+@keyframes turn { from { --clearcart-frame-a: 0deg; } to { --clearcart-frame-a: 360deg; } }
 @media (prefers-reduced-motion: reduce) {
   .ring, .ring.on { animation: none; }
 }
@@ -75,6 +85,7 @@
     if (ui.host && ui.host.isConnected) return true;
     const root = document.documentElement;
     if (!root) return false;
+    registerAngle();
     const host = document.createElement("clearcart-frame");
     host.setAttribute("aria-hidden", "true");
     host.setAttribute("inert", "");
