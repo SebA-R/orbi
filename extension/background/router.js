@@ -228,18 +228,26 @@ export function createRouter({
   }
 
   // Presses one control the user asked for: the page re-checks the ref is
-  // of unlock class cls with that label (content/page.js press_check_user).
+  // of unlock class cls with that label (content/page.js press_check_user),
+  // then re-resolves it and hit-tests the click point right before the CDP
+  // click (press_hit_user). The lock marker comes off only after the press
+  // (press_done_user), so the page gets no early signal to swap controls.
   async function pressUnlocked(tabId, params) {
     await spend(tabId, params.nonce, "user");
     const target = { ref: params.ref, label: params.label, cls: params.cls };
     const r = await pageCall(tabId, "press_check_user", target);
+    const x = Math.round(r.x + r.width / 2);
+    const y = Math.round(r.y + r.height / 2);
+    await pageCall(tabId, "press_hit_user", { ...target, x, y });
     try {
-      await cdp.click({ tabId, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) });
-      return { ok: true, via: "cdp" };
+      await cdp.click({ tabId, x, y });
     } catch {
+      // press_ref_user checks, clicks and releases in one page task.
       await pageCall(tabId, "press_ref_user", target);
       return { ok: true, via: "dom" };
     }
+    await pageCall(tabId, "press_done_user", target).catch(() => null);
+    return { ok: true, via: "cdp" };
   }
 
   async function route(method, params = {}) {

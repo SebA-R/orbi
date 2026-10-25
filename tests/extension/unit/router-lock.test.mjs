@@ -147,7 +147,7 @@ test("lock_arm refuses a site that is browsable but not a pay site", async () =>
 
 test("press_check and press_ref are not reachable as plain page methods", async () => {
   const f = fakes();
-  for (const m of ["press_check", "press_ref", "press_check_user", "press_ref_user", "guard_ref", "guard_point", "guard_key"]) {
+  for (const m of ["press_check", "press_ref", "press_check_user", "press_hit_user", "press_done_user", "press_ref_user", "guard_ref", "guard_point", "guard_key"]) {
     await assert.rejects(f.router.route(m, { ref: "ref_9" }), { code: "unknown_method" }, m);
   }
 });
@@ -212,6 +212,21 @@ test("user scope: nonce bound to tab, origin and TTL; refused when the page says
   const d = await g.router.route("lock_arm", { tabId: 7, scope: "user" });
   await assert.rejects(g.router.route("press_unlocked", { ...target, tabId: 7, nonce: d.nonce }), { code: "locked" });
   assert.deepEqual([...f.sent(), ...g.sent()], []);
+});
+
+test("user scope: hit-tests the point right before the click and releases the lock only after it", async () => {
+  const f = fakes({ url: "https://www.etsy.com/cart" });
+  const target = { ref: "ref_4", label: "Proceed to checkout", cls: "checkout" };
+  const a = await f.router.route("lock_arm", { tabId: 7, scope: "user" });
+  await f.router.route("press_unlocked", { ...target, tabId: 7, nonce: a.nonce });
+  const seq = f.calls.filter((c) => c[0] === "cdp.click" || /^press_/.test(c[1] || "")).map((c) => (c[0] === "page" ? c[1] : c[0]));
+  assert.deepEqual(seq, ["press_check_user", "press_hit_user", "cdp.click", "press_done_user"]);
+  assert.deepEqual(f.calls.find((c) => c[1] === "press_hit_user")[2], { ...target, x: 60, y: 40 });
+  // A swapped or covered control fails the hit test: no click.
+  const g = fakes({ url: "https://www.etsy.com/cart", locked: new Set(["press_hit_user"]) });
+  const b = await g.router.route("lock_arm", { tabId: 7, scope: "user" });
+  await assert.rejects(g.router.route("press_unlocked", { ...target, tabId: 7, nonce: b.nonce }), { code: "locked" });
+  assert.ok(!g.calls.some((c) => c[0] === "cdp.click" || c[1] === "press_done_user"));
 });
 
 test("typing into a password field is refused before CDP", async () => {

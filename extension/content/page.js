@@ -226,10 +226,11 @@
       var t = (el.type || "").toLowerCase();
       if (t !== "checkbox" && t !== "radio" && t !== "submit" && t !== "button" && t !== "reset" && t !== "image" && t !== "hidden") {
         var v = el.value;
-        if (Mask.isPaymentField(el) || t === "password") parts.push(v ? 'value="' + Mask.MASK + '"' : "empty");
+        var pw = isPassword(el);
+        if (Mask.isPaymentField(el) || pw) parts.push(v ? 'value="' + Mask.MASK + '"' : "empty");
         else if (v) parts.push('value="' + clean(Mask.maskValue(v, null), 120) + '"');
         if (Mask.isPaymentField(el)) parts.push("payment");
-        else if (t === "password") parts.push("password");
+        else if (pw) parts.push("password");
       }
     }
     if (tag === "SELECT") {
@@ -388,8 +389,10 @@
     return /^(true|on|yes|1|checked)$/i.test(String(v).trim());
   }
 
+  // A password field, now or ever (Protect.isPasswordField): masked in
+  // read_page, refused by form_input, and typing into it is refused.
   function isPassword(el) {
-    return !!el && el.tagName === "INPUT" && String(el.type || "").toLowerCase() === "password";
+    return !!Protect.isPasswordField(el);
   }
 
   function formInput(params) {
@@ -571,25 +574,55 @@
     return t;
   }
 
+  // Throws unless the point (x, y) lands on t.el or inside it.
+  function hitTest(t, x, y, ref) {
+    if (typeof document.elementFromPoint !== "function") return;
+    var hit = document.elementFromPoint(x, y);
+    if (!hit || !(hit === t.el || t.el.contains(hit))) throw PageError(ERR.NO_ELEMENT, ref + " is covered by another element");
+  }
+
+  // Scrolls the control into view and returns its rect. The lock marker
+  // stays on until the press is done (press_done_user), so the page gets no
+  // early signal to swap the control.
   function pressCheckUser(params) {
     var t = userTarget(params);
     if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     var r = t.el.getBoundingClientRect();
     var x = r.x !== undefined ? r.x : r.left, y = r.y !== undefined ? r.y : r.top;
     if (!(r.width > 0 && r.height > 0)) throw PageError(ERR.NO_ELEMENT, params.ref + " is not visible");
-    if (typeof document.elementFromPoint === "function") {
-      var hit = document.elementFromPoint(x + r.width / 2, y + r.height / 2);
-      if (!hit || !(hit === t.el || t.el.contains(hit))) throw PageError(ERR.NO_ELEMENT, params.ref + " is covered by another element");
-    }
-    Protect.release(t.el);
+    hitTest(t, x + r.width / 2, y + r.height / 2, params.ref);
     return { x: x, y: y, width: r.width, height: r.height, cls: params.cls };
   }
 
+  // Right before the CDP click: the ref still resolves to a control of that
+  // class and label, and the click point (params.x, params.y) still lands
+  // on it.
+  function pressHitUser(params) {
+    var t = userTarget(params);
+    if (typeof params.x !== "number" || typeof params.y !== "number") throw PageError(ERR.BAD_REQUEST, "x and y are required");
+    hitTest(t, params.x, params.y, params.ref);
+    return { ok: true };
+  }
+
+  // After the press: the control stops looking locked.
+  function pressDoneUser(params) {
+    var el = elementFor(params.ref);
+    Protect.release(lockTarget(el).el);
+    return { ok: true };
+  }
+
+  // DOM fallback when CDP cannot attach: check, click and release in one
+  // task, so nothing on the page runs in between.
   function pressRefUser(params) {
     var t = userTarget(params);
-    Protect.release(t.el);
     if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", behavior: "instant" });
+    var r = t.el.getBoundingClientRect();
+    if (r && r.width > 0 && r.height > 0) {
+      var x = r.x !== undefined ? r.x : r.left, y = r.y !== undefined ? r.y : r.top;
+      hitTest(t, x + r.width / 2, y + r.height / 2, params.ref);
+    }
     t.el.click();
+    Protect.release(t.el);
     return { ok: true };
   }
 
@@ -751,6 +784,8 @@
     press_ref: pressRef,
     lock_info: lockInfo,
     press_check_user: pressCheckUser,
+    press_hit_user: pressHitUser,
+    press_done_user: pressDoneUser,
     press_ref_user: pressRefUser,
   };
 
@@ -777,6 +812,11 @@
 
   globalThis.__clearcartPage = { call: call, handle: handle, refFor: refFor };
   if (Protect) badges();
+  // Remember every password field from the start, so a later type change
+  // (a show-password toggle) still counts as a password.
+  if (Protect && typeof Protect.watchPasswords === "function") {
+    try { Protect.watchPasswords(document); } catch (_) { /* isPasswordField still checks each field */ }
+  }
 
   if (globalThis.chrome && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
