@@ -160,3 +160,85 @@ test("form_input on a select may move away from an opt-in option, never onto one
   assert.equal((await p.call("form_input", { ref, value: "once" })).ok, true);
   assert.equal(sel.value, "once");
 });
+
+// User-directed unlock (request_unlock): lock_info, press_check_user and
+// press_ref_user press checkout, sign in, subscribe and saved card controls
+// with the expected class and label, and never an order or card form submit.
+const box = (el) => (el.getBoundingClientRect = () => ({ x: 10, y: 20, left: 10, top: 20, width: 100, height: 40, right: 110, bottom: 60 }));
+
+test("press_check_user presses Proceed to checkout with its class and label, never Place order", async () => {
+  const cart = load("cart", "/cart");
+  const tree = (await cart.call("read_page", {})).result.tree;
+  const ref = refIn(lineOf(tree, /Proceed to checkout/));
+  const info = (await cart.call("lock_info", { ref })).result;
+  assert.equal(info.locked, true);
+  assert.equal(info.cls, "checkout");
+  const target = [...cart.document.querySelectorAll("a,button")].find((e) => /Proceed to checkout/i.test(e.textContent));
+  box(target);
+  cart.document.elementFromPoint = () => target;
+  assert.equal((await cart.call("press_check_user", { ref, label: info.label, cls: "account" })).error.code, "locked", "wrong class");
+  assert.equal((await cart.call("press_check_user", { ref, label: "Sign in", cls: "checkout" })).error.code, "locked", "wrong label");
+  const ok = await cart.call("press_check_user", { ref, label: info.label, cls: "checkout" });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.result.cls, "checkout");
+
+  const checkout = load("checkout", "/checkout");
+  const ctree = (await checkout.call("read_page", { filter: "all" })).result.tree;
+  const place = refIn(lineOf(ctree, /Place order/));
+  const pinfo = (await checkout.call("lock_info", { ref: place })).result;
+  assert.equal(pinfo.locked, true);
+  assert.equal(pinfo.cls, null, "Place order never unlocks on request");
+  const btn = checkout.document.getElementById("place-order");
+  box(btn);
+  checkout.document.elementFromPoint = () => btn;
+  let clicks = 0;
+  btn.addEventListener("click", (e) => { clicks++; e.preventDefault(); });
+  for (const cls of ["checkout", "marked", "account"]) {
+    assert.equal((await checkout.call("press_check_user", { ref: place, label: pinfo.label, cls })).error.code, "locked", cls);
+    assert.equal((await checkout.call("press_ref_user", { ref: place, label: pinfo.label, cls })).error.code, "locked", cls);
+  }
+  assert.equal(clicks, 0);
+});
+
+const SIGNIN = `<!doctype html><body>
+<form id="f" action="/session" method="post">
+  <label>Email <input id="email" name="email" type="email"></label>
+  <label>Password <input id="pw" name="password" type="password" value="hunter2"></label>
+  <button id="go" type="submit">Sign in</button>
+</form>
+<button id="sub" type="button">Subscribe</button>
+<form id="card"><input autocomplete="cc-number" name="cardnumber"><button id="cont" type="submit">Continue</button></form>
+</body>`;
+
+test("passwords stay masked and refused; Sign in unlocks only for its own class and label", async () => {
+  const p = loadPage(SIGNIN, { url: "https://shop.example/signin" });
+  const tree = (await p.call("read_page", { filter: "all" })).result.tree;
+  const pwLine = lineOf(tree, /textbox "Password"/);
+  assert.doesNotMatch(tree, /hunter2/);
+  assert.match(pwLine, /password/);
+  const fill = await p.call("form_input", { ref: refIn(pwLine), value: "secret" });
+  assert.equal(fill.ok, false);
+  assert.equal(fill.error.code, "payment_field");
+  assert.equal(p.document.getElementById("pw").value, "hunter2");
+  p.document.getElementById("pw").focus();
+  assert.equal((await p.call("focused_field", {})).result.password, true);
+
+  const go = refIn(lineOf(tree, /button "Sign in"/));
+  const info = (await p.call("lock_info", { ref: go })).result;
+  assert.deepEqual([info.cls, info.password, info.passwordFilled], ["account", true, true]);
+  const btn = p.document.getElementById("go");
+  box(btn);
+  p.document.elementFromPoint = () => btn;
+  let clicks = 0;
+  btn.addEventListener("click", (e) => { clicks++; e.preventDefault(); });
+  assert.equal((await p.call("press_ref_user", { ref: go, label: "Sign up", cls: "account" })).error.code, "locked");
+  assert.equal((await p.call("press_ref_user", { ref: go, label: "Sign in", cls: "account" })).ok, true);
+  assert.equal(clicks, 1);
+  assert.doesNotMatch(JSON.stringify(info), /hunter2/);
+
+  const sub = (await p.call("lock_info", { ref: refIn(lineOf(tree, /Subscribe/)) })).result;
+  assert.equal(sub.cls, "subscription");
+  const cont = (await p.call("lock_info", { ref: refIn(lineOf(tree, /Continue/)) })).result;
+  assert.equal(cont.kind, "payment-form");
+  assert.equal(cont.cls, null, "card form submit never unlocks");
+});
