@@ -85,6 +85,7 @@
 }
 .act { font-size: 12px; line-height: 1.3; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .act:empty { display: none; }
+.lines:has(> .user:empty):has(> .agent:empty) { align-self: center; } /* the action line alone */
 .hint { font-size: 12px; line-height: 1.3; font-weight: 500; letter-spacing: .01em; color: var(--muted); }
 .user:empty, .agent:empty, .hint:empty { display: none; }
 .w { display: inline; animation: word-in .46s var(--ease) both; animation-delay: calc(var(--i, 0) * 55ms); }

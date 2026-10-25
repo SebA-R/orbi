@@ -67,6 +67,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/orb-face.js` | The mini orb face (eyes and a smile) that shows the voice state; loaded before `subtitles.js` and by the popup |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `content/frame.js`, `background/frame.js` | Active-tab frame: a faint rotating spectrum ring around the tab Clearcart is acting on during a turn or within 10 s of an agent call (declared content script, top frame; the worker sends `FRAME {on}`) |
+| `content/cursor.js`, `background/cursor.js` | Clearcart's cursor: the orb tag arrow following the actor's pointer samples (`CURSOR`), with a ripple, ring pulse and highlight on each press; its action ("Clicking Add to cart") shows as a small line in the subtitle card. Setting `showCursor`, default on |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, earcons, its own `/session` socket |
 | `options/` | Options page |
 | `setup/`, `popup/` | Setup page (install and update), drawn by `setup/checklist.js`, and the toolbar popup, which follows `VOICE_STATE` and counts the same checks |
