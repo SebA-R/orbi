@@ -179,3 +179,52 @@ test("token source surfaces server errors", async () => {
   const getToken = createTokenSource({ url: () => "u", fetchImpl: async () => ({ ok: false, status: 500 }) });
   await assert.rejects(getToken(), /500/);
 });
+
+test("silent start records from the first moment but shows nothing until confirm", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  assert.deepEqual(r.log, []);
+  assert.deepEqual(states(r.emitted), []);
+  assert.equal(r.stt.opened, true);
+  r.mic.sink("first-word");
+  assert.deepEqual(r.stt.audio, ["first-word"]);
+  r.stt.h.onTurnStart();
+  r.stt.h.onPartial("reorder");
+  assert.deepEqual(r.log, []);
+  assert.equal(r.emitted.length, 0);
+  r.c.confirm();
+  assert.deepEqual(r.log, ["tts.stop", "chime:start", "tts.stop"]);
+  assert.deepEqual(states(r.emitted), ["listening"]);
+  assert.ok(r.emitted.some((m) => m.type === RT.SUBTITLE && m.text === "reorder"));
+  r.c.stop();
+  r.timers.shift().fn();
+  assert.equal(r.stt.finished, true);
+  r.stt.h.onFinal("reorder my allergy pills");
+  assert.deepEqual(r.agent.sent, [{ type: "user_text", text: "reorder my allergy pills" }]);
+});
+
+test("cancel after a silent start drops the audio with no chime, state or agent message", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  r.stt.h.onFinal("uh");
+  r.c.cancel();
+  assert.equal(r.stt.aborted, true);
+  assert.equal(r.mic.sink, null);
+  assert.deepEqual(r.log, []);
+  assert.deepEqual(states(r.emitted), []);
+  assert.deepEqual(r.agent.sent, []);
+  assert.equal(r.c.listening, false);
+  r.c.confirm(); // too late, nothing happens
+  assert.deepEqual(r.log, []);
+});
+
+test("a silent start does not interrupt the agent speaking; confirm barges in", async () => {
+  const r = rig();
+  r.c.onSpeakingChange(true);
+  await r.c.start({ silent: true });
+  assert.deepEqual(r.log, []);
+  assert.deepEqual(states(r.emitted), ["speaking"]);
+  r.c.stop(); // released before confirm counts as a tap
+  assert.equal(r.stt.aborted, true);
+  assert.deepEqual(r.log, []);
+});

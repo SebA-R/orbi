@@ -3,6 +3,11 @@
 //
 //   start()  PTT_START: barge-in (stop TTS), start chime, open an STT session,
 //            route mic audio to it. state -> listening
+//   start({ silent: true }) the key was just touched: record into the STT
+//            session right away but show nothing (no chime, no state, no
+//            barge-in, transcripts held back). confirm() once the key is held
+//            makes it a normal start, keeping the audio from the first moment;
+//            cancel() on a quick tap throws it all away.
 //   stop()   PTT_STOP: stop chime, 300 ms tail, then finish() so Ink flushes.
 //            state -> thinking once something was said, else idle
 //   each STT turn.end -> {type:"user_text"} to the agent + VOICE_FINAL + SUBTITLE
@@ -22,6 +27,8 @@ export class VoiceController {
     this.awaitingReply = false;
     this.speaking = false;
     this.state = STATES.IDLE;
+    this.confirmed = false;
+    this.held = []; // transcript events from a silent start, replayed on confirm()
   }
 
   #setState(state) {
@@ -41,27 +48,29 @@ export class VoiceController {
     return this.listening ? this.stop() : this.start();
   }
 
-  async start() {
+  async start({ silent = false } = {}) {
     if (this.listening) return;
     this.listening = true;
-    this.speaker.stop(); // barge-in
+    this.confirmed = false;
+    this.held = [];
     this.resumeAudio();
-    this.chime("start");
-    this.#setState(STATES.LISTENING);
+    if (!silent) this.confirm();
 
+    // Until confirm(), transcript events wait in this.held.
+    const gate = (fn) => (...args) => (this.confirmed ? fn(...args) : this.held.push(() => fn(...args)));
     const s = this.createStt({
-      onTurnStart: () => this.speaker.stop(),
-      onPartial: (text) => {
+      onTurnStart: gate(() => this.speaker.stop()),
+      onPartial: gate((text) => {
         this.emit({ type: RT.VOICE_PARTIAL, text });
         this.emit({ type: RT.SUBTITLE, speaker: "user", text, final: false });
-      },
-      onFinal: (text) => {
+      }),
+      onFinal: gate((text) => {
         this.awaitingReply = true;
         this.agent.send({ type: "user_text", text });
         this.emit({ type: RT.VOICE_FINAL, text });
         this.emit({ type: RT.SUBTITLE, speaker: "user", text, final: true });
         this.#settle();
-      },
+      }),
       onError: (message) => this.emit({ type: RT.VOICE_ERROR, message }),
       onClosed: () => {
         if (this.session === s) this.session = null;
@@ -77,6 +86,8 @@ export class VoiceController {
       this.mic.sink = null;
       s.abort();
       this.listening = false;
+      this.confirmed = false;
+      this.held = [];
       this.#settle();
       const blocked = err && err.name === "NotAllowedError";
       this.emit({
@@ -89,8 +100,33 @@ export class VoiceController {
     }
   }
 
+  // The key is still held: announce it and keep everything recorded so far.
+  confirm() {
+    if (!this.listening || this.confirmed) return;
+    this.confirmed = true;
+    this.speaker.stop(); // barge-in
+    this.chime("start");
+    this.#setState(STATES.LISTENING);
+    const held = this.held;
+    this.held = [];
+    for (const replay of held) replay();
+  }
+
+  // A quick tap: drop the recording without a sound or a state change.
+  cancel() {
+    if (!this.listening || this.confirmed) return;
+    this.listening = false;
+    this.held = [];
+    this.mic.sink = null;
+    const s = this.session;
+    this.session = null;
+    if (s) s.abort();
+    this.#settle();
+  }
+
   stop() {
     if (!this.listening) return;
+    if (!this.confirmed) return this.cancel();
     this.listening = false;
     this.chime("stop"); // right on release, so the user knows we heard them let go
     this.#settle();
