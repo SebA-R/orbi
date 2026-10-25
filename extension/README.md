@@ -35,6 +35,7 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | Subtitles | on | |
 | Quiet other tabs while talking | on | fades out and mutes audible tabs while you talk and Clearcart answers |
 | Use the Clearcart new tab page | on | off: new tabs forward to `chrome://new-tab-page/`, see [New tab page](#new-tab-page) |
+| Replace Chrome error pages with Clearcart's page | on | off: Chrome's own network error page stays, where only the toggle shortcut works, see [Error pages](#error-pages) |
 
 Allowed sites take one site address per line (`https://www.etsy.com`; a path is dropped, a login in the address is refused). Only extension pages can change these settings; the agent server cannot.
 
@@ -153,6 +154,10 @@ Browser tests that load the real extension use a temp copy whose default agent U
 ### New tab page
 
 Content scripts can't run on Chrome's own pages, so on Chrome's new tab page Space does nothing (the toggle command still works, but without subtitles). `chrome_url_overrides` replaces it with `newtab/newtab.html`, which loads `content/hotkey.js` and `content/subtitles.js` unchanged as plain script tags. `newtab/guard.js` runs first and keeps their `runtime.onMessage` listeners to what the worker sends this tab, since an extension page also hears the offscreen document's raw broadcasts. The worker treats the page as any tab: talking from it, the latch, double-tap, single-session rules and the tab-switch replay; the page also asks for the state when it loads. It shows the popup's orb and voice state, a search box (`chrome.search.query`, default engine) and the toggle shortcut. Chrome asks once whether to keep the new tab page; "Change it back" turns the whole extension off. Overrides can't change at runtime, so with the setting off the page forwards to `chrome://new-tab-page/` (`chrome.tabs.update`). A new tab opens with the keyboard in the address bar; the page says to press F6 or click it before holding Space.
+
+### Error pages
+
+Chrome's network error page (`chrome-error://chromewebdata/`) runs no content scripts, and `scripting.executeScript` refuses it ("Frame with ID 0 is showing error page"); `match_about_blank` and `match_origin_as_fallback` don't cover it. The toggle command works there, as on every page. With the setting on, `background/errpage.js` watches `webRequest.onErrorOccurred` for main-frame network errors (no connection, unknown address, refused, reset, timed out; never a stop, a download, a blocked request, a certificate warning or a form resubmission) and, once the tab shows the failure in a normal window, sends it to `newtab/error.html`. That page loads the same scripts as the new tab page (`newtab/voice.js` shares its orb and voice state) and shows the address, the error and Retry. The address is kept in `chrome.storage.session` under a random key in the page's fragment. Back from the page loads the failed address again; that failure keeps Chrome's page, so the next Back goes on. Retry tells the worker first, then goes Back to the failed entry: a second failure comes back to Clearcart's page, and a success adds no entry. A reload that starts while the redirect is decided cancels it. The agent sees the tab as `chrome-error://chromewebdata/` titled "Can't reach this site": listed, navigable to an allowed address (never `back` or `forward` for the user's tabs), never read, and `page_context` names the failed address only when it is allowed. A user's error page for a blocked site stays hidden, as Chrome's would be.
 
 ## Known gaps
 

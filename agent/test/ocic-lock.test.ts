@@ -68,6 +68,8 @@ test("checkout paths: decoded, any segment, with extensions; the sweep re-checks
   const allow: SitePolicy = { mode: "allowlist", allowed: new Set([STORE_ORIGIN, "https://shop.example"]), blocked: new Set(), entries: [] };
   assert.ok(isStrayTab("https://elsewhere.example/", allow), "off the allowlist");
   assert.ok(!isStrayTab("https://shop.example/cart", open), "an open-web cart is fine");
+  assert.ok(!isStrayTab("chrome-error://chromewebdata/", open), "the extension's error page holds nothing");
+  assert.ok(!isStrayTab("chrome-error://chromewebdata/", allow), "the extension's error page holds nothing");
   for (const p of [open, allow]) {
     assert.ok(isStrayTab("https://shop.example/en/checkout.html", p), "a landed checkout page is sent back");
     assert.ok(isStrayTab("https://shop.example/%63heckout", p));

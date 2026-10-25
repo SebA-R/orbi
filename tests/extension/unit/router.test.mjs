@@ -174,6 +174,32 @@ test("page_context: a new tab page is an empty new tab, not a blocked site, and 
   assert.deepEqual(calls, []);
 });
 
+test("page_context: Clearcart's error page names the failed address only when tabs allows it, and reads nothing", async () => {
+  const calls = [];
+  let failed = "https://shop.example/cart";
+  let hidden = false;
+  const r = createRouter({
+    chromeApi: { scripting: { executeScript: async () => calls.push(["inject"]) }, tabs: { sendMessage: async () => calls.push(["page"]) } },
+    tabs: {
+      activeTab: async () => ({ id: 31, title: "Can't reach this site", url: "chrome-extension://x/newtab/error.html#k=1" }),
+      onNewTab: () => false,
+      onErrorPage: () => true,
+      failedAddress: async () => failed,
+      resolveTab: async (id) => { if (hidden) throw new Error("blocked"); return id; },
+      resolveAllowedTab: async () => { throw new Error("no"); },
+    },
+    cdp: {},
+  });
+  const base = { tabId: 31, title: "Can't reach this site", url: "chrome-error://chromewebdata/", newTab: true, errorPage: true };
+  assert.deepEqual(await r.route("page_context", {}), { active: { ...base, failedUrl: "https://shop.example/cart" } });
+  failed = null;
+  assert.deepEqual(await r.route("page_context", {}), { active: base });
+  // A user's error page for a blocked site is a blocked tab.
+  hidden = true;
+  assert.deepEqual(await r.route("page_context", {}), { active: { blocked: true } });
+  assert.deepEqual(calls, []);
+});
+
 test("page_context uses the snapshot taken when the user started talking, once", async () => {
   const page = { selection: "at talk start", pointing: null };
   const { calls, router } = contextFakes({ page });

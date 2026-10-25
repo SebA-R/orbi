@@ -160,6 +160,11 @@
               <span class="hint" id="newtab-page-hint">Chrome pages can't run Clearcart, so on Chrome's own new tab page Space doesn't talk and subtitles don't show. Clearcart's new tab page has a search box and works like any site. Turned off, new tabs go straight on to Chrome's new tab page, whose address then shows as chrome://new-tab-page. When Chrome asks whether to keep the new tab page, choose Keep it: Change it back turns Clearcart off. The toggle shortcut works on every page either way.</span></span>
             <input id="newtab-page" name="newTabPage" class="sw" type="checkbox" role="switch" data-setting="newTabPage" aria-labelledby="newtab-page-label" aria-describedby="newtab-page-hint">
           </label>
+          <label class="row" for="error-pages">
+            <span class="row-text"><span id="error-pages-label">Replace Chrome error pages with Clearcart's page</span>
+              <span class="hint" id="error-pages-hint">When a site can't be reached (no connection, a wrong address, a site that is down), Chrome's own error page can't run Clearcart. Clearcart's page shows the address with a Retry button, and Space to talk works there, so you can ask to go somewhere else. Back still returns to where you were.</span></span>
+            <input id="error-pages" name="errorPages" class="sw" type="checkbox" role="switch" data-setting="errorPages" aria-labelledby="error-pages-label" aria-describedby="error-pages-hint">
+          </label>
           <label class="row" for="sounds">
             <span class="row-text"><span id="sounds-label">Play sounds</span>
               <span class="hint" id="sounds-hint">Short sounds for listening, sent, order result and errors.</span></span>
