@@ -4,6 +4,10 @@ import {
 
 // Speaks text with Sonic over one shared TTS websocket. Each utterance is its own context;
 // requests go out immediately, audio plays strictly in order, and stop() cuts everything (barge-in).
+// duck() fades our speech to near silence while the talk key is touched; unduck() brings it back.
+export const DUCK_LEVEL = 0.03;
+export const DUCK_SECONDS = 0.08;
+
 export class Speaker {
   constructor({ ctx, getToken, getSpeed, voiceId, log, onSpeakingChange }) {
     this.ctx = ctx;
@@ -12,8 +16,7 @@ export class Speaker {
     this.voiceId = voiceId;
     this.log = log;
     this.onSpeakingChange = onSpeakingChange || (() => {});
-    this.out = ctx.createGain();
-    this.out.connect(ctx.destination);
+    this.out = this.#newOut();
     this.ws = null;
     this.connecting = null;
     this.queue = []; // utterances in play order
@@ -55,6 +58,24 @@ export class Speaker {
     }
   }
 
+  #newOut() {
+    const out = this.ctx.createGain();
+    out.connect(this.ctx.destination);
+    return out;
+  }
+
+  #rampTo(level) {
+    const g = this.out.gain;
+    const now = this.ctx.currentTime;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(g.value, now);
+    g.linearRampToValueAtTime(level, now + DUCK_SECONDS);
+  }
+
+  duck() { this.#rampTo(DUCK_LEVEL); }
+
+  unduck() { this.#rampTo(1); }
+
   // Barge-in: silence now, cancel anything still generating.
   stop() {
     const ws = this.ws;
@@ -70,6 +91,11 @@ export class Speaker {
       try { s.stop(); } catch {}
     }
     this.sources.clear();
+    // Mute and drop the output node too, so nothing already scheduled on the
+    // AudioContext can still be heard; later speech gets a fresh one at full level.
+    const old = this.out;
+    try { old.gain.cancelScheduledValues(0); old.gain.value = 0; old.disconnect(); } catch {}
+    this.out = this.#newOut();
     this.playHead = 0;
     this.#setSpeaking(false);
   }
