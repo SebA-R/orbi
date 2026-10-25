@@ -51,7 +51,7 @@ before(async () => {
 
   const ext = fs.mkdtempSync(path.join(os.tmpdir(), "clearcart-tabs-cdp-ext-"));
   dirs.push(ext);
-  for (const d of ["background", "lib", "icons"]) fs.cpSync(path.join(EXT_SRC, d), path.join(ext, d), { recursive: true });
+  for (const d of ["background", "lib", "icons", "content", "offscreen", "options"]) fs.cpSync(path.join(EXT_SRC, d), path.join(ext, d), { recursive: true });
   const manifest = JSON.parse(fs.readFileSync(path.join(EXT_SRC, "manifest.json"), "utf8"));
   manifest.permissions = [...new Set([...manifest.permissions, "tabs", "tabGroups", "debugger"])];
   fs.writeFileSync(path.join(ext, "manifest.json"), JSON.stringify(manifest));
