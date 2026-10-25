@@ -127,6 +127,8 @@ export const RT = Object.freeze({
   TTS_STOP: "tts.stop",
   SUBTITLE: "subtitle",
   FRAME: "frame",
+  // worker -> top frame: an agent pointer sample for content/cursor.js.
+  CURSOR: "cursor",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
   // worker -> offscreen: say your VOICE_STATE again (a restarted worker asks).
