@@ -1,7 +1,8 @@
 // Routes one bridge request from the agent server to module A (tabs, CDP) or
 // module B (the on-demand page script). Every call that touches a page first
 // resolves its tab with tabs.resolveAllowedTab, so it must be a tab in the
-// Clearcart group whose current page is on the allowlist.
+// Clearcart group whose current page is allowed (see allowlist.js: the
+// allowlist, or in open mode any site off the blocklist).
 //
 // Button lock: every click, key press and typed newline is checked by the
 // page script (content/protect.js) before it reaches CDP, and is refused
@@ -163,10 +164,15 @@ export function createRouter({
   }
 
   // The pay flow's half of the unlock: a nonce bound to this tab and its
-  // current (allowlisted) origin.
+  // current origin, which must be a pay site (the allowlist setting). Open
+  // web browsing lets Claude read many more sites, never unlock on them.
   async function lockArm(tabId) {
-    const origin = await tabOrigin(tabId);
+    const info = await tabs.tabInfo({ tabId });
+    const origin = originOf(info && info.url);
     if (!origin) throw new BridgeError(ERR.NOT_ALLOWED, "tab has no origin to unlock");
+    if (typeof tabs.isPaySite !== "function" || !(await tabs.isPaySite(info.url))) {
+      throw new BridgeError(ERR.LOCKED, "Locked: this site is not a Clearcart pay site");
+    }
     for (const [n, a] of armed) if (a.expires <= now()) armed.delete(n);
     const nonce = newNonce();
     armed.set(nonce, { tabId, origin, expires: now() + UNLOCK_TTL_MS });

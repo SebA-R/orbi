@@ -30,6 +30,7 @@ function fakes({ locked = new Set(), url = "http://localhost:4000/checkout", cdp
   const tabs = {
     resolveAllowedTab: async (id) => id ?? 7,
     tabInfo: async ({ tabId }) => ({ tabId, url: state.url, title: "t" }),
+    isPaySite: async (u) => new URL(u).origin === "http://localhost:4000",
   };
   const cdp = {
     click: async (o) => {
@@ -133,6 +134,14 @@ test("press_protected asks the page to confirm an order button, and falls back t
   const n2 = (await g.router.route("lock_arm", {})).nonce;
   assert.deepEqual(await g.router.route("press_protected", { ref: "ref_9", nonce: n2 }), { ok: true, via: "dom" });
   assert.ok(g.calls.some((c) => c[1] === "press_ref"));
+});
+
+test("lock_arm refuses a site that is browsable but not a pay site", async () => {
+  const f = fakes({ url: "https://www.etsy.com/checkout" });
+  await assert.rejects(f.router.route("lock_arm", { tabId: 7 }), { code: "locked", message: /not a Clearcart pay site/ });
+  // A tabs module without isPaySite fails closed.
+  const bare = createRouter({ chromeApi: {}, tabs: { resolveAllowedTab: async () => 7, tabInfo: async () => ({ url: "http://localhost:4000/checkout" }) }, cdp: {} });
+  await assert.rejects(bare.route("lock_arm", { tabId: 7 }), { code: "locked" });
 });
 
 test("press_check and press_ref are not reachable as plain page methods", async () => {
