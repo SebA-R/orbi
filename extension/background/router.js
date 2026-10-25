@@ -19,9 +19,10 @@
 // opens it with a real click on the card number field; Chrome takes the
 // pick only from the user). While a card is or may be in the page (card
 // fields with a value or filled by Chrome, or card frames Clearcart cannot
-// see into), the agent's clicks, typing, keys and form changes on that
-// page are refused and so are screenshots: only press_protected, after the
-// user's yes, acts on it. No key at all goes into a card field.
+// see into), the page's checks refuse the agent's clicks, typing, keys and
+// form changes there (content/page.js handsOff), and screenshots are
+// refused here: only press_protected, after the user's yes, acts on it. No
+// key but Tab or Escape goes into a card field.
 //
 // Follow: a call that acts on a tab (follow.js ACT_METHODS, and tabs_create)
 // brings that tab to the front first, unless the setting is off or the user
@@ -313,17 +314,7 @@ export function createRouter({
       if (e && e.code === ERR.NOT_ALLOWED) throw e;
       return true;
     }
-    return !s || s.live !== false;
-  }
-
-  const CARD_LIVE =
-    "Locked: a card is in this page's payment form, or the page has card fields Clearcart cannot see into. " +
-    "Clearcart only reads this page now: the user fills it in, and pay_now places the order after their yes.";
-
-  // Hands off a page that holds a card: no agent click, typing, key or
-  // form change there.
-  async function assertNoCard(tabId) {
-    if (await cardLive(tabId)) throw new BridgeError(ERR.LOCKED, CARD_LIVE);
+    return !s || s.live === true;
   }
 
   // A paced check that ran in a different document than the one the action
@@ -547,8 +538,10 @@ export function createRouter({
     const frames = Number(f && f.frames) || 0;
     if (!f || !f.found) return { found: false, frames };
     if (f.filled) return { found: true, filled: true, focused: false, frames };
-    await clickAt(tabId, { ref: f.ref }, epoch);
-    const focus = await pageCall(tabId, "focused_field");
+    const check = async () => visibleRect(await pageCall(tabId, "guard_card", { ref: f.ref }), f.ref);
+    await clickCentre(tabId, await check(), f.ref, "click_ref", check, undefined, epoch);
+    // On a page that also holds a card frame the focus check refuses.
+    const focus = await pageCall(tabId, "focused_field").catch(() => null);
     return { found: true, filled: false, focused: !!focus && focus.kind === "cc-number", frames };
   }
 
@@ -600,10 +593,6 @@ export function createRouter({
     const tabId = await tabs.resolveAllowedTab(params.tabId);
     indicate(tabId);
     if (ACT_METHODS.has(method)) await follow.to(tabId);
-    // A page that holds a card is read only for the agent.
-    if (method === "click" || method === "type" || method === "key" || method === "form_input" || method === "click_ref" || method === "press_unlocked") {
-      await assertNoCard(tabId);
-    }
     switch (method) {
       case "click":
         return clickAt(tabId, params, epoch);
@@ -620,10 +609,11 @@ export function createRouter({
       case "key": {
         // Parse first: a spec CDP would not send is refused before any check.
         const parsed = parseKey(params.key);
-        // No key at all in a card field: Chrome's saved-card list there
-        // answers to arrows and Enter, and only the user picks from it.
+        // In a card field only Tab and Escape (leaving it) go through:
+        // arrows and Enter there work Chrome's saved-card list, and only the
+        // user picks from it.
         const focus = await pageCall(tabId, "focused_field");
-        if (focus && focus.payment) {
+        if (focus && focus.payment && !/^(shift\+)?tab$|^esc(ape)?$/i.test(String(params.key ?? "").trim())) {
           throw new BridgeError(ERR.PAYMENT_FIELD, "refusing a key press in a payment field; the user picks the card in Chrome's own list");
         }
         // A single printable key is typing too.

@@ -88,13 +88,12 @@
   var PRESSABLE = { order: 1, marked: 1, "payment-form": 1 };
   // User-directed unlock (agent request_unlock): the classes of locked
   // control the user may ask Clearcart to press once. "checkout" is only a
-  // control that goes to the checkout page ("Proceed to checkout") or on to
-  // its payment step ("Continue to payment"), never one that pays. Placing
-  // an order, wallets, card or password form submits, frames and hidden
-  // components never unlock this way: paying goes only through
-  // request_checkout and pay_now.
+  // control that goes to the checkout page ("Proceed to checkout"), never
+  // one that pays. Placing an order, wallets, card or password form submits,
+  // frames and hidden components never unlock this way: paying goes only
+  // through pick_card, request_checkout and pay_now.
   var CHECKOUT_NAV = ["checkout", "check out", "secure checkout", "proceed to checkout", "continue to checkout",
-    "go to checkout", "continue to payment", "proceed to payment", "continue to billing"];
+    "go to checkout"];
 
   // Kinds that make a checkbox or radio uncheck-only.
   var OPTIN_KINDS = { subscription: 1, "payment-method": 1, account: 1, express: 1 };
@@ -742,7 +741,7 @@
     var unlock = "call request_unlock with " + (ref ? "ref " + ref + " and label '" + label + "'" : "label '" + label + "' and its ref from read_page or find") +
       "; it asks the user itself when needed. Do not retry the click or look for another way around it.";
     var userOnly = " Only the user can press it. Never call request_unlock for it; tell the user where it is if they want it.";
-    var pay = " Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.";
+    var pay = " Never call request_unlock for it: paying goes only through pick_card, request_checkout and pay_now, after the user's yes.";
     switch (lock && lock.kind) {
       case "frame":
         return "Locked: that point is inside an embedded frame, often a payment widget, that Clearcart cannot inspect, so nothing was pressed. The AI may not click inside it; only the user can.";

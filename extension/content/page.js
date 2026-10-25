@@ -43,6 +43,17 @@
     throw PageError(ERR.LOCKED, Protect.message(lock, ref, target));
   }
 
+  // A page that holds a card (the user's pick, or card frames Clearcart
+  // cannot see into, cardState live) is read only for the agent: every
+  // check before an agent click, key, typing or form change refuses. The
+  // pay flow's one press (press_check, press_ref) is not stopped here: it
+  // needs the user's spoken yes and a single-use nonce.
+  var CARD_LIVE = "Locked: a card is in this page's payment form, or the page has card fields Clearcart cannot see into. " +
+    "Clearcart only reads this page now: the user fills it in, and pay_now places the order after their yes.";
+  function handsOff() {
+    if (cardState().live) throw PageError(ERR.LOCKED, CARD_LIVE);
+  }
+
   // Lock marker for read_page and find: only on the control itself (or the
   // element carrying data-clearcart-protected), not on every text node
   // inside a marked block.
@@ -445,6 +456,7 @@
   }
 
   function formInput(params) {
+    handsOff();
     var el = elementFor(params.ref);
     if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; the user picks the card in Chrome's own list");
     if (isPassword(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a password field; Clearcart never types passwords, the user types it themselves");
@@ -512,6 +524,7 @@
   }
 
   function clickRef(params) {
+    handsOff();
     var el = elementFor(params.ref);
     refuse(Protect.lockInChain(el));
     if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", behavior: "instant" });
@@ -535,6 +548,7 @@
   // neither may whatever is on top of its centre, which is where the click
   // will land.
   function guardRef(params) {
+    handsOff();
     refuse(Protect.lockInChain(elementFor(params.ref)));
     var r = rect(params);
     if (r.width > 0 && r.height > 0) refuse(Protect.lockAt(document, r.x + r.width / 2, r.y + r.height / 2));
@@ -542,12 +556,14 @@
   }
 
   function guardPoint(params) {
+    handsOff();
     var p = point(params);
     refuse(Protect.lockAt(document, p.x, p.y));
     return { ok: true };
   }
 
   function guardKey(params) {
+    handsOff();
     refuse(Protect.lockForKey(document, String(params.key == null ? "" : params.key)));
     return { ok: true };
   }
@@ -616,6 +632,7 @@
   }
 
   function userTarget(params) {
+    handsOff();
     var t = lockTarget(elementFor(params.ref));
     var cls = Protect.unlockClass(t.lock, t.el);
     if (!cls || cls !== params.cls) throw PageError(ERR.LOCKED, "Locked: this control cannot be unlocked on request");
@@ -774,6 +791,19 @@
     return { found: true, ref: refFor(el), filled: isFilled(el), autofilled: autofilled(el), frames: cardFrames() };
   }
 
+  // card_autofill's check right before its click (and again on arrival at
+  // watchable pace): the ref is still the card number field, nothing locked
+  // sits on it, and it is visible. Not stopped by handsOff: a click on the
+  // card number field presses nothing and opens only Chrome's own list.
+  function guardCard(params) {
+    var el = elementFor(params.ref);
+    if (kindOf(el) !== "cc-number") throw PageError(ERR.LOCKED, "Locked: that is not the card number field");
+    refuse(Protect.lockInChain(el));
+    var r = rect(params);
+    if (r.width > 0 && r.height > 0) refuse(Protect.lockAt(document, r.x + r.width / 2, r.y + r.height / 2));
+    return r;
+  }
+
   // Counts only: card fields in this document, how many hold something, how
   // many Chrome filled or previews, the card number field's state, and the
   // card frames. live: a card is or may be in the page (router.js keeps the
@@ -812,6 +842,9 @@
   // Kind of the element that has keyboard focus, so the worker can refuse
   // CDP typing into a card field. Never returns the value.
   function focusedField() {
+    // The check before every typed character and key press: a page that
+    // holds a card refuses here.
+    handsOff();
     var el = document.activeElement;
     while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
     if (!el || el === document.body || el === document.documentElement) return { kind: "none", payment: false };
@@ -924,6 +957,7 @@
     rect: rect,
     click_ref: clickRef,
     card_field: cardField,
+    guard_card: guardCard,
     card_state: cardState,
     order_buttons: orderButtons,
     guard_ref: guardRef,
