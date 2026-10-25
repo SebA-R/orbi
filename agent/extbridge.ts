@@ -15,6 +15,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { parseBlockLines, type BlockEntry } from "./blocklist.ts";
 import { extensionOrigins } from "./hostcheck.ts";
 import { parseLocalBaseUrl, parseLocalModel, parseProvider, type Provider } from "./local/config.ts";
+import { SEARCH_ENGINES, type SearchEngine } from "./prompt.ts";
 
 // Mirrors extension/lib/protocol.js (the test checks they agree). Kept as a
 // copy because that file is plain JS outside this tsconfig.
@@ -95,6 +96,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   private counter = 0;
   private entries: readonly BlockEntry[] | null = null;
   private guided: boolean | null = null;
+  private engine: SearchEngine | null = null;
   private danger = false;
   private memory: boolean | null = null;
   private agent: ExtProviderSettings = { provider: null, localBaseUrl: null, localModel: null, localVision: null };
@@ -122,6 +124,12 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   // across a reconnect), or null before the first one arrives.
   guidedMode(): boolean | null {
     return this.guided;
+  }
+
+  // The user's Search engine setting as the extension last sent it (kept
+  // across a reconnect), or null before the first one arrives.
+  searchEngine(): SearchEngine | null {
+    return this.engine;
   }
 
   // The user's Memory setting as the extension last sent it (kept across a
@@ -275,6 +283,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
           this.log(`ext: guided mode ${this.guided ? "on" : "off"}, memory ${this.memory === false ? "off" : "on"}`);
           this.emit("settings", { guidedMode: m.guidedMode, memory: this.memory });
         }
+        if ((SEARCH_ENGINES as readonly unknown[]).includes(m.searchEngine)) this.engine = m.searchEngine;
         this.takeProvider(m);
       }
       if (m.type === "danger_mode" && ws === this.current) {

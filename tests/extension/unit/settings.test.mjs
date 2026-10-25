@@ -180,10 +180,12 @@ test("local model address must be http(s) on a loopback host", () => {
 
 test("the worker sends the provider fields in the settings message and on change", () => {
   assert.deepEqual(agentSettingsMessage({ provider: "local", localModel: "qwen2.5:7b", guidedMode: false }), {
-    type: "settings", guidedMode: false, memory: true, provider: "local", localBaseUrl: "http://localhost:11434/v1", localModel: "qwen2.5:7b",
+    type: "settings", guidedMode: false, memory: true, provider: "local", localBaseUrl: "http://localhost:11434/v1", localModel: "qwen2.5:7b", searchEngine: "google",
   });
+  assert.equal(agentSettingsMessage({ searchEngine: "bing" }).searchEngine, "bing");
+  assert.equal(agentSettingsMessage({ searchEngine: "yahoo" }).searchEngine, "google", "an unknown engine falls back to Google");
   assert.deepEqual(agentSettingsMessage({ localBaseUrl: "http://evil.example" }).localBaseUrl, DEFAULTS.localBaseUrl);
-  for (const k of ["guidedMode", "memory", "provider", "localBaseUrl", "localModel"]) assert.ok(AGENT_SETTING_KEYS.includes(k), k);
+  for (const k of ["guidedMode", "memory", "provider", "localBaseUrl", "localModel", "searchEngine"]) assert.ok(AGENT_SETTING_KEYS.includes(k), k);
   const src = readFileSync(new URL("../../../extension/background/worker.js", import.meta.url), "utf8");
   assert.match(src, /bridge\?\.send\(agentSettingsMessage\(s\)\)/);
   assert.match(src, /AGENT_SETTING_KEYS\.some\(\(k\) => changes\[k\]\)\) sendAgentSettings\(\)/);
