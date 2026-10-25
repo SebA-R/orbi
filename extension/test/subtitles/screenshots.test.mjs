@@ -120,7 +120,8 @@ test("thinking state with only the user line", async () => {
   await page.close();
 });
 
-// Karaoke: a line mid-utterance, the fifth word being heard.
+// Karaoke: a line mid-utterance. Screenshots hold the sweep halfway across
+// the word being heard (frozen at 50%, so the frame is the same every run).
 const KLINE = "I found Oatly Barista for $4.99. Want me to add it to your cart?";
 const karaoke = (index, extra = {}) => [
   { type: "subtitle", speaker: "user", text: "Find me oat milk under five dollars", final: true },
@@ -141,7 +142,7 @@ for (const [name, media] of [
     await page.emulateMedia(media);
     await page.goto(`http://localhost:${port}/`);
     await page.waitForTimeout(300);
-    await sendAll(karaoke(4));
+    await sendAll(karaoke(3, { ms: 600, elapsed: 300, frozen: true })); // "Barista", half said
     await page.waitForTimeout(700); // the sweep is .3 s
     fs.mkdirSync(KOUT, { recursive: true });
     await page.screenshot({ path: path.join(KOUT, `karaoke-${name}.png`) });
@@ -171,7 +172,9 @@ async function heardWordStyle(media) {
     const kc = window.__root.querySelector(".agent .w.kc");
     const cs = getComputedStyle(kc);
     const after = getComputedStyle(kc, "::after");
-    return { text: kc.textContent, anim: cs.animationName, line: after.animationName, deco: cs.textDecorationLine };
+    const said = getComputedStyle(kc.previousElementSibling.previousElementSibling).color;
+    const next = getComputedStyle(kc.nextElementSibling.nextElementSibling).color;
+    return { text: kc.textContent, anim: cs.animationName, line: after.animationName, deco: cs.textDecorationLine, color: cs.color, fill: cs.webkitTextFillColor, said, next };
   }, karaoke(2));
   await page.close();
   return out;
@@ -181,9 +184,11 @@ test("karaoke: reduced motion has no animation on the heard word; forced colors 
   const moving = await heardWordStyle({ reducedMotion: "no-preference", forcedColors: "none" });
   assert.equal(moving.text, "Oatly");
   assert.equal(moving.anim, "k-sweep");
+  assert.notEqual(moving.said, moving.next, "said and coming words differ in ink");
   const still = await heardWordStyle({ reducedMotion: "reduce", forcedColors: "none" });
   assert.equal(still.anim, "none");
   assert.equal(still.line, "none");
+  assert.equal(still.color, still.said, "the color steps to the said ink, no sweep");
   const forced = await heardWordStyle({ reducedMotion: "no-preference", forcedColors: "active" });
   assert.equal(forced.deco, "underline");
 });
