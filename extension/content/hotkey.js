@@ -268,10 +268,11 @@
     const orphaned = () => { try { return !!myId && !chromeApi.runtime.id; } catch { return true; } };
     // A press another listener already took (a second Clearcart build, such
     // as Clearcart Preview, registered first in this frame) is left to it, so
-    // one press never opens two mics.
+    // one press never opens two mics. Never while ours is held or latched:
+    // that press may be the one that ends it.
     const onDown = (e) => {
       if (orphaned()) return detach();
-      if (e.defaultPrevented && !detector.held) return;
+      if (e.defaultPrevented && !detector.held && !detector.latched) return;
       detector.onKeyDown(e);
     };
     const onUp = (e) => { if (orphaned()) return detach(); detector.onKeyUp(e); };

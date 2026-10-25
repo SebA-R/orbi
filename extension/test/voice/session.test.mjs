@@ -32,7 +32,7 @@ function voice(emit = () => {}) {
     speaker: { stop() { log.push("tts.stop"); }, speak(t) { log.push(`speak:${t}`); }, duck() {}, unduck() {} },
     mic,
     agent,
-    chime: () => {},
+    chime: (name) => log.push(`chime:${name}`),
     emit,
     // The release tail runs at once; the latch's idle stop never fires here.
     setTimer: (fn, ms) => (ms === TAIL_MS ? fn() : null),
@@ -175,6 +175,7 @@ test("standby moved: speech stops and a turn still listening ends unsent", async
   assert.equal(v.stts[0].aborted, true);
   assert.equal(v.mic.sink, null);
   assert.ok(v.log.includes("tts.stop"));
+  assert.ok(v.log.includes("chime:error"), "the lost words are heard as the error cue");
   assert.equal(v.controller.state, "idle");
   v.controller.stop(); // the key comes up afterwards
   assert.ok(!v.agent.sent.some((m) => m.type === "user_text"));
@@ -210,10 +211,12 @@ test("standby stale: waiting for a reply ends, but a newer turn already listenin
   assert.equal(v.controller.state, "thinking");
   v.controller.onAgentMessage({ type: "standby", reason: "stale", text: "Not sent." });
   assert.equal(v.controller.state, "idle", "not stuck thinking, so other tabs are not kept quiet");
+  assert.equal(v.log.filter((l) => l === "chime:error").length, 1, "the dropped words get the error cue");
   await v.controller.start(); // a newer press, which takes the session back
   v.controller.onAgentMessage({ type: "standby", reason: "stale", text: "Not sent." });
   assert.equal(v.controller.listening, true);
   assert.equal(v.stts[1].aborted, undefined);
+  assert.equal(v.log.filter((l) => l === "chime:error").length, 1, "no cue over the new press");
 });
 
 // The hotkey content script, loaded the way hotkey.test.mjs does.
@@ -257,4 +260,12 @@ test("hotkey: a press another Clearcart build already took is left to it", () =>
   assert.deepEqual(p.sent, []);
   p.fire("keydown", key("Space", { altKey: true }));
   assert.deepEqual(p.sent, [RT.PTT_START], "an untaken press still talks");
+});
+
+test("hotkey: while latched, Space still ends the latch even if another listener prevented it", () => {
+  const p = page();
+  p.fire("keydown", key("Space", { altKey: true })); // Option+Space latches
+  p.fire("keyup", key("Space", { altKey: true }));
+  p.fire("keydown", key("Space", { defaultPrevented: true }));
+  assert.deepEqual(p.sent, [RT.PTT_START, RT.PTT_STOP]);
 });

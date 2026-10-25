@@ -329,8 +329,11 @@ export class VoiceController {
   // reason "moved": it just took it, so a turn still listening here (a hold
   // or a latch) ends unsent, and nothing here keeps listening alongside it.
   // "stale": the words we sent were dropped; a newer press here (which takes
-  // the conversation back) is left alone.
+  // the conversation back) is left alone. Either way, words the user said
+  // here that will never be answered get the error cue, so the loss is
+  // heard, not silent.
   standby(reason) {
+    const lost = reason === "moved" ? this.listening && this.confirmed : !this.listening;
     if (reason === "moved" && this.listening) {
       if (this.turn) this.turn.dropped = true;
       this.#endLatch();
@@ -346,6 +349,7 @@ export class VoiceController {
     this.muted = true;
     this.awaitingReply = false;
     this.#settle();
+    if (lost) this.#errorCue();
   }
 
   // Says the current state again (latched too): a restarted worker asks
