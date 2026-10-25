@@ -29,11 +29,11 @@ const tabIdOf = () => ext.worker.evaluate(async () => {
   return t && t.id;
 });
 
-test("chrome://newtab opens Clearcart's page with the hotkey and subtitles installed", async () => {
+test("chrome://newtab opens Clearcart's page with the hotkey and no subtitle card", async () => {
   const page = await openNewTab();
   assert.equal(page.url(), NEWTAB);
   assert.equal(await page.title(), "New Tab");
-  assert.equal(await page.evaluate(() => !!window.__clearcartHotkey && globalThis.__clearcartSubtitles === true), true);
+  assert.equal(await page.evaluate(() => !!window.__clearcartHotkey && globalThis.__clearcartSubtitles !== true), true);
   assert.equal(await page.locator("h1").textContent(), "Clearcart");
   assert.equal(await page.getByRole("heading", { level: 2, name: "Hold Space to talk" }).count(), 1);
   assert.equal(await page.getByLabel("Search the web").count(), 1);
@@ -51,12 +51,13 @@ test("the worker's VOICE_STATE reaches the page; offscreen broadcasts do not", a
   await other.evaluate(() => chrome.runtime.sendMessage({ type: "voice.state", state: "speaking" }).catch(() => {}));
   await page.waitForTimeout(200);
   assert.equal(await page.locator("#orb").getAttribute("data-state"), "idle");
-  // What the relay sends the talking tab is heard by all three scripts.
+  // What the relay sends the talking tab reaches the page and the hotkey.
   await ext.worker.evaluate((tabId) => chrome.tabs.sendMessage(tabId, { type: "voice.state", state: "listening", latched: true }), id);
   await page.waitForFunction(() => document.getElementById("orb").dataset.state === "listening");
   assert.equal(await page.evaluate(() => window.__clearcartHotkey.latched), true);
   await ext.worker.evaluate((tabId) => chrome.tabs.sendMessage(tabId, { type: "subtitle", speaker: "agent", text: "Opening Etsy.", final: true }), id);
-  await page.waitForFunction(() => !!document.querySelector("clearcart-subtitles"));
+  await page.waitForTimeout(200);
+  assert.equal(await page.evaluate(() => !!document.querySelector("clearcart-subtitles")), false, "no subtitle card on the new tab page");
   await ext.worker.evaluate((tabId) => chrome.tabs.sendMessage(tabId, { type: "voice.state", state: "idle" }), id);
   await other.close();
   await page.close();

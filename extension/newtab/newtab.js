@@ -1,7 +1,8 @@
 // Clearcart new tab page (chrome_url_overrides). Chrome pages can't run
-// content scripts, so this page loads content/hotkey.js and
-// content/subtitles.js itself (see newtab.html; guard.js keeps them to the
-// worker's messages for this tab). The worker sees it as any other tab:
+// content scripts, so this page loads content/hotkey.js itself (see
+// newtab.html; guard.js keeps it to the worker's messages for this tab). No
+// subtitle card here: it would sit over the centered orb, which already
+// shows the voice state. The worker sees it as any other tab:
 // hold-to-talk, the latch, double-tap, replay on tab switch.
 //
 // This file adds the orb, the search box and the setting: with "Use the
@@ -90,7 +91,7 @@ function start() {
   });
   document.addEventListener("visibilitychange", () => { if (document.hidden) show("idle"); });
   // A tab opened with Command + T may load after the worker's tab-switch
-  // replay, so ask once (hotkey.js and subtitles.js hear the answer too).
+  // replay, so ask once (hotkey.js hears the answer too).
   chrome.runtime.sendMessage({ type: RT.VOICE_STATE_QUERY }).catch(() => {});
 
   chrome.storage.onChanged.addListener((changes, area) => {
