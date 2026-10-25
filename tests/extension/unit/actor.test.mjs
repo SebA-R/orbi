@@ -339,6 +339,13 @@ test("router: a control that turns locked during the approach is not pressed, an
   assert.equal(f.pages.filter((p) => p.method === "click_ref").length, 0);
 });
 
+test("router: a press-time lock reaches Claude as the page's refusal, with the ref and next step", async () => {
+  const msg = "Locked: 'Proceed to checkout' (ref_4) starts checkout, so it needs the user's permission and nothing was pressed. If the user wants this, call request_unlock with ref ref_4 and label 'Proceed to checkout'; it asks the user itself when needed. Do not retry the click or look for another way around it.";
+  const f = routerFakes({ guard: (n) => (n === 1 ? { ok: true, result: RECT } : { ok: false, error: { code: "locked", message: msg } }) });
+  await assert.rejects(f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" })), (e) => e.code === "locked" && e.message === msg);
+  assert.equal(mouse(f.cdp.sent, "mousePressed").length, 0);
+});
+
 test("router: a target that moved is pressed where it is now, after its new check", async () => {
   const f = routerFakes({ guard: (n) => ({ ok: true, result: n === 1 ? RECT : { x: 210, y: 20, width: 100, height: 40 } }) });
   await f.clock.run(f.router.route("click", { tabId: 3, ref: "e4" }));
