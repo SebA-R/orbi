@@ -247,9 +247,13 @@ export async function tabsCreate({ url, onCreated } = {}) {
   return { tabId: tab.id };
 }
 
+// Where the agent server's tab sweep sends a stray tab Clearcart opened.
+export const BLANK_PAGE = "about:blank";
+
 export async function navigate({ tabId, url } = {}) {
   if (typeof url !== "string" || !url) throw new BridgeError(ERR.BAD_REQUEST, "url is required");
   const id = await resolveTab(tabId, { nav: true });
+  const mine = await isCreated(id);
   let start;
   const history = (fn, dir) => async () => {
     try {
@@ -261,7 +265,11 @@ export async function navigate({ tabId, url } = {}) {
   };
   if (url === "back") start = history((i) => api().tabs.goBack(i), "back");
   else if (url === "forward") start = history((i) => api().tabs.goForward(i), "forward");
-  else {
+  else if (url === BLANK_PAGE) {
+    // Only a tab Clearcart opened; the user's own tabs keep their page.
+    if (!mine) throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is one of the user's tabs; Clearcart only blanks tabs it opened`);
+    start = () => api().tabs.update(id, { url });
+  } else {
     await assertAllowed(url);
     start = () => api().tabs.update(id, { url });
   }
@@ -269,8 +277,8 @@ export async function navigate({ tabId, url } = {}) {
   await navigateAndWait(id, start);
   const tab = await api().tabs.get(id);
   // History or a redirect can lead to a site that is not allowed; report it
-  // so callers stop driving.
-  if (!(await isAllowed(tab.url))) {
+  // so callers stop driving. A blank page in a tab Clearcart opened is fine.
+  if (!(mine && BLANK.test(tab.url || "")) && !(await isAllowed(tab.url))) {
     let origin = "unknown";
     try {
       origin = new URL(tab.url).origin;

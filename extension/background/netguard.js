@@ -4,7 +4,7 @@
 // prompt-injected page send Claude to the agent server or a router. Chrome
 // reports the IP each response actually came from (webRequest
 // onResponseStarted `ip`); a tab whose page or frame came from a local
-// address, on an origin that is not on the allowlist (the demo store), is
+// address, on an origin that is not on the allowlist, is
 // flagged here. The worker closes flagged Clearcart tabs and tabs.js refuses
 // every call on them until then.
 //

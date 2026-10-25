@@ -135,10 +135,10 @@ els.form.addEventListener("submit", async (e) => {
     say(els.status, `Fix the blocked sites first: ${block.bad.join(", ")}. Use forms like chase.com, amazon.com/ap, *bank* or *.gov.`);
     return;
   }
-  if (!allow.origins.length) {
+  if (!allow.origins.length && readSetting("browseMode") === "allowlist") {
     els.allowlist.setAttribute("aria-invalid", "true");
     els.allowlist.focus();
-    say(els.status, "Add at least one allowed site, for example http://localhost:4000.");
+    say(els.status, "Add at least one allowed site, for example https://www.etsy.com, or choose Open web.");
     return;
   }
   const before = (await loadSettings()).agentUrl;

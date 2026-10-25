@@ -3,7 +3,7 @@
 //
 //   Fixed rules, in code: anything that is not an http(s) page, an address
 //   with a login in it, and localhost or private network addresses (except
-//   the allowlisted ones, which is how the demo store gets through).
+//   the allowlisted ones, which is how a local test page gets through).
 //
 //   The user's blocked sites: settings `blocklist`, edited on the options
 //   page, one entry per line. Seeded on install from SUGGESTED_BLOCKLIST.
@@ -201,7 +201,7 @@ function matches(e, host, labels, path) {
 
 // Why this URL is blocked, or null when it is not: the fixed rules first,
 // then `entries` (from parseBlockLines). `local` is the set of loopback
-// origins allowed anyway (the demo store).
+// origins allowed anyway (the allowed sites).
 export function blocklistReason(href, entries = [], local = new Set()) {
   let u;
   try {

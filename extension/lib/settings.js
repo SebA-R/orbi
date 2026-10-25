@@ -13,14 +13,15 @@ export const HOTKEYS = Object.freeze({
 
 // browseMode "open": any web site except the fixed rules in lib/blocklist.js
 // and `blocklist`, the user's blocked sites (lines in lib/blocklist.js's
-// format, seeded with SUGGESTED_BLOCKLIST until the user saves their own). "allowlist": only the `allowlist` origins. In both
-// modes the allowlist sites are the only ones where the pay flow may arm an
-// unlock; open browsing never widens that.
+// format, seeded with SUGGESTED_BLOCKLIST until the user saves their own).
+// "allowlist": only the `allowlist` origins, empty until the user adds some.
+// In both modes the allowlist sites are the only ones where the pay flow may
+// arm an unlock; open browsing never widens that.
 export const BROWSE_MODES = Object.freeze(["open", "allowlist"]);
 
 export const DEFAULTS = Object.freeze({
   agentUrl: "ws://localhost:5050",
-  allowlist: Object.freeze(["http://localhost:4000"]),
+  allowlist: Object.freeze([]),
   browseMode: "open",
   blocklist: SUGGESTED_BLOCKLIST,
   hotkey: "Space",
@@ -33,9 +34,10 @@ export const DEFAULTS = Object.freeze({
   followTab: true,
   // Earcons: listening, sent, cut off, order result, errors (lib/voice/chime.js).
   sounds: true,
-  // Guided mode: the agent describes each page and lets the user choose.
-  // Off, it picks and acts on its own (agent/prompt.ts GUIDED_PROMPT).
-  guidedMode: true,
+  // Guided mode, the mode for blind and low-vision users: the agent
+  // describes each page, reads out the choices and lets the user pick
+  // (agent/prompt.ts GUIDED_PROMPT). Off unless the user turns it on.
+  guidedMode: false,
   // Danger mode: Clearcart presses sign in and sign up without asking
   // (content/protect.js says what it lifts). Off unless the user turns it
   // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
@@ -50,7 +52,7 @@ export const SPEED_MAX = 2;
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-// The bridge can drive allowlisted tabs and carries card values for pay_now,
+// The bridge drives the user's tabs and carries card values for pay_now,
 // so it may only point at this machine.
 export function normalizeAgentUrl(value) {
   try {
@@ -78,10 +80,7 @@ export function normalize(raw = {}) {
   const out = { ...DEFAULTS, allowlist: [...DEFAULTS.allowlist], blocklist: [...DEFAULTS.blocklist] };
   const url = raw.agentUrl != null && normalizeAgentUrl(raw.agentUrl);
   if (url) out.agentUrl = url;
-  if (Array.isArray(raw.allowlist)) {
-    const list = [...new Set(raw.allowlist.map(normalizeOrigin).filter(Boolean))];
-    if (list.length) out.allowlist = list;
-  }
+  if (Array.isArray(raw.allowlist)) out.allowlist = [...new Set(raw.allowlist.map(normalizeOrigin).filter(Boolean))];
   if (BROWSE_MODES.includes(raw.browseMode)) out.browseMode = raw.browseMode;
   if (Array.isArray(raw.blocklist)) out.blocklist = parseBlockLines(raw.blocklist).lines;
   if (typeof raw.hotkey === "string" && Object.hasOwn(HOTKEYS, raw.hotkey)) out.hotkey = raw.hotkey;
