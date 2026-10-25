@@ -33,7 +33,7 @@
       <span class="orb-mark" aria-hidden="true"></span>
       <div>
         <h1>Clearcart settings</h1>
-        <p class="lede">Switches and menus save as soon as you change them. Site lists and the server address save with the Save button at the bottom.</p>
+        <p class="lede">Talk to the web: Clearcart navigates, reads and acts on pages for you. Switches and menus save as soon as you change them. Site lists and the server address save with the Save button at the bottom.</p>
       </div>
     </header>
 
@@ -92,7 +92,7 @@
           <p class="hint warn" id="speak-replies-note" role="status" hidden></p>
           <label class="row" for="guided-mode">
             <span class="row-text"><span id="guided-mode-label">Guided mode</span>
-              <span class="hint" id="guided-mode-hint">Clearcart describes each page and lets you choose. Turn off to let it pick and act on its own.</span></span>
+              <span class="hint" id="guided-mode-hint">Made for blind and low-vision users: Clearcart describes each page, reads out choices and lets you pick. Off by default.</span></span>
             <input id="guided-mode" name="guidedMode" class="sw" type="checkbox" role="switch" data-setting="guidedMode" aria-labelledby="guided-mode-label" aria-describedby="guided-mode-hint">
           </label>
         </div>
@@ -106,7 +106,7 @@
         <div class="card">
           <div class="row">
             <span class="row-text"><span id="mode-label">Browse mode</span>
-              <span class="hint" id="mode-hint">Open web: any store, except the blocked sites below. Only allowed sites: just the allowed sites below.</span></span>
+              <span class="hint" id="mode-hint">Open web: any site, except the blocked sites below. Only allowed sites: just the allowed sites below.</span></span>
             <div class="seg" role="radiogroup" aria-labelledby="mode-label" aria-describedby="mode-hint">
               <label>Open web<input type="radio" name="browseMode" value="open" id="mode-open" data-setting="browseMode"></label>
               <label>Only allowed sites<input type="radio" name="browseMode" value="allowlist" id="mode-allowlist" data-setting="browseMode"></label>
@@ -130,7 +130,7 @@
           <div class="row stack">
             <label for="allowlist">Allowed sites, one per line</label>
             <textarea id="allowlist" name="allowlist" class="field" rows="3" spellcheck="false" autocomplete="off" aria-describedby="allowlist-hint"></textarea>
-            <p class="hint" id="allowlist-hint">Site addresses only, for example https://www.etsy.com. Keep the demo store, http://localhost:4000.</p>
+            <p class="hint" id="allowlist-hint">Site addresses only, for example https://www.etsy.com. Empty by default. In Only allowed sites mode these are the only sites Clearcart opens.</p>
           </div>
         </div>
         <p class="foot">Which sites Clearcart may open. It can use your open tabs on these sites and opens its own in the background. Tabs on blocked sites stay hidden from it, and it only closes tabs it opened.</p>

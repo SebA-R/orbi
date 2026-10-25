@@ -66,11 +66,11 @@ test("call: request/response and error responses", async () => {
   const b = await startBridge();
   try {
     const ext = new FakeExt(b.url, (method, params) => {
-      if (method === "tab_info") return { tabId: params.tabId, url: "http://localhost:4000/", title: "Store" };
+      if (method === "tab_info") return { tabId: params.tabId, url: "https://shop.example/", title: "Shop" };
       throw new ExtError2("no_element", "nothing at ref_9");
     });
     await ext.open();
-    assert.deepEqual(await b.bridge.call("tab_info", { tabId: 3 }), { tabId: 3, url: "http://localhost:4000/", title: "Store" });
+    assert.deepEqual(await b.bridge.call("tab_info", { tabId: 3 }), { tabId: 3, url: "https://shop.example/", title: "Shop" });
     await assert.rejects(b.bridge.call("rect", { ref: "ref_9" }), (e: any) => e instanceof ExtError && e.code === "no_element" && /ref_9/.test(e.message));
     // Concurrent calls get their own ids and answers.
     const [x, y] = await Promise.all([b.bridge.call("tab_info", { tabId: 1 }), b.bridge.call("tab_info", { tabId: 2 })]);

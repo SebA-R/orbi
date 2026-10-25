@@ -1,9 +1,8 @@
 // Button lock on the Open Claude in Chrome path: the PreToolUse reasons and
 // PostToolUse notes from ocic-lock.ts, the session's tool lists, and the
 // injected page script run for real in Playwright's Chromium (never the
-// user's Chrome) against the demo store.
+// user's Chrome) on the test shop's checkout page (tests/fixtures/shop.mjs).
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -11,11 +10,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ocicLockNote, ocicLockReason, pageScript, parseRefLine, REF_CLICK, type Deps } from "../ocic-lock.ts";
 import { ALLOWED, DISALLOWED_BROWSER, isStrayTab, navigateLockReason } from "../session.ts";
-import { isCheckoutUrl, STORE_ORIGIN, type SitePolicy } from "../origins.ts";
+import { isCheckoutUrl, type SitePolicy } from "../origins.ts";
+import { pages as shopPages } from "../../tests/fixtures/shop.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PW = path.join(REPO, "tests", "extension", "node_modules", "playwright", "index.mjs");
-const PAYS = " places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now on the demo store. Elsewhere, tell the user they can finish it themselves.";
+const PAYS = " places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.";
 const PLACE = "Locked: 'Place order · $14.27'" + PAYS;
 const PLACE_REF = "Locked: 'Place order · $14.27' (ref_9)" + PAYS;
 
@@ -42,11 +42,11 @@ test("the session gives Claude no page script on this path", () => {
   assert.ok(DISALLOWED_BROWSER.includes("mcp__browser__execute_code"));
 });
 
-test("navigate: checkout pages are locked off the store, open on it", () => {
+test("navigate: with no pay sites (the default), checkout pages are locked on every site", () => {
   assert.match(navigateLockReason("https://www.aritzia.com/us/en/checkout")!, /^Locked:/);
   assert.match(navigateLockReason("https://shop.example/checkouts/abc123")!, /^Locked:/);
   assert.match(navigateLockReason("https://shop.example/payment")!, /^Locked:/);
-  assert.equal(navigateLockReason("http://localhost:4000/checkout"), null);
+  assert.match(navigateLockReason("http://localhost:4100/checkout")!, /^Locked:/);
   assert.equal(navigateLockReason("https://www.aritzia.com/us/en/cart"), null);
   assert.equal(navigateLockReason("https://www.aritzia.com/us/en/product/checkout-tee/123"), null);
   assert.equal(navigateLockReason("back"), null);
@@ -66,8 +66,9 @@ test("checkout paths: decoded, any segment, with extensions; the sweep re-checks
   for (const u of ["https://shop.example/product/checkout-tee/123", "https://shop.example/paypal-info", "https://shop.example/gp/product/123", "https://shop.example/cart"]) {
     assert.ok(!isCheckoutUrl(u), u);
   }
-  const open: SitePolicy = { mode: "open", allowed: new Set([STORE_ORIGIN]), blocked: new Set(), entries: [] };
-  const allow: SitePolicy = { mode: "allowlist", allowed: new Set([STORE_ORIGIN, "https://shop.example"]), blocked: new Set(), entries: [] };
+  const LOCAL = "http://localhost:4100";
+  const open: SitePolicy = { mode: "open", allowed: new Set([LOCAL]), blocked: new Set(), entries: [] };
+  const allow: SitePolicy = { mode: "allowlist", allowed: new Set([LOCAL, "https://shop.example"]), blocked: new Set(), entries: [] };
   assert.ok(isStrayTab("https://elsewhere.example/", allow), "off the allowlist");
   assert.ok(!isStrayTab("https://shop.example/cart", open), "an open-web cart is fine");
   assert.ok(!isStrayTab("chrome-error://chromewebdata/", open), "the extension's error page holds nothing");
@@ -75,7 +76,8 @@ test("checkout paths: decoded, any segment, with extensions; the sweep re-checks
   for (const p of [open, allow]) {
     assert.ok(isStrayTab("https://shop.example/en/checkout.html", p), "a landed checkout page is sent back");
     assert.ok(isStrayTab("https://shop.example/%63heckout", p));
-    assert.ok(!isStrayTab(STORE_ORIGIN + "/checkout", p), "the store's own checkout is fine");
+    assert.ok(isStrayTab(LOCAL + "/checkout", p), "no pay sites: an allowed site's checkout page is sent back too");
+    assert.ok(!isStrayTab(LOCAL + "/cart", p), "its cart is fine");
   }
   assert.ok(!isStrayTab("about:blank") && !isStrayTab(undefined));
 });
@@ -168,7 +170,7 @@ test("form_input on a dropdown never chooses an opt-in option", async () => {
 
 test("read_page and find notes name locked and uncheck-only refs", async () => {
   const tree = [
-    'link "Elm Street Pharmacy" [ref_1] href="http://localhost:4000/"',
+    'link "Test shop" [ref_1] href="http://localhost:4100/"',
     'button "Remove" [ref_6] type="submit"',
     'checkbox "Subscribe & Save: auto-deliver every 30 days (+$4.99 membership)" [ref_7] type="checkbox"',
     'button "Proceed to checkout" [ref_8]',
@@ -187,36 +189,20 @@ test("read_page and find notes name locked and uncheck-only refs", async () => {
 
 // ---------------------------------------------------------------- Chromium
 const skip = !fs.existsSync(PW) && "playwright not installed in tests/extension";
-let store: ChildProcess | null = null;
 let browser: any;
-const STORE_PORT = 4400 + Math.floor(Math.random() * 400);
-const STORE = `http://localhost:${STORE_PORT}`;
 
 before(async () => {
   if (skip) return;
-  store = spawn(process.execPath, [path.join(REPO, "store", "server.js")], { env: { ...process.env, STORE_PORT: String(STORE_PORT) }, stdio: "ignore" });
-  for (let i = 0; i < 100; i++) {
-    if (await fetch(STORE + "/").then((r) => r.ok, () => false)) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
   const { chromium } = await import(pathToFileURL(PW).href);
   browser = await chromium.launch({ headless: true });
 });
 after(async () => {
   await browser?.close();
-  store?.kill();
 });
 
 test("the page script locks Place order in a real page, and a hostile global cannot swap it", { skip }, async () => {
-  await fetch(STORE + "/reset", { method: "POST", redirect: "manual" });
-  await fetch(STORE + "/cart/add", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "product_id=cetirizine-30&quantity=1",
-    redirect: "manual",
-  });
   const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
-  await page.goto(STORE + "/checkout");
+  await page.setContent(shopPages().checkout);
   // The page tries to plant a fake classifier.
   // (String scripts: tsx rewrites inline functions in ways the page cannot run.)
   await page.evaluate("window.ClearcartProtect = { lockAt: function () { return null; }, lockForKey: function () { return null; }, listLocks: function () { return []; } }");

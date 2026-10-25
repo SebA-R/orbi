@@ -3,14 +3,15 @@ import assert from "node:assert/strict";
 
 import { installChrome } from "./chrome-mock.mjs";
 import {
-  LEGACY_GROUP_TITLE, STATE_KEY, agentTabs, assertPageAllowed, navigate, navigateAndWait, onTabRemoved, originPath, resolveAllowedTab, resolveTab,
+  BLANK_PAGE, LEGACY_GROUP_TITLE, STATE_KEY, agentTabs, assertPageAllowed, navigate, navigateAndWait, onTabRemoved, originPath, resolveAllowedTab, resolveTab,
   isPaySite, tabInfo, tabsActivate, tabsClose, tabsContext, tabsCreate, ungroupLegacy,
 } from "../../background/tabs.js";
 import * as netguard from "../../background/netguard.js";
 import { ERR } from "../../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST } from "../../lib/blocklist.js";
 
-const STORE = "http://localhost:4000";
+// A made-up shop on the open web (nothing is fetched).
+const SHOP = "https://shop.example";
 
 // A user's own tab, already loaded, not opened by Clearcart.
 async function userTab(c, url, { active = false, title = "User tab" } = {}) {
@@ -26,8 +27,8 @@ function fresh(opts) {
 
 test("no tab group is ever created", async () => {
   const c = fresh();
-  const { tabId } = await tabsCreate({ url: `${STORE}/` });
-  await navigate({ tabId, url: `${STORE}/cart` });
+  const { tabId } = await tabsCreate({ url: `${SHOP}/` });
+  await navigate({ tabId, url: `${SHOP}/cart` });
   assert.equal(c._groups.size, 0);
   assert.equal(c._tabs.get(tabId).groupId, -1);
 });
@@ -51,7 +52,7 @@ test("tabsContext lists the user's tabs and Clearcart's, with origin+path only, 
   const login = await userTab(c, "https://user:pw@shop.example/");
   const newtab = await userTab(c, "chrome://newtab/");
   const { tabId: mineBlank } = await tabsCreate({});
-  const { tabId: mine } = await tabsCreate({ url: `${STORE}/` });
+  const { tabId: mine } = await tabsCreate({ url: `${SHOP}/` });
   const { tabs } = await tabsContext();
   assert.deepEqual(tabs.map((t) => t.tabId).sort(), [etsy, mineBlank, mine].sort());
   assert.deepEqual(tabs.find((t) => t.tabId === etsy), { tabId: etsy, title: "Mug", url: "https://www.etsy.com/listing/1/mug", active: true, openedByClearcart: false });
@@ -128,6 +129,19 @@ test("agentTabs (the sweep) holds only tabs Clearcart opened, blocked ones inclu
   assert.deepEqual(c.storage.session.data[STATE_KEY].created, [tabId]);
 });
 
+test("the sweep may send a tab Clearcart opened to a blank page, never one of the user's tabs", async () => {
+  const c = fresh();
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
+  await navigateAndWait(tabId, () => c.tabs.update(tabId, { url: "https://www.paypal.com/signin" }));
+  assert.equal(BLANK_PAGE, "about:blank");
+  const r = await navigate({ tabId, url: BLANK_PAGE });
+  assert.equal(r.tabId, tabId);
+  assert.equal(c._tabs.get(tabId).url, "about:blank");
+  const user = await userTab(c, "https://www.etsy.com/");
+  await assert.rejects(navigate({ tabId: user, url: BLANK_PAGE }), (e) => e.code === ERR.NOT_ALLOWED && /only blanks tabs it opened/.test(e.message));
+  assert.equal(c._tabs.get(user).url, "https://www.etsy.com/");
+});
+
 test("a user tab Clearcart navigated is never swept or navigated once the user opens a blocked site in it", async () => {
   const c = fresh();
   const id = await userTab(c, "https://www.etsy.com/");
@@ -190,32 +204,37 @@ test("ungroupLegacy takes tabs out of the old Clearcart group without closing th
 });
 
 test("allowlist mode: navigate checks the allowlist, waits for complete and reports url/title", async () => {
-  const c = fresh({ local: { browseMode: "allowlist" } });
+  const c = fresh({ local: { browseMode: "allowlist", allowlist: [SHOP] } });
   await assert.rejects(tabsCreate({ url: "https://evil.example/" }), (e) => e.code === ERR.NOT_ALLOWED);
-  const { tabId } = await tabsCreate({ url: `${STORE}/` });
-  const r = await navigate({ tabId, url: `${STORE}/cart` });
-  assert.deepEqual(r, { tabId, url: `${STORE}/cart`, title: `Title of ${STORE}/cart` });
+  const { tabId } = await tabsCreate({ url: `${SHOP}/` });
+  const r = await navigate({ tabId, url: `${SHOP}/cart` });
+  assert.deepEqual(r, { tabId, url: `${SHOP}/cart`, title: `Title of ${SHOP}/cart` });
   await assert.rejects(navigate({ tabId, url: "https://evil.example/" }), (e) => e.code === ERR.NOT_ALLOWED);
-  assert.equal(c._tabs.get(tabId).url, `${STORE}/cart`);
+  assert.equal(c._tabs.get(tabId).url, `${SHOP}/cart`);
   await assert.rejects(navigate({ tabId }), (e) => e.code === ERR.BAD_REQUEST);
+});
+
+test("allowlist mode with no allowed sites opens nothing", async () => {
+  fresh({ local: { browseMode: "allowlist" } });
+  await assert.rejects(tabsCreate({ url: `${SHOP}/` }), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
 test("navigate back and forward", async () => {
   fresh();
-  const { tabId } = await tabsCreate({ url: `${STORE}/a` });
-  await navigate({ url: `${STORE}/b` });
-  assert.equal((await navigate({ url: "back" })).url, `${STORE}/a`);
-  assert.equal((await navigate({ url: "forward" })).url, `${STORE}/b`);
-  assert.equal((await tabInfo({ tabId })).url, `${STORE}/b`);
+  const { tabId } = await tabsCreate({ url: `${SHOP}/a` });
+  await navigate({ url: `${SHOP}/b` });
+  assert.equal((await navigate({ url: "back" })).url, `${SHOP}/a`);
+  assert.equal((await navigate({ url: "forward" })).url, `${SHOP}/b`);
+  assert.equal((await tabInfo({ tabId })).url, `${SHOP}/b`);
   await assert.rejects(navigate({ url: "forward" }), (e) => e.code === ERR.BAD_REQUEST && /forward/.test(e.message));
 });
 
 test("navigateAndWait times out, and fails with NO_TAB if the tab closes", async () => {
   const c = fresh({ autoComplete: false });
   const { tabId } = await tabsCreate({});
-  await assert.rejects(navigateAndWait(tabId, () => c.tabs.update(tabId, { url: `${STORE}/slow` }), 50), (e) => e.code === ERR.TIMEOUT);
+  await assert.rejects(navigateAndWait(tabId, () => c.tabs.update(tabId, { url: `${SHOP}/slow` }), 50), (e) => e.code === ERR.TIMEOUT);
   assert.equal(c.tabs.onUpdated.size, 0);
-  const p = navigateAndWait(tabId, () => c.tabs.update(tabId, { url: `${STORE}/x` }), 1000);
+  const p = navigateAndWait(tabId, () => c.tabs.update(tabId, { url: `${SHOP}/x` }), 1000);
   setTimeout(() => c.tabs.remove(tabId), 10);
   await assert.rejects(p, (e) => e.code === ERR.NO_TAB);
 });
@@ -234,9 +253,11 @@ test("open mode: blocked sites are refused before the tab moves", async () => {
   await assert.rejects(tabsCreate({ url: "https://mail.google.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
-test("pay sites stay the allowlist in open mode", async () => {
+test("pay sites stay the allowlist in open mode, and there are none by default", async () => {
   fresh();
-  assert.equal(await isPaySite(`${STORE}/checkout`), true);
+  assert.equal(await isPaySite(`${SHOP}/checkout`), false);
+  fresh({ local: { allowlist: [SHOP] } });
+  assert.equal(await isPaySite(`${SHOP}/checkout`), true);
   assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
 });
 

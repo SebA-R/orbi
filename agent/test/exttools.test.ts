@@ -28,7 +28,7 @@ test("exposes exactly the TOOLS, none of the INTERNAL methods", () => {
 
 test("schemas validate the documented params", () => {
   const defs = Object.fromEntries(extToolDefinitions(fakeBridge(() => null) as any).map((d) => [d.name, z.object(d.inputSchema)]));
-  assert.ok(defs.navigate.safeParse({ url: "http://localhost:4000/" }).success);
+  assert.ok(defs.navigate.safeParse({ url: "https://shop.example/" }).success);
   assert.ok(!defs.navigate.safeParse({}).success);
   assert.ok(defs.click.safeParse({ ref: "ref_3" }).success);
   assert.ok(defs.click.safeParse({ tabId: 5, x: 10, y: 20 }).success);

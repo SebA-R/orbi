@@ -1,46 +1,28 @@
-// Runs page.js against real HTML from the demo store (store/server.js).
-import { test, before, after } from "node:test";
+// read_page against the small test shop's pages (tests/fixtures/shop.mjs).
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadPage, startStore, fetchHtml } from "./harness.js";
+import { loadPage, shopPages } from "./harness.js";
 
 const CARD = "4111111111111111";
-let store;
-const pages = {};
+const BASE = "http://localhost:4100";
+const pages = shopPages();
 
-before(async () => {
-  store = await startStore();
-  const b = store.base;
-  await fetch(b + "/reset", { method: "POST", redirect: "manual" });
-  pages.home = await fetchHtml(b + "/");
-  pages.search = await fetchHtml(b + "/search?q=allergy");
-  pages.product = await fetchHtml(b + "/product/cetirizine-30");
-  await fetch(b + "/cart/add", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "product_id=cetirizine-30&quantity=1",
-    redirect: "manual",
-  });
-  pages.cart = await fetchHtml(b + "/cart");
-  pages.checkout = await fetchHtml(b + "/checkout");
-});
-after(() => store && store.stop());
-
-const load = (name, path = "/") => loadPage(pages[name], { url: store.base + path });
+const load = (name, path = "/") => loadPage(pages[name], { url: BASE + path });
 
 test("read_page interactive lists search, links and buttons with refs", async () => {
-  const p = load("search", "/search?q=allergy");
+  const p = load("search", "/search?q=mug");
   const r = await p.call("read_page", {});
   assert.equal(r.ok, true, JSON.stringify(r));
   const { tree, url, title } = r.result;
   assert.ok(url.includes("/search"));
   assert.ok(title.length > 0);
-  assert.match(tree, /^- searchbox "Search products" value="allergy" \[ref_\d+\]$/m);
-  assert.match(tree, /^- button "Search" \[ref_\d+\]$/m);
-  assert.match(tree, /- link "Elm Health Cetirizine[^"]*" href="\/product\/cetirizine-30" \[ref_\d+\]/);
+  assert.match(tree, /^\s*- searchbox "Search products" value="mug" \[ref_\d+\]$/m);
+  assert.match(tree, /^\s*- button "Search" \[ref_\d+\]$/m);
+  assert.match(tree, /- link "Blue mug, 12 oz" href="\/product\/mug" \[ref_\d+\]/);
 });
 
 test("read_page refs are stable across calls and re-injection", async () => {
-  const p = load("product", "/product/cetirizine-30");
+  const p = load("product", "/product/mug");
   const a = (await p.call("read_page", {})).result.tree;
   p.inject();
   const b = (await p.call("read_page", {})).result.tree;
@@ -57,10 +39,10 @@ test("read_page shows the pre-checked add-on checkbox on the cart", async () => 
 });
 
 test("read_page all mode includes headings and text", async () => {
-  const p = load("product", "/product/cetirizine-30");
+  const p = load("product", "/product/mug");
   const { tree } = (await p.call("read_page", { filter: "all" })).result;
-  assert.match(tree, /- heading "Elm Health Cetirizine[^"]*" level=1 \[ref_\d+\]/);
-  assert.match(tree, /text "\$8\.99"/);
+  assert.match(tree, /- heading "Blue mug" level=1 \[ref_\d+\]/);
+  assert.match(tree, /text "\$12\.00"/);
 });
 
 test("read_page masks filled payment fields and card numbers in text", async () => {
@@ -96,4 +78,3 @@ test("unknown methods and bad refs return protocol errors", async () => {
   assert.deepEqual(r.ok, false);
   assert.equal(r.error.code, "unknown_method");
 });
-

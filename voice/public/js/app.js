@@ -122,11 +122,11 @@ function friendlyStatus(text) {
   if (t === 'checkout confirmed') return 'Confirmed';
   if (t === 'checkout declined') return 'Okay, not paying';
   if (t.startsWith('navigate')) {
-    if (t.includes('/search') || t.includes('?q=')) return 'Searching the store';
+    if (t.includes('/search') || t.includes('?q=')) return 'Searching';
     if (t.includes('/product')) return 'Looking at a product';
     if (t.includes('/cart')) return 'Checking your cart';
     if (t.includes('/checkout')) return 'Opening checkout';
-    return 'Opening the store';
+    return 'Opening a page';
   }
   if (/^(computer|find|read_page|get_page_text|form_input)/.test(t)) return 'Reading the page';
   return '';
@@ -385,7 +385,7 @@ window.__clearcartDemoState = (state, opts = {}) => {
   renderUi();
   return uiState();
 };
-window.__clearcartDemoReceipt = (r = { item: 'Store brand cetirizine 10mg, 30 count', total: '$9.64', last4: '1111' }) => showReceipt(r);
+window.__clearcartDemoReceipt = (r = { item: 'Blue ceramic mug, 12 oz', total: '$12.96', last4: '1111' }) => showReceipt(r);
 // Same hooks grouped, plus conversation turns and the read-back card (used by index.html ?demo=).
 window.__clearcartDemo = {
   state: window.__clearcartDemoState,

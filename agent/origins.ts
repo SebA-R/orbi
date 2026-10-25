@@ -4,19 +4,18 @@
 //
 // CLEARCART_BROWSE_MODE:
 //   open (default)  any http(s) site except the blocked sites
-//                   (blocklist.ts: fixed rules such as other localhost
-//                   ports, plus the extension's list in ext mode or the
-//                   suggested list otherwise) and CLEARCART_BLOCKED_ORIGINS.
+//                   (blocklist.ts: fixed rules such as localhost ports,
+//                   plus the extension's list in ext mode or the suggested
+//                   list otherwise) and CLEARCART_BLOCKED_ORIGINS.
 //                   Best effort.
-//   allowlist       only the store plus CLEARCART_ALLOWED_ORIGINS.
+//   allowlist       only CLEARCART_ALLOWED_ORIGINS.
 // Pay sites never follow the browse mode: CLEARCART_PAY_ORIGINS (default
-// the store only) is the only place the unlock gate issues grants.
+// none) is the only place the unlock gate issues grants.
+//
+// These are read at import, so set them on the command line rather than in
+// .env.
 
 import { blocklistReason, SUGGESTED_ENTRIES, type BlockEntry } from "./blocklist.ts";
-
-// CLEARCART_STORE_ORIGIN moves the demo store (tests run one on a spare port).
-// Read at import, so set it on the command line rather than in .env.
-export const STORE_ORIGIN = new URL(process.env.CLEARCART_STORE_ORIGIN || "http://localhost:4000").origin;
 
 export function parseOrigins(list: string): string[] {
   return list
@@ -34,9 +33,10 @@ export function parseOrigins(list: string): string[] {
 }
 
 // CLEARCART_ALLOWED_ORIGINS: comma-separated origins navigate and the tab
-// sweep accept (default: the store only).
-export const ALLOWED_ORIGINS: ReadonlySet<string> = new Set([STORE_ORIGIN, ...parseOrigins(process.env.CLEARCART_ALLOWED_ORIGINS || "")]);
-export const EXTRA_SITES = [...ALLOWED_ORIGINS].filter((o) => o !== STORE_ORIGIN);
+// sweep always accept, in both modes (default: none). In allowlist mode
+// they are the only sites. Local addresses get through only when listed.
+export const ALLOWED_ORIGINS: ReadonlySet<string> = new Set(parseOrigins(process.env.CLEARCART_ALLOWED_ORIGINS || ""));
+export const EXTRA_SITES = [...ALLOWED_ORIGINS];
 
 export type BrowseMode = "open" | "allowlist";
 export const BROWSE_MODE: BrowseMode = process.env.CLEARCART_BROWSE_MODE?.trim().toLowerCase() === "allowlist" ? "allowlist" : "open";
@@ -46,9 +46,8 @@ export const BROWSE_MODE: BrowseMode = process.env.CLEARCART_BROWSE_MODE?.trim()
 export const BLOCKED_ORIGINS: ReadonlySet<string> = new Set(parseOrigins(process.env.CLEARCART_BLOCKED_ORIGINS || ""));
 
 // CLEARCART_PAY_ORIGINS: comma-separated origins where pay flows may get an
-// unlock grant. Default: the store only.
-const payList = parseOrigins(process.env.CLEARCART_PAY_ORIGINS || "");
-export const PAY_ORIGINS: ReadonlySet<string> = new Set(payList.length ? payList : [STORE_ORIGIN]);
+// unlock grant. Default: none.
+export const PAY_ORIGINS: ReadonlySet<string> = new Set(parseOrigins(process.env.CLEARCART_PAY_ORIGINS || ""));
 
 export type SitePolicy = {
   mode: BrowseMode;
@@ -59,8 +58,8 @@ export type SitePolicy = {
 };
 
 // Why `href` may not be browsed under `policy`, or null when it may.
-// Allowlisted origins get past the localhost rule (that is how the store
-// opens), not past CLEARCART_BLOCKED_ORIGINS or the blocked sites list.
+// Allowlisted origins get past the localhost rule (a local test page opens
+// that way), not past CLEARCART_BLOCKED_ORIGINS or the blocked sites list.
 export function siteBlockReason(href: string | null | undefined, policy: SitePolicy): string | null {
   const o = originOf(href);
   const listed = !!o && policy.allowed.has(o);
@@ -96,8 +95,8 @@ export function paySite(href: string | null | undefined): boolean {
 }
 
 // Checkout and payment pages by path. Used to keep Claude from navigating
-// straight into checkout on sites where no pay flow exists yet, and by the
-// tab sweep on the URL a tab actually landed on. The path is percent-decoded
+// straight into checkout, and by the tab sweep on the URL a tab actually
+// landed on. The path is percent-decoded
 // (repeatedly, so %2563 is caught too) and split into segments; a segment
 // matches with or without a file extension or ;params ("checkout.html",
 // "pay.php", "checkout;jsessionid=1"). Amazon's /gp/buy/ is two segments.

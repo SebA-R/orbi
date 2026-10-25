@@ -27,7 +27,7 @@ import { createExtToolsServer } from "./exttools.ts";
 import { withContext, type PageContext } from "./context.ts";
 import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
-import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
+import { isCheckoutUrl, originOf, paySite, SITE_POLICY, siteBlockReason, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
 import { buildSystemPrompt, dangerNote, EXT_TABS_PROMPT, guidedNote, MEMORY_OFF_PROMPT, MEMORY_PROMPT } from "./prompt.ts";
 import { factFromUserWords, factNamedBy, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
@@ -50,8 +50,8 @@ const BROWSER_SERVER =
   process.env.OCIC_SERVER || "/Users/sebastianarellano-rubach/code/open-claude-in-chrome/host/mcp-server.js";
 
 // Which sites may be browsed comes from origins.ts (CLEARCART_BROWSE_MODE:
-// open web minus a blocklist, or the allowlist). pay_now stays store-only
-// and the unlock gate only serves CLEARCART_PAY_ORIGINS.
+// open web minus a blocklist, or the allowlist). pay_now and the unlock gate
+// only serve CLEARCART_PAY_ORIGINS.
 
 const B = "mcp__browser__";
 const C = "mcp__clearcart__";
@@ -59,8 +59,8 @@ const C = "mcp__clearcart__";
 // Tools Claude never gets. execute_code is the big one: its sandbox can call
 // every browser tool from inside one call, which would step around the
 // per-tool guard below. javascript_tool would let page script press a
-// locked button (button lock); pay_now still uses it over our own bridge
-// client, which Claude cannot reach.
+// locked button (button lock); our own lock checks still use it over our
+// own bridge client, which Claude cannot reach.
 export const DISALLOWED_BROWSER = [
   "execute_code",
   "javascript_tool",
@@ -116,15 +116,15 @@ const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
 function extPrompt(prompt: string): string {
   return prompt.replace(
     "calling tabs_context_mcp with createIfEmpty true, then use a tab in the MCP group.",
-    "calling tabs_context. Use a tab already on the store, or open one with tabs_create."
+    "calling tabs_context. Use a tab already on the site you need, or open one with tabs_create."
   ) + EXT_TABS_PROMPT;
 }
 
-// The user's Guided mode setting: the extension's in ext mode, on until it
-// says otherwise (Clearcart is built for blind and low-vision users).
-// Elsewhere CLEARCART_GUIDED=0 turns it off.
+// The user's Guided mode setting, the mode for blind and low-vision users:
+// the extension's in ext mode, off until it says otherwise. Elsewhere
+// CLEARCART_GUIDED=1 turns it on.
 export function currentGuided(): boolean {
-  return extMode() ? (extBridge.guidedMode() ?? true) : process.env.CLEARCART_GUIDED !== "0";
+  return extMode() ? (extBridge.guidedMode() ?? false) : /^(1|true|on|yes)$/i.test(process.env.CLEARCART_GUIDED?.trim() || "");
 }
 
 // The user's Memory setting: the extension's in ext mode, off until the
@@ -179,8 +179,8 @@ const systemLookup: Lookup = (host) => dns.promises.lookup(host, { all: true });
 
 // Why `url` may not be opened because its host name resolves to this
 // computer or the local network (localtest.me, a DNS rebinding domain), or
-// null. Allowed origins (the store) and IP literals (blocklist.ts judges
-// those) are skipped. A name that does not resolve here passes: the browser
+// null. Allowed origins (CLEARCART_ALLOWED_ORIGINS) and IP literals
+// (blocklist.ts judges those) are skipped. A name that does not resolve here passes: the browser
 // uses the same resolver, so it cannot load it either.
 export async function localDnsReason(url: string, policy: SitePolicy = sitePolicy(), lookup: Lookup = systemLookup): Promise<string | null> {
   const o = originOf(url);
@@ -204,11 +204,14 @@ function tabIdOf(args: Record<string, unknown>): number | null {
   return null;
 }
 
+// Where the sweep sends a stray tab when going back does not help.
+export const STRAY_PAGE = "about:blank";
+
 // Tab sweep: any Clearcart-group tab whose page is not allowed (a clicked
-// link, a redirect, history) is sent away from it. Allowlist mode: to the
-// store home page. Open mode: back to the page before, or to the store home
-// page when going back does not land somewhere allowed. `nav` loads a URL
-// (or "back") in a tab and returns where the tab ended up, or null.
+// link, a redirect, history) is sent away from it. Allowlist mode: to a
+// blank page. Open mode: back to the page before, or to a blank page when
+// going back does not land somewhere allowed. `nav` loads a URL (or "back")
+// in a tab and returns where the tab ended up, or null.
 export async function returnStrays(
   tabs: Array<{ tabId: number; url?: string }>,
   nav: (tabId: number, url: string) => Promise<string | null>,
@@ -220,26 +223,27 @@ export async function returnStrays(
       const at = await nav(t.tabId, "back").catch(() => null);
       if (at && (SWEEP_BLANK.test(at) || !strayReason(at, policy))) continue;
     }
-    await nav(t.tabId, STORE_ORIGIN + "/").catch(() => null);
+    await nav(t.tabId, STRAY_PAGE).catch(() => null);
   }
   return strays.length;
 }
 
 export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string {
+  const allowed = [...policy.allowed];
   return policy.mode === "open"
     ? `A tab opened a blocked site or a checkout page and was sent back${n > 1 ? " (" + n + " tabs)" : ""}. Never open sites on the user's blocked list; tell the user instead.`
-    : `A tab left the allowed sites and was sent back to the store home page. Only browse ${[...policy.allowed].join(", ")}.`;
+    : `A tab left the allowed sites and was sent to a blank page. ${allowed.length ? `Only browse ${allowed.join(", ")}.` : "No sites are allowed yet; tell the user."}`;
 }
 
 // Button lock for navigation: checkout and payment pages are off limits on
-// every site except the store, where pay_now runs. Both browser paths, for
-// navigate and for tabs_create / tabs_create_mcp with a url. passed: true
-// when the user asked to go to checkout on this tab and origin
+// every site except the pay sites, where pay_now runs. Both browser paths,
+// for navigate and for tabs_create / tabs_create_mcp with a url. passed:
+// true when the user asked to go to checkout on this tab and origin
 // (request_unlock's checkout pass), which lifts the block for that visit.
 // Off in Danger mode, like the rest of the button lock.
 export function navigateLockReason(url: string, passed?: (url: string) => boolean, danger: boolean = dangerModeOn()): string | null {
   if (danger || url === "back" || url === "forward") return null;
-  if (isCheckoutUrl(url) && originOf(url) !== STORE_ORIGIN && !passed?.(url)) {
+  if (isCheckoutUrl(url) && !paySite(url) && !passed?.(url)) {
     return "Locked: checkout pages open only by pressing the cart's checkout button. If the user asked to check out, call request_unlock with that button's ref and label; otherwise stop at the cart and tell the user what is in it. Never tell the user it is locked.";
   }
   return null;
@@ -827,7 +831,7 @@ export class Session {
       conf.state = "confirmed";
       conf.confirmedAt = Date.now();
       this.status("checkout announced: Danger mode, no yes needed");
-      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. On the demo store call pay_now now; on another store press its Place order button yourself now." }] };
+      return { content: [{ type: "text" as const, text: "confirmed. Danger mode is on: the order was announced and no yes is needed. On a Clearcart pay site call pay_now now; on another site press its Place order button yourself now." }] };
     }
     this.send({ type: "confirm", item, quantity, total, changes: changed });
     this.say(`You're buying ${quantity} ${item} for ${total}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
@@ -960,7 +964,7 @@ export class Session {
     this.status(`unlocked once: ${d.cls} "${label}" (${how})`);
     const next =
       d.cls === "checkout"
-        ? origin === STORE_ORIGIN
+        ? paySite(href)
           ? " Continue as usual; paying still goes through request_checkout and pay_now."
           : " Read the checkout page for the user. Never enter an address, card or other details there, and never press Place order; tell the user they can finish it themselves."
         : d.cls === "account"

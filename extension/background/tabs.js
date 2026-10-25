@@ -7,7 +7,7 @@
 //     left out of tabsContext and refused for every call.
 //   - A new tab page (Chrome's or Clearcart's, isNewTabPage) and Clearcart's
 //     "Can't reach this site" page (errpage.js) are listed and may be
-//     navigated to a store, but are never read or acted on. The error page
+//     navigated to a site, but are never read or acted on. The error page
 //     is listed as chrome-error://chromewebdata/, without the address that
 //     failed; a user's error page for a blocked site is hidden.
 //   - That check runs again on every call (resolveAllowedTab), not only when
@@ -64,7 +64,7 @@ export function originPath(url) {
 }
 
 // A new tab page, Chrome's or Clearcart's. Nothing on it is the user's, so
-// Clearcart lists the tab and may navigate it to a store, like a blank tab
+// Clearcart lists the tab and may navigate it to a site, like a blank tab
 // it opened itself. It never reads or acts on the page.
 export function isNewTabPage(url) {
   const u = String(url || "");
@@ -236,7 +236,7 @@ export async function resolveAllowedTab(tabId, { peek = false } = {}) {
   const id = await resolveTab(tabId);
   const tab = await api().tabs.get(id);
   if (onNewTab(tab)) {
-    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page with nothing to use; navigate it to a store first`);
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page with nothing to use; navigate it to a web address first`);
   }
   if (onErrorPage(tab)) {
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a page saying Chrome could not reach the site; navigate it somewhere else first`);
@@ -319,14 +319,18 @@ export async function tabsCreate({ url, onCreated } = {}) {
   return { tabId: tab.id };
 }
 
+// Where the agent server's tab sweep sends a stray tab Clearcart opened.
+export const BLANK_PAGE = "about:blank";
+
 export async function navigate({ tabId, url } = {}) {
   if (typeof url !== "string" || !url) throw new BridgeError(ERR.BAD_REQUEST, "url is required");
   const id = await resolveTab(tabId, { nav: true });
+  const mine = await isCreated(id);
   // A user's new tab or error page may only be sent to an allowed address:
   // its history can hold sites the user visited, blocked ones included
   // (Back from the error page loads the address that failed).
-  if ((url === "back" || url === "forward") && !(await isCreated(id)) && onEmptyPage(await api().tabs.get(id))) {
-    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page or an error page; navigate it to a store address instead`);
+  if ((url === "back" || url === "forward") && !mine && onEmptyPage(await api().tabs.get(id))) {
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page or an error page; navigate it to a web address instead`);
   }
   let start;
   const history = (fn, dir) => async () => {
@@ -339,7 +343,11 @@ export async function navigate({ tabId, url } = {}) {
   };
   if (url === "back") start = history((i) => api().tabs.goBack(i), "back");
   else if (url === "forward") start = history((i) => api().tabs.goForward(i), "forward");
-  else {
+  else if (url === BLANK_PAGE) {
+    // Only a tab Clearcart opened; the user's own tabs keep their page.
+    if (!mine) throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is one of the user's tabs; Clearcart only blanks tabs it opened`);
+    start = () => api().tabs.update(id, { url });
+  } else {
     await assertAllowed(url);
     start = () => api().tabs.update(id, { url });
   }
@@ -349,8 +357,8 @@ export async function navigate({ tabId, url } = {}) {
   // The address did not load and the tab is already on Clearcart's error page.
   if (onErrorPage(tab)) return { tabId: tab.id, url: ERROR_URL, title: ERROR_TITLE };
   // History or a redirect can lead to a site that is not allowed; report it
-  // so callers stop driving.
-  if (!(await isAllowed(tab.url))) {
+  // so callers stop driving. A blank page in a tab Clearcart opened is fine.
+  if (!(mine && BLANK.test(tab.url || "")) && !(await isAllowed(tab.url))) {
     let origin = "unknown";
     try {
       origin = new URL(tab.url).origin;

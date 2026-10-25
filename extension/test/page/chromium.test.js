@@ -1,26 +1,27 @@
 // Real-layout check in Playwright's isolated Chromium (never the user's
-// Chrome): mask.js + page.js injected in worker order into live store pages.
+// Chrome): mask.js + page.js injected in worker order into the test shop's
+// live pages (tests/fixtures/shop.mjs).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { startStore } from "./harness.js";
+import { startShop } from "./harness.js";
 
 const file = (p) => fileURLToPath(new URL(p, import.meta.url));
-let store, browser;
+let shop, browser;
 
 before(async () => {
-  store = await startStore();
+  shop = await startShop();
   browser = await chromium.launch({ headless: true });
 });
 after(async () => {
   await browser?.close();
-  store?.stop();
+  await shop?.stop();
 });
 
 async function open(path) {
   const page = await browser.newPage({ viewport: { width: 1000, height: 600 } });
-  await page.goto(store.base + path);
+  await page.goto(shop.base + path);
   await page.addScriptTag({ path: file("../../content/mask.js") });
   await page.addScriptTag({ path: file("../../content/protect.js") });
   await page.addScriptTag({ path: file("../../content/page.js") });
@@ -31,16 +32,16 @@ async function open(path) {
 }
 
 test("checkout: fill_payment, masked read_page, rect hits #place-order", async () => {
-  await fetch(store.base + "/reset", { method: "POST", redirect: "manual" });
-  await fetch(store.base + "/cart/add", {
+  await fetch(shop.base + "/reset", { method: "POST", redirect: "manual" });
+  await fetch(shop.base + "/cart/add", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "product_id=cetirizine-30&quantity=1",
+    body: "product_id=mug&quantity=1",
     redirect: "manual",
   });
   const { page, call } = await open("/checkout");
   const fill = await call("fill_payment", { card: { name: "Ada Lovelace", number: "4111111111111111", exp: "12/29", csc: "737" }, address: "1 Main St" });
-  assert.deepEqual(fill, { ok: true, result: { ok: true, last4: "1111" } });
+  assert.deepEqual([fill.ok, fill.result], [true, { ok: true, last4: "1111" }]);
   const tree = (await call("read_page", { filter: "all" })).result.tree;
   for (const s of ["4111111111111111", "Ada Lovelace", "12/29", "737"]) assert.ok(!tree.includes(s), "leaked " + s);
   const ref = (await call("find", { query: "place order" })).result.matches[0].ref;
@@ -55,10 +56,10 @@ test("checkout: fill_payment, masked read_page, rect hits #place-order", async (
 });
 
 test("cart: hidden addon line is skipped after unticking the add-on", async () => {
-  await fetch(store.base + "/cart/add", {
+  await fetch(shop.base + "/cart/add", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "product_id=cetirizine-30&quantity=1",
+    body: "product_id=mug&quantity=1",
     redirect: "manual",
   });
   const { page, call } = await open("/cart");
@@ -71,11 +72,11 @@ test("cart: hidden addon line is skipped after unticking the add-on", async () =
 });
 
 test("button lock: real hit-testing, label clicks, the badge never blocks a person's click", async () => {
-  await fetch(store.base + "/reset", { method: "POST", redirect: "manual" });
-  await fetch(store.base + "/cart/add", {
+  await fetch(shop.base + "/reset", { method: "POST", redirect: "manual" });
+  await fetch(shop.base + "/cart/add", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "product_id=cetirizine-30&quantity=1",
+    body: "product_id=mug&quantity=1",
     redirect: "manual",
   });
   const { page, call } = await open("/checkout");
@@ -123,10 +124,10 @@ test("button lock: real hit-testing, label clicks, the badge never blocks a pers
 });
 
 test("button lock: a label click would check the add-on back on, so it is refused once unchecked", async () => {
-  await fetch(store.base + "/cart/add", {
+  await fetch(shop.base + "/cart/add", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "product_id=cetirizine-30&quantity=1",
+    body: "product_id=mug&quantity=1",
     redirect: "manual",
   });
   const { page, call } = await open("/cart");

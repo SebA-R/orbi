@@ -47,7 +47,7 @@ export function hasCardNumber(text: string): boolean {
   return Mask.maskCardRuns(String(text)) !== String(text);
 }
 
-export const CARD = "Not sent: that looks like a card number, or the focus is in a card field. Clearcart never types card details; pay_now fills them on the store, and elsewhere the user types them.";
+export const CARD = "Not sent: that looks like a card number, or the focus is in a card field. Clearcart never types card details; pay_now fills them on a Clearcart pay site, and elsewhere the user types them.";
 
 const MASK_SRC = fs.readFileSync(path.join(EXT, "mask.js"), "utf8");
 const PROTECT_SRC = fs.readFileSync(path.join(EXT, "protect.js"), "utf8");

@@ -57,7 +57,7 @@ test("an interrupt with no turn running changes nothing", () => {
 test("an interrupt during the read-back does not confirm or cancel request_checkout", async () => {
   const { s, sent } = session();
   s.userText("buy it");
-  const done = s.requestCheckout({ item: "Advil 50 count", quantity: 1, total: "$14.27" });
+  const done = s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$14.27" });
   await new Promise((r) => setImmediate(r));
   s.interrupt();
   let settled = false;
@@ -75,7 +75,7 @@ test("request_checkout from an interrupted turn is declined without a read-back"
   const { s, sent } = session();
   s.userText("buy it");
   s.interrupt();
-  const r = await s.requestCheckout({ item: "Advil", quantity: 1, total: "$9.00" });
+  const r = await s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
   assert.match(r.content[0].text, /^declined/);
   assert.ok(!sent.some((m) => m.type === "confirm"));
   assert.equal((s as any).state.confirmation, null);

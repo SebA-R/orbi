@@ -14,14 +14,15 @@ export const HOTKEYS = Object.freeze({
 
 // browseMode "open": any web site except the fixed rules in lib/blocklist.js
 // and `blocklist`, the user's blocked sites (lines in lib/blocklist.js's
-// format, seeded with SUGGESTED_BLOCKLIST until the user saves their own). "allowlist": only the `allowlist` origins. In both
-// modes the allowlist sites are the only ones where the pay flow may arm an
-// unlock; open browsing never widens that.
+// format, seeded with SUGGESTED_BLOCKLIST until the user saves their own).
+// "allowlist": only the `allowlist` origins, empty until the user adds some.
+// In both modes the allowlist sites are the only ones where the pay flow may
+// arm an unlock; open browsing never widens that.
 export const BROWSE_MODES = Object.freeze(["open", "allowlist"]);
 
 export const DEFAULTS = Object.freeze({
   agentUrl: "ws://localhost:5050",
-  allowlist: Object.freeze(["http://localhost:4000"]),
+  allowlist: Object.freeze([]),
   browseMode: "open",
   blocklist: SUGGESTED_BLOCKLIST,
   hotkey: "Space",
@@ -38,9 +39,10 @@ export const DEFAULTS = Object.freeze({
   followTab: true,
   // Earcons: listening, sent, cut off, order result, errors (lib/voice/chime.js).
   sounds: true,
-  // Guided mode: the agent describes each page and lets the user choose.
-  // Off, it picks and acts on its own (agent/prompt.ts GUIDED_PROMPT).
-  guidedMode: true,
+  // Guided mode, the mode for blind and low-vision users: the agent
+  // describes each page, reads out the choices and lets the user pick
+  // (agent/prompt.ts GUIDED_PROMPT). Off unless the user turns it on.
+  guidedMode: false,
   // Clearcart's new tab page (newtab/newtab.html), so Space to talk and
   // subtitles work on new tabs. Off: it forwards to Chrome's own.
   newTabPage: true,
@@ -101,7 +103,7 @@ export const SPEED_MAX = 2;
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-// The bridge can drive allowlisted tabs and carries card values for pay_now,
+// The bridge drives the user's tabs and carries card values for pay_now,
 // so it may only point at this machine.
 export function normalizeAgentUrl(value) {
   try {
@@ -167,10 +169,7 @@ export function normalize(raw = {}) {
   const out = { ...DEFAULTS, allowlist: [...DEFAULTS.allowlist], blocklist: [...DEFAULTS.blocklist] };
   const url = raw.agentUrl != null && normalizeAgentUrl(raw.agentUrl);
   if (url) out.agentUrl = url;
-  if (Array.isArray(raw.allowlist)) {
-    const list = [...new Set(raw.allowlist.map(normalizeOrigin).filter(Boolean))];
-    if (list.length) out.allowlist = list;
-  }
+  if (Array.isArray(raw.allowlist)) out.allowlist = [...new Set(raw.allowlist.map(normalizeOrigin).filter(Boolean))];
   if (BROWSE_MODES.includes(raw.browseMode)) out.browseMode = raw.browseMode;
   if (Array.isArray(raw.blocklist)) out.blocklist = parseBlockLines(raw.blocklist).lines;
   if (typeof raw.hotkey === "string" && Object.hasOwn(HOTKEYS, raw.hotkey)) out.hotkey = raw.hotkey;
@@ -261,6 +260,27 @@ export async function seedBlocklist(storage = globalThis.chrome?.storage?.local)
   if (blocklist !== undefined) return false;
   await storage.set({ blocklist: [...SUGGESTED_BLOCKLIST] });
   return true;
+}
+
+// Earlier versions allowed one local test page by default, and saving any
+// setting stored that list. It is gone now: on update the old default is
+// taken out of the stored allowlist once, so only sites the user added stay
+// allowed. Answers true when it removed something.
+export const RETIRED_ALLOWED = Object.freeze(["http://localhost:4000"]);
+export const MIGRATIONS_KEY = "settingsMigrations";
+const DROP_RETIRED_ALLOWED = "drop-retired-allowed-site";
+
+export async function migrateSettings(storage = globalThis.chrome?.storage?.local) {
+  const got = await storage.get([MIGRATIONS_KEY, "allowlist"]);
+  const done = Array.isArray(got[MIGRATIONS_KEY]) ? got[MIGRATIONS_KEY] : [];
+  if (done.includes(DROP_RETIRED_ALLOWED)) return false;
+  const patch = { [MIGRATIONS_KEY]: [...done, DROP_RETIRED_ALLOWED] };
+  if (Array.isArray(got.allowlist)) {
+    const kept = got.allowlist.filter((o) => !RETIRED_ALLOWED.includes(normalizeOrigin(o)));
+    if (kept.length !== got.allowlist.length) patch.allowlist = kept;
+  }
+  await storage.set(patch);
+  return "allowlist" in patch;
 }
 
 export async function saveSettings(patch, storage = globalThis.chrome?.storage?.local) {

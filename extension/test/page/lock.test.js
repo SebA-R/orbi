@@ -1,30 +1,15 @@
-// The button lock inside page.js, against real demo store HTML: markers in
-// read_page and find, form_input on locked controls, the guard_* checks the
-// worker runs before clicks and keys, and press_check / press_ref.
-import { test, before, after } from "node:test";
+// The button lock inside page.js, against the test shop's pages
+// (tests/fixtures/shop.mjs): markers in read_page and find, form_input on
+// locked controls, the guard_* checks the worker runs before clicks and
+// keys, and press_check / press_ref.
+import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadPage, startStore, fetchHtml } from "./harness.js";
+import { loadPage, shopPages } from "./harness.js";
 
-let store;
-const pages = {};
+const BASE = "http://localhost:4100";
+const pages = shopPages();
 
-before(async () => {
-  store = await startStore();
-  const b = store.base;
-  await fetch(b + "/reset", { method: "POST", redirect: "manual" });
-  pages.product = await fetchHtml(b + "/product/cetirizine-30");
-  await fetch(b + "/cart/add", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "product_id=cetirizine-30&quantity=1",
-    redirect: "manual",
-  });
-  pages.cart = await fetchHtml(b + "/cart");
-  pages.checkout = await fetchHtml(b + "/checkout");
-});
-after(() => store && store.stop());
-
-const load = (name, path) => loadPage(pages[name], { url: store.base + path });
+const load = (name, path) => loadPage(pages[name], { url: BASE + path });
 const lineOf = (tree, re) => tree.split("\n").find((l) => re.test(l));
 const refIn = (line) => /\[(ref_\d+)\]/.exec(line)[1];
 
@@ -35,7 +20,7 @@ test("read_page marks Place order [locked] and the add-on [uncheck only]; shoppi
   assert.match(lineOf(cart, /Subscribe/), /checked \[ref_\d+\] \[uncheck only\]$/);
   assert.match(lineOf(cart, /Proceed to checkout/), /\[locked\]$/);
   assert.doesNotMatch(lineOf(cart, /"Remove"/), /locked|uncheck/);
-  const product = (await load("product", "/product/cetirizine-30").call("read_page", {})).result.tree;
+  const product = (await load("product", "/product/mug").call("read_page", {})).result.tree;
   assert.doesNotMatch(lineOf(product, /Add to cart/), /locked/);
   assert.doesNotMatch(product, /\[locked\]/);
 });
@@ -44,7 +29,7 @@ test("find flags locked matches", async () => {
   const p = load("checkout", "/checkout");
   const m = (await p.call("find", { query: "place order" })).result.matches.find((x) => x.role === "button");
   assert.equal(m.locked, true);
-  const add = (await load("product", "/product/cetirizine-30").call("find", { query: "add to cart" })).result.matches[0];
+  const add = (await load("product", "/product/mug").call("find", { query: "add to cart" })).result.matches[0];
   assert.equal(add.locked, undefined);
 });
 
@@ -67,7 +52,7 @@ test("guard_ref and guard_point refuse locked targets and pass normal ones", asy
   assert.equal(r.ok, false);
   assert.equal(r.error.code, "locked");
   const placeRef = refIn(lineOf(tree, /Place order/));
-  assert.equal(r.error.message, "Locked: 'Place order · $" + /Place order · \$([0-9.]+)/.exec(tree)[1] + "' (" + placeRef + ") places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now on the demo store. Elsewhere, tell the user they can finish it themselves.");
+  assert.equal(r.error.message, "Locked: 'Place order · $" + /Place order · \$([0-9.]+)/.exec(tree)[1] + "' (" + placeRef + ") places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.");
   const ok = await p.call("guard_ref", { ref: refIn(lineOf(tree, /textbox "Name on card"/)) });
   assert.equal(ok.ok, true);
 
@@ -101,7 +86,7 @@ test("press_check and press_ref accept only order buttons", async () => {
   btn.getBoundingClientRect = () => ({ x: 10, y: 20, left: 10, top: 20, width: 100, height: 40, right: 110, bottom: 60 });
   p.document.elementFromPoint = () => btn;
   const ok = await p.call("press_check", { ref: place });
-  assert.deepEqual([ok.ok, ok.result], [true, { x: 10, y: 20, width: 100, height: 40, kind: "marked" }]);
+  assert.deepEqual([ok.ok, ok.result], [true, { x: 10, y: 20, width: 100, height: 40, kind: "order" }]);
   // Covered by something else: refused.
   p.document.elementFromPoint = () => p.document.body;
   assert.equal((await p.call("press_check", { ref: place })).error.code, "no_element");
@@ -126,7 +111,7 @@ test("badges come up when the page script loads, outside what read_page and get_
 });
 
 test("page calls fail closed without protect.js", async () => {
-  const p = loadPage(pages.checkout, { url: store.base + "/checkout", page: false });
+  const p = loadPage(pages.checkout, { url: BASE + "/checkout", page: false });
   delete p.window.ClearcartProtect;
   p.inject = null;
   p.window.eval(await (await import("node:fs")).promises.readFile(new URL("../../content/page.js", import.meta.url), "utf8"));

@@ -1,3 +1,4 @@
+import { PAY_SITE } from "./pay-site-env.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -14,12 +15,12 @@ const getCard = async () => ({ ...CARD });
 function confirmed(total = "$14.27", tab: number | null = 7, extra: Partial<Confirmation> = {}): PayState {
   return {
     lastTabId: tab,
-    confirmation: { item: "Advil 50 count", quantity: 1, total, state: "confirmed", confirmedAt: Date.now(), tabId: tab, ...extra },
+    confirmation: { item: "Blue mug", quantity: 1, total, state: "confirmed", confirmedAt: Date.now(), tabId: tab, ...extra },
     cardFieldsLive: false,
   };
 }
 
-type StoreOpts = {
+type CheckoutOpts = {
   total?: string;
   url?: string;
   fields?: Array<{ kind: string; filled: boolean }>;
@@ -29,9 +30,9 @@ type StoreOpts = {
   press?: "ok" | "locked";
 };
 
-// A fake extension driving a fake store tab 7.
-function fakeStore(o: StoreOpts = {}) {
-  let url = o.url ?? "http://localhost:4000/checkout";
+// A fake extension driving a checkout tab 7 on a pay site.
+function fakeCheckout(o: CheckoutOpts = {}) {
+  let url = o.url ?? `${PAY_SITE}/checkout`;
   const calls: Array<{ method: string; params: any }> = [];
   const fields = o.fields ?? [
     { kind: "address", filled: false },
@@ -41,6 +42,7 @@ function fakeStore(o: StoreOpts = {}) {
     { kind: "cc-csc", filled: false },
   ];
   let rejected = false;
+  let ordered = false;
   const handler = async (method: string, params: any) => {
     calls.push({ method, params });
     switch (method) {
@@ -50,7 +52,7 @@ function fakeStore(o: StoreOpts = {}) {
       case "tabs_context":
         return { tabs: [{ tabId: 7, url, title: "t", active: true }], groupId: 1 };
       case "get_page_text":
-        if (url.includes("/order/")) return { url, title: "Order", text: "Thanks!\nTotal charged: $14.27\nPaid with: Visa ending in 4242" };
+        if (ordered) return { url, title: "Order", text: "Thanks!\nTotal charged: $14.27\nPaid with: Visa ending in 4242" };
         return { url, title: "Checkout", text: `Shipping\nOrder total ${o.total ?? "$14.27"}\nPlace order · ${o.total ?? "$14.27"}` };
       case "read_fields":
         return { fields };
@@ -67,7 +69,10 @@ function fakeStore(o: StoreOpts = {}) {
         return { nonce: `nonce-${calls.filter((c) => c.method === "lock_arm").length}`, expiresInMs: 30_000 };
       case "press_protected":
         if (o.press === "locked") throw new ExtError("locked", "Locked: no valid unlock for this press");
-        if ((o.outcome ?? "order") === "order") url = "http://localhost:4000/order/abc";
+        if ((o.outcome ?? "order") === "order") {
+          ordered = true;
+          url = `${PAY_SITE}/order/abc`;
+        }
         else if (o.outcome === "reject") rejected = true;
         return { ok: true, via: "cdp" };
       case "read_page":
@@ -89,17 +94,17 @@ function noCard(value: unknown) {
 }
 
 test("happy path: fill_payment, press place order through the unlock, receipt", async () => {
-  const s = fakeStore();
+  const s = fakeCheckout();
   const state = confirmed();
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
-  assert.deepEqual(r, { ok: true, last4: "4242", receipt: { item: "Advil 50 count", total: "$14.27", last4: "4242" } });
+  assert.deepEqual(r, { ok: true, last4: "4242", receipt: { item: "Blue mug", total: "$14.27", last4: "4242" } });
   noCard(r);
   assert.equal(state.cardFieldsLive, false);
   assert.equal(state.confirmation?.state, "used");
   const fill = s.calls.find((c) => c.method === "fill_payment")!;
   assert.deepEqual(fill.params.card, CARD);
   assert.equal(fill.params.tabId, 7);
-  assert.ok(fill.params.address, "fills the empty address");
+  assert.equal("address" in fill.params, false, "never fills an address");
   assert.ok(!s.calls.some((c) => c.method === "click"), "no plain click on the locked button");
   const arm = s.calls.findIndex((c) => c.method === "lock_arm");
   const press = s.calls.findIndex((c) => c.method === "press_protected");
@@ -108,17 +113,8 @@ test("happy path: fill_payment, press place order through the unlock, receipt", 
   assert.ok(!s.calls.some((c) => c.method === "clear_payment"));
 });
 
-test("address already filled is left alone", async () => {
-  const s = fakeStore({
-    fields: ["cc-name", "cc-number", "cc-exp", "cc-csc"].map((kind) => ({ kind, filled: false })).concat([{ kind: "address", filled: true }]),
-  });
-  const r = await payNowExt(confirmed(), { ...fast, bridge: s.bridge as any });
-  assert.equal(r.ok, true);
-  assert.equal("address" in s.calls.find((c) => c.method === "fill_payment")!.params, false);
-});
-
 test("refuses without a confirmation", async () => {
-  const s = fakeStore();
+  const s = fakeCheckout();
   const state = confirmed();
   state.confirmation!.state = "pending";
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
@@ -127,7 +123,7 @@ test("refuses without a confirmation", async () => {
 });
 
 test("refuses off the checkout page", async () => {
-  const s = fakeStore({ url: "http://localhost:4000/cart" });
+  const s = fakeCheckout({ url: `${PAY_SITE}/cart` });
   const r = await payNowExt(confirmed(), { ...fast, bridge: s.bridge as any });
   assert.equal(r.ok, false);
   assert.match((r as any).error, /not the checkout page/);
@@ -135,7 +131,7 @@ test("refuses off the checkout page", async () => {
 });
 
 test("refuses on a total mismatch and burns the confirmation", async () => {
-  const s = fakeStore({ total: "$19.99" });
+  const s = fakeCheckout({ total: "$19.99" });
   const state = confirmed("$14.27");
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
   assert.equal(r.ok, false);
@@ -145,14 +141,14 @@ test("refuses on a total mismatch and burns the confirmation", async () => {
 });
 
 test("refuses when the card fields are missing", async () => {
-  const s = fakeStore({ fields: [{ kind: "address", filled: false }] });
+  const s = fakeCheckout({ fields: [{ kind: "address", filled: false }] });
   const r = await payNowExt(confirmed(), { ...fast, bridge: s.bridge as any });
   assert.equal(r.ok, false);
   assert.ok(!s.calls.some((c) => c.method === "fill_payment"));
 });
 
 test("fill_payment errors never carry the extension's message", async () => {
-  const s = fakeStore({
+  const s = fakeCheckout({
     onFill: (p) => {
       throw new ExtError("payment_field", `bad number ${p.card.number}`);
     },
@@ -165,15 +161,15 @@ test("fill_payment errors never carry the extension's message", async () => {
   assert.equal(state.cardFieldsLive, false);
 });
 
-test("store rejection is reported and the form is cleared", async () => {
-  const s = fakeStore({ outcome: "reject" });
+test("a rejected payment is reported and the form is cleared", async () => {
+  const s = fakeCheckout({ outcome: "reject" });
   const r = await payNowExt(confirmed(), { ...fast, bridge: s.bridge as any });
-  assert.deepEqual(r, { ok: false, error: "The store rejected the payment: Card declined" });
+  assert.deepEqual(r, { ok: false, error: "The site rejected the payment: Card declined" });
   assert.ok(s.calls.some((c) => c.method === "clear_payment"));
 });
 
 test("order page timeout clears the form", async () => {
-  const s = fakeStore({ outcome: "stuck" });
+  const s = fakeCheckout({ outcome: "stuck" });
   const state = confirmed();
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
   assert.equal(r.ok, false);
@@ -188,7 +184,7 @@ test("over a real socket: card travels only in fill_payment, bridge logs stay cl
   const server = http.createServer();
   bridge.attach(server);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const s = fakeStore();
+  const s = fakeCheckout();
   const ext = new FakeExt(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/ext`, s.handler);
   try {
     await ext.open();
@@ -212,7 +208,7 @@ test("alertText reads named alerts and alerts with text children", () => {
 });
 
 test("the extension refusing the press stops payment and clears the form", async () => {
-  const s = fakeStore({ press: "locked" });
+  const s = fakeCheckout({ press: "locked" });
   const state = confirmed();
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
   assert.deepEqual(r, { ok: false, error: "Could not press Place order on the checkout page." });
@@ -221,7 +217,7 @@ test("the extension refusing the press stops payment and clears the form", async
 });
 
 test("the gate refuses an origin that is not a pay site before any card is read", async () => {
-  const s = fakeStore();
+  const s = fakeCheckout();
   let read = false;
   const gate = new UnlockGate({ isAllowed: () => false });
   const r = await payNowExt(confirmed(), { ...fast, gate, getCard: async () => ((read = true), { ...CARD }), bridge: s.bridge as any });
@@ -232,7 +228,7 @@ test("the gate refuses an origin that is not a pay site before any card is read"
 });
 
 test("a grant spent elsewhere cannot press", async () => {
-  const s = fakeStore();
+  const s = fakeCheckout();
   // A gate whose grants are expired by the time the press comes.
   let t = 0;
   const gate = new UnlockGate({ now: () => (t += 70_000) });
@@ -245,7 +241,7 @@ test("a grant spent elsewhere cannot press", async () => {
 // Security review: a yes expires, is tied to its tab and cart, and is spent
 // before pay_now awaits anything.
 test("a yes older than a minute is refused and spent", async () => {
-  const s = fakeStore();
+  const s = fakeCheckout();
   const state = confirmed("$14.27", 7, { confirmedAt: Date.now() - CONFIRM_TTL_MS - 1_000 });
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
   assert.equal(r.ok, false);
@@ -255,7 +251,7 @@ test("a yes older than a minute is refused and spent", async () => {
 });
 
 test("a yes given on another tab is refused", async () => {
-  const s = fakeStore();
+  const s = fakeCheckout();
   const state = confirmed("$14.27", 7, { tabId: 3 });
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
   assert.equal(r.ok, false);
@@ -268,32 +264,53 @@ test("a yes given on another tab is refused", async () => {
 
 test("a cart that changed since the yes is refused, an unchanged one pays", async () => {
   const page = "Shipping\nOrder total $14.27\nPlace order · $14.27";
-  const s = fakeStore();
-  const changed = confirmed("$14.27", 7, { cart: cartLines("1 × Advil 50 count: $9.99\n" + page) });
+  const s = fakeCheckout();
+  const changed = confirmed("$14.27", 7, { cart: cartLines("1 × Blue mug: $9.99\n" + page) });
   const r = await payNowExt(changed, { ...fast, bridge: s.bridge as any });
   assert.equal(r.ok, false);
   assert.match((r as any).error, /cart changed/);
   assert.ok(!s.calls.some((c) => c.method === "fill_payment"));
   const same = confirmed("$14.27", 7, { cart: cartLines(page) });
-  assert.equal((await payNowExt(same, { ...fast, bridge: fakeStore().bridge as any })).ok, true);
+  assert.equal((await payNowExt(same, { ...fast, bridge: fakeCheckout().bridge as any })).ok, true);
 });
 
 test("an early return spends the yes: a retry after missing card fields is refused", async () => {
-  const s = fakeStore({ fields: [{ kind: "address", filled: false }] });
+  const s = fakeCheckout({ fields: [{ kind: "address", filled: false }] });
   const state = confirmed();
   assert.equal((await payNowExt(state, { ...fast, bridge: s.bridge as any })).ok, false);
   assert.equal(state.confirmation?.state, "used");
-  const again = await payNowExt(state, { ...fast, bridge: fakeStore().bridge as any });
+  const again = await payNowExt(state, { ...fast, bridge: fakeCheckout().bridge as any });
   assert.equal(again.ok, false);
   assert.match((again as any).error, /No confirmed checkout/);
 });
 
 test("two pay_now calls at once: the yes is spent synchronously, so only one fills", async () => {
-  const s = fakeStore();
+  const s = fakeCheckout();
   const state = confirmed();
   const [a, b] = await Promise.all([payNowExt(state, { ...fast, bridge: s.bridge as any }), payNowExt(state, { ...fast, bridge: s.bridge as any })]);
   assert.deepEqual([a.ok, b.ok].sort(), [false, true]);
   assert.equal(s.calls.filter((c) => c.method === "fill_payment").length, 1);
   assert.equal(s.calls.filter((c) => c.method === "press_protected").length, 1);
   assert.equal(claimConfirmation(state).ok, false);
+});
+
+test("a checkout page with an order path is not the order page: no receipt, and the form is cleared", async () => {
+  for (const url of [`${PAY_SITE}/order/checkout`, `${PAY_SITE}/orders/123/payment`]) {
+    const s = fakeCheckout({ url, outcome: "stuck" });
+    const state = confirmed();
+    const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
+    assert.equal(r.ok, false, url);
+    assert.match((r as any).error, /did not load in time/);
+    assert.ok(s.calls.some((c) => c.method === "clear_payment"), `clears the form on ${url}`);
+    assert.equal(state.cardFieldsLive, false);
+  }
+});
+
+test("on the order page, a form that still holds card values is cleared", async () => {
+  const s = fakeCheckout({ fields: [{ kind: "cc-name", filled: false }, { kind: "cc-number", filled: true }, { kind: "cc-exp", filled: false }, { kind: "cc-csc", filled: false }] });
+  const state = confirmed();
+  const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
+  assert.equal(r.ok, true);
+  assert.ok(s.calls.some((c) => c.method === "clear_payment"));
+  assert.equal(state.cardFieldsLive, false);
 });

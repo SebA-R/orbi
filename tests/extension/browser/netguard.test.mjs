@@ -66,7 +66,7 @@ before(async () => {
   const src = fs.readFileSync(settings, "utf8");
   const patched = src
     .replace('agentUrl: "ws://localhost:5050"', `agentUrl: "ws://127.0.0.1:${wss.address().port}"`)
-    .replace('["http://localhost:4000"]', `["http://localhost:${port}"]`);
+    .replace("allowlist: Object.freeze([])", `allowlist: Object.freeze(["http://localhost:${port}"])`);
   assert.notEqual(patched, src, "settings defaults not found");
   fs.writeFileSync(settings, patched);
 
@@ -86,7 +86,7 @@ after(async () => {
   for (const d of [profile, extDir]) if (d) fs.rmSync(d, { recursive: true, force: true });
 });
 
-test("the allowed local store still works", async () => {
+test("an allowed local page still works", async () => {
   const { tabId } = await call("tabs_create", { url: `http://localhost:${port}/` });
   assert.match((await call("get_page_text", { tabId })).text, /secret-voice-token/);
 });

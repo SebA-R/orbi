@@ -104,7 +104,7 @@ function upgradeStatus(port: number, pathname: string, host: string, origin?: st
 
 test("hostAllowed: only this computer's names on this port", () => {
   for (const h of ["localhost:5050", "127.0.0.1:5050", "[::1]:5050", "LOCALHOST:5050"]) assert.ok(hostAllowed(h, 5050), h);
-  for (const h of ["localtest.me:5050", "127.0.0.1.nip.io:5050", "evil.example:5050", "localhost:4000", "localhost", "[::ffff:127.0.0.1]:5050", "", undefined]) {
+  for (const h of ["localtest.me:5050", "127.0.0.1.nip.io:5050", "evil.example:5050", "localhost:4100", "localhost", "[::ffff:127.0.0.1]:5050", "", undefined]) {
     assert.equal(hostAllowed(h as any, 5050), false, String(h));
   }
 });
@@ -113,7 +113,7 @@ for (const [port, env, label] of [[5172, {}, "default mode"], [5173, { CLEARCART
   test(`${label}: requests with a foreign Host header are refused (DNS rebinding)`, async () => {
     const child = await startServer(port, env);
     try {
-      for (const host of [`localtest.me:${port}`, `127.0.0.1.nip.io:${port}`, `evil.example:${port}`, "localhost:4000"]) {
+      for (const host of [`localtest.me:${port}`, `127.0.0.1.nip.io:${port}`, `evil.example:${port}`, "localhost:4100"]) {
         assert.equal(await getStatus(port, "/cartesia-token", host), 403, host);
         assert.equal(await getStatus(port, "/healthz", host), 403, host);
         assert.equal(await getStatus(port, "/", host), 403, host);
@@ -126,7 +126,7 @@ for (const [port, env, label] of [[5172, {}, "default mode"], [5173, { CLEARCART
       // could speak as the user, so it is refused.
       const paths = env.CLEARCART_BROWSER ? ["/session", "/ext"] : ["/session"];
       for (const p of paths) {
-        for (const origin of ["https://evil.example", "null", "http://localhost:4000", "chrome-extension://abcdefghijklmnopabcdefghijklmnop"]) {
+        for (const origin of ["https://evil.example", "null", "http://localhost:4100", "chrome-extension://abcdefghijklmnopabcdefghijklmnop"]) {
           assert.equal(await upgradeStatus(port, p, `localhost:${port}`, origin), 403, `${p} ${origin}`);
         }
       }
