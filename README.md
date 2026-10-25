@@ -2,7 +2,7 @@
 
 ![The Clearcart voice console, listening](docs/images/console-listening-dark.jpg)
 
-**Shop any store by voice.** Clearcart is a voice shopping agent for blind and low-vision screen reader users. You say what you want, and Clearcart searches, compares and reads back products, fills the cart and checks out by driving a real browser for you. Payment details come from a local vault and are filled straight into the checkout form after a Touch ID prompt, so the AI model never sees your card.
+**Shop any store by voice.** Clearcart is a voice shopping agent for blind and low-vision screen reader users. You say what you want, and Clearcart searches, compares and reads back products, fills the cart and checks out by driving a real browser for you. Payment details come from a local vault and are filled straight into the checkout form by our own code after your spoken yes, so the AI model never sees your card.
 
 ![Clearcart on aritzia.com: a sold-out size is caught, captions show both sides of the conversation](docs/images/demo-loop.gif)
 
@@ -14,7 +14,7 @@
 2. **Claude plans the trip.** Each finished turn goes to a Claude agent (Claude Agent SDK, `claude-sonnet-5-5`).
 3. **Browser tools do the clicking.** The agent searches, opens products, picks sizes, closes pop-ups without accepting them and adds to the cart through Open Claude in Chrome.
 4. **Read-back, then a spoken yes.** Before paying, Clearcart reads back the item, the total and the card. Only an explicit "yes" confirms the order.
-5. **The card is filled outside the model.** After Touch ID, a local Keychain vault fills the card fields directly. While card values are in the form, the agent can't screenshot or read the page.
+5. **The card is filled outside the model.** After your spoken yes, our code reads the card from your macOS Keychain and fills the card fields directly. While card values are in the form, the agent can't screenshot or read the page.
 6. **Spoken receipt.** Cartesia Sonic reads the order back, and the console shows a receipt card.
 
 ## Demo examples
@@ -66,7 +66,7 @@ These runs used real retail sites, but they are **AI-to-AI simulations**: a sepa
 - **Voice:** Cartesia Ink 2 speech-to-text (`/stt/turns/websocket`) and Cartesia Sonic text-to-speech (`/tts/websocket`)
 - **Agent:** Claude via the Claude Agent SDK (TypeScript), model `claude-sonnet-5-5`
 - **Browser automation:** the third-party extension Open Claude in Chrome, plus our own add-ons
-- **Payment vault:** a native messaging host with the macOS Keychain and Touch ID that fills card fields without the model ever seeing the card
+- **Payment vault:** the card is read from the macOS Keychain and filled into the form by our own code, without the model ever seeing it (a Touch ID prompt is planned, not built yet)
 - **Demo store and verifier:** the Visa Trusted Agent Protocol sample
 - **Payments:** the Visa Acceptance sandbox
 
@@ -77,14 +77,14 @@ These runs used real retail sites, but they are **AI-to-AI simulations**: a sepa
 | `agent/` | Claude Agent SDK voice agent server |
 | `voice/` | Cartesia STT/TTS client |
 | `extension-addons/` | Our changes on top of Open Claude in Chrome (side panel, payment fill, redaction) |
-| `vault/` | Native messaging host, Keychain and Touch ID helper |
+| `vault/` | Keychain card reader and test card setup script |
 | `store/` | Setup notes for the demo store (TAP sample) |
 | `docs/` | Design notes and documentation; `docs/demo/` has the demo video, credits and raw runs |
 | `vendor/open-claude-in-chrome/` | Git submodule for Open Claude in Chrome (third-party) |
 
 ## Setup
 
-Needs macOS (Keychain and Touch ID), Node 20 or newer and Chrome.
+Needs macOS (for the Keychain), Node 20 or newer and Chrome.
 
 1. **Clone with the submodule:** `git clone --recurse-submodules <repo>`, then install the Open Claude in Chrome extension from `vendor/open-claude-in-chrome/`.
 2. **Keys:** copy `.env.example` to `.env` and fill in `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` (the `VISA_ACCEPTANCE_*` keys are for the sandbox). `.env` is gitignored.
