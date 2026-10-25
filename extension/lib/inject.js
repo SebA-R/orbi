@@ -1,11 +1,12 @@
 // Chrome only injects manifest content scripts into pages loaded after an
 // install, update, reload or site access grant. This adds them to the tabs
 // that were already open, so hold-to-talk and captions work there too.
-// Both scripts guard against running twice in the same page.
+// Each script guards against running twice in the same page.
 
 export const CONTENT_SCRIPTS = [
   { files: ["content/hotkey.js"], allFrames: true },
   { files: ["content/subtitles.js"], allFrames: false },
+  { files: ["content/context.js"], allFrames: false },
 ];
 
 const BLOCKED_HOSTS = new Set(["chromewebstore.google.com"]);
@@ -19,7 +20,7 @@ export function canInject(url) {
   return true;
 }
 
-// Resolves to the ids of the tabs that got both scripts. Never throws.
+// Resolves to the ids of the tabs that got every script. Never throws.
 export async function injectIntoOpenTabs(chromeApi = globalThis.chrome) {
   const done = [];
   if (!chromeApi?.scripting?.executeScript) return done;

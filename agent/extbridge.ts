@@ -22,6 +22,8 @@ export const SERVER_NAME = "clearcart-agent";
 export const TOOLS = [
   "tabs_context",
   "tabs_create",
+  "tabs_close",
+  "tabs_activate",
   "navigate",
   "read_page",
   "find",
@@ -33,7 +35,7 @@ export const TOOLS = [
   "scroll",
   "screenshot",
 ] as const;
-export const INTERNAL = ["tab_info", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref", "lock_arm", "press_protected"] as const;
+export const INTERNAL = ["tab_info", "agent_tabs", "page_context", "read_fields", "fill_payment", "clear_payment", "rect", "click_ref", "lock_arm", "press_protected"] as const;
 export const ERR = {
   BAD_REQUEST: "bad_request",
   UNKNOWN_METHOD: "unknown_method",

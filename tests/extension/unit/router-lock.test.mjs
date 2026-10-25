@@ -31,6 +31,7 @@ function fakes({ locked = new Set(), url = "http://localhost:4000/checkout", cdp
     resolveAllowedTab: async (id) => id ?? 7,
     tabInfo: async ({ tabId }) => ({ tabId, url: state.url, title: "t" }),
     isPaySite: async (u) => new URL(u).origin === "http://localhost:4000",
+    assertPageAllowed: async () => {},
   };
   const cdp = {
     click: async (o) => {

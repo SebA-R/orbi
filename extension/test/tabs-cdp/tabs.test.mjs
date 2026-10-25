@@ -3,86 +3,195 @@ import assert from "node:assert/strict";
 
 import { installChrome } from "./chrome-mock.mjs";
 import {
-  GROUP_KEY, GROUP_TITLE, groupId, navigate, navigateAndWait, onGroupRemoved, resolveAllowedTab, resolveTab,
-  isPaySite, tabInfo, tabsContext, tabsCreate,
+  LEGACY_GROUP_TITLE, STATE_KEY, agentTabs, assertPageAllowed, navigate, navigateAndWait, onTabRemoved, originPath, resolveAllowedTab, resolveTab,
+  isPaySite, tabInfo, tabsActivate, tabsClose, tabsContext, tabsCreate, ungroupLegacy,
 } from "../../background/tabs.js";
+import * as netguard from "../../background/netguard.js";
 import { ERR } from "../../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST } from "../../lib/blocklist.js";
 
 const STORE = "http://localhost:4000";
 
-test("tabsContext is empty before any agent tab exists", async () => {
-  installChrome();
-  assert.deepEqual(await tabsContext(), { tabs: [], groupId: null });
-});
+// A user's own tab, already loaded, not opened by Clearcart.
+async function userTab(c, url, { active = false, title = "User tab" } = {}) {
+  const t = await c.tabs.create({ url: "about:blank", active });
+  Object.assign(c._tabs.get(t.id), { url, title, status: "complete" });
+  return t.id;
+}
 
-test("tabsCreate makes a Clearcart group, persists its id and loads the url", async () => {
-  const c = installChrome();
+function fresh(opts) {
+  netguard._reset();
+  return installChrome(opts);
+}
+
+test("no tab group is ever created", async () => {
+  const c = fresh();
   const { tabId } = await tabsCreate({ url: `${STORE}/` });
-  const gid = c.storage.session.data[GROUP_KEY];
-  assert.equal(c._groups.get(gid).title, GROUP_TITLE);
-  assert.equal(c._tabs.get(tabId).groupId, gid);
-  assert.equal(c._tabs.get(tabId).status, "complete");
-  const ctx = await tabsContext();
-  assert.equal(ctx.groupId, gid);
-  assert.deepEqual(ctx.tabs, [{ tabId, url: `${STORE}/`, title: `Title of ${STORE}/`, active: true }]);
+  await navigate({ tabId, url: `${STORE}/cart` });
+  assert.equal(c._groups.size, 0);
+  assert.equal(c._tabs.get(tabId).groupId, -1);
 });
 
-test("a second tab joins the same group", async () => {
-  const c = installChrome();
-  const a = await tabsCreate({});
-  const b = await tabsCreate({ url: `${STORE}/p/1` });
-  assert.equal(c._groups.size, 1);
-  assert.equal(c._tabs.get(a.tabId).groupId, c._tabs.get(b.tabId).groupId);
-  assert.equal((await tabsContext()).tabs.length, 2);
+test("new tabs open in the background next to the user's tab", async () => {
+  const c = fresh();
+  const mine = await userTab(c, "https://www.etsy.com/", { active: true });
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/search?q=mug" });
+  const create = c._calls.find((x) => x[0] === "tabs.create" && x[1].active === false);
+  assert.deepEqual(create[1], { url: "about:blank", active: false, windowId: 1, index: c._tabs.get(mine).index + 1 });
+  assert.equal(c._tabs.get(mine).active, true, "the user stays on their tab");
+  assert.equal(c._tabs.get(tabId).active, false);
 });
 
-test("allowlist mode: tabsCreate refuses a non-allowlisted url before opening anything", async () => {
-  const c = installChrome({ local: { browseMode: "allowlist" } });
-  await assert.rejects(tabsCreate({ url: "https://evil.example/" }), (e) => e.code === ERR.NOT_ALLOWED);
-  assert.equal(c._tabs.size, 0);
+test("tabsContext lists the user's tabs and Clearcart's, with origin+path only, and hides blocked tabs", async () => {
+  const c = fresh();
+  const etsy = await userTab(c, "https://www.etsy.com/listing/1/mug?ref=search#reviews", { active: true, title: "Mug" });
+  const mail = await userTab(c, "https://mail.google.com/mail/u/0/#inbox");
+  const local = await userTab(c, "http://localhost:5050/");
+  const settings = await userTab(c, "chrome://settings/");
+  const login = await userTab(c, "https://user:pw@shop.example/");
+  const newtab = await userTab(c, "chrome://newtab/");
+  const { tabId: mineBlank } = await tabsCreate({});
+  const { tabId: mine } = await tabsCreate({ url: `${STORE}/` });
+  const { tabs } = await tabsContext();
+  assert.deepEqual(tabs.map((t) => t.tabId).sort(), [etsy, mineBlank, mine].sort());
+  assert.deepEqual(tabs.find((t) => t.tabId === etsy), { tabId: etsy, title: "Mug", url: "https://www.etsy.com/listing/1/mug", active: true, openedByClearcart: false });
+  assert.equal(tabs.find((t) => t.tabId === mine).openedByClearcart, true);
+  for (const id of [mail, local, settings, login, newtab]) {
+    await assert.rejects(resolveAllowedTab(id), (e) => e.code === ERR.NOT_ALLOWED && !/google|localhost/.test(e.message), String(id));
+    await assert.rejects(navigate({ tabId: id, url: "https://www.etsy.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
+  }
+  assert.equal(originPath("https://a.example/p?q=1#f"), "https://a.example/p");
 });
 
-test("group id is recovered by title when session storage is lost", async () => {
-  const c = installChrome();
-  await tabsCreate({});
-  const gid = c.storage.session.data[GROUP_KEY];
-  delete c.storage.session.data[GROUP_KEY];
-  assert.equal(await groupId(), gid);
-  assert.equal(c.storage.session.data[GROUP_KEY], gid);
+test("a tab served from a local address is hidden and refused (netguard)", async () => {
+  const c = fresh();
+  const id = await userTab(c, "https://rebind.example/");
+  netguard.noteResponse({ tabId: id, type: "main_frame", url: "https://rebind.example/", ip: "127.0.0.1" });
+  assert.equal((await tabsContext()).tabs.length, 0);
+  await assert.rejects(resolveAllowedTab(id), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
-test("a stale stored group id is dropped and a new group created", async () => {
-  const c = installChrome({ session: { [GROUP_KEY]: 999 } });
-  assert.equal(await groupId(), null);
-  assert.equal(GROUP_KEY in c.storage.session.data, false);
-  await tabsCreate({});
-  assert.notEqual(c.storage.session.data[GROUP_KEY], 999);
+test("every call checks the tab again: a user tab that moves to a blocked site is refused", async () => {
+  const c = fresh();
+  const id = await userTab(c, "https://www.etsy.com/");
+  assert.equal(await resolveAllowedTab(id), id);
+  c._tabs.get(id).url = "https://www.paypal.com/signin";
+  await assert.rejects(resolveAllowedTab(id), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
-test("closing the last agent tab clears the stored group", async () => {
-  const c = installChrome();
-  c.tabGroups.onRemoved.addListener(onGroupRemoved);
-  const { tabId } = await tabsCreate({});
-  await c.tabs.remove(tabId);
-  await new Promise((r) => setTimeout(r, 0));
-  assert.equal(GROUP_KEY in c.storage.session.data, false);
+test("Clearcart closes only tabs it opened", async () => {
+  const c = fresh();
+  const user = await userTab(c, "https://www.etsy.com/");
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
+  await assert.rejects(tabsClose({ tabId: user }), (e) => e.code === ERR.NOT_ALLOWED && /only closes tabs it opened/.test(e.message));
+  assert.ok(c._tabs.has(user));
+  assert.deepEqual(await tabsClose({ tabId }), { ok: true });
+  assert.ok(!c._tabs.has(tabId));
 });
 
-test("resolveTab defaults to the active agent tab and rejects outsiders", async () => {
-  const c = installChrome();
-  await assert.rejects(resolveTab(), (e) => e.code === ERR.NO_TAB);
-  const outside = await c.tabs.create({ url: "about:blank", active: false });
-  const { tabId } = await tabsCreate({});
+test("tabsActivate brings an allowed tab to the front, never a blocked one", async () => {
+  const c = fresh();
+  await userTab(c, "https://www.etsy.com/", { active: true });
+  const mail = await userTab(c, "https://mail.google.com/");
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/c/mugs" });
+  await tabsActivate({ tabId });
+  assert.equal(c._tabs.get(tabId).active, true);
+  await assert.rejects(tabsActivate({ tabId: mail }), (e) => e.code === ERR.NOT_ALLOWED);
+});
+
+test("resolveTab defaults to the tab Clearcart used last, else the user's active tab", async () => {
+  const c = fresh();
+  const active = await userTab(c, "https://www.etsy.com/", { active: true });
+  assert.equal(await resolveTab(), active);
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/x" });
   assert.equal(await resolveTab(), tabId);
-  assert.equal(await resolveTab(tabId), tabId);
-  await assert.rejects(resolveTab(outside.id), (e) => e.code === ERR.NO_TAB);
+  await c.tabs.remove(tabId);
+  await onTabRemoved(tabId);
+  assert.equal(await resolveTab(), active);
   await assert.rejects(resolveTab(12345), (e) => e.code === ERR.NO_TAB);
   await assert.rejects(resolveTab("1"), (e) => e.code === ERR.BAD_REQUEST);
 });
 
+test("agentTabs (the sweep) holds only tabs Clearcart opened, blocked ones included", async () => {
+  const c = fresh();
+  const untouched = await userTab(c, "https://mail.google.com/");
+  const used = await userTab(c, "https://www.etsy.com/");
+  await navigate({ tabId: used, url: "https://www.etsy.com/cart" });
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
+  // A clicked link lands the agent's own tab on a blocked site.
+  await navigateAndWait(tabId, () => c.tabs.update(tabId, { url: "https://www.paypal.com/signin" }));
+  const { tabs } = await agentTabs();
+  assert.deepEqual(tabs.map((t) => t.tabId), [tabId]);
+  assert.ok(!tabs.some((t) => t.tabId === untouched || t.tabId === used));
+  // The sweep may still send it back.
+  assert.equal((await navigate({ tabId, url: "back" })).url, "https://www.etsy.com/");
+  assert.deepEqual(c.storage.session.data[STATE_KEY].created, [tabId]);
+});
+
+test("a user tab Clearcart navigated is never swept or navigated once the user opens a blocked site in it", async () => {
+  const c = fresh();
+  const id = await userTab(c, "https://www.etsy.com/");
+  await navigate({ tabId: id, url: "https://www.etsy.com/cart" });
+  assert.equal(await resolveAllowedTab(id), id);
+  // The user opens Gmail in their own tab.
+  c._tabs.get(id).url = "https://mail.google.com/mail/u/0/#inbox";
+  assert.deepEqual((await agentTabs()).tabs, []);
+  await assert.rejects(navigate({ tabId: id, url: "back" }), (e) => e.code === ERR.NOT_ALLOWED && !/google/.test(e.message));
+  await assert.rejects(navigate({ tabId: id, url: "https://www.etsy.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
+  await assert.rejects(tabInfo({ tabId: id }), (e) => e.code === ERR.NOT_ALLOWED);
+  assert.equal(c._tabs.get(id).url, "https://mail.google.com/mail/u/0/#inbox");
+});
+
+test("a driven list left by an older version gives no tab a pass", async () => {
+  const c = fresh();
+  const id = await userTab(c, "https://mail.google.com/");
+  c.storage.session.data[STATE_KEY] = { created: [], driven: [id], last: null };
+  assert.deepEqual((await agentTabs()).tabs, []);
+  await assert.rejects(navigate({ tabId: id, url: "https://www.etsy.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
+});
+
+test("navigate reports origin and path only, never the query string or fragment", async () => {
+  fresh();
+  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
+  const r = await navigate({ tabId, url: "https://www.etsy.com/oauth/callback?code=SECRET&state=x#access_token=TOKEN" });
+  assert.equal(r.url, "https://www.etsy.com/oauth/callback");
+  assert.ok(!r.url.includes("SECRET") && !r.url.includes("TOKEN"));
+  // The agent server's internal pay flow still gets the full URL.
+  assert.match((await tabInfo({ tabId })).url, /code=SECRET/);
+});
+
+test("assertPageAllowed drops a result from a page that moved to a blocked site", async () => {
+  const c = fresh();
+  const id = await userTab(c, "https://www.etsy.com/");
+  await assertPageAllowed(id);
+  await assertPageAllowed(id, "https://www.etsy.com/c/mugs");
+  await assert.rejects(assertPageAllowed(id, "https://mail.google.com/"), (e) => e.code === ERR.NOT_ALLOWED && !/google/.test(e.message));
+  c._tabs.get(id).pendingUrl = "https://www.paypal.com/signin";
+  await assert.rejects(assertPageAllowed(id), (e) => e.code === ERR.NOT_ALLOWED);
+  delete c._tabs.get(id).pendingUrl;
+  c._tabs.get(id).url = "https://www.paypal.com/signin";
+  await assert.rejects(assertPageAllowed(id), (e) => e.code === ERR.NOT_ALLOWED);
+});
+
+test("ungroupLegacy takes tabs out of the old Clearcart group without closing them", async () => {
+  const c = fresh();
+  const a = await userTab(c, "https://www.etsy.com/");
+  const b = await userTab(c, "https://www.etsy.com/x");
+  const other = await userTab(c, "https://www.etsy.com/y");
+  const gid = await c.tabs.group({ tabIds: [a, b] });
+  await c.tabGroups.update(gid, { title: LEGACY_GROUP_TITLE });
+  const mine = await c.tabs.group({ tabIds: [other] });
+  await c.tabGroups.update(mine, { title: "Work" });
+  assert.equal(await ungroupLegacy(), 2);
+  assert.equal(c._tabs.get(a).groupId, -1);
+  assert.equal(c._tabs.get(b).groupId, -1);
+  assert.equal(c._tabs.get(other).groupId, mine, "the user's own groups are left alone");
+  assert.equal(c._tabs.size, 3);
+});
+
 test("allowlist mode: navigate checks the allowlist, waits for complete and reports url/title", async () => {
-  const c = installChrome({ local: { browseMode: "allowlist" } });
+  const c = fresh({ local: { browseMode: "allowlist" } });
+  await assert.rejects(tabsCreate({ url: "https://evil.example/" }), (e) => e.code === ERR.NOT_ALLOWED);
   const { tabId } = await tabsCreate({ url: `${STORE}/` });
   const r = await navigate({ tabId, url: `${STORE}/cart` });
   assert.deepEqual(r, { tabId, url: `${STORE}/cart`, title: `Title of ${STORE}/cart` });
@@ -92,7 +201,7 @@ test("allowlist mode: navigate checks the allowlist, waits for complete and repo
 });
 
 test("navigate back and forward", async () => {
-  installChrome();
+  fresh();
   const { tabId } = await tabsCreate({ url: `${STORE}/a` });
   await navigate({ url: `${STORE}/b` });
   assert.equal((await navigate({ url: "back" })).url, `${STORE}/a`);
@@ -101,53 +210,18 @@ test("navigate back and forward", async () => {
   await assert.rejects(navigate({ url: "forward" }), (e) => e.code === ERR.BAD_REQUEST && /forward/.test(e.message));
 });
 
-test("navigate back off the allowlist reports NOT_ALLOWED", async () => {
-  installChrome();
-  await tabsCreate({});
-  // first history entry is about:blank, which is not allowlisted
-  await navigate({ url: `${STORE}/a` });
-  await assert.rejects(navigate({ url: "back" }), (e) => e.code === ERR.NOT_ALLOWED);
-  await assert.rejects(resolveAllowedTab(), (e) => e.code === ERR.NOT_ALLOWED);
-});
-
-test("navigateAndWait times out", async () => {
-  const c = installChrome({ autoComplete: false });
+test("navigateAndWait times out, and fails with NO_TAB if the tab closes", async () => {
+  const c = fresh({ autoComplete: false });
   const { tabId } = await tabsCreate({});
-  await assert.rejects(
-    navigateAndWait(tabId, () => c.tabs.update(tabId, { url: `${STORE}/slow` }), 50),
-    (e) => e.code === ERR.TIMEOUT,
-  );
+  await assert.rejects(navigateAndWait(tabId, () => c.tabs.update(tabId, { url: `${STORE}/slow` }), 50), (e) => e.code === ERR.TIMEOUT);
   assert.equal(c.tabs.onUpdated.size, 0);
-});
-
-test("navigateAndWait fails with NO_TAB if the tab closes", async () => {
-  const c = installChrome({ autoComplete: false });
-  const { tabId } = await tabsCreate({});
   const p = navigateAndWait(tabId, () => c.tabs.update(tabId, { url: `${STORE}/x` }), 1000);
   setTimeout(() => c.tabs.remove(tabId), 10);
   await assert.rejects(p, (e) => e.code === ERR.NO_TAB);
 });
 
-test("tabInfo returns the resolved tab", async () => {
-  installChrome();
-  const { tabId } = await tabsCreate({ url: `${STORE}/` });
-  assert.deepEqual(await tabInfo({}), { tabId, url: `${STORE}/`, title: `Title of ${STORE}/` });
-  assert.equal(await resolveAllowedTab(tabId), tabId);
-});
-
-// Open web (the default browseMode).
-
-test("open mode: tabs may load any ordinary store", async () => {
-  installChrome();
-  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/search?q=mug" });
-  const r = await navigate({ tabId, url: "https://www.aritzia.com/us/en" });
-  assert.equal(r.url, "https://www.aritzia.com/us/en");
-  assert.equal(await resolveAllowedTab(tabId), tabId);
-  assert.equal((await navigate({ tabId, url: `${STORE}/cart` })).url, `${STORE}/cart`, "the allowlisted store passes the localhost block");
-});
-
 test("open mode: blocked sites are refused before the tab moves", async () => {
-  const c = installChrome({ local: { blocklist: [...SUGGESTED_BLOCKLIST, "nordstrom.com"] } });
+  const c = fresh({ local: { blocklist: [...SUGGESTED_BLOCKLIST, "nordstrom.com"] } });
   const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
   for (const url of [
     "https://mail.google.com/", "https://vault.bitwarden.com/", "https://secure.chase.com/", "https://www.irs.gov/",
@@ -160,24 +234,21 @@ test("open mode: blocked sites are refused before the tab moves", async () => {
   await assert.rejects(tabsCreate({ url: "https://mail.google.com/" }), (e) => e.code === ERR.NOT_ALLOWED);
 });
 
-test("open mode: a tab that lands on a blocked site cannot be driven", async () => {
-  const c = installChrome();
-  const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
-  // A clicked link or redirect, not a navigate call.
-  await navigateAndWait(tabId, () => c.tabs.update(tabId, { url: "https://www.paypal.com/signin" }));
-  await assert.rejects(resolveAllowedTab(tabId), (e) => e.code === ERR.NOT_ALLOWED);
-});
-
-test("open mode: tabs outside the Clearcart group stay off limits", async () => {
-  const c = installChrome();
-  const mine = await c.tabs.create({ url: "https://www.etsy.com/", active: false });
-  await tabsCreate({ url: "https://www.etsy.com/" });
-  await assert.rejects(resolveAllowedTab(mine.id), (e) => e.code === ERR.NO_TAB);
-  await assert.rejects(navigate({ tabId: mine.id, url: "https://www.etsy.com/x" }), (e) => e.code === ERR.NO_TAB);
-});
-
 test("pay sites stay the allowlist in open mode", async () => {
-  installChrome();
+  fresh();
   assert.equal(await isPaySite(`${STORE}/checkout`), true);
   assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
+});
+
+test("incognito: the manifest keeps Clearcart out, and an incognito tab is hidden and refused", async () => {
+  const { readFileSync } = await import("node:fs");
+  const manifest = JSON.parse(readFileSync(new URL("../../manifest.json", import.meta.url), "utf8"));
+  assert.equal(manifest.incognito, "not_allowed");
+  const c = fresh();
+  const id = await userTab(c, "https://www.etsy.com/", { active: true });
+  c._tabs.get(id).incognito = true;
+  assert.deepEqual((await tabsContext()).tabs, []);
+  await assert.rejects(resolveAllowedTab(id), (e) => e.code === ERR.NOT_ALLOWED);
+  await assert.rejects(resolveAllowedTab(), (e) => e.code === ERR.NOT_ALLOWED);
+  await assert.rejects(navigate({ tabId: id, url: "https://www.etsy.com/x" }), (e) => e.code === ERR.NOT_ALLOWED);
 });
