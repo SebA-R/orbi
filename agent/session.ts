@@ -29,7 +29,8 @@ import { ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, Protect } fro
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
-import { buildSystemPrompt, EXT_TABS_PROMPT, guidedNote } from "./prompt.ts";
+import { buildSystemPrompt, EXT_TABS_PROMPT, guidedNote, MEMORY_OFF_PROMPT, MEMORY_PROMPT } from "./prompt.ts";
+import { factFromUserWords, isForgetAsk, isRememberAsk, memoryBlock, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript } from "./memory.ts";
 import {
   decideUnlock,
   isDirectAsk,
@@ -79,6 +80,10 @@ export const DISALLOWED_BROWSER = [
   "update_plan",
 ].map((t) => B + t);
 
+// Long-term memory (memory.ts): remember asks the user unless their own
+// words just asked for it; forget the same way; recall lists.
+const MEMORY_TOOLS = [C + "remember", C + "forget", C + "recall"];
+
 export const ALLOWED = [
   "tabs_context_mcp",
   "tabs_create_mcp",
@@ -91,7 +96,7 @@ export const ALLOWED = [
   "read_page",
   "read_console_messages",
   "set_tab_focus",
-].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"]);
+].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
 
 // Blocked while card values sit in the checkout form: anything that can read
 // or screenshot the page, or change it.
@@ -102,7 +107,7 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
 // CLEARCART_BROWSER=ext: Claude's browser tools are the Clearcart extension's
 // TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
 // key and scroll stand in for "computer" in the card-live block list.
-const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"]);
+const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"], MEMORY_TOOLS);
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
   ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
@@ -120,6 +125,16 @@ function extPrompt(prompt: string): string {
 export function currentGuided(): boolean {
   return extMode() ? (extBridge.guidedMode() ?? true) : process.env.CLEARCART_GUIDED !== "0";
 }
+
+// The user's Memory setting: the extension's in ext mode, on until it says
+// otherwise. Elsewhere CLEARCART_MEMORY=0 turns it off. Off: saved facts
+// are not used or saved and the conversation is not kept for a restart.
+export function memoryOn(): boolean {
+  return extMode() ? (extBridge.memoryEnabled() ?? true) : process.env.CLEARCART_MEMORY !== "0";
+}
+
+// How many of the user's recent utterances a direct remember may draw on.
+const RECENT_USER_TURNS = 3;
 
 // How long a user turn waits for page_context before going without it.
 const CONTEXT_TIMEOUT_MS = 1_500;
@@ -395,10 +410,27 @@ export class Session {
   // "Danger mode is on." was spoken in this session.
   private dangerSaid = false;
 
-  constructor(private send: (m: ServerMessage) => void) {}
+  // Saved facts and the recent conversation (memory.ts). Null in tests that
+  // do not give them: nothing is read or written.
+  private mem: MemoryStore | null;
+  private log: Transcript | null;
+  // The user's last few utterances, their own words only (never the
+  // context block), for remember's direct-ask check.
+  private recentUser: string[] = [];
+  // Saved memory as the model last heard it (see withMemoryNote).
+  private memSeen: string;
+
+  constructor(private send: (m: ServerMessage) => void, opts: { memory?: MemoryStore | null; log?: Transcript | null } = {}) {
+    this.mem = opts.memory ?? null;
+    this.log = opts.log ?? null;
+    this.memSeen = this.memKey();
+  }
 
   userText(text: string) {
     if (this.closed || !text.trim()) return;
+    // Only the user's own words are kept, never the context block.
+    this.recentUser = [...this.recentUser, text].slice(-RECENT_USER_TURNS);
+    if (memoryOn()) this.log?.add("user", text);
     const tabId = this.state.lastTabId;
     const pw = this.passwordAsk;
     this.passwordAsk = null;
@@ -424,14 +456,14 @@ export class Session {
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
     const fetch = this.pageContext;
-    if (!fetch) return this.input.push(this.withGuidedNote(text));
+    if (!fetch) return this.input.push(this.withMemoryNote(this.withGuidedNote(text)));
     const ctx = Promise.race([
       fetch().catch(() => null),
       new Promise<null>((r) => setTimeout(() => r(null), CONTEXT_TIMEOUT_MS + 200).unref?.()),
     ]);
     this.turns = this.turns.then(async () => {
       const c = await ctx;
-      if (!this.closed) this.input.push(withContext(this.withGuidedNote(text), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
+      if (!this.closed) this.input.push(withContext(this.withMemoryNote(this.withGuidedNote(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
     });
     return this.turns;
   }
@@ -444,6 +476,34 @@ export class Session {
     if (now === this.guided) return turn;
     this.guided = now;
     return `${guidedNote(now)}\n\n${turn}`;
+  }
+
+  // What the model knows of saved memory: "off", or the facts' text.
+  private memKey(): string {
+    if (!this.mem) return "none";
+    return memoryOn() ? "on:" + JSON.stringify(this.mem.list().map((f) => f.text)) : "off";
+  }
+
+  // Memory changed outside the tools (the settings page deleted a fact, or
+  // the switch moved): the next turn says so, like withGuidedNote.
+  private withMemoryNote(turn: string): string {
+    const key = this.memKey();
+    if (key === this.memSeen) return turn;
+    this.memSeen = key;
+    const note = key === "off"
+      ? `[Setting changed, from the user's Clearcart settings] ${MEMORY_OFF_PROMPT.trim().split("\n").slice(1).join(" ").replace(/^- /, "")}`
+      : `[Memory changed, from the user's Clearcart settings]${memoryBlock(this.mem!.list())}`;
+    return `${note}\n\n${turn}`;
+  }
+
+  // The system prompt for this session: the rules, then memory (saved facts
+  // and the conversation from before a restart) when it is on.
+  systemPrompt(ext = extMode()): string {
+    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined });
+    this.memSeen = this.memKey();
+    if (!this.mem) return base;
+    if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
+    return base + MEMORY_PROMPT + memoryBlock(this.mem.list()) + transcriptBlock(this.log?.recent() ?? []);
   }
 
   // The user started talking over us.
@@ -506,6 +566,7 @@ export class Session {
 
   private say(text: string) {
     if (this.muted) return this.unspoken(text);
+    if (memoryOn()) this.log?.add("assistant", text);
     this.send({ type: "agent_text", text });
   }
 
@@ -850,6 +911,95 @@ export class Session {
     return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""}${next}`);
   }
 
+  // The user's last words if they are recent enough to count, else "".
+  private freshWords(): string {
+    const w = this.lastUser;
+    return w.text && Date.now() - w.at <= USER_WORDS_TTL_MS ? w.text : "";
+  }
+
+  // Asks the user one question out loud and waits for the answer. Like
+  // request_unlock: a muted turn's question is never asked.
+  private async askYes(question: string): Promise<{ yes: boolean; why: string }> {
+    if (this.muted) return { yes: false, why: "The user interrupted before the question was asked." };
+    this.say(question);
+    const answer = await new Promise<string | null>((resolve) => {
+      this.awaitingAnswer = resolve;
+    });
+    if (answer !== null && isExplicitYes(answer)) return { yes: true, why: "" };
+    return { yes: false, why: answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}` };
+  }
+
+  // The remember tool. Saves only when the user's own last words asked to
+  // remember it and the fact is made of what they said; anything else (the
+  // model's idea, or a page's) is asked out loud first and saved only on an
+  // explicit yes. The filter (memory.ts) refuses secrets either way.
+  async remember({ fact }: { fact: string }): Promise<ToolText> {
+    if (!this.mem) return said("Memory is not available here.");
+    if (!memoryOn()) return said("Memory is off in the user's Clearcart settings, so nothing was saved. They can turn it on there.");
+    const text = String(fact ?? "").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
+    const why = sensitiveReason(text);
+    if (why) {
+      this.status("memory: refused a fact");
+      return said(`Not saved: ${why}. Clearcart never remembers card, password, ID or bank details, or anything that tells it what to do. Tell the user briefly.`);
+    }
+    const words = this.freshWords();
+    let how = "the user asked";
+    if (!(words && isRememberAsk(words) && factFromUserWords(text, this.recentUser))) {
+      const a = await this.askYes(`Want me to remember that ${text}?`);
+      if (!a.yes) {
+        this.status("memory: not saved (no yes)");
+        return said(`Not saved. ${a.why}`.trim());
+      }
+      how = "the user confirmed";
+    }
+    const r = this.mem.add(text);
+    if (!r.ok) return said(r.reason);
+    this.memSeen = this.memKey();
+    this.status(`memory: saved a fact (${how})`);
+    return said(r.existed ? `Already saved: ${r.fact.text}` : `Saved: ${r.fact.text}.${how === "the user confirmed" ? " The question was already spoken; do not ask again." : ""}`);
+  }
+
+  // The forget tool: one fact, or everything. Direct when the user's last
+  // words asked to forget, otherwise asked out loud first.
+  async forget({ fact, all }: { fact?: string; all?: boolean }): Promise<ToolText> {
+    if (!this.mem) return said("Memory is not available here.");
+    const words = this.freshWords();
+    const asked = !!words && isForgetAsk(words);
+    if (all) {
+      if (!(asked && /\b(everything|all)\b/i.test(words))) {
+        const a = await this.askYes("Want me to forget everything I remember about you?");
+        if (!a.yes) return said(`Nothing was forgotten. ${a.why}`.trim());
+      }
+      const n = this.mem.clear();
+      this.log?.clear();
+      this.memSeen = this.memKey();
+      this.status("memory: forgot everything");
+      return said(`Forgot everything (${n} saved fact${n === 1 ? "" : "s"}).`);
+    }
+    const hits = this.mem.find(String(fact ?? ""));
+    if (!hits.length) return said("Nothing saved matches that. Call recall to see what is saved.");
+    if (hits.length > 1) return said(`More than one saved fact matches. Ask the user which one, then call forget with its id:\n${hits.map((f) => `${f.id}: ${f.text}`).join("\n")}`);
+    const hit = hits[0];
+    if (!asked) {
+      const a = await this.askYes(`Want me to forget that ${hit.text}?`);
+      if (!a.yes) return said(`Nothing was forgotten. ${a.why}`.trim());
+    }
+    this.mem.remove(hit.id);
+    this.memSeen = this.memKey();
+    this.status("memory: forgot a fact");
+    return said(`Forgot: ${hit.text}.`);
+  }
+
+  // The recall tool: what is saved, freshly read.
+  recall(): ToolText {
+    if (!this.mem) return said("Memory is not available here.");
+    if (!memoryOn()) return said("Memory is off in the user's Clearcart settings, so nothing saved is used. They can turn it on there.");
+    const facts = this.mem.list();
+    this.memSeen = this.memKey();
+    if (!facts.length) return said("Nothing is saved yet.");
+    return said(`Saved facts (read them plainly, never the ids):\n${facts.map((f) => `${f.id}: ${f.text}`).join("\n")}`);
+  }
+
   private tools() {
     const requestCheckout = tool(
       "request_checkout",
@@ -910,10 +1060,27 @@ export class Session {
       (args) => this.requestUnlock(args)
     );
 
+    const rememberTool = tool(
+      "remember",
+      "Save one fact about the user for later sessions, when they ask you to remember it or after they agree. If their own words did not just ask for it, this tool asks them one short question itself and saves only on a yes, so do not ask first. Refuses card, password, ID and bank details.",
+      { fact: z.string().max(200).describe("The fact in a few words, addressed to the user, e.g. \"you wear size medium\" or \"you like to be called Seb\"") },
+      (args) => this.remember(args)
+    );
+    const forgetTool = tool(
+      "forget",
+      "Forget one saved fact (by its words or its id from recall), or everything with all true. Asks the user first unless their own words just asked to forget it.",
+      {
+        fact: z.string().max(200).optional().describe("A few words of the saved fact, or its id"),
+        all: z.boolean().optional().describe("Forget every saved fact and the recent conversation"),
+      },
+      (args) => this.forget(args)
+    );
+    const recallTool = tool("recall", "List the facts saved about the user. Call it when they ask what you remember.", {}, async () => this.recall());
+
     return createSdkMcpServer({
       name: "clearcart",
       version: "0.1.0",
-      tools: [sayTool, requestCheckout, payNowTool, requestUnlockTool],
+      tools: [sayTool, requestCheckout, payNowTool, requestUnlockTool, rememberTool, forgetTool, recallTool],
       alwaysLoad: true,
       // request_checkout waits on a person; give it room.
       timeout: 10 * 60_000,
@@ -965,7 +1132,7 @@ export class Session {
       prompt: this.input,
       options: {
         model: MODEL,
-        systemPrompt: buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined }),
+        systemPrompt: this.systemPrompt(ext),
         cwd: HERE,
         tools: [],
         settingSources: [],
