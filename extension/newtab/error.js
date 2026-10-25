@@ -6,7 +6,7 @@
 //
 // The failed address is in chrome.storage.session under the key in this
 // page's fragment, not in its address. Retry tells the worker first, so a
-// second failure comes back here, then replaces this page with the address.
+// second failure comes back here, then goes Back to the failed entry.
 import { RT } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
 import { recordFor } from "../background/errpage.js";
@@ -54,7 +54,11 @@ $("retry").addEventListener("click", async () => {
   try {
     const { url } = (await chrome.runtime.sendMessage({ type: RT.ERROR_PAGE_RETRY })) || {};
     if (!url) throw new Error("no address");
-    location.replace(url);
+    // The entry before this page is the failed address (the worker sent the
+    // tab here from it): load that again rather than add another entry.
+    // Without one (a restored tab), load the address here.
+    if (history.length > 1) history.back();
+    else location.replace(url);
   } catch {
     $("error").textContent = "Retry did not start. Type the address in the address bar.";
     $("error").hidden = false;

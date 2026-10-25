@@ -12,8 +12,9 @@
 // History: Chrome keeps the failed entry, so Back from Clearcart's page
 // loads the failed address again. That failure is left on Chrome's page
 // (the tab was just on Clearcart's page for the same address), so Back
-// keeps working. Retry tells the worker first and is replaced again if it
-// fails. The failed address is kept in chrome.storage.session under a random
+// keeps working. Retry tells the worker first, then goes Back to the failed
+// entry, which loads again: replaced again if it fails, and no duplicate
+// entry if it works. The failed address is kept in chrome.storage.session under a random
 // key in the page's fragment, never in the page's address, so the agent
 // never sees it there (tabs.js reports the page as chrome-error://chromewebdata/).
 
@@ -60,6 +61,9 @@ export function isErrorPage(url) {
   return !!base && String(url || "").split(/[?#]/)[0] === base;
 }
 
+// webRequest leaves out the fragment; tab.url keeps it.
+const noHash = (url) => String(url || "").split("#")[0];
+
 export function keyOf(url) {
   if (!isErrorPage(url)) return null;
   const m = /#k=([0-9a-f-]{36})$/.exec(String(url));
@@ -101,6 +105,7 @@ export async function recordFor(url) {
 export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) {
   const pending = new Map(); // tabId -> { url, error, at }
   const last = new Map(); // tabId -> { url, at }, the loop guard
+  const loads = new Map(); // tabId -> loads started, so a later reload is not replaced
 
   const unmark = (tabId) => update((s) => { delete s.shown[tabId]; });
 
@@ -115,6 +120,7 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
   // tabs.onUpdated: which Clearcart error page the tab is on, and, once the
   // failed address finishes loading as Chrome's error page, the redirect.
   async function onTabUpdated(tabId, change, tab) {
+    if (change && change.status === "loading") loads.set(tabId, (loads.get(tabId) || 0) + 1);
     if (change && typeof change.url === "string") {
       const k = keyOf(change.url);
       if (k) await update((s) => { s.shown[tabId] = k; });
@@ -122,19 +128,23 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
         // Back to the address it failed on keeps the mark; anything else drops it.
         const s = await read();
         const k0 = s.shown[tabId];
-        if (k0 && s.pages[k0]?.url !== change.url) await unmark(tabId);
+        if (k0 && noHash(s.pages[k0]?.url) !== noHash(change.url)) await unmark(tabId);
       }
     }
     if (!change || change.status !== "complete") return false;
     const p = pending.get(tabId);
     if (!p) {
-      // A page that loaded fine: the tab has left Clearcart's page behind.
-      if (tab && !isErrorPage(tab.url) && (await read()).shown[tabId]) await unmark(tabId);
+      // A page that loaded fine: the tab has left Clearcart's page behind,
+      // and a Retry that worked is used up.
+      if (tab && !isErrorPage(tab.url)) {
+        const s = await read();
+        if (s.shown[tabId] || s.retry[tabId]) await update((st) => { delete st.shown[tabId]; delete st.retry[tabId]; });
+      }
       return false;
     }
     pending.delete(tabId);
-    if (now() - p.at > PENDING_MS || !tab || tab.url !== p.url || tab.incognito) return false;
-    return maybeReplace(tabId, tab, p);
+    if (now() - p.at > PENDING_MS || !tab || noHash(tab.url) !== noHash(p.url) || tab.incognito) return false;
+    return maybeReplace(tabId, tab, { ...p, url: tab.url, load: loads.get(tabId) || 0 });
   }
 
   async function maybeReplace(tabId, tab, p) {
@@ -144,14 +154,14 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
     if (win && win.type !== "normal") return false;
     const s = await read();
     const retry = s.retry[tabId];
-    const retried = !!retry && retry.url === p.url && now() - retry.at < RETRY_MS;
+    const retried = !!retry && noHash(retry.url) === noHash(p.url) && now() - retry.at < RETRY_MS;
     // Retry is the user's and used up below, so only the rest is guarded.
     const prev = last.get(tabId);
-    if (!retried && prev && prev.url === p.url && now() - prev.at < REPEAT_MS) return false;
+    if (!retried && prev && noHash(prev.url) === noHash(p.url) && now() - prev.at < REPEAT_MS) return false;
     const from = s.shown[tabId] && s.pages[s.shown[tabId]];
     // Back (or the same address typed again) from Clearcart's page for it:
     // leave Chrome's page, so Back goes on past it.
-    if (!retried && from && from.url === p.url) return false;
+    if (!retried && from && noHash(from.url) === noHash(p.url)) return false;
     const key = crypto.randomUUID();
     await update((st) => {
       delete st.retry[tabId];
@@ -163,9 +173,9 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
       }
     });
     last.set(tabId, { url: p.url, at: now() });
-    // The tab may have moved on while this ran.
+    // The tab may have moved on, or reloaded (perhaps fine now), while this ran.
     const cur = await api().tabs.get(tabId).catch(() => null);
-    if (!cur || cur.url !== p.url) return false;
+    if (!cur || cur.url !== p.url || cur.status !== "complete" || (loads.get(tabId) || 0) !== p.load) return false;
     await api().tabs.update(tabId, { url: `${errorPageBase()}#k=${key}` });
     return true;
   }
@@ -184,6 +194,7 @@ export function createErrorPages({ loadSettings, now = () => Date.now() } = {}) 
 
   function forget(tabId) {
     pending.delete(tabId);
+    loads.delete(tabId);
     last.delete(tabId);
     return update((s) => {
       delete s.shown[tabId];
