@@ -132,19 +132,68 @@ test("a new user turn clears the previous agent answer", () => {
   assert.equal(t.$(".agent").textContent, "");
 });
 
-test("fades out 5 s after the last final line, a newer line resets the timer, text clears after the fade", () => {
+const wordsOf = (n) => Array.from({ length: n }, (_, i) => `w${i}`).join(" ") + ".";
+
+test("a short line hides at 10 s, not before, and text clears after the fade", () => {
   const t = setup();
   t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
-  t.tick(4000);
+  t.tick(9999);
   assert.ok(t.visible());
-  t.send({ type: "subtitle", speaker: "agent", text: "Anything else?", final: true });
-  t.tick(4000);
-  assert.ok(t.visible(), "timer restarted by the newer final line");
-  t.tick(1000);
+  t.tick(1);
   assert.equal(t.visible(), false);
-  assert.equal(t.$(".agent").textContent.trim(), "Anything else?", "words stay while fading");
+  assert.equal(t.$(".agent").textContent.trim(), "Done.", "words stay while fading");
   t.tick(700);
   assert.equal(t.$(".agent").textContent, "", "card is cleared once the fade ends");
+});
+
+test("a newer final line restarts the timer", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
+  t.tick(8000);
+  t.send({ type: "subtitle", speaker: "agent", text: "Anything else?", final: true });
+  t.tick(8000);
+  assert.ok(t.visible(), "timer restarted by the newer final line");
+  t.tick(2000);
+  assert.equal(t.visible(), false);
+});
+
+test("a 75 word answer waits about 28 s", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(75), final: true });
+  t.tick(27_999);
+  assert.ok(t.visible());
+  t.tick(1);
+  assert.equal(t.visible(), false);
+});
+
+test("the user line counts toward the wait too", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "user", text: wordsOf(10), final: true });
+  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(15), final: true });
+  t.tick(12_999); // 25 words: 10 s + 10 x 300 ms
+  assert.ok(t.visible());
+  t.tick(1);
+  assert.equal(t.visible(), false);
+});
+
+test("the wait is capped at 60 s", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "user", text: wordsOf(100), final: true });
+  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(150), final: true });
+  t.tick(59_999);
+  assert.ok(t.visible());
+  t.tick(1);
+  assert.equal(t.visible(), false);
+});
+
+test("the stale cap is extended for long text", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(100), final: false });
+  t.send({ type: "voice.state", state: "speaking" }); // never returns to idle
+  t.tick(44_999); // 100 words: 35.5 s wait, so the cap is 45.5 s
+  assert.ok(t.visible(), "not cut at 30 s");
+  t.tick(501);
+  assert.equal(t.visible(), false);
 });
 
 test("hides 30 s after the last update even if the voice state never returns to idle", () => {
@@ -178,7 +227,7 @@ test("state dot follows voice.state; active states keep the card up, idle lets i
   assert.ok(t.visible(), "still speaking, no hide");
   t.send({ type: "voice.state", state: "idle" });
   assert.equal(t.$(".wrap").dataset.state, "idle");
-  t.tick(4999);
+  t.tick(9999);
   assert.ok(t.visible());
   t.tick(1);
   assert.equal(t.visible(), false);
@@ -239,7 +288,7 @@ test("a line arriving mid-fade clears the old words at once instead of bringing 
   const t = setup();
   t.send({ type: "subtitle", speaker: "user", text: "old question", final: true });
   t.send({ type: "subtitle", speaker: "agent", text: "Old answer.", final: true });
-  t.tick(5000);
+  t.tick(10_000);
   assert.equal(t.visible(), false, "fading");
   t.send({ type: "voice.state", state: "listening" });
   assert.ok(t.visible());
