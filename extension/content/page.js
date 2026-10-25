@@ -524,6 +524,69 @@
     return { ok: true };
   }
 
+  // ------------------------------------------------- user-directed unlock
+  // request_unlock on the agent server, after the user asked for this action
+  // or said yes to it. lock_info says what a ref is; press_check_user and
+  // press_ref_user press it once, after the worker has spent a "user" scope
+  // nonce. The ref must resolve to a control of the expected unlock class
+  // and label (Protect.unlockClass: checkout, account, subscription, saved
+  // card, marked). Order, wallet and card form controls never pass.
+  function lockTarget(el) {
+    var lk = Protect.lockOf(el);
+    if (!lk) {
+      for (var n = el.parentElement; n && !lk; n = n.parentElement) {
+        lk = Protect.lockOf(n);
+        if (lk) el = n;
+      }
+    }
+    return { el: el, lock: lk };
+  }
+
+  function lockInfo(params) {
+    var t = lockTarget(elementFor(params.ref));
+    if (!t.lock) return { locked: false };
+    var pw = Protect.passwordState(t.el);
+    return {
+      locked: Protect.blocks(t.lock),
+      kind: t.lock.kind,
+      label: t.lock.label,
+      optin: !!t.lock.optin,
+      cls: Protect.unlockClass(t.lock),
+      password: pw.password,
+      passwordFilled: pw.filled,
+    };
+  }
+
+  function userTarget(params) {
+    var t = lockTarget(elementFor(params.ref));
+    var cls = Protect.unlockClass(t.lock);
+    if (!cls || cls !== params.cls) throw PageError(ERR.LOCKED, "Locked: this control cannot be unlocked on request");
+    if (!Protect.sameLabel(t.lock.label, params.label)) throw PageError(ERR.LOCKED, "Locked: the control changed since the user asked");
+    return t;
+  }
+
+  function pressCheckUser(params) {
+    var t = userTarget(params);
+    if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    var r = t.el.getBoundingClientRect();
+    var x = r.x !== undefined ? r.x : r.left, y = r.y !== undefined ? r.y : r.top;
+    if (!(r.width > 0 && r.height > 0)) throw PageError(ERR.NO_ELEMENT, params.ref + " is not visible");
+    if (typeof document.elementFromPoint === "function") {
+      var hit = document.elementFromPoint(x + r.width / 2, y + r.height / 2);
+      if (!hit || !(hit === t.el || t.el.contains(hit))) throw PageError(ERR.NO_ELEMENT, params.ref + " is covered by another element");
+    }
+    Protect.release(t.el);
+    return { x: x, y: y, width: r.width, height: r.height, cls: params.cls };
+  }
+
+  function pressRefUser(params) {
+    var t = userTarget(params);
+    Protect.release(t.el);
+    if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", behavior: "instant" });
+    t.el.click();
+    return { ok: true };
+  }
+
   // False once the extension is disabled or reloaded (chrome.runtime.id goes
   // away); the badges and grayed marks then come off the page.
   var runtimeId = function () { return globalThis.chrome && chrome.runtime && chrome.runtime.id; };
@@ -680,6 +743,9 @@
     guard_key: guardKey,
     press_check: pressCheck,
     press_ref: pressRef,
+    lock_info: lockInfo,
+    press_check_user: pressCheckUser,
+    press_ref_user: pressRefUser,
   };
 
   function call(method, params) {
