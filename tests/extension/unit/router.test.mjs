@@ -161,6 +161,17 @@ test("page_context: a blocked active tab gives only { blocked: true } and nothin
   assert.ok(!calls.some((c) => c[0] === "inject" || c[0] === "page"));
 });
 
+test("page_context: a new tab page is an empty new tab, not a blocked site, and nothing is read from it", async () => {
+  const calls = [];
+  const r = createRouter({
+    chromeApi: { scripting: { executeScript: async () => calls.push(["inject"]) }, tabs: { sendMessage: async () => calls.push(["page"]) } },
+    tabs: { activeTab: async () => ({ id: 30, title: "Clearcart", url: "chrome://newtab/" }), isNewTabPage: (u) => u === "chrome://newtab/", resolveAllowedTab: async () => { throw new Error("no"); } },
+    cdp: {},
+  });
+  assert.deepEqual(await r.route("page_context", {}), { active: { tabId: 30, title: "New Tab", url: "chrome://newtab/", newTab: true } });
+  assert.deepEqual(calls, []);
+});
+
 test("page_context uses the snapshot taken when the user started talking, once", async () => {
   const page = { selection: "at talk start", pointing: null };
   const { calls, router } = contextFakes({ page });

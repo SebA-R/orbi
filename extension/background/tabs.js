@@ -5,6 +5,8 @@
 //     the fixed rules: non-web pages, local and private addresses, addresses
 //     with a login in them) or served from a local address (netguard.js) is
 //     left out of tabsContext and refused for every call.
+//   - A new tab page (Chrome's or Clearcart's, isNewTabPage) is listed and
+//     may be navigated to a store, but is never read or acted on.
 //   - That check runs again on every call (resolveAllowedTab), not only when
 //     the tabs are listed: a tab can move between calls.
 //   - Clearcart only closes tabs it opened itself.
@@ -30,6 +32,10 @@ export const STATE_KEY = "clearcartTabs";
 export const NAV_TIMEOUT_MS = 20_000;
 const TITLE_MAX = 120;
 const BLANK = /^(about:blank|chrome:\/\/newtab\/?)$/;
+// Chrome's own new tab pages. Tabs report Clearcart's new tab page
+// (newtab/newtab.html) as chrome://newtab/ too.
+const NEW_TAB = /^chrome:\/\/(newtab|new-tab-page|new-tab-page-third-party)\/?$/;
+export const NEW_TAB_PATH = "newtab/newtab.html";
 
 const api = () => globalThis.chrome;
 
@@ -47,6 +53,16 @@ export function originPath(url) {
   } catch {
     return "";
   }
+}
+
+// A new tab page, Chrome's or Clearcart's. Nothing on it is the user's, so
+// Clearcart lists the tab and may navigate it to a store, like a blank tab
+// it opened itself. It never reads or acts on the page.
+export function isNewTabPage(url) {
+  const u = String(url || "");
+  if (NEW_TAB.test(u)) return true;
+  const own = api()?.runtime?.getURL?.(NEW_TAB_PATH);
+  return !!own && u.split(/[?#]/)[0] === own;
 }
 
 // ------------------------------------------------------------ tab state
@@ -99,6 +115,7 @@ function hiddenReason(tab, settings, { blankOk = false } = {}) {
   if (tab.incognito) return "incognito";
   const url = tab.url || tab.pendingUrl || "";
   if (blankOk && BLANK.test(url)) return null;
+  if (isNewTabPage(url)) return null;
   const why = blockReason(url, settings);
   if (why) return why;
   if (flagOf(tab.id)) return "served from a local address";
@@ -127,10 +144,11 @@ export async function tabsContext() {
   for (const t of all) {
     const mine = state.created.includes(t.id);
     if (hiddenReason(t, settings, { blankOk: mine })) continue;
+    const newTab = isNewTabPage(t.url || t.pendingUrl);
     tabs.push({
       tabId: t.id,
       title: String(t.title || "").slice(0, TITLE_MAX),
-      url: originPath(t.url || t.pendingUrl || ""),
+      url: newTab ? "chrome://newtab/" : originPath(t.url || t.pendingUrl || ""),
       active: !!active && active.id === t.id,
       openedByClearcart: mine,
     });
@@ -169,6 +187,9 @@ export async function resolveTab(tabId, { nav = false } = {}) {
 export async function resolveAllowedTab(tabId, { peek = false } = {}) {
   const id = await resolveTab(tabId);
   const tab = await api().tabs.get(id);
+  if (isNewTabPage(tab.url || tab.pendingUrl)) {
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page with nothing to use; navigate it to a store first`);
+  }
   await assertAllowed(tab.url);
   assertNetSafe(id);
   if (!peek) await markUsed(id);
