@@ -52,7 +52,7 @@ test("guard_ref and guard_point refuse locked targets and pass normal ones", asy
   assert.equal(r.ok, false);
   assert.equal(r.error.code, "locked");
   const placeRef = refIn(lineOf(tree, /Place order/));
-  assert.equal(r.error.message, "Locked: 'Place order · $" + /Place order · \$([0-9.]+)/.exec(tree)[1] + "' (" + placeRef + ") places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.");
+  assert.equal(r.error.message, "Locked: 'Place order · $" + /Place order · \$([0-9.]+)/.exec(tree)[1] + "' (" + placeRef + ") places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now, on an Orbi pay site. Elsewhere, tell the user they can finish it themselves.");
   const ok = await p.call("guard_ref", { ref: refIn(lineOf(tree, /textbox "Name on card"/)) });
   assert.equal(ok.ok, true);
 
@@ -249,7 +249,7 @@ const PW_TRICKS = `<!doctype html><body>
 test("passwords: a show-password toggle, autocomplete, name, id or label all count; masked and refused", async () => {
   const p = loadPage(PW_TRICKS, { url: "https://shop.example/signin" });
   const d = p.document;
-  // The page flips the password to text after Clearcart first saw it.
+  // The page flips the password to text after Orbi first saw it.
   d.getElementById("pw").setAttribute("type", "text");
   await new Promise((r) => setTimeout(r, 0));
   const tree = (await p.call("read_page", { filter: "all" })).result.tree;

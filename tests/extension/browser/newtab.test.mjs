@@ -1,4 +1,4 @@
-// The Clearcart new tab page (chrome_url_overrides): it loads, hotkey.js runs
+// The Orbi new tab page (chrome_url_overrides): it loads, hotkey.js runs
 // on it unchanged, the hero orb is the face, the worker reaches it like any tab, and
 // broadcasts meant for the offscreen document never reach those scripts.
 import { after, before, test } from "node:test";
@@ -29,12 +29,12 @@ const tabIdOf = () => ext.worker.evaluate(async () => {
   return t && t.id;
 });
 
-test("chrome://newtab opens Clearcart's page with the hotkey and no subtitle card", async () => {
+test("chrome://newtab opens Orbi's page with the hotkey and no subtitle card", async () => {
   const page = await openNewTab();
   assert.equal(page.url(), NEWTAB);
   assert.equal(await page.title(), "New Tab");
   assert.equal(await page.evaluate(() => !!window.__clearcartHotkey && globalThis.__clearcartSubtitles !== true), true);
-  assert.equal(await page.locator("h1").textContent(), "Clearcart");
+  assert.equal(await page.locator("h1").textContent(), "Orbi");
   assert.equal(await page.getByRole("heading", { level: 2, name: "Hold Space to talk" }).count(), 1);
   assert.equal(await page.getByLabel("Search the web").count(), 1);
   assert.equal(await page.getByRole("search").getByRole("button", { name: "Search" }).count(), 1, "one capsule with its submit button");

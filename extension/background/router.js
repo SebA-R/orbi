@@ -191,7 +191,7 @@ export function createRouter({
     if (typeof tabs.onNewTab === "function" && tabs.onNewTab(tab)) {
       return { active: { tabId: tab.id, title: "New Tab", url: "chrome://newtab/", newTab: true } };
     }
-    // Clearcart's "Can't reach this site" page: nothing to read either. The
+    // Orbi's "Can't reach this site" page: nothing to read either. The
     // address that failed only when it is allowed (tabs.failedAddress).
     // newTab too, so an agent server that predates errorPage still says
     // the tab may be navigated.
@@ -477,7 +477,7 @@ export function createRouter({
     const origin = originOf(info && info.url);
     if (!origin) throw new BridgeError(ERR.NOT_ALLOWED, "tab has no origin to unlock");
     if (scope === "order" && (typeof tabs.isPaySite !== "function" || !(await tabs.isPaySite(info.url)))) {
-      throw new BridgeError(ERR.LOCKED, "Locked: this site is not a Clearcart pay site");
+      throw new BridgeError(ERR.LOCKED, "Locked: this site is not an Orbi pay site");
     }
     for (const [n, a] of armed) if (a.expires <= now()) armed.delete(n);
     const nonce = newNonce();
@@ -513,7 +513,7 @@ export function createRouter({
   }
 
   // Brings the tab a navigate call will use to the front, when it is one
-  // Clearcart may use now. A tab on a blocked page (the agent server's sweep
+  // Orbi may use now. A tab on a blocked page (the agent server's sweep
   // sending a stray tab back) is not shown; navigate itself decides the rest.
   async function followBeforeNavigate(tabId) {
     if (typeof tabs.resolveTab !== "function") return;

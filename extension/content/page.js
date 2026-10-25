@@ -1,4 +1,4 @@
-// Clearcart page content script.
+// Orbi page content script.
 //
 // Injected on demand by the worker with
 //   chrome.scripting.executeScript({ target: { tabId }, files: ["content/mask.js", "content/protect.js", "content/page.js"] })
@@ -434,7 +434,7 @@
   function formInput(params) {
     var el = elementFor(params.ref);
     if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; payment is entered only by pay_now");
-    if (isPassword(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a password field; Clearcart never types passwords, the user types it themselves");
+    if (isPassword(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a password field; Orbi never types passwords, the user types it themselves");
     if (!("value" in params)) throw PageError(ERR.BAD_REQUEST, "value is required");
     var value = params.value;
     if (typeof value !== "boolean" && Mask.luhn(String(value))) {

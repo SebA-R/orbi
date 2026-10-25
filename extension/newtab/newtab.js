@@ -1,4 +1,4 @@
-// Clearcart new tab page (chrome_url_overrides). Chrome pages can't run
+// Orbi new tab page (chrome_url_overrides). Chrome pages can't run
 // content scripts, so this page loads content/hotkey.js itself (see
 // newtab.html; guard.js keeps it to the worker's messages for this tab). No
 // subtitle card here: it would sit over the centered orb, which already
@@ -6,7 +6,7 @@
 // hold-to-talk, the latch, double-tap, replay on tab switch.
 //
 // voice.js adds the orb face and the voice state. This file adds the search
-// box and the setting: with "Use the Clearcart new tab page" off it forwards
+// box and the setting: with "Use the Orbi new tab page" off it forwards
 // to Chrome's own new tab page.
 import { loadSettings } from "../lib/settings.js";
 import { startVoice } from "./voice.js";
@@ -33,8 +33,8 @@ if (!settings.newTabPage) {
     for (const el of document.querySelectorAll("main > :not(#off, h1)")) el.hidden = true;
     $("off").hidden = false;
     $("off-text").textContent = back
-      ? "The Clearcart new tab page is turned off in Clearcart settings."
-      : "Chrome did not let Clearcart open its own new tab page. Turn on \"Use the Clearcart new tab page\" in Clearcart settings, or open a site from the address bar.";
+      ? "The Orbi new tab page is turned off in Orbi settings."
+      : "Chrome did not let Orbi open its own new tab page. Turn on \"Use the Orbi new tab page\" in Orbi settings, or open a site from the address bar.";
     $("off-go").addEventListener("click", () => forward().catch(() => {}));
   }
 } else {

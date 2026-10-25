@@ -24,7 +24,7 @@ const VOICE = {
     : ["Ready", key === "Space" ? "Hold Space to talk. Option\u00a0+\u00a0Space keeps listening until you press Space." : `Hold ${key} on any page to talk.`],
   listening: (key) => ["Listening", `Let go of ${key} when you're done.`],
   thinking: () => ["Thinking", "Working on your request."],
-  speaking: (key) => ["Speaking", `Clearcart is answering. Hold ${key} to interrupt.`],
+  speaking: (key) => ["Speaking", `Orbi is answering. Hold ${key} to interrupt.`],
 };
 let voiceState = "idle";
 // The mini orb face in the header. Decorative: the status region says the state.

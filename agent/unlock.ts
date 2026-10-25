@@ -1,5 +1,5 @@
 // The button lock's unlock: the only way a protected control (place order,
-// pay, checkout...) gets pressed by Clearcart instead of the user.
+// pay, checkout...) gets pressed by Orbi instead of the user.
 //
 // Claude has no tool that reaches this module. A pay flow asks the gate for
 // a grant; the gate issues one only when all of these hold:
@@ -60,7 +60,7 @@ export class UnlockGate {
     }
     const origin = originOf(req.href);
     if (!origin || !this.isAllowed(req.href)) {
-      return { ok: false, error: "This site is not a Clearcart pay site, so its order button stays locked." };
+      return { ok: false, error: "This site is not an Orbi pay site, so its order button stays locked." };
     }
     const page = money(req.pageTotal);
     if (!Number.isFinite(page) || Math.abs(page - money(req.confirmation.total)) > 0.005) {

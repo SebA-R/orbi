@@ -1,4 +1,4 @@
-// Clearcart service worker (Manifest V3, ES module).
+// Orbi service worker (Manifest V3, ES module).
 //
 // Chrome starts and stops this worker on its own. Everything that must
 // survive a restart lives in chrome.storage; listeners are registered at the
@@ -30,9 +30,9 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
   migrateSettings()
     .then((removed) => removed && log.info("removed the old default allowed site"))
     .catch((e) => log.warn(`settings migration failed: ${e.message}`));
-  // Earlier versions kept agent tabs in a "Clearcart" tab group: take them
+  // Earlier versions kept agent tabs in a "Orbi" tab group: take them
   // out of it, closing nothing.
-  tabs.ungroupLegacy().then((n) => n && log.info(`ungrouped ${n} tab(s) from the old Clearcart group`)).catch(() => {});
+  tabs.ungroupLegacy().then((n) => n && log.info(`ungrouped ${n} tab(s) from the old Orbi group`)).catch(() => {});
   // Setup page (site access, microphone, agent server): always on install,
   // on update only when site access or the mic is still missing.
   onInstalledSetup(reason).catch((e) => log.warn(`setup check failed: ${e.message}`));
@@ -57,13 +57,13 @@ chrome.permissions.onAdded.addListener(() => {
 });
 chrome.permissions.onRemoved.addListener(badge);
 
-// Module A lifecycle: forget debugger sessions and which tabs Clearcart
+// Module A lifecycle: forget debugger sessions and which tabs Orbi
 // opened.
 chrome.tabs.onRemoved.addListener((tabId) => cdp.onTabRemoved(tabId));
 chrome.tabs.onRemoved.addListener((tabId) => void tabs.onTabRemoved(tabId).catch(() => {}));
 chrome.debugger.onDetach.addListener((source) => cdp.onDetach(source));
 
-// Connected-address check (netguard.js): a tab Clearcart opened whose page
+// Connected-address check (netguard.js): a tab Orbi opened whose page
 // came from a local address it may not use is closed. The user's own tabs
 // are never closed; every call on a flagged tab is refused instead.
 chrome.tabs.onRemoved.addListener((tabId) => netguard.forget(tabId));
@@ -81,7 +81,7 @@ async function closeIfAgentTab(tabId, flag) {
 }
 
 // Network error pages: Chrome's runs no content scripts, so a failed main
-// frame in a normal tab goes on to Clearcart's "Can't reach this site" page
+// frame in a normal tab goes on to Orbi's "Can't reach this site" page
 // (errpage.js), where Space to talk works.
 const errorPages = createErrorPages({ loadSettings });
 chrome.webRequest.onErrorOccurred.addListener((d) => errorPages.onRequestError(d), ERROR_FILTER);
@@ -99,10 +99,10 @@ loadAllowlist();
 // Voice: hold-to-talk relay between content scripts and the offscreen
 // document; SUBTITLE and VOICE_STATE go to the talking (or active) tab, where
 // content/subtitles.js shows them.
-// The active-tab frame (content/frame.js) goes on the tab Clearcart is
+// The active-tab frame (content/frame.js) goes on the tab Orbi is
 // acting on during a turn; the relay reports voice states, the router calls.
 const frame = installFrame();
-// Clearcart's cursor (content/cursor.js), cached like the settings below.
+// Orbi's cursor (content/cursor.js), cached like the settings below.
 let showCursor = true;
 loadSettings().then((s) => { showCursor = s.showCursor; }).catch(() => {});
 const cursor = createCursorRelay({ enabled: () => showCursor });
@@ -120,7 +120,7 @@ const voice = installVoiceRelay({
 // locked as usual.
 let dangerMode = false;
 const dangerReady = loadSettings().then((s) => { dangerMode = s.dangerMode; }).catch(() => { dangerMode = false; });
-// Follow: the tab Clearcart acts on comes to the front (follow.js). A tab or
+// Follow: the tab Orbi acts on comes to the front (follow.js). A tab or
 // window the user picks themselves pauses that until their next turn.
 const follow = createFollower();
 chrome.tabs.onActivated.addListener((info) => follow.onActivated(info));

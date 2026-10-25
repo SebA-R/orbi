@@ -29,7 +29,7 @@ test("open mode (default): navigate may open any site, not blocked sites or loca
     assert.equal(denied(await pre(s, "navigate", { url, tabId: 5 })), null, url);
   }
   for (const url of ["https://mail.google.com/", "https://www.chase.com/", "https://vault.bitwarden.com/", "http://localhost:5050/", `${LOCAL}/cart`, "chrome://settings", "file:///etc/passwd"]) {
-    assert.match(denied(await pre(s, "navigate", { url })) || "", /^Blocked: Clearcart does not open/, url);
+    assert.match(denied(await pre(s, "navigate", { url })) || "", /^Blocked: Orbi does not open/, url);
   }
   assert.match(denied(await pre(s, "tabs_create", { url: "https://accounts.google.com/" })) || "", /Blocked/);
   assert.equal(denied(await pre(s, "tabs_create", {})), null);
@@ -121,7 +121,7 @@ test("allowlist mode sweep sends strays straight to a blank page", async () => {
   assert.match(sweepNote(1), /blocked site/);
 });
 
-test("the session sweep over the extension bridge only looks at tabs Clearcart opened", async () => {
+test("the session sweep over the extension bridge only looks at tabs Orbi opened", async () => {
   const calls: Array<[string, any]> = [];
   let tab10 = "https://mail.google.com/";
   const orig = extBridge.call;
@@ -222,7 +222,7 @@ test("OCIC path: the current-tab check fails closed", async () => {
     });
     assert.match(denied(await pre(broken.s, "get_page_text", { tabId: 5 })) || "", /could not check/);
     const { s } = ocicSession([{ tabId: 5, url: "https://www.etsy.com/" }, { tabId: 7 }]);
-    assert.match(denied(await pre(s, "get_page_text", { tabId: 9 })) || "", /not one of Clearcart's tabs/);
+    assert.match(denied(await pre(s, "get_page_text", { tabId: 9 })) || "", /not one of Orbi's tabs/);
     assert.match(denied(await pre(s, "get_page_text", { tabId: 7 })) || "", /could not check/);
     assert.match(denied(await pre(s, "get_page_text", {})) || "", /could not check/, "no tabId: every tab must be known");
   });

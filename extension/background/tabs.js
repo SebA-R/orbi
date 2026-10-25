@@ -1,26 +1,26 @@
-// Agent tabs: the user's own open tabs plus the tabs Clearcart opens. There
+// Agent tabs: the user's own open tabs plus the tabs Orbi opens. There
 // is no tab group. Instead every tab is judged by its current page:
 //
 //   - A tab on a page the browse mode does not allow (the blocked sites, or
 //     the fixed rules: non-web pages, local and private addresses, addresses
 //     with a login in them) or served from a local address (netguard.js) is
 //     left out of tabsContext and refused for every call.
-//   - A new tab page (Chrome's or Clearcart's, isNewTabPage) and Clearcart's
+//   - A new tab page (Chrome's or Orbi's, isNewTabPage) and Orbi's
 //     "Can't reach this site" page (errpage.js) are listed and may be
 //     navigated to a site, but are never read or acted on. The error page
 //     is listed as chrome-error://chromewebdata/, without the address that
 //     failed; a user's error page for a blocked site is hidden.
 //   - That check runs again on every call (resolveAllowedTab), not only when
 //     the tabs are listed: a tab can move between calls.
-//   - Clearcart only closes tabs it opened itself.
+//   - Orbi only closes tabs it opened itself.
 //   - New tabs open next to the user's tab. The router brings a tab to the
-//     front when Clearcart acts on it (follow.js), or on tabsActivate.
+//     front when Orbi acts on it (follow.js), or on tabsActivate.
 //
-// Which tabs Clearcart opened is kept in chrome.storage.session so it
+// Which tabs Orbi opened is kept in chrome.storage.session so it
 // survives a service-worker restart. The agent server's tab sweep only looks
 // at those (agentTabs). Navigating, clicking or typing in one of the user's
 // own tabs never makes it sweepable: the user may later open a blocked site
-// in it, and Clearcart must then leave it alone.
+// in it, and Orbi must then leave it alone.
 
 import { BridgeError, ERR } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
@@ -37,14 +37,14 @@ export const NAV_TIMEOUT_MS = 20_000;
 const TITLE_MAX = 120;
 export const ERROR_TITLE = "Can't reach this site";
 const BLANK = /^(about:blank|chrome:\/\/newtab\/?)$/;
-// Chrome's own new tab pages. Tabs report Clearcart's new tab page
+// Chrome's own new tab pages. Tabs report Orbi's new tab page
 // (newtab/newtab.html) as chrome://newtab/ too.
 const NEW_TAB = /^chrome:\/\/(newtab|new-tab-page|new-tab-page-third-party)\/?$/;
 export const NEW_TAB_PATH = "newtab/newtab.html";
 
 const api = () => globalThis.chrome;
 
-// Full URL: INTERNAL replies (tab_info, agent_tabs) only. Clearcart's error
+// Full URL: INTERNAL replies (tab_info, agent_tabs) only. Orbi's error
 // page is chrome-error://chromewebdata/ there too, the address Chrome's own
 // error page would have.
 function info(tab) {
@@ -63,8 +63,8 @@ export function originPath(url) {
   }
 }
 
-// A new tab page, Chrome's or Clearcart's. Nothing on it is the user's, so
-// Clearcart lists the tab and may navigate it to a site, like a blank tab
+// A new tab page, Chrome's or Orbi's. Nothing on it is the user's, so
+// Orbi lists the tab and may navigate it to a site, like a blank tab
 // it opened itself. It never reads or acts on the page.
 export function isNewTabPage(url) {
   const u = String(url || "");
@@ -81,7 +81,7 @@ export function onNewTab(tab) {
   return isNewTabPage(tab.url || pending) && (!pending || isNewTabPage(pending));
 }
 
-// The tab is on Clearcart's "Can't reach this site" page and not on its way
+// The tab is on Orbi's "Can't reach this site" page and not on its way
 // somewhere else.
 export function onErrorPage(tab) {
   if (!tab) return false;
@@ -89,11 +89,11 @@ export function onErrorPage(tab) {
   return isErrorPage(tab.url || pending) && (!pending || isErrorPage(pending));
 }
 
-// A page of Clearcart's own with nothing on it to read: a new tab page or
+// A page of Orbi's own with nothing on it to read: a new tab page or
 // the error page. Listed, may be navigated, never read or acted on.
 export const onEmptyPage = (tab) => onNewTab(tab) || onErrorPage(tab);
 
-// The user's tab is on Clearcart's error page for a site the browse mode
+// The user's tab is on Orbi's error page for a site the browse mode
 // does not allow: hidden like Chrome's own error page for it would be.
 async function errorPageHidden(tab, settings, mine) {
   if (mine || !onErrorPage(tab)) return false;
@@ -101,7 +101,7 @@ async function errorPageHidden(tab, settings, mine) {
   return !!rec && !!blockReason(rec.url, settings);
 }
 
-// The address Clearcart's error page in this tab failed on, origin and path
+// The address Orbi's error page in this tab failed on, origin and path
 // only, or null. Null too when that address is not allowed: a blocked
 // site's address never reaches the agent.
 export async function failedAddress(tab) {
@@ -154,10 +154,10 @@ export async function isCreated(tabId) {
 
 // ------------------------------------------------------------ the check
 
-// Why Clearcart may not use this tab's current page, or null. A blank tab
-// Clearcart opened itself may be navigated (blankOk), nothing else.
+// Why Orbi may not use this tab's current page, or null. A blank tab
+// Orbi opened itself may be navigated (blankOk), nothing else.
 function hiddenReason(tab, settings, { blankOk = false } = {}) {
-  // The manifest keeps Clearcart out of incognito; this is a second line.
+  // The manifest keeps Orbi out of incognito; this is a second line.
   if (tab.incognito) return "incognito";
   const url = tab.url || tab.pendingUrl || "";
   if (blankOk && BLANK.test(url)) return null;
@@ -182,7 +182,7 @@ export async function activeTab() {
   return tab || null;
 }
 
-// Every tab Clearcart may see: the user's tabs on allowed pages, and the
+// Every tab Orbi may see: the user's tabs on allowed pages, and the
 // tabs it opened (blank ones too). Blocked tabs are left out entirely.
 export async function tabsContext() {
   const [all, settings, state, active] = await Promise.all([api().tabs.query({}), loadSettings(), loadState(), activeTab()]);
@@ -203,11 +203,11 @@ export async function tabsContext() {
   return { tabs };
 }
 
-// The tab a call acts on. Default: the tab Clearcart used last, else the
-// user's active tab. `nav` lets a navigate call reach a tab Clearcart opened
+// The tab a call acts on. Default: the tab Orbi used last, else the
+// user's active tab. `nav` lets a navigate call reach a tab Orbi opened
 // itself even when it sits on a blocked page (that is how the sweep sends
 // it back). The user's own tabs on blocked pages are never reachable, for
-// any call, however Clearcart used them before.
+// any call, however Orbi used them before.
 export async function resolveTab(tabId, { nav = false } = {}) {
   if (tabId != null && !Number.isInteger(tabId)) throw new BridgeError(ERR.BAD_REQUEST, "tabId must be an integer");
   const [state, settings] = await Promise.all([loadState(), loadSettings()]);
@@ -224,7 +224,7 @@ export async function resolveTab(tabId, { nav = false } = {}) {
   const mine = state.created.includes(tab.id);
   if (!(nav && mine) && (hiddenReason(tab, settings, { blankOk: mine && nav }) || (await errorPageHidden(tab, settings, mine)))) {
     // No origin in the message: a blocked tab of the user's stays private.
-    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Clearcart does not use it`);
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Orbi does not use it`);
   }
   return tab.id;
 }
@@ -319,7 +319,7 @@ export async function tabsCreate({ url, onCreated } = {}) {
   return { tabId: tab.id };
 }
 
-// Where the agent server's tab sweep sends a stray tab Clearcart opened.
+// Where the agent server's tab sweep sends a stray tab Orbi opened.
 export const BLANK_PAGE = "about:blank";
 
 export async function navigate({ tabId, url } = {}) {
@@ -344,8 +344,8 @@ export async function navigate({ tabId, url } = {}) {
   if (url === "back") start = history((i) => api().tabs.goBack(i), "back");
   else if (url === "forward") start = history((i) => api().tabs.goForward(i), "forward");
   else if (url === BLANK_PAGE) {
-    // Only a tab Clearcart opened; the user's own tabs keep their page.
-    if (!mine) throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is one of the user's tabs; Clearcart only blanks tabs it opened`);
+    // Only a tab Orbi opened; the user's own tabs keep their page.
+    if (!mine) throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is one of the user's tabs; Orbi only blanks tabs it opened`);
     start = () => api().tabs.update(id, { url });
   } else {
     await assertAllowed(url);
@@ -354,23 +354,23 @@ export async function navigate({ tabId, url } = {}) {
   await markUsed(id);
   await navigateAndWait(id, start);
   const tab = await api().tabs.get(id);
-  // The address did not load and the tab is already on Clearcart's error page.
+  // The address did not load and the tab is already on Orbi's error page.
   if (onErrorPage(tab)) return { tabId: tab.id, url: ERROR_URL, title: ERROR_TITLE };
   // History or a redirect can lead to a site that is not allowed; report it
-  // so callers stop driving. A blank page in a tab Clearcart opened is fine.
+  // so callers stop driving. A blank page in a tab Orbi opened is fine.
   if (!(mine && BLANK.test(tab.url || "")) && !(await isAllowed(tab.url))) {
     let origin = "unknown";
     try {
       origin = new URL(tab.url).origin;
     } catch {}
-    throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Clearcart does not drive: ${origin}`);
+    throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${origin}`);
   }
   assertNetSafe(id);
   // Origin and path only: a query string or fragment can carry login codes.
   return { tabId: tab.id, url: originPath(tab.url || tab.pendingUrl || ""), title: tab.title || "" };
 }
 
-// Checks a page again right after Clearcart read from it, so a tab that
+// Checks a page again right after Orbi read from it, so a tab that
 // moved to a blocked site mid-call gives nothing back. `url` is the address
 // of the document that answered; without one the tab's current (and
 // pending) address is checked. Throws NOT_ALLOWED to drop the result.
@@ -386,10 +386,10 @@ export async function assertPageAllowed(tabId, url) {
   }
 }
 
-// Closes a tab, only one Clearcart opened.
+// Closes a tab, only one Orbi opened.
 export async function tabsClose({ tabId } = {}) {
   if (!Number.isInteger(tabId)) throw new BridgeError(ERR.BAD_REQUEST, "tabId must be an integer");
-  if (!(await isCreated(tabId))) throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tabId} is one of the user's tabs; Clearcart only closes tabs it opened`);
+  if (!(await isCreated(tabId))) throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tabId} is one of the user's tabs; Orbi only closes tabs it opened`);
   await getTab(tabId);
   await api().tabs.remove(tabId);
   return { ok: true };
@@ -403,16 +403,16 @@ export async function tabsActivate({ tabId } = {}) {
   return { ok: true, tabId: id };
 }
 
-// Full URL of a tab Clearcart may see. INTERNAL: the agent server's pay flow
+// Full URL of a tab Orbi may see. INTERNAL: the agent server's pay flow
 // and unlock gate, never Claude.
 export async function tabInfo({ tabId } = {}) {
   const id = await resolveTab(tabId, { nav: true });
   return info(await api().tabs.get(id));
 }
 
-// The tabs Clearcart opened, with full URLs, blocked ones included.
+// The tabs Orbi opened, with full URLs, blocked ones included.
 // INTERNAL: the agent server's tab sweep. The user's own tabs never appear,
-// even ones Clearcart navigated, clicked or typed in.
+// even ones Orbi navigated, clicked or typed in.
 export async function agentTabs() {
   const state = await loadState();
   const tabs = [];
@@ -423,7 +423,7 @@ export async function agentTabs() {
   return { tabs };
 }
 
-// Earlier versions kept agent tabs in a "Clearcart" tab group. On install or
+// Earlier versions kept agent tabs in a "Orbi" tab group. On install or
 // update, take those tabs out of it (the group goes away with its last tab)
 // without closing any of them.
 export async function ungroupLegacy() {

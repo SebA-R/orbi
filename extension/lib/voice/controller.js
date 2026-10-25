@@ -49,7 +49,7 @@
 //            as each word is heard. A speaker without captions (a test fake)
 //            gets SUBTITLE(agent) as soon as agent_text arrives.
 //   confirm_done -> the placed cue (paid) or the failed cue (failed)
-//   standby  the agent server gave the conversation to another Clearcart
+//   standby  the agent server gave the conversation to another Orbi
 //            window (agent/hub.ts): stop speaking and stop waiting for a
 //            reply; "moved" also drops a turn still listening, unsent
 //
@@ -311,7 +311,7 @@ export class VoiceController {
         type: RT.VOICE_ERROR,
         code: blocked ? "mic_blocked" : "mic_failed",
         message: blocked
-          ? "Microphone access is blocked. Open Clearcart options and press Grant microphone."
+          ? "Microphone access is blocked. Open Orbi options and press Grant microphone."
           : `Could not start the microphone: ${err && err.message}`,
       });
     }
@@ -460,7 +460,7 @@ export class VoiceController {
     }
   }
 
-  // {type:"standby"} from the agent server: another Clearcart window (the
+  // {type:"standby"} from the agent server: another Orbi window (the
   // voice console, another browser profile) owns the conversation now.
   // reason "moved": it just took it, so a turn still listening here (a hold
   // or a latch) ends unsent, and nothing here keeps listening alongside it.
@@ -542,7 +542,7 @@ export class VoiceController {
         else if (m.outcome === "failed") this.chime("failed");
         break;
       case "standby":
-        this.emit({ type: RT.STATUS, kind: "status", text: m.text || "Clearcart is in use in another window." });
+        this.emit({ type: RT.STATUS, kind: "status", text: m.text || "Orbi is in use in another window." });
         this.standby(m.reason);
         break;
       default:

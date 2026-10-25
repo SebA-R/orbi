@@ -15,7 +15,7 @@ import { pages as shopPages } from "../../tests/fixtures/shop.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PW = path.join(REPO, "tests", "extension", "node_modules", "playwright", "index.mjs");
-const PAYS = " places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now, on a Clearcart pay site. Elsewhere, tell the user they can finish it themselves.";
+const PAYS = " places the order or pays, so nothing was pressed. Never call request_unlock for it: paying goes only through request_checkout and pay_now, on an Orbi pay site. Elsewhere, tell the user they can finish it themselves.";
 const PLACE = "Locked: 'Place order · $14.27'" + PAYS;
 const PLACE_REF = "Locked: 'Place order · $14.27' (ref_9)" + PAYS;
 
@@ -130,7 +130,7 @@ test("form_input: an opt-in may be unchecked, not checked; locked controls are r
 
 test("fails closed when the check cannot run", async () => {
   const broken = fake({ evalThrows: true });
-  const msg = /^Locked: Clearcart could not check/;
+  const msg = /^Locked: Orbi could not check/;
   assert.match((await ocicLockReason("computer", { action: "left_click", coordinate: [1, 1], tabId: 1 }, broken))!, msg);
   assert.match((await ocicLockReason("computer", { action: "key", text: "Enter", tabId: 1 }, broken))!, msg);
   assert.equal(await ocicLockReason("computer", { action: "left_click", ref: "ref_1", tabId: 1 }, fake({ refLine: "Error: ref_id \"ref_1\" not found" })), REF_CLICK);

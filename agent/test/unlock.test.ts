@@ -97,7 +97,7 @@ test("Claude's tools cannot reach the unlock: no tool arms or presses, and click
     call: async (m: string, p: any) => {
       calls.push([m, p]);
       if (m === "rect") return { x: 0, y: 0, width: 10, height: 10 };
-      if (m === "click") throw new ExtError("locked", "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
+      if (m === "click") throw new ExtError("locked", "Locked: 'Place order' can only be pressed by Orbi after the user says yes.");
       return null;
     },
   };
@@ -105,7 +105,7 @@ test("Claude's tools cannot reach the unlock: no tool arms or presses, and click
   for (const m of ["lock_arm", "press_protected", "click_ref", "rect", "fill_payment"]) assert.equal(defs[m], undefined, m);
   const r: any = await defs.click.handler({ ref: "ref_9", nonce: "x", unlock: true } as any, {});
   assert.equal(r.isError, true);
-  assert.equal(r.content[0].text, "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
+  assert.equal(r.content[0].text, "Locked: 'Place order' can only be pressed by Orbi after the user says yes.");
   assert.ok(!calls.some(([m]) => m === "lock_arm" || m === "press_protected"));
   assert.ok(calls.every(([, p]) => !("nonce" in p) && !("unlock" in p)));
 });
@@ -119,7 +119,7 @@ test("open web browsing does not widen the unlock: no site is a pay site by defa
     for (const gate of [unlockGate, new UnlockGate()]) {
       const r = gate.issue(req({ href }));
       assert.equal(r.ok, false, href);
-      assert.match((r as any).error, /not a Clearcart pay site/);
+      assert.match((r as any).error, /not an Orbi pay site/);
     }
   }
 });

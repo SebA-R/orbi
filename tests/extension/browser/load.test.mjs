@@ -15,5 +15,5 @@ test("the unpacked extension loads with its pinned ID and starts its worker", as
   assert.equal(new URL(ext.worker.url()).host, EXT_ID);
   const manifest = await ext.worker.evaluate(() => chrome.runtime.getManifest());
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.name, "Clearcart");
+  assert.equal(manifest.name, "Orbi");
 });

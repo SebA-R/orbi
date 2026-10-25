@@ -17,7 +17,7 @@
 // also learned from VOICE_STATE {latched}, so other frames and the toggle
 // command's hands-free session end on Space the same way.
 //
-// Double-tap Space while Clearcart is speaking: the first tap ducks the speech
+// Double-tap Space while Orbi is speaking: the first tap ducks the speech
 // (silent start) and, instead of bringing it back, waits DOUBLE_TAP_MS for a
 // second tap, which sends PTT_HUSH (hard stop plus the cut-off sound). A second press
 // that is held instead barges in as usual. Both taps are consumed. When not
@@ -266,8 +266,8 @@
     // and the worker injects a fresh one, so this copy steps aside.
     const myId = chromeApi.runtime && chromeApi.runtime.id;
     const orphaned = () => { try { return !!myId && !chromeApi.runtime.id; } catch { return true; } };
-    // A press another listener already took (a second Clearcart build, such
-    // as Clearcart Preview, registered first in this frame) is left to it, so
+    // A press another listener already took (a second Orbi build, such
+    // as Orbi Preview, registered first in this frame) is left to it, so
     // one press never opens two mics. Never while ours is held or latched:
     // that press may be the one that ends it.
     const onDown = (e) => {

@@ -2,7 +2,7 @@
   "name": "clearcart-ext-cursor-tests",
   "private": true,
   "type": "module",
-  "description": "jsdom unit tests for extension/content/cursor.js (Clearcart's on-page cursor).",
+  "description": "jsdom unit tests for extension/content/cursor.js (Orbi's on-page cursor).",
   "scripts": {
     "test": "node --test unit.test.mjs"
   },

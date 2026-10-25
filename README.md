@@ -1,10 +1,10 @@
-# Clearcart
+# Orbi
 
-**Talk to the web.** Clearcart is a voice-controlled web agent for anyone. Hold Space and say what you want. It navigates, searches, reads pages to you, fills in forms, clicks, and shops when you ask, in your own Chrome.
+**Talk to the web.** Orbi is a voice-controlled web agent for anyone. Hold Space and say what you want. It navigates, searches, reads pages to you, fills in forms, clicks, and shops when you ask, in your own Chrome.
 
-**Guided mode** (off by default) makes it work well for blind and low-vision users: Clearcart describes each page, reads out the top choices and lets you pick.
+**Guided mode** (off by default) makes it work well for blind and low-vision users: Orbi describes each page, reads out the top choices and lets you pick.
 
-Clearcart started with a sound screen reader users know too well: tabbing through a page and hearing "button, button, button", because nothing on it is labeled. Instead of waiting for every site to fix that, you say what you want and Clearcart does the clicking.
+Orbi started with a sound screen reader users know too well: tabbing through a page and hearing "button, button, button", because nothing on it is labeled. Instead of waiting for every site to fix that, you say what you want and Orbi does the clicking.
 
 ## Demo
 
@@ -16,18 +16,18 @@ Clearcart started with a sound screen reader users know too well: tabbing throug
 
 - **Hold Space and talk** on any web page. Recording starts the moment the key goes down, so your first word is kept. A quick tap is still a normal Space.
 - **Option+Space latches** listening, in text fields too. Press Space to send. A minute without speech stops it.
-- **Double-tap Space** while Clearcart is speaking to stop it.
+- **Double-tap Space** while Orbi is speaking to stop it.
 - **Instant barge-in:** touch Space while it is talking and its speech fades out in about 20 ms, and it starts listening.
 - **Speak replies off:** read answers in the subtitles without hearing them. Listening still works.
 - **Ctrl+Shift+Space anywhere:** a toggle shortcut (set in `chrome://extensions/shortcuts`) for people who can't hold a key. It works on every page, even where Space can't.
-- **New tab page and error pages:** Chrome's new tab page and "can't reach this site" page can't run extensions, so Clearcart replaces them with its own pages, where Space and subtitles work. Both can be turned off.
+- **New tab page and error pages:** Chrome's new tab page and "can't reach this site" page can't run extensions, so Orbi replaces them with its own pages, where Space and subtitles work. Both can be turned off.
 
 ### Seeing what it does
 
 - **Karaoke subtitles:** each reply shows at the bottom of the tab, and each word lights up as you hear it, timed from Cartesia Sonic's word timestamps.
 - **Orb face:** a small orb shows the voice state with a face: resting, listening, thinking and speaking. While it speaks, the mouth follows the words, timed from Sonic's phoneme timestamps.
-- **Active-tab ring:** an 8px rotating spectrum ring with rounded corners frames the tab Clearcart is working in.
-- **Humanized cursor and typing:** Clearcart's own pointer moves along curved paths at a pace you can follow, with a ripple on each click. Typing goes key by key at a typist's cadence. Your own mouse never moves.
+- **Active-tab ring:** an 8px rotating spectrum ring with rounded corners frames the tab Orbi is working in.
+- **Humanized cursor and typing:** Orbi's own pointer moves along curved paths at a pace you can follow, with a ripple on each click. Typing goes key by key at a typist's cadence. Your own mouse never moves.
 - **Follows you to its tab:** when it opens, clicks, types or scrolls in a tab, that tab comes to the front. If you switch away yourself, it stops following until your next turn.
 - **Quiets other tabs:** videos and music in other tabs fade out while you talk and while it answers, then come back.
 - **Sounds:** short cues for listening, sent, cut off, order placed, order not placed, errors and a lost connection.
@@ -42,25 +42,25 @@ Clearcart started with a sound screen reader users know too well: tabbing throug
 
 - **Locked risky buttons.** Place order, Buy now, Pay, Checkout, wallet buttons (Apple Pay, Google Pay, PayPal and others), Subscribe, Save card, Sign in and Sign up are locked for the AI, along with the submit of any card or password form. Every agent click, key and form change is checked against the page before it is sent, and refused if the check can't run.
 - **Unlocked when you ask.** Say "sign me in" or "go to checkout" and that one control unlocks once, for that tab. Anything less direct gets one spoken question, and only a clear yes unlocks it. Place order and wallet buttons never unlock this way.
-- **Checkout read-back and a spoken yes.** Before paying, Clearcart reads back the item and the total. Only an explicit "yes" confirms, and the total on the page must match what you heard.
-- **The card and passwords are never visible to the agent.** Page reads mask card and password fields and card-like numbers. The agent can't type into them. The card is filled by Clearcart's own code, and the model only ever gets back the last four digits.
+- **Checkout read-back and a spoken yes.** Before paying, Orbi reads back the item and the total. Only an explicit "yes" confirms, and the total on the page must match what you heard.
+- **The card and passwords are never visible to the agent.** Page reads mask card and password fields and card-like numbers. The agent can't type into them. The card is filled by Orbi's own code, and the model only ever gets back the last four digits.
 - **Blocked sites.** A suggested list of sensitive sites (email, password managers, banks, government, health, account pages) is blocked from the start, and you can edit it. Browser pages, local network addresses and addresses with a login in them are always blocked.
 - **Page text is data, not instructions.** Page content, your selection and earlier conversation reach the model labeled as data, and the prompt tells it never to follow instructions found in them.
-- **CAPTCHA hand-off.** Clearcart never tries to solve a CAPTCHA or bot check. It tells you, and you take over.
+- **CAPTCHA hand-off.** Orbi never tries to solve a CAPTCHA or bot check. It tells you, and you take over.
 - **Limits.** The lock and masking are enforced in code. Some rules are only instructions to the model, such as not typing other personal details like your address. Details are in [`extension/README.md`](extension/README.md#button-lock).
-- **One global session.** Every Clearcart window shares one agent. The window you last talked into owns it, so one yes can never confirm two checkouts.
-- **Danger mode (opt-in, off by default).** Danger mode turns Clearcart into a free agent: no button lock at all, no checkout page block, and it places orders without waiting for a yes (it announces the item and total, then presses the button). It still can't see or type card numbers or passwords, so on most sites an order only goes through where the site already has your payment and sign-in saved. On a pay site you set up, Clearcart's own code fills the Keychain card without asking. Card and password masking, blocked sites and the CAPTCHA hand-off stay on. The risk is real: a misheard request or a misleading page can lead to a real purchase you didn't intend. Turning it on takes a second confirming press.
+- **One global session.** Every Orbi window shares one agent. The window you last talked into owns it, so one yes can never confirm two checkouts.
+- **Danger mode (opt-in, off by default).** Danger mode turns Orbi into a free agent: no button lock at all, no checkout page block, and it places orders without waiting for a yes (it announces the item and total, then presses the button). It still can't see or type card numbers or passwords, so on most sites an order only goes through where the site already has your payment and sign-in saved. On a pay site you set up, Orbi's own code fills the Keychain card without asking. Card and password masking, blocked sites and the CAPTCHA hand-off stay on. The risk is real: a misheard request or a misleading page can lead to a real purchase you didn't intend. Turning it on takes a second confirming press.
 
 ### Pay
 
-Paying runs through the read-back and your spoken yes. After the yes, Clearcart's own code (not the AI) fills the card from the macOS Keychain and presses Place order once, on a pay site you set up with `CLEARCART_PAY_ORIGINS`. There are no pay sites by default. On every other site Clearcart stops at checkout, reads you the order and lets you finish it yourself.
+Paying runs through the read-back and your spoken yes. After the yes, Orbi's own code (not the AI) fills the card from the macOS Keychain and presses Place order once, on a pay site you set up with `CLEARCART_PAY_ORIGINS`. There are no pay sites by default. On every other site Orbi stops at checkout, reads you the order and lets you finish it yourself.
 
 ## How it works
 
 ```
  you ── hold Space ──┐
                      v
- ┌──────────────── Chrome: Clearcart extension (MV3) ───────────────────┐
+ ┌──────────────── Chrome: Orbi extension (MV3) ───────────────────┐
  │ content scripts   hotkey, subtitles, orb, ring, cursor, page context │
  │ offscreen doc     mic ── Cartesia Ink 2 (STT) / Sonic (TTS) ── audio │
  │ service worker    bridge, tabs, CDP input, follow, ducking           │
@@ -82,13 +82,13 @@ Paying runs through the read-back and your spoken yes. After the yes, Clearcart'
 
 ## Setup
 
-**Prerequisites:** Node 20 or newer, Chrome 116 or newer, and macOS if you want Clearcart to pay (the card lives in the Keychain). You need an Anthropic API key and a Cartesia API key.
+**Prerequisites:** Node 20 or newer, Chrome 116 or newer, and macOS if you want Orbi to pay (the card lives in the Keychain). You need an Anthropic API key and a Cartesia API key.
 
 1. **Clone and install the agent server.**
 
    ```bash
-   git clone https://github.com/SebA-R/clearcart.git
-   cd clearcart
+   git clone https://github.com/SebA-R/orbi.git
+   cd orbi
    npm --prefix agent install
    ```
 
@@ -96,7 +96,9 @@ Paying runs through the read-back and your spoken yes. After the yes, Clearcart'
    - `ANTHROPIC_API_KEY`
    - `CARTESIA_API_KEY`
    - `CLEARCART_VOICE`: `true` for voice, `false` for text and subtitles only, with no Cartesia calls
-   - `CLEARCART_BROWSER=ext`, so the server drives the Clearcart extension
+   - `CLEARCART_BROWSER=ext`, so the server drives the Orbi extension
+
+   The environment variables keep the `CLEARCART_` prefix from the project's old name, Clearcart, so existing setups keep working.
 
 3. **Start the agent server** on port 5050:
 
@@ -116,7 +118,7 @@ Paying runs through the read-back and your spoken yes. After the yes, Clearcart'
 CLEARCART_PAY_ORIGINS=https://shop.example npm --prefix agent start
 ```
 
-**Tip: hide the debugging bar.** Chrome shows "Clearcart started debugging this browser" while the agent clicks or types. Quit Chrome and relaunch it with `--silent-debugger-extension-api` to hide the bar:
+**Tip: hide the debugging bar.** Chrome shows "Orbi started debugging this browser" while the agent clicks or types. Quit Chrome and relaunch it with `--silent-debugger-extension-api` to hide the bar:
 
 ```bash
 open -a "Google Chrome" --args --silent-debugger-extension-api
@@ -139,14 +141,14 @@ All settings live in the extension's options page. The everyday ones are also in
 | Browse mode (Open web or Only allowed sites) | Open web |
 | Allowed sites | None |
 | Blocked sites | The suggested list |
-| Follow Clearcart to its tab | On |
+| Follow Orbi to its tab | On |
 | Show actions at a watchable pace | On |
-| Show Clearcart's cursor | On |
+| Show Orbi's cursor | On |
 | Danger mode | Off |
 | Remember things about me (Memory) | On |
 | Show subtitles on the page | On |
-| Use the Clearcart new tab page | On |
-| Replace Chrome error pages with Clearcart's page | On |
+| Use the Orbi new tab page | On |
+| Replace Chrome error pages with Orbi's page | On |
 | Play sounds | On |
 | Quiet other tabs while talking | On |
 | Model provider (Claude or Local) | Claude |
@@ -159,7 +161,7 @@ Run the light tests without Cartesia: `CLEARCART_VOICE=false npm --prefix agent 
 
 ## Tracks and credits
 
-Clearcart was built at **Cal Hacks 13.0** (October 24 to 25, 2026) for the Visa, Anthropic, Cartesia and Microsoft tracks:
+Orbi was built at **Cal Hacks 13.0** (October 24 to 25, 2026) for the Visa, Anthropic, Cartesia and Microsoft tracks:
 
 - **Visa:** agent checkout where the card never reaches the model and nothing is bought without a spoken yes.
 - **Anthropic:** the agent runs on Claude through the Claude Agent SDK.

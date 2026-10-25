@@ -64,7 +64,7 @@ function fakeCheckout(o: CheckoutOpts = {}) {
         return { x: 10, y: 20, width: 100, height: 40 };
       case "click":
         // The extension refuses agent clicks on the locked Place order.
-        throw new ExtError("locked", "Locked: 'Place order' can only be pressed by Clearcart after the user says yes.");
+        throw new ExtError("locked", "Locked: 'Place order' can only be pressed by Orbi after the user says yes.");
       case "lock_arm":
         return { nonce: `nonce-${calls.filter((c) => c.method === "lock_arm").length}`, expiresInMs: 30_000 };
       case "press_protected":
@@ -222,7 +222,7 @@ test("the gate refuses an origin that is not a pay site before any card is read"
   const gate = new UnlockGate({ isAllowed: () => false });
   const r = await payNowExt(confirmed(), { ...fast, gate, getCard: async () => ((read = true), { ...CARD }), bridge: s.bridge as any });
   assert.equal(r.ok, false);
-  assert.match((r as any).error, /not a Clearcart pay site/);
+  assert.match((r as any).error, /not an Orbi pay site/);
   assert.equal(read, false);
   assert.ok(!s.calls.some((c) => c.method === "fill_payment" || c.method === "lock_arm"));
 });

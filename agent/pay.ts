@@ -1,6 +1,6 @@
 // pay_now: our code, not Claude, fills the card and places the order, on a
 // pay site (CLEARCART_PAY_ORIGINS, none by default) and only over the
-// Clearcart extension (CLEARCART_BROWSER=ext).
+// Orbi extension (CLEARCART_BROWSER=ext).
 //
 // The card is read from the vault and written into the checkout inputs with
 // one fill_payment call over our own bridge socket. Claude only ever sees
@@ -130,11 +130,11 @@ export async function payNow(state: PayState): Promise<PayResult> {
   if (extMode()) return payNowExt(state);
   const claim = claimConfirmation(state);
   if (!claim.ok) return claim;
-  return { ok: false, error: "Paying needs the Clearcart extension. Tell the user they can finish checkout on the page themselves." };
+  return { ok: false, error: "Paying needs the Orbi extension. Tell the user they can finish checkout on the page themselves." };
 }
 
 // ---------------------------------------------------------------------------
-// pay_now over the Clearcart extension (CLEARCART_BROWSER=ext).
+// pay_now over the Orbi extension (CLEARCART_BROWSER=ext).
 //
 // The card goes to the page in one fill_payment call over our own bridge
 // socket; the extension sets the fields by autocomplete kind and answers

@@ -59,7 +59,7 @@ test("a new tab page is named as an empty new tab, not a blocked site", () => {
   assert.equal(contextBlock({ active: { tabId: 7, newTab: true, blocked: true } }, SITE_POLICY), `${CONTEXT_LABEL} Active tab: a blocked site.`);
 });
 
-test("Clearcart's error page is named as one, with the failed address only when allowed", () => {
+test("Orbi's error page is named as one, with the failed address only when allowed", () => {
   const active = { tabId: 8, title: "Can't reach this site", url: "chrome-error://chromewebdata/", newTab: true, errorPage: true };
   assert.equal(
     contextBlock({ active: { ...active, failedUrl: "https://shop.example/cart?q=1" } }, SITE_POLICY),
