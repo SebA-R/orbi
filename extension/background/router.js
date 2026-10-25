@@ -187,6 +187,16 @@ export function createRouter({
     if (typeof tabs.onNewTab === "function" && tabs.onNewTab(tab)) {
       return { active: { tabId: tab.id, title: "New Tab", url: "chrome://newtab/", newTab: true } };
     }
+    // Clearcart's "Can't reach this site" page: nothing to read either. The
+    // address that failed only when it is allowed (tabs.failedAddress).
+    // newTab too, so an agent server that predates errorPage still says
+    // the tab may be navigated.
+    if (typeof tabs.onErrorPage === "function" && tabs.onErrorPage(tab)) {
+      const failed = typeof tabs.failedAddress === "function" ? await tabs.failedAddress(tab).catch(() => null) : null;
+      const active = { tabId: tab.id, title: "Can't reach this site", url: "chrome-error://chromewebdata/", newTab: true, errorPage: true };
+      if (failed) active.failedUrl = failed;
+      return { active };
+    }
     try {
       await tabs.resolveAllowedTab(tab.id, { peek: true });
     } catch {

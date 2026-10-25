@@ -136,7 +136,9 @@ export function browseDenyReason(url: string, policy: SitePolicy = sitePolicy())
   return `Blocked: Clearcart does not open ${originOf(url) || "that page"} (${why}). Tell the user if they asked for it.`;
 }
 
-const BLANK = /^(about:blank|chrome:\/\/newtab)/;
+// chrome-error://chromewebdata/: the extension's name for its "Can't reach
+// this site" page (extension/background/errpage.js), which holds nothing.
+const BLANK = /^(about:blank|chrome:\/\/newtab|chrome-error:\/\/chromewebdata\/?$)/;
 
 // Tools that act on an existing tab's page. On the Open Claude in Chrome
 // path the guard checks that tab's current URL first (a redirect or page
