@@ -26,7 +26,9 @@ export function loadPage(html, { url = "http://localhost:4000/", page = true } =
     new Promise((resolve) => {
       let async = false;
       for (const fn of listeners) {
-        if (fn(msg, { id: "test" }, resolve) === true) async = true;
+        // JSON round-trip: chrome messaging serializes, and it drops the jsdom realm.
+        const reply = (r) => resolve(r === undefined ? r : JSON.parse(JSON.stringify(r)));
+        if (fn(msg, { id: "test" }, reply) === true) async = true;
       }
       if (!async) resolve(undefined);
     });
