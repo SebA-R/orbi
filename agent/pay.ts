@@ -110,8 +110,9 @@ export async function payNow(state: PayState): Promise<PayResult> {
   if (!process.env.CLEARCART_ALLOW_AUDIT) {
     try {
       const cfg = JSON.parse(resultText(await callBrowserTool("get_config", { tabId })));
-      const mode = cfg?.effectiveForTab?.audit_mode ?? cfg?.default?.audit_mode;
-      if (mode && mode !== "off") {
+      const mode = cfg?.effectiveForTab?.config?.audit_mode ?? cfg?.default?.audit_mode;
+      // Extensions that mask payment fields in recordings say so; older ones don't.
+      if (mode && mode !== "off" && cfg?.auditMasksPayment !== true) {
         return {
           ok: false,
           error: "Payment is paused because the browser extension's audit recording is on, and it would record the card. Ask the user to turn audit mode off in the Open Claude in Chrome options.",
