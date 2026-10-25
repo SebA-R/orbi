@@ -22,9 +22,15 @@
 Clearcart's AI can never press the button that spends your money. Place order, Buy now, Pay, Checkout, Apple Pay, Google Pay, PayPal and similar wallet buttons, Subscribe, Save card, Sign in and Sign up are locked for the agent, along with the submit of any form that holds card or password fields. Pre-checked add-on and subscription boxes may be unchecked, never checked. Add to cart, quantity and remove stay open, so shopping works as before.
 
 - **Enforced in code, not just asked for.** Every agent click (by element or by screen position), Enter or Space key, typed newline and form change is checked against the page before it is sent, and refused if it would press a locked control. If the check cannot run, the action is refused. Checkout and payment pages on sites other than the demo store will not open.
-- **One way through.** Only Clearcart's own pay code presses the order button, once, after your spoken yes, on an allowlisted site, with the total you heard. The AI cannot unlock anything.
+- **One way through.** Only Clearcart's own pay code presses the order button, once, after your spoken yes, on a pay site (just the demo store unless you add others), with the total you heard. The AI cannot unlock anything.
 - **Only the AI is locked out.** You can always press any button yourself. A small "Locked for AI" padlock appears over locked controls for sighted helpers and the demo video. It is hidden from screen readers and lets clicks through, so what you hear does not change.
 - **What is still prompt-only:** stopping at the cart on real stores is now enforced for the checkout, wallet and sign-in buttons, but avoiding other personal details (typing an address on a real site, for example) is still an instruction to the model. Details and limits are in [`extension/README.md`](extension/README.md#button-lock) and [`agent/README.md`](agent/README.md#button-lock).
+
+## Which sites it browses
+
+By default Clearcart browses the open web: any store you name, such as Etsy, Aritzia or Nordstrom. It never opens a blocklist of sensitive sites (email, password managers, banks, brokerages and crypto exchanges, government and tax, health portals, Google, Apple, Microsoft and Amazon account pages), browser and extension pages, or other ports on this computer. The list is best effort, so you can add your own blocked sites. It only ever drives tabs in its own "Clearcart" tab group, never your other tabs, and on real stores it stops at the cart: the button lock and the checkout page block stay on, and open browsing does not make any site a pay site.
+
+To limit it to a fixed list instead, set `CLEARCART_BROWSE_MODE=allowlist` for the agent (with `CLEARCART_ALLOWED_ORIGINS`) and pick "Only these sites" in the extension's options. `CLEARCART_BLOCKED_ORIGINS` and the options page add blocked sites. Details are in [`agent/README.md`](agent/README.md) and [`extension/README.md`](extension/README.md#which-sites).
 
 ## Demo examples
 
