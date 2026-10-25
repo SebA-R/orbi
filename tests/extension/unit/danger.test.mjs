@@ -114,7 +114,7 @@ function routerFakes(dangerMode, url = "https://shop.example/cart") {
     isPaySite: async (u) => new URL(u).origin === "http://localhost:4000",
     assertPageAllowed: async () => {},
   };
-  const cdp = { click: async () => {}, type: async () => {}, key: async () => {} };
+  const cdp = { click: async () => {}, type: async () => {}, key: async () => {}, send: async () => {} };
   const router = createRouter({ chromeApi, tabs, cdp, dangerMode });
   return { router, msgs };
 }

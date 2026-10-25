@@ -1,10 +1,11 @@
 // Clearcart new tab page (chrome_url_overrides). Chrome pages can't run
-// content scripts, so this page loads content/hotkey.js and
-// content/subtitles.js itself (see newtab.html; guard.js keeps them to the
-// worker's messages for this tab). The worker sees it as any other tab:
+// content scripts, so this page loads content/hotkey.js itself (see
+// newtab.html; guard.js keeps it to the worker's messages for this tab). No
+// subtitle card here: it would sit over the centered orb, which already
+// shows the voice state. The worker sees it as any other tab:
 // hold-to-talk, the latch, double-tap, replay on tab switch.
 //
-// This file adds the orb, the search box and the setting: with "Use the
+// This file adds the orb face, the search box and the setting: with "Use the
 // Clearcart new tab page" off it forwards to Chrome's own new tab page.
 import { RT } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
@@ -39,7 +40,7 @@ if (!settings.newTabPage) {
     await forward();
   } catch (e) {
     document.documentElement.dataset.ready = "true";
-    for (const el of document.querySelectorAll("main > :not(#off, .brand)")) el.hidden = true;
+    for (const el of document.querySelectorAll("main > :not(#off, h1)")) el.hidden = true;
     $("off").hidden = false;
     $("off-text").textContent = back
       ? "The Clearcart new tab page is turned off in Clearcart settings."
@@ -59,7 +60,9 @@ function start() {
     thinking: () => ["Thinking", "Working on your request."],
     speaking: (k) => ["Speaking", `Hold ${k} to interrupt${k === "Space" ? ", or tap it twice to stop" : ""}.`],
   };
-  // The popup's mini orb face beside the name. Decorative: the heading says the state.
+  // The hero orb is the face (content/orb-face.js): it smiles at rest and
+  // goes faceless while listening, thinking or speaking. Decorative: the
+  // heading and the live region say the state.
   let face = null;
   const FACE = globalThis.__clearcartOrbFace;
   if (FACE) {
@@ -67,8 +70,8 @@ function start() {
       const sheet = new CSSStyleSheet();
       sheet.replaceSync(FACE.CSS);
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-      face = FACE.create(document);
-      $("mini-orb").append(face.el);
+      face = FACE.create(document, { canPlay: () => !document.hidden });
+      $("orb").append(face.el);
     } catch {}
   }
   const show = (next = state) => {
@@ -79,7 +82,18 @@ function start() {
     const [title, sub] = TEXT[state](keyName(hotkey));
     $("orb").dataset.state = state;
     face?.setState(state);
-    if ($("voice-title").textContent !== title) $("voice-title").textContent = title;
+    document.body.dataset.state = state;
+    if ($("voice-title").textContent !== title) {
+      // The key shows as a keycap, as in "Hold [Space] to talk".
+      const k = keyName(hotkey);
+      const at = title.indexOf(k);
+      if (at < 0) $("voice-title").textContent = title;
+      else {
+        const kbd = document.createElement("kbd");
+        kbd.textContent = k;
+        $("voice-title").replaceChildren(title.slice(0, at), kbd, title.slice(at + k.length));
+      }
+    }
     if ($("voice-sub").textContent !== sub) $("voice-sub").textContent = sub;
   };
 
@@ -90,7 +104,7 @@ function start() {
   });
   document.addEventListener("visibilitychange", () => { if (document.hidden) show("idle"); });
   // A tab opened with Command + T may load after the worker's tab-switch
-  // replay, so ask once (hotkey.js and subtitles.js hear the answer too).
+  // replay, so ask once (hotkey.js hears the answer too).
   chrome.runtime.sendMessage({ type: RT.VOICE_STATE_QUERY }).catch(() => {});
 
   chrome.storage.onChanged.addListener((changes, area) => {
