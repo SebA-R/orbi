@@ -225,3 +225,55 @@ P.release(el);
 setTimeout(function () { el.click(); }, 30);
 return "pressed";`;
 }
+
+// ---------------------------------------------------------------- decision
+
+export type Decision =
+  | { kind: "refuse"; message: string }
+  | { kind: "needs_password"; message: string }
+  | { kind: "grant"; cls: UnlockClass; label: string; direct: true }
+  | { kind: "ask"; cls: UnlockClass; label: string; question: string };
+
+// "done" after the user typed their own password.
+const DONE = /^ (ok |okay |yes |yeah |alright |all right )*(done|im done|i am done|finished|ready|typed it|i typed it|entered it|i entered it|its in|go ahead|go|yes|yeah|ok|okay)( now| thanks| thank you)? $/;
+
+export const NOT_LOCKED = "That control is not locked. Press it with click as usual.";
+
+// What request_unlock does for a control: refuse it, wait for the user's
+// own password, press it at once (the user's latest words asked for it), or
+// ask one short question first. spent: unlock classes already granted
+// directly for this utterance (one press per ask). passwordAsk: the user
+// asked for this sign in before their password was typed.
+export function decideUnlock(
+  info: LockInfo,
+  opts: { userText: string; spent?: Set<string>; passwordAsk?: boolean }
+): Decision {
+  if (!info || !info.locked) return { kind: "refuse", message: NOT_LOCKED };
+  const label = String(info.label || "this control");
+  const cls = (info.cls || null) as UnlockClass | null;
+  if (!cls) {
+    switch (info.kind) {
+      case "express":
+        return { kind: "refuse", message: `'${label}' is a one-tap wallet or pay later button. Only the user can press it. Tell them where it is if they want to use it.` };
+      case "frame":
+      case "shadow":
+        return { kind: "refuse", message: "Clearcart cannot see inside that part of the page, so only the user can press it there." };
+      default:
+        return {
+          kind: "refuse",
+          message: `'${label}' places the order or pays. Only request_checkout and pay_now can do that, after the user's yes, and only on the demo store. Elsewhere, tell the user they can finish it themselves.`,
+        };
+    }
+  }
+  if (cls === "account" && info.password && !info.passwordFilled) {
+    return {
+      kind: "needs_password",
+      message: "The password field is empty. Clearcart never types or reads passwords. Ask the user to type their password into the page themselves and to tell you when they are done, then call request_unlock again for this control.",
+    };
+  }
+  const spent = opts.spent?.has(cls);
+  const direct = !spent && (isDirectAsk(opts.userText, cls, label) || (!!opts.passwordAsk && cls === "account" && DONE.test(norm(opts.userText))));
+  if (direct) return { kind: "grant", cls, label, direct: true };
+  const question = cls === "checkout" ? "Do you want me to go to checkout?" : `Do you want me to press ${label}?`;
+  return { kind: "ask", cls, label, question };
+}
