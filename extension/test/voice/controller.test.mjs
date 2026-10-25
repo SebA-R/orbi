@@ -44,13 +44,13 @@ const states = (emitted) => emitted.filter((m) => m.type === RT.VOICE_STATE).map
 test("start: barge-in, start chime, listening, mic routed to STT", async () => {
   const r = rig();
   await r.c.start();
-  assert.deepEqual(r.log, ["tts.stop", "chime:start"]);
+  assert.deepEqual(r.log, ["tts.stop", "chime:listen"]);
   assert.deepEqual(states(r.emitted), ["listening"]);
   assert.equal(r.stt.opened, true);
   r.mic.sink("chunk");
   assert.deepEqual(r.stt.audio, ["chunk"]);
   await r.c.start(); // ignored while listening
-  assert.deepEqual(r.log, ["tts.stop", "chime:start"]);
+  assert.deepEqual(r.log, ["tts.stop", "chime:listen"]);
 });
 
 test("stop: stop chime now, finish after the tail; a final becomes user_text + subtitle", async () => {
@@ -58,7 +58,7 @@ test("stop: stop chime now, finish after the tail; a final becomes user_text + s
   await r.c.start();
   r.stt.h.onPartial("cheap aller");
   r.c.stop();
-  assert.equal(r.log.at(-1), "chime:stop");
+  assert.equal(r.log.at(-1), "chime:sent");
   assert.equal(r.timers[0].ms, TAIL_MS);
   assert.equal(r.stt.finished, false);
   r.timers[0].fn();
@@ -150,7 +150,7 @@ test("toggle latches like Option+Space", async () => {
 test("a latched session holds its phrases and sends them as one user_text after stop", async () => {
   const r = rig();
   await r.c.start({ latch: true });
-  assert.deepEqual(r.log, ["tts.stop", "chime:start"], "confirms at once, no silent start");
+  assert.deepEqual(r.log, ["tts.stop", "chime:listen"], "confirms at once, no silent start");
   r.stt.h.onFinal("two bags of");
   r.stt.h.onPartial("chips");
   assert.deepEqual(r.agent.sent.filter((m) => m.type === "user_text"), [], "nothing sent before Space");
@@ -186,7 +186,7 @@ test("a latch stops itself after a minute with no speech, and speech pushes it b
   t.fn();
   assert.equal(r.c.listening, false);
   assert.ok(r.emitted.some((m) => m.type === RT.STATUS && /no speech/.test(m.text)));
-  assert.equal(r.log.at(-1), "chime:stop");
+  assert.equal(r.log.at(-1), "chime:sent");
 });
 
 test("a hold has no idle timeout; the old timer is a no-op once the latch ended", async () => {
@@ -216,7 +216,7 @@ test("hush while speaking drops the tap's silent start, hard-stops speech and bo
   assert.equal(r.c.hush(), true);
   assert.equal(r.stt.aborted, true);
   assert.equal(r.c.listening, false);
-  assert.deepEqual(r.log, ["tts.stop", "chime:boop"]);
+  assert.deepEqual(r.log, ["tts.stop", "chime:cut"]);
   assert.deepEqual(r.agent.sent, [{ type: "interrupt" }], "never a user_text, so it can't answer a read-back");
   assert.ok(!states(r.emitted).includes("listening"));
 });
@@ -303,7 +303,7 @@ test("silent start records from the first moment but shows nothing until confirm
   assert.deepEqual(r.log, ["tts.duck"]);
   assert.equal(r.emitted.length, 0);
   r.c.confirm();
-  assert.deepEqual(r.log, ["tts.duck", "tts.stop", "chime:start", "tts.stop"]);
+  assert.deepEqual(r.log, ["tts.duck", "tts.stop", "chime:listen", "tts.stop"]);
   assert.deepEqual(states(r.emitted), ["listening"]);
   assert.ok(r.emitted.some((m) => m.type === RT.SUBTITLE && m.text === "reorder"));
   r.c.stop();
@@ -347,7 +347,7 @@ test("confirm hard-stops the speaker and sends interrupt to the agent", async ()
   r.log.length = 0;
   await r.c.start({ silent: true });
   r.c.confirm();
-  assert.deepEqual(r.log.slice(0, 3), ["tts.duck", "tts.stop", "chime:start"]);
+  assert.deepEqual(r.log.slice(0, 4), ["tts.duck", "tts.stop", "chime:cut", "chime:listen"]);
   assert.deepEqual(r.agent.sent, [{ type: "interrupt" }]);
 });
 
@@ -412,4 +412,90 @@ test("the toggle during a tap's silent start latches instead of doing nothing", 
   assert.equal(r.c.latched, true);
   r.c.cancel(); // the tap's late PTT_CANCEL is a no-op now
   assert.equal(r.c.listening, true);
+});
+
+// ---- earcons: which cue each trigger plays ----
+const cues = (log) => log.filter((l) => l.startsWith("chime:")).map((l) => l.slice(6));
+
+test("cues: listen on confirm, sent on release", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  assert.deepEqual(cues(r.log), [], "a touch is silent");
+  r.c.confirm();
+  assert.deepEqual(cues(r.log), ["listen"]);
+  r.c.stop();
+  assert.deepEqual(cues(r.log), ["listen", "sent"]);
+});
+
+test("cues: a quick tap plays nothing", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  r.c.cancel();
+  assert.deepEqual(cues(r.log), []);
+});
+
+test("cues: holding over speech or thinking plays cut, then listen after it", async () => {
+  for (const setup of [(c) => c.onSpeakingChange(true), (c) => { c.awaitingReply = true; }]) {
+    const calls = [];
+    const r = rig();
+    r.c.chime = (k, o) => calls.push([k, o]);
+    setup(r.c);
+    await r.c.start({ silent: true });
+    r.c.confirm();
+    assert.deepEqual(calls.map(([k]) => k), ["cut", "listen"]);
+    assert.ok(calls[1][1].when > 0.1, "listen waits for the cut cue");
+  }
+  const r = rig();
+  await r.c.start();
+  assert.deepEqual(cues(r.log), ["listen"], "no cut when idle");
+});
+
+test("cues: double-tap hush plays cut", async () => {
+  const r = rig();
+  r.c.onSpeakingChange(true);
+  await r.c.start({ silent: true });
+  r.c.hush();
+  assert.deepEqual(cues(r.log), ["cut"]);
+});
+
+test("cues: confirm_done paid -> placed, failed -> failed, declined -> nothing", () => {
+  const r = rig();
+  r.c.onAgentMessage({ type: "confirm_done", outcome: "declined" });
+  assert.deepEqual(cues(r.log), []);
+  r.c.onAgentMessage({ type: "confirm_done", outcome: "paid" });
+  r.c.onAgentMessage({ type: "confirm_done", outcome: "failed" });
+  assert.deepEqual(cues(r.log), ["placed", "failed"]);
+});
+
+test("cues: mic blocked buzzes on a held start", async () => {
+  const r = rig({ micFails: "NotAllowedError" });
+  await r.c.start();
+  assert.deepEqual(cues(r.log), ["listen", "error"]);
+});
+
+test("cues: mic failure on a touch waits for the hold; a tap stays silent", async () => {
+  const r = rig({ micFails: "NotReadableError" });
+  await r.c.start({ silent: true });
+  assert.deepEqual(cues(r.log), []);
+  r.c.confirm();
+  assert.deepEqual(cues(r.log), ["error"]);
+  r.c.confirm();
+  assert.deepEqual(cues(r.log), ["error"], "only once");
+
+  const t = rig({ micFails: "NotReadableError" });
+  await t.c.start({ silent: true });
+  t.c.cancel();
+  assert.deepEqual(cues(t.log), []);
+});
+
+test("cues: an STT error buzzes (after the hold is confirmed)", async () => {
+  const r = rig();
+  await r.c.start({ silent: true });
+  r.stt.h.onError("Speech recognition error: boom");
+  assert.deepEqual(cues(r.log), []);
+  assert.ok(r.emitted.some((m) => m.type === RT.VOICE_ERROR));
+  r.c.confirm();
+  assert.deepEqual(cues(r.log), ["listen", "error"]);
+  r.stt.h.onError("again");
+  assert.deepEqual(cues(r.log), ["listen", "error", "error"]);
 });
