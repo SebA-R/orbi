@@ -68,3 +68,30 @@ test("cart: hidden addon line is skipped after unticking the add-on", async () =
   assert.ok(!text.includes("Subscribe & Save membership"), text);
   await page.close();
 });
+
+test("protect.js in real layout: closed shadow roots fail closed, pointer divs and form= buttons lock", async () => {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  await page.setContent(`<style>.btn{cursor:pointer;padding:8px;width:200px}</style>
+    <div id="pd" class="btn"><span>Place order</span></div>
+    <pay-widget id="host" style="display:block;width:200px;height:40px"></pay-widget>
+    <form id="f"><input id="addr" name="address"></form><button form="f" id="po">Place order</button>`);
+  await page.evaluate(() => {
+    const sr = document.getElementById("host").attachShadow({ mode: "closed" });
+    sr.innerHTML = `<button style="width:200px;height:40px">Buy now</button>`;
+    globalThis.__sr = sr;
+  });
+  await page.addScriptTag({ path: file("../../content/mask.js") });
+  await page.addScriptTag({ path: file("../../content/protect.js") });
+  const at = (sel) => page.evaluate((s) => {
+    const r = document.querySelector(s).getBoundingClientRect();
+    const l = globalThis.ClearcartProtect.lockAt(document, r.left + r.width / 2, r.top + r.height / 2);
+    return l && l.kind;
+  }, sel);
+  assert.equal(await at("#pd"), "order");
+  assert.equal(await at("#host"), "shadow", "no chrome.dom in the main world: fail closed");
+  await page.evaluate(() => { globalThis.chrome = { dom: { openOrClosedShadowRoot: (el) => (el.id === "host" ? globalThis.__sr : null) } }; });
+  assert.equal(await at("#host"), "order", "with chrome.dom the closed root is read");
+  await page.focus("#addr");
+  assert.equal(await page.evaluate(() => globalThis.ClearcartProtect.lockForKey(document, "Enter")?.kind), "order");
+  await page.close();
+});
