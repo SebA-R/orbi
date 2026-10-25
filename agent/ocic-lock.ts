@@ -47,7 +47,7 @@ export function hasCardNumber(text: string): boolean {
   return Mask.maskCardRuns(String(text)) !== String(text);
 }
 
-export const CARD = "Not sent: that looks like a card number, or the focus is in a card field. Orbi never types card details; pay_now fills them on an Orbi pay site, and elsewhere the user types them.";
+export const CARD = "Not sent: that looks like a card number, or the focus is in a card field. Orbi never types card details; the user types them here (saved cards are filled by pay_with_saved_card only with the Orbi extension).";
 
 const MASK_SRC = fs.readFileSync(path.join(EXT, "mask.js"), "utf8");
 const PROTECT_SRC = fs.readFileSync(path.join(EXT, "protect.js"), "utf8");
@@ -323,4 +323,4 @@ export async function ocicLockNote(tool: string, args: Record<string, unknown>, 
 
 // What to do about a locked control, after the list.
 export const LOCK_NEXT =
-  "If the user wants one of them (go to checkout, sign in, sign up, subscribe, save a card), call request_unlock with its label; it asks the user itself when needed. Never call request_unlock for Place order, Buy now, Pay or wallet buttons: paying goes only through request_checkout and pay_now.";
+  "If the user wants one of them (go to checkout, sign in, sign up, subscribe, save a card), call request_unlock with its label; it asks the user itself when needed. Never call request_unlock for Place order, Buy now, Pay or wallet buttons: paying goes only through request_checkout and pay_with_saved_card.";

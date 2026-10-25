@@ -3,7 +3,7 @@
 //
 // A separate store from saved facts (memory.ts): facts refuse anything about
 // buying or paying (an anti-injection rule), so purchases get their own
-// structured list. An entry is added when pay_now places an order
+// structured list. An entry is added when pay_with_saved_card places an order
 // (session.ts) and when the user tells Orbi about a purchase they made
 // (the record_purchase tool, which needs the user's own words or a spoken
 // yes). It follows the Memory setting: off means nothing is added and

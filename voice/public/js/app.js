@@ -117,7 +117,7 @@ function renderUi() {
 function friendlyStatus(text) {
   const t = text.toLowerCase();
   if (t.includes('request_checkout')) return 'Waiting for your yes';
-  if (t.includes('pay_now') || t === 'paying') return 'Paying securely';
+  if (t.includes('pay_with_saved_card') || t === 'paying') return 'Paying securely';
   if (t === 'order placed') return 'Order placed';
   if (t === 'checkout confirmed') return 'Confirmed';
   if (t === 'checkout declined') return 'Okay, not paying';

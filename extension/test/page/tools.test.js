@@ -1,13 +1,16 @@
-// find, get_page_text, form_input, rect, click_ref, read_fields,
-// fill_payment, clear_payment against the test shop's pages
-// (tests/fixtures/shop.mjs).
+// find, get_page_text, form_input, rect, click_ref and order_buttons, and
+// the saved-card fill's frame script (content/cardfill.js), against the test
+// shop's pages (tests/fixtures/shop.mjs).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { HELP_LINE } from "../../../tests/fixtures/shop.mjs";
 import { loadPage, shopPages } from "./harness.js";
 
-const CARD = { name: "Ada Lovelace", number: "4111 1111 1111 1111", exp: "12/29", csc: "737" };
+// What the worker hands a frame for the published Visa test card.
+const VALUES = { "cc-number": "4111111111111111", "cc-name": "Ada Lovelace", "cc-exp": { mm: "12", yy: "29", yyyy: "2029" }, "cc-csc": "737" };
 const SECRETS = ["4111111111111111", "4111 1111", "Ada Lovelace", "12/29", "737"];
+const CARDFILL_SRC = readFileSync(new URL("../../content/cardfill.js", import.meta.url), "utf8");
 const BASE = "http://localhost:4100";
 const pages = shopPages();
 
@@ -119,69 +122,122 @@ test("click_ref clicks the element, and refuses the locked Place order", async (
   assert.equal(orders, 0);
 });
 
-test("read_fields classifies checkout fields without values", async () => {
+// cardfill.js in the page's window, the way the worker injects it after
+// mask.js. Results come back through JSON, as executeScript sends them.
+function cardFill(p) {
+  p.window.eval(CARDFILL_SRC);
+  const api = p.window.__clearcartCardFill;
+  return (fn, ...a) => JSON.parse(JSON.stringify(api[fn](...a)));
+}
+
+test("cardfill scan finds the checkout's card fields by kind, never a value", async () => {
   const p = load("checkout", "/checkout");
-  const { fields } = (await p.call("read_fields", {})).result;
-  const kinds = Object.fromEntries(fields.map((f) => [f.name, f.kind]));
-  assert.equal(kinds["cc-number"], "cc-number");
-  assert.equal(kinds["cc-name"], "cc-name");
-  assert.equal(kinds["cc-exp"], "cc-exp");
-  assert.equal(kinds["cc-csc"], "cc-csc");
-  assert.equal(kinds.address, "address");
-  assert.equal(kinds.q, "other");
-  assert.ok(fields.every((f) => f.filled === false || f.name === "q"));
-  for (const f of fields) assert.deepEqual(Object.keys(f).sort(), ["autocomplete", "filled", "kind", "name"]);
+  const cf = cardFill(p);
+  p.document.querySelector('[name="cc-name"]').value = "Ada Lovelace";
+  const s = cf("scan");
+  assert.equal(s.href, BASE + "/checkout");
+  assert.deepEqual(s.fields, [
+    { kind: "cc-name", filled: true, usable: true },
+    { kind: "cc-number", filled: false, usable: true },
+    { kind: "cc-exp", filled: false, usable: true },
+    { kind: "cc-csc", filled: false, usable: true },
+  ], "the address and the search box are not card fields");
+  assert.ok(!JSON.stringify(s).includes("Ada"));
 });
 
-test("fill_payment fills by kind, returns last4 only, and nothing leaks after", async () => {
+test("cardfill fills by kind with input events, nothing reaches the page-reading tools, and clear empties the card only", async () => {
   const p = load("checkout", "/checkout");
   const d = p.document;
+  const cf = cardFill(p);
+  d.querySelector('[name="address"]').value = "1 Main St, Springfield";
   let inputs = 0;
   d.querySelector('[name="cc-number"]').addEventListener("input", () => inputs++);
-  const r = await p.call("fill_payment", { card: CARD, address: "1 Main St, Springfield" });
-  assert.deepEqual([r.ok, r.result], [true, { ok: true, last4: "1111" }]);
+  const r = cf("fill", VALUES);
+  assert.deepEqual(r, { ok: true, filled: { "cc-number": true, "cc-name": true, "cc-exp": true, "cc-csc": true } });
   assert.equal(inputs, 1);
   assert.equal(d.querySelector('[name="cc-number"]').value, "4111111111111111");
   assert.equal(d.querySelector('[name="cc-name"]').value, "Ada Lovelace");
-  assert.equal(d.querySelector('[name="cc-exp"]').value, "12/29");
+  assert.equal(d.querySelector('[name="cc-exp"]').value, "12/29", "the field's MM/YY");
   assert.equal(d.querySelector('[name="cc-csc"]').value, "737");
-  assert.equal(d.querySelector('[name="address"]').value, "1 Main St, Springfield");
-  const filled = (await p.call("read_fields", {})).result.fields.filter((f) => f.kind !== "other");
-  assert.ok(filled.every((f) => f.filled));
+  assert.ok(cf("scan").fields.every((f) => f.filled));
   const outputs = JSON.stringify([
+    r,
+    cf("scan"),
     (await p.call("read_page", {})).result,
     (await p.call("read_page", { filter: "all" })).result,
     (await p.call("get_page_text", {})).result,
     (await p.call("find", { query: "card" })).result,
-    (await p.call("read_fields", {})).result,
+    (await p.call("order_buttons", {})).result,
   ]);
-  for (const s of SECRETS) assert.ok(!outputs.includes(s), "leaked " + s);
-  assert.equal((await p.call("clear_payment", {})).ok, true);
+  for (const x of SECRETS) assert.ok(!outputs.includes(x), "leaked " + x);
+  assert.deepEqual(cf("clear"), { ok: true, cleared: 4 });
   for (const n of ["cc-number", "cc-name", "cc-exp", "cc-csc"]) assert.equal(d.querySelector(`[name="${n}"]`).value, "", n);
   assert.equal(d.querySelector('[name="address"]').value, "1 Main St, Springfield");
 });
 
-test("fill_payment validates input and errors never echo the card", async () => {
-  const p = load("checkout", "/checkout");
-  const bad = await p.call("fill_payment", { card: { ...CARD, number: "4111 1111 1111 111x" } });
-  assert.equal(bad.error.code, "bad_request");
-  assert.ok(!JSON.stringify(bad).includes("4111"));
-  const noField = load("product", "/product/mug");
-  const r = await noField.call("fill_payment", { card: CARD });
-  assert.equal(r.error.code, "no_element");
-  assert.ok(!JSON.stringify(r).includes("4111"));
-});
-
-test("fill_payment handles split month/year selects", async () => {
+test("cardfill takes split month and year selects and each field's own expiry format", async () => {
   const p = loadPage(`<form>
     <input autocomplete="cc-number" name="n">
     <select autocomplete="cc-exp-month" name="m"><option value="">MM</option><option value="01">01</option><option value="12">12</option></select>
     <select autocomplete="cc-exp-year" name="y"><option value="">YYYY</option><option value="2029">2029</option></select>
   </form>`);
-  const r = await p.call("fill_payment", { card: CARD });
-  assert.equal(r.ok, true);
+  const cf = cardFill(p);
+  const exp = VALUES["cc-exp"];
+  assert.deepEqual(cf("fill", { "cc-number": VALUES["cc-number"], "cc-exp-month": exp, "cc-exp-year": exp }).ok, true);
   assert.equal(p.document.querySelector('[name="m"]').value, "12");
   assert.equal(p.document.querySelector('[name="y"]').value, "2029");
+  const q = loadPage(`<input autocomplete="cc-exp" name="a" maxlength="4"><input autocomplete="cc-exp" name="b" placeholder="MM/YYYY">`);
+  const cq = cardFill(q);
+  // Two expiry fields: the kind is not clear, so neither is filled.
+  assert.deepEqual(cq("fill", { "cc-exp": exp }), { ok: false, filled: { "cc-exp": false } });
+  assert.equal(q.document.querySelector('[name="a"]').value + q.document.querySelector('[name="b"]').value, "");
+  q.document.querySelector('[name="b"]').remove();
+  assert.equal(cq("fill", { "cc-exp": exp }).ok, true);
+  assert.equal(q.document.querySelector('[name="a"]').value, "1229");
+  const y = loadPage(`<input autocomplete="cc-exp" name="b" placeholder="MM/YYYY">`);
+  cardFill(y)("fill", { "cc-exp": exp });
+  assert.equal(y.document.querySelector('[name="b"]').value, "12/2029");
+});
+
+test("cardfill guesses a kind only for payment fields: never a shipping name or ZIP, nor a hidden or disabled field", async () => {
+  const p = loadPage(`<form>
+    <label>Full name <input name="name"></label>
+    <label>ZIP <input name="zip" autocomplete="shipping postal-code"></label>
+    <label>Card number <input name="cardnumber"></label>
+    <label>CVC <input name="cvc"></label>
+    <label>Expiry <input name="card-expiry" placeholder="MM / YY"></label>
+    <label>Billing ZIP <input name="bzip" autocomplete="billing postal-code"></label>
+    <input name="cc-old" autocomplete="cc-number" hidden>
+    <input name="cc-off" autocomplete="cc-csc" disabled>
+    <input type="hidden" name="token" autocomplete="cc-number">
+  </form>`);
+  const cf = cardFill(p);
+  // Hidden and disabled card fields are reported (clear and the guard count
+  // them) but never usable.
+  const scan = cf("scan").fields;
+  assert.deepEqual(scan.filter((f) => f.usable).map((f) => f.kind), ["cc-number", "cc-csc", "cc-exp", "postal-code"]);
+  assert.deepEqual(scan.filter((f) => !f.usable).map((f) => f.kind), ["cc-number", "cc-csc"]);
+  const r = cf("fill", { "cc-number": VALUES["cc-number"], "cc-csc": "737", "cc-exp": VALUES["cc-exp"], "postal-code": "94704" });
+  assert.equal(r.ok, true);
+  const v = (n) => p.document.querySelector(`[name="${n}"]`).value;
+  assert.deepEqual([v("name"), v("zip"), v("cardnumber"), v("cvc"), v("card-expiry"), v("bzip"), v("cc-old"), v("cc-off")], ["", "", "4111111111111111", "737", "12 / 29", "94704", "", ""]);
+  // A value left in a hidden or disabled card field is still emptied.
+  p.document.querySelector('[name="cc-old"]').value = "4111111111111111";
+  p.document.querySelector('[name="cc-off"]').value = "737";
+  assert.equal(cf("scan").fields.filter((f) => f.filled).length, 6);
+  assert.deepEqual(cf("clear"), { ok: true, cleared: 6 });
+  assert.equal(v("cc-old") + v("cc-off") + v("cardnumber"), "");
+});
+
+test("order_buttons lists the order button with its label, masked, and never a navigation link", async () => {
+  const p = load("checkout", "/checkout");
+  const { buttons } = (await p.call("order_buttons", {})).result;
+  assert.deepEqual(buttons.map((b) => [b.label, b.kind, b.disabled]), [[`Place order · ${pages.total}`, "order", false]]);
+  assert.match(buttons[0].ref, /^ref_\d+$/);
+  p.document.querySelector("main").insertAdjacentHTML("beforeend", '<button type="button">Pay with 4111 1111 1111 1111</button><a href="/checkout">Checkout</a>');
+  const again = (await p.call("order_buttons", {})).result.buttons;
+  assert.ok(!JSON.stringify(again).includes("4111"), JSON.stringify(again));
+  assert.ok(!again.some((b) => /^Checkout$/.test(b.label)));
 });
 
 test("read_page and get_page_text report origin and path only, never the query string or fragment", async () => {

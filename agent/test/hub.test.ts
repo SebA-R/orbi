@@ -111,7 +111,7 @@ test("a checkout read-back can't be confirmed from another window", async () => 
   b.peer.userText("yes"); // a yes from the other window
   const r = await done;
   assert.match(r.content[0].text, /^declined\. No answer came/);
-  assert.equal(claimConfirmation((s as any).state).ok, false, "nothing pay_now could use");
+  assert.equal(claimConfirmation((s as any).state).ok, false, "nothing pay_with_saved_card could use");
   assert.ok(!b.got.some((m) => m.type === "status" && m.text === "checkout confirmed"));
   // a's own late yes can't revive it either: a lost the session.
   a.peer.userText("yes");
@@ -132,7 +132,7 @@ test("the window that heard the read-back still confirms it with a yes", async (
   assert.equal((session() as any).state.confirmation.state, "confirmed");
 });
 
-test("a yes pay_now has not used yet is withdrawn when the user moves to another window; a payment under way is left alone", async () => {
+test("a yes pay_with_saved_card has not used yet is withdrawn when the user moves to another window; a payment under way is left alone", async () => {
   const { hub, session } = realHub();
   const a = windowOf(hub);
   const b = windowOf(hub);
@@ -142,17 +142,17 @@ test("a yes pay_now has not used yet is withdrawn when the user moves to another
   await tick();
   a.peer.userText("yes");
   assert.equal((await done).content[0].text, "confirmed");
-  b.peer.interrupt(); // the user moves to b before pay_now ran
+  b.peer.interrupt(); // the user moves to b before pay_with_saved_card ran
   const claim = claimConfirmation((s as any).state);
   assert.equal(claim.ok, false);
   assert.match((claim as any).error, /No confirmed checkout/);
-  // b hears its own read-back and says yes; pay_now takes it; then a takes over.
+  // b hears its own read-back and says yes; pay_with_saved_card takes it; then a takes over.
   s.onSdkMessage({ type: "result", subtype: "success" } as any); // the interrupted turn ends
   done = s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
   await tick();
   b.peer.userText("yes");
   assert.equal((await done).content[0].text, "confirmed");
-  (s as any).state.confirmation.state = "used"; // what claimConfirmation does as pay_now starts
+  (s as any).state.confirmation.state = "used"; // what claimConfirmation does as pay_with_saved_card starts
   a.peer.interrupt();
   assert.equal((s as any).state.confirmation.state, "used");
 });

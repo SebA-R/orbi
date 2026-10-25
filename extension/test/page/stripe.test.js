@@ -1,6 +1,6 @@
-// read_fields, fill_payment, find and get_page_text on a saved copy of
-// Stripe's hosted test checkout (tests/fixtures/stripe-checkout.html).
-// Never a live Stripe page.
+// The saved-card fill (content/cardfill.js), find and get_page_text on a
+// saved copy of Stripe's hosted test checkout
+// (tests/fixtures/stripe-checkout.html). Never a live Stripe page.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -8,56 +8,65 @@ import { fileURLToPath } from "node:url";
 import { loadPage } from "./harness.js";
 
 const HTML = readFileSync(fileURLToPath(new URL("../../../tests/fixtures/stripe-checkout.html", import.meta.url)), "utf8");
+const CARDFILL_SRC = readFileSync(new URL("../../content/cardfill.js", import.meta.url), "utf8");
 const URL_ = "https://checkout.stripe.com/c/pay/cs_test_a1B2c3";
-const CARD = { name: "Ada Lovelace", number: "4242 4242 4242 4242", exp: "12/30", csc: "123" };
-const SECRETS = ["4242424242424242", "4242 4242", "12/30", "Ada Lovelace"];
+// What the worker hands the page for Stripe's test card (router.js fillCard).
+const VALUES = { "cc-number": "4242424242424242", "cc-exp": { mm: "12", yy: "30", yyyy: "2030" }, "cc-csc": "123", "cc-name": "Ada Lovelace", "postal-code": "42424", email: "demo@example.com" };
+const SECRETS = ["4242424242424242", "4242 4242", "12 / 30", "Ada Lovelace"];
 
 const load = () => loadPage(HTML, { url: URL_ });
 const val = (p, id) => p.document.getElementById(id).value;
+// cardfill.js in the page's window, after mask.js, as the worker injects it.
+function cardFill(p) {
+  p.window.eval(CARDFILL_SRC);
+  const api = p.window.__clearcartCardFill;
+  return (fn, ...a) => JSON.parse(JSON.stringify(api[fn](...a)));
+}
 
-test("stripe: the card fields are in the page and read by kind", async () => {
-  const p = load();
-  const kinds = Object.fromEntries((await p.call("read_fields", {})).result.fields.map((f) => [f.name, f.kind]));
-  assert.equal(kinds.cardNumber, "cc-number");
-  assert.equal(kinds.cardExpiry, "cc-exp");
-  assert.equal(kinds.cardCvc, "cc-csc");
-  assert.equal(kinds.billingName, "cc-name");
-  assert.equal(kinds.billingPostalCode, "address");
+test("stripe: the card fields and the billing ZIP are in the page, by kind; the email and country are not card fields", () => {
+  const cf = cardFill(load());
+  assert.deepEqual(cf("scan").fields.map((f) => [f.kind, f.usable]), [["cc-number", true], ["cc-exp", true], ["cc-csc", true], ["cc-name", true], ["postal-code", true]]);
 });
 
-test("stripe: fill_payment fills card, name, billing ZIP and email; only last4 comes back", async () => {
+test("stripe: fill puts in card, name, billing ZIP and email; nothing reaches the page-reading tools; clear empties the card", async () => {
   const p = load();
+  const cf = cardFill(p);
   let inputs = 0;
   p.document.getElementById("cardNumber").addEventListener("input", () => inputs++);
-  const r = await p.call("fill_payment", { card: CARD, billing: { postal: "42424", email: "demo@example.com" } });
-  assert.deepEqual([r.ok, r.result], [true, { ok: true, last4: "4242" }]);
+  const r = cf("fill", VALUES);
+  assert.deepEqual(r, { ok: true, filled: { email: true, "cc-number": true, "cc-exp": true, "cc-csc": true, "cc-name": true, "postal-code": true } });
   assert.equal(inputs, 1);
   assert.equal(val(p, "cardNumber"), "4242424242424242");
-  assert.equal(val(p, "cardExpiry"), "12/30");
+  assert.equal(val(p, "cardExpiry"), "12 / 30", "the field's MM / YY");
   assert.equal(val(p, "cardCvc"), "123");
   assert.equal(val(p, "billingName"), "Ada Lovelace");
   assert.equal(val(p, "billingPostalCode"), "42424");
   assert.equal(val(p, "email"), "demo@example.com");
   assert.equal(val(p, "billingCountry"), "US", "the country select is left alone");
   const outputs = JSON.stringify([
+    r,
+    cf("scan"),
     (await p.call("read_page", { filter: "all" })).result,
     (await p.call("get_page_text", {})).result,
     (await p.call("find", { query: "card" })).result,
-    (await p.call("read_fields", {})).result,
   ]);
   for (const s of SECRETS) assert.ok(!outputs.includes(s), "leaked " + s);
-  await p.call("clear_payment", {});
-  for (const id of ["cardNumber", "cardExpiry", "cardCvc", "billingName"]) assert.equal(val(p, id), "", id);
+  assert.deepEqual(cf("clear"), { ok: true, cleared: 5 });
+  for (const id of ["cardNumber", "cardExpiry", "cardCvc", "billingName", "billingPostalCode"]) assert.equal(val(p, id), "", id);
 });
 
-test("stripe: billing values never overwrite what is there, and no billing means no ZIP or email", async () => {
+test("stripe: an email or ZIP already there is never overwritten, and no email means none is typed", () => {
   const p = load();
   p.document.getElementById("email").value = "typed@example.com";
-  await p.call("fill_payment", { card: CARD, billing: { postal: "42424", email: "demo@example.com" } });
+  p.document.getElementById("billingPostalCode").value = "10001";
+  const r = cardFill(p)("fill", VALUES);
+  assert.equal(r.ok, true);
+  assert.equal(r.filled.email, false);
   assert.equal(val(p, "email"), "typed@example.com");
+  assert.equal(val(p, "billingPostalCode"), "10001");
   const q = load();
-  await q.call("fill_payment", { card: CARD });
-  assert.equal(val(q, "billingPostalCode"), "");
+  const { email: _, ...noEmail } = VALUES;
+  assert.equal(cardFill(q)("fill", noEmail).ok, true);
   assert.equal(val(q, "email"), "");
 });
 

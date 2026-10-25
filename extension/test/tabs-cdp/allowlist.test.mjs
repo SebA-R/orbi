@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { installChrome } from "./chrome-mock.mjs";
-import { allowedOrigins, assertAllowed, blockReason, isAllowed, isPaySite } from "../../background/allowlist.js";
+import { allowedOrigins, assertAllowed, blockReason, frameAllowed, isAllowed } from "../../background/allowlist.js";
 import { normalize } from "../../lib/settings.js";
 import { ERR } from "../../lib/protocol.js";
 
@@ -93,13 +93,17 @@ test("open mode with no saved list uses the suggested one", async () => {
   assert.equal(await isAllowed("https://www.etsy.com/"), true);
 });
 
-test("isPaySite is the allowlist in both modes, empty by default", async () => {
+test("a payment provider's frame needs only the fixed rules; local frames only when allowed", async () => {
+  // js.stripe.com is on the suggested blocked list, but a card frame inside
+  // an allowed checkout page is still filled.
   installChrome();
-  assert.equal(await isPaySite(`${LOCAL}/checkout`), false);
-  installChrome({ local: { allowlist: [LOCAL] } });
-  assert.equal(await isPaySite(`${LOCAL}/checkout`), true);
-  assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
-  installChrome({ local: { browseMode: "allowlist", allowlist: ["https://shop.example"] } });
-  assert.equal(await isPaySite("https://shop.example/pay"), true);
-  assert.equal(await isPaySite(`${LOCAL}/checkout`), false);
+  assert.equal(await isAllowed("https://js.stripe.com/v3/elements-inner-card.html"), false);
+  assert.equal(await frameAllowed("https://js.stripe.com/v3/elements-inner-card.html"), true);
+  assert.equal(await frameAllowed("https://checkoutshopper-live.adyen.com/securedfields/x.html"), true);
+  for (const url of ["http://127.0.0.1:4101/card-frame", `${LOCAL}/card`, "https://user:pw@pay.example/", "about:blank", "data:text/html,x", "chrome-extension://abc/x.html"]) {
+    assert.equal(await frameAllowed(url), false, url);
+  }
+  installChrome({ local: { browseMode: "allowlist", allowlist: [LOCAL, "http://127.0.0.1:4101"] } });
+  assert.equal(await frameAllowed("http://127.0.0.1:4101/card-frame"), true);
+  assert.equal(await frameAllowed("https://js.stripe.com/v3/"), true, "the browse mode does not narrow frames");
 });

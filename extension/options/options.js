@@ -1,5 +1,6 @@
 // Options page, grouped like iOS Settings (see options.html): talk key,
 // speech speed, Speak replies, Guided mode, browse mode and site lists, follow tab, Danger mode,
+// Payment cards (saved on the agent server, never in extension storage),
 // Memory (on or off, saved facts, Forget everything),
 // subtitles, sounds, quiet other tabs, setup status, the agent URL and the one-time
 // microphone grant (getUserMedia here, on an extension page, so the
@@ -21,6 +22,7 @@ import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
 import { bindDangerToggle } from "../lib/danger-toggle.js";
 import { SETUP_STEPS, agentHealth, basicVoice, hasSiteAccess, keyName, setupDone } from "../lib/setup.js";
 import { forgetAll, forgetFact, listMemory } from "../lib/memory.js";
+import { addCard, cardLabel, checkCard, listCards, removeCard, setDefaultCard } from "../lib/cards.js";
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -175,7 +177,7 @@ els.form.addEventListener("submit", async (e) => {
   fill(saved);
   notify(saved);
   say(els.status, "Saved.");
-  if (saved.agentUrl !== before) { refreshSetup(); refreshMemory(); }
+  if (saved.agentUrl !== before) { refreshSetup(); refreshMemory(); refreshCards(); }
 });
 
 els.reset.addEventListener("click", async () => {
@@ -362,6 +364,139 @@ mem.yes.addEventListener("click", async () => {
 // Facts saved by voice while this page is open show up when it is back in front.
 window.addEventListener("focus", () => void refreshMemory());
 
+// Payment cards: saved encrypted on the agent server (lib/cards.js), which
+// answers nicknames, brands and last 4 digits only. The add-card fields
+// belong to #card-form, have no data-setting and are never written to
+// extension storage: what the user typed is sent once, then the fields are
+// cleared whether it was saved or not.
+const cardUi = {
+  list: $("cards-list"), state: $("cards-state"), form: $("card-form"), error: $("card-error"), add: $("card-add"),
+  nickname: $("card-nickname"), name: $("card-name"), number: $("card-number"), exp: $("card-exp"), csc: $("card-csc"), zip: $("card-zip"),
+};
+const CARD_FIELDS = ["nickname", "name", "number", "exp", "csc", "zip"];
+
+function cardRow(c, isDefault) {
+  const label = `${c.nickname}, ${cardLabel(c)}`;
+  const li = document.createElement("li");
+  li.dataset.id = c.id;
+  li.dataset.label = label;
+  const text = document.createElement("span");
+  text.className = "fact";
+  const nick = document.createElement("span");
+  nick.className = "card-nick";
+  nick.textContent = c.nickname;
+  const which = document.createElement("span");
+  which.className = "hint";
+  which.textContent = ` ${cardLabel(c)}`;
+  text.append(nick, which);
+  const end = document.createElement("span");
+  end.className = "row-end";
+  if (isDefault) {
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.dataset.state = "ok";
+    tag.textContent = "Default";
+    end.append(tag);
+  } else {
+    const def = document.createElement("button");
+    def.type = "button";
+    def.className = "btn";
+    def.dataset.act = "default";
+    def.textContent = "Make default";
+    def.setAttribute("aria-label", `Make ${label} the default card`);
+    end.append(def);
+  }
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "btn";
+  del.dataset.act = "delete";
+  del.textContent = "Delete";
+  del.setAttribute("aria-label", `Delete ${label}`);
+  end.append(del);
+  li.append(text, end);
+  return li;
+}
+
+let cardsRun = 0;
+async function refreshCards() {
+  const run = ++cardsRun;
+  const { agentUrl } = await loadSettings();
+  let data = null;
+  try { data = await listCards(agentUrl); } catch {}
+  if (run !== cardsRun) return;
+  if (!data) {
+    cardUi.list.replaceChildren();
+    cardUi.state.textContent = "The agent server is not reachable, so saved cards can't be shown.";
+    return;
+  }
+  cardUi.state.textContent = data.cards.length ? `${data.cards.length} saved.` : "No cards saved yet.";
+  cardUi.list.replaceChildren(...data.cards.map((c) => cardRow(c, c.id === data.defaultId)));
+}
+
+function cardError(text) {
+  cardUi.error.textContent = text;
+  cardUi.error.hidden = !text;
+}
+
+function sendError(err) {
+  if (err && err.status === 403) return "The agent server refused this page. Check the agent server address under Setup.";
+  if (err && err.status && err.status < 500) return err.message;
+  if (err && err.status) return "The agent server could not save the card.";
+  return "Could not save the card: the agent server is not reachable.";
+}
+
+cardUi.form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const card = Object.fromEntries(CARD_FIELDS.map((k) => [k, cardUi[k].value]));
+  // Caught here, nothing is sent and the fields stay for fixing.
+  const why = checkCard(card);
+  if (why) {
+    cardError(why);
+    for (const k of CARD_FIELDS) card[k] = "";
+    return;
+  }
+  cardError("");
+  cardUi.add.disabled = true;
+  try {
+    const saved = await addCard((await loadSettings()).agentUrl, card);
+    say(els.status, `Saved ${saved.nickname}, ${cardLabel(saved)}.`);
+  } catch (err) {
+    cardError(sendError(err));
+  } finally {
+    for (const k of CARD_FIELDS) {
+      card[k] = "";
+      cardUi[k].value = "";
+    }
+    cardUi.add.disabled = false;
+  }
+  await refreshCards();
+  cardUi.nickname.focus();
+});
+
+cardUi.list.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const li = btn.closest("li");
+  const { id, label } = li.dataset;
+  const next = li.nextElementSibling || li.previousElementSibling;
+  const nextId = next?.dataset.id;
+  try {
+    const agentUrl = (await loadSettings()).agentUrl;
+    if (btn.dataset.act === "delete") {
+      await removeCard(agentUrl, id);
+      say(els.status, `Deleted ${label}.`);
+    } else {
+      await setDefaultCard(agentUrl, id);
+      say(els.status, `${label} is now the default card.`);
+    }
+  } catch {
+    say(els.status, "Could not change the saved cards: the agent server is not reachable.");
+  }
+  await refreshCards();
+  const keep = btn.dataset.act === "delete" ? nextId : id;
+  (cardUi.list.querySelector(`li[data-id="${keep}"] button`) || $("cards-list-label")).focus?.();
+});
+
 // Setup and server status tags. Checks can overlap (each health check takes
 // up to 3 s); only the latest counts. Plain text, not announced on load.
 const tag = (el, state, text) => { el.dataset.state = state; el.textContent = text; };
@@ -400,6 +535,7 @@ fill(await loadSettings());
 await showMicState();
 refreshSetup();
 refreshMemory();
+refreshCards();
 refreshLocal();
 // The popup's "Blocked sites" link and the setup page's talk key link land here.
 const target = { "#blocked-sites": els.blocklist, "#hotkey": els.hotkey }[location.hash];

@@ -1,5 +1,5 @@
 // Past purchases (history.ts, session.ts) and the web search guard: what an
-// entry may hold, recording from the user's words and from pay_now, the
+// entry may hold, recording from the user's words and from pay_with_saved_card, the
 // Memory switch, forget, and personal data in search queries.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -73,7 +73,7 @@ test("record_purchase: saved at once from the user's own words, asked first othe
   assert.equal(history.list().length, 1);
 });
 
-test("Memory off: nothing recorded (pay_now or told), nothing in the prompt; forget my purchases clears", async () => {
+test("Memory off: nothing recorded (pay_with_saved_card or told), nothing in the prompt; forget my purchases clears", async () => {
   const { history, s } = setup();
   await (s as any).recordOrder({ item: "Coffee beans 1 lb", variant: "1 lb", total: "$18.00", tabId: null }, "$18.00");
   assert.equal(history.list()[0].source, "orbi");

@@ -3,18 +3,21 @@
 // the checkout page block (both off while on), checkout without a spoken
 // yes (announced instead), and the limits that never move with it
 // (masking, the blocklist, the CAPTCHA hand-off). Off, all as before.
-import { PAY_SITE } from "./pay-site-env.ts";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+
+import { CardVault, memoryKeys } from "../../vault/index.ts";
 
 import * as proto from "../../extension/lib/protocol.js";
 import { extBridge, extOriginAllowed } from "../extbridge.ts";
 import { extensionOrigins, upgradeOriginAllowed as sessionOriginAllowed } from "../hostcheck.ts";
 import { CARD, hasCardNumber, ocicDangerMode, ocicLockNote, ocicLockReason, pageScript, type Deps } from "../ocic-lock.ts";
-import { claimConfirmation, payNowExt, type PayState } from "../pay.ts";
+import { payWithSavedCardExt } from "../pay.ts";
 import { dangerNote, SITES_PROMPT } from "../prompt.ts";
 import { browseDenyReason, DANGER_LINE, dangerModeOn, isExplicitYes, navigateLockReason, Session, strayReason, type ServerMessage } from "../session.ts";
-import { UnlockGate } from "../unlock.ts";
 import { FakeExt, onceEvent, startBridge } from "./fake-ext.ts";
 
 function withDanger<T>(on: boolean, fn: () => Promise<T>): Promise<T> {
@@ -29,9 +32,11 @@ function withDanger<T>(on: boolean, fn: () => Promise<T>): Promise<T> {
   });
 }
 
-function session() {
+// A session with its own saved cards (none by default), never the real vault.
+const emptyVault = () => new CardVault({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc-danger-")), "cards.json"), keys: memoryKeys() });
+function session(vault: CardVault = emptyVault()) {
   const sent: ServerMessage[] = [];
-  const s = new Session((m) => sent.push(m));
+  const s = new Session((m) => sent.push(m), { vault });
   s.pageContext = null;
   const spoken = () => sent.filter((m) => m.type === "agent_text").map((m: any) => m.text);
   return { s, sent, spoken };
@@ -145,46 +150,51 @@ test("Danger mode on: checkout announces the order and confirms without waiting 
 });
 
 test("Danger mode on: an order completes end to end with no yes, and the line is spoken first", async () => {
-  // A fake checkout on a pay site, tab 7, behind a fake extension.
-  let url = `${PAY_SITE}/checkout`;
+  // A fake checkout in tab 7 behind a fake extension, and a saved test card.
+  const SHOP = "https://shop.example";
+  let url = `${SHOP}/checkout`;
   const calls: string[] = [];
   const handler = async (method: string, params: any): Promise<any> => {
     calls.push(method);
     switch (method) {
       case "tab_info": return { tabId: params.tabId, url, title: "t" };
-      case "tabs_context": return { tabs: [{ tabId: 7, url, title: "t", active: true }] };
       case "get_page_text":
-        if (url.includes("/order/")) return { url, title: "Order", text: "Thanks!\nTotal charged: $9.00" };
+        if (url.includes("/order/")) return { url, title: "Order", text: "Thank you! Your order is confirmed.\nTotal charged: $9.00" };
         return { url, title: "Checkout", text: "Order total $9.00\nPlace order · $9.00" };
-      case "read_fields": return { fields: [{ kind: "address", filled: true }, { kind: "cc-name", filled: false }, { kind: "cc-number", filled: false }, { kind: "cc-exp", filled: false }, { kind: "cc-csc", filled: false }] };
-      case "fill_payment": return { ok: true, last4: "4242" };
-      case "find": return { matches: [{ ref: "ref_9", role: "button", name: "Place order · $9.00" }] };
+      case "card_state": return url.includes("/order/") ? { fields: 0, filled: 0, kinds: {}, frames: 0 } : { fields: 3, filled: 0, kinds: { "cc-number": 1, "cc-exp": 1, "cc-csc": 1 }, frames: 1 };
+      case "order_buttons": return { buttons: [{ ref: "ref_9", label: "Place order · $9.00", kind: "order" }] };
+      case "fill_card": return { ok: true, last4: "4242" };
       case "lock_arm": return { nonce: "n1", expiresInMs: 30_000 };
-      case "press_protected": url = `${PAY_SITE}/order/abc`; return { ok: true };
+      case "press_protected": url = `${SHOP}/order/abc`; return { ok: true };
       case "read_page": return { url, title: "t", tree: "- main\n" };
-      case "clear_payment": return { ok: true };
+      case "clear_card": return { ok: true, cleared: 0 };
     }
     throw new Error(method);
   };
+  const vault = new CardVault({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc-danger-")), "cards.json"), keys: memoryKeys() });
+  assert.ok((await vault.add({ nickname: "Test card", name: "T", number: "4242424242424242", exp: "12/30", csc: "123" })).ok);
   const realCall = extBridge.call;
   (extBridge as any).call = (m: string, p: any = {}) => handler(m, p);
   try {
     await withDanger(true, async () => {
-      const f = session();
+      const f = session(vault);
       (f.s as any).state.lastTabId = 7;
       const r = await f.s.requestCheckout({ item: "Blue mug", quantity: 1, total: "$9.00" });
       assert.match(r.content[0].text, /^confirmed/);
-      assert.deepEqual(f.spoken().filter((t) => /Placing/.test(t)), ["Placing your order for Blue mug, $9.00."]);
+      assert.match(r.content[0].text, /pay_with_saved_card/);
+      assert.deepEqual(f.spoken().filter((t) => /Placing/.test(t)), ["Placing your order for Blue mug, $9.00 on shop.example, with Test card ending 4242."], "the site and the card are said");
+      assert.equal((f.s as any).state.confirmation.origin, SHOP, "pinned to the checkout's site");
       const before = calls.length;
-      const paid = await payNowExt((f.s as any).state, {
+      const paid = await payWithSavedCardExt((f.s as any).state, {}, {
         bridge: { call: (m: string, p: any = {}) => handler(m, p) } as any,
-        getCard: async () => ({ name: "T", number: "4242424242424242", exp: "12/30", csc: "123" }),
+        vault,
         pollMs: 5,
         orderTimeoutMs: 300,
-      } as any);
+        settleMs: 0,
+      });
       assert.equal(paid.ok, true, JSON.stringify(paid));
-      assert.ok(calls.slice(before).includes("press_protected"));
-      assert.doesNotMatch(JSON.stringify(paid), /4242424242424242|"123"/);
+      assert.ok(calls.slice(before).includes("fill_card") && calls.slice(before).includes("press_protected"));
+      assert.doesNotMatch(JSON.stringify(paid), /4242424242424242|"123"|12\/30/);
       f.s.close();
     });
   } finally {
