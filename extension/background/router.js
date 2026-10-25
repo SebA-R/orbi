@@ -6,10 +6,12 @@
 import * as tabsModule from "./tabs.js";
 import * as cdpModule from "./cdp.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
+import { luhnValid } from "../lib/log.js";
 
 export const PAGE_FILES = ["content/mask.js", "content/page.js"];
 
-// Page-script methods the bridge may call.
+// Page-script methods the bridge may call. focused_field is used by the type
+// guard below and is not a bridge method.
 export const PAGE_METHODS = new Set([
   "read_page",
   "find",
@@ -23,6 +25,23 @@ export const PAGE_METHODS = new Set([
 ]);
 
 const NO_RECEIVER = /Receiving end does not exist|Could not establish connection/i;
+const DIGIT_RUN = /\d(?:[ -]?\d){12,18}/g;
+
+// True when the text holds a Luhn-valid run of 13 to 19 digits (optionally
+// grouped by single spaces or dashes), checked at every window so a card
+// number glued to other digits is still caught.
+export function containsCardNumber(text) {
+  for (const run of String(text).match(DIGIT_RUN) || []) {
+    const d = run.replace(/[ -]/g, "");
+    for (let len = 13; len <= Math.min(19, d.length); len++) {
+      for (let i = 0; i + len <= d.length; i++) {
+        if (luhnValid(d.slice(i, i + len))) return true;
+      }
+    }
+  }
+  return false;
+}
+
 const msgOf = (e) => String((e && e.message) || e || "failed");
 
 export function createRouter({ chromeApi = globalThis.chrome, tabs = tabsModule, cdp = cdpModule } = {}) {
@@ -60,6 +79,18 @@ export function createRouter({ chromeApi = globalThis.chrome, tabs = tabsModule,
     return reply.result;
   }
 
+  // CDP typing goes around the page script, so check here that it is not
+  // aimed at a card field and does not carry a card number.
+  async function guardType(tabId, text) {
+    if (containsCardNumber(text)) {
+      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type a card number; pay_now fills payment fields");
+    }
+    const focus = await pageCall(tabId, "focused_field");
+    if (focus && focus.payment) {
+      throw new BridgeError(ERR.PAYMENT_FIELD, "refusing to type into a payment field; pay_now fills payment fields");
+    }
+  }
+
   async function clickAt(tabId, params) {
     if (params.ref != null && (params.x == null || params.y == null)) {
       const r = await pageCall(tabId, "rect", { ref: params.ref });
@@ -93,9 +124,12 @@ export function createRouter({ chromeApi = globalThis.chrome, tabs = tabsModule,
       case "click":
         return clickAt(tabId, params);
       case "type":
+        await guardType(tabId, params.text);
         await cdp.type({ tabId, text: params.text });
         return { ok: true };
       case "key":
+        // A single printable key is typing too.
+        if (typeof params.key === "string" && params.key.length === 1) await guardType(tabId, params.key);
         await cdp.key({ tabId, key: params.key });
         return { ok: true };
       case "scroll":

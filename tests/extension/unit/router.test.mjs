@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createRouter } from "../../../extension/background/router.js";
+import { containsCardNumber, createRouter } from "../../../extension/background/router.js";
 
 function fakes({ focus = { kind: "other", payment: false }, failFirstSend = false, cdpClickFails = false } = {}) {
   const calls = [];
@@ -35,6 +35,15 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
   return { calls, router: createRouter({ chromeApi, tabs, cdp }) };
 }
 
+test("containsCardNumber finds Luhn-valid 13-19 digit runs only", () => {
+  assert.ok(containsCardNumber("4111 1111 1111 1111"));
+  assert.ok(containsCardNumber("pay 4111-1111-1111-1111 now"));
+  assert.ok(containsCardNumber("x94111111111111111"));
+  assert.ok(!containsCardNumber("4111 1111 1111 2"));
+  assert.ok(!containsCardNumber("order 12345 qty 2"));
+  assert.ok(!containsCardNumber("blue wool sweater"));
+});
+
 test("page methods inject mask.js then page.js and pass params without tabId", async () => {
   const { calls, router } = fakes();
   await router.route("find", { tabId: 3, query: "sweater" });
@@ -62,6 +71,22 @@ test("click by ref clicks the rect centre over CDP, and falls back to click_ref"
   const b = fakes({ cdpClickFails: true });
   assert.deepEqual(await b.router.route("click", { ref: "ref_4" }), { ok: true, via: "dom" });
   assert.ok(b.calls.some((c) => c[0] === "page" && c[2] === "click_ref"));
+});
+
+test("type refuses card numbers and payment fields, and allows normal text", async () => {
+  const ok = fakes();
+  await ok.router.route("type", { text: "wool sweater" });
+  assert.ok(ok.calls.some((c) => c[0] === "cdp.type"));
+
+  const num = fakes();
+  await assert.rejects(num.router.route("type", { text: "4111111111111111" }), { code: "payment_field" });
+  assert.ok(!num.calls.some((c) => c[0] === "cdp.type"));
+
+  const field = fakes({ focus: { kind: "cc-csc", payment: true } });
+  await assert.rejects(field.router.route("type", { text: "123" }), { code: "payment_field" });
+  await assert.rejects(field.router.route("key", { key: "1" }), { code: "payment_field" });
+  await field.router.route("key", { key: "Tab" });
+  assert.ok(field.calls.some((c) => c[0] === "cdp.key"));
 });
 
 test("unknown methods are refused", async () => {
