@@ -218,6 +218,7 @@ export function installVoiceRelay(opts = {}) {
   chromeApi.storage.onChanged.addListener((changes, area) => relay.onStorageChanged(changes, area));
   chromeApi.tabs.onActivated?.addListener((info) => relay.onTabActivated(info));
   chromeApi.windows?.onFocusChanged?.addListener((id) => relay.onWindowFocused(id));
+  chromeApi.tabs.onUpdated?.addListener((id, change) => relay.ducker.onTabUpdated?.(id, change));
   relay.ducker.recover?.().catch(() => {});
   return relay;
 }

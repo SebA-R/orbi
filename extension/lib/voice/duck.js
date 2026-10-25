@@ -108,17 +108,25 @@ export function createDucker({
 
   const ours = (info) => !!info && info.muted && info.reason === "extension" && info.extensionId === chromeApi.runtime.id;
 
+  // Each id leaves storage only once its own tab is unmuted and faded back,
+  // so a worker that dies mid-restore still finds the rest on recover().
+  // Removals are serialized so parallel restores don't overwrite each other.
+  let untrackChain = Promise.resolve();
+  const untrack = (id) => (untrackChain = untrackChain.then(async () => {
+    await setTracked((await tracked()).filter((x) => x !== id));
+  }).catch(() => {}));
+
   async function restoreNow() {
     const ids = await tracked();
     if (!ids.length) return;
-    await setTracked([]);
     await Promise.all(ids.map(async (id) => {
       let tab;
-      try { tab = await chromeApi.tabs.get(id); } catch { return; } // closed
+      try { tab = await chromeApi.tabs.get(id); } catch { return untrack(id); } // closed
       // The user muted or unmuted it since: their call, leave the mute alone.
       if (ours(tab.mutedInfo)) await chromeApi.tabs.update(id, { muted: false }).catch(() => {});
       // The faded volumes are ours either way; a page with nothing saved is a no-op.
       await fade(id, false, fadeInMs);
+      await untrack(id);
     }));
   }
 
@@ -162,11 +170,17 @@ export function createDucker({
     return restore();
   }
 
+  // A tab that starts playing mid-turn (autoplay, the next video) gets ducked
+  // too. duckNow skips tabs already muted, so this only touches the new one.
+  function onTabUpdated(_tabId, change) {
+    if (change && change.audible === true && turnActive() && restoreTimer == null) queue(duckNow);
+  }
+
   // After a worker restart nobody knows the voice state; restore whatever
   // is still tracked unless a new turn starts within the grace.
   async function recover() {
     if ((await tracked()).length) scheduleRestore();
   }
 
-  return { duck, restore, onState, onError, recover, idle: () => chain };
+  return { duck, restore, onState, onError, onTabUpdated, recover, idle: () => chain };
 }
