@@ -349,46 +349,52 @@ test("the orb face gets one state class per voice state", () => {
   assert.ok(face(t).classList.contains("ccf--idle"), "unknown states ignored");
 });
 
+// The face on its own (as in the popup, which stays visible), on the same clock.
+const bare = (opts) => {
+  const t = setup(opts);
+  const f = t.window.__clearcartOrbFace.create(t.window.document);
+  return { t, f, happy: () => f.el.classList.contains("ccf-happy") };
+};
+
 test("happy moment fires once, only after 20 minutes of continuous idle, and lasts under 600 ms", () => {
-  const t = setup();
-  t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
-  t.send({ type: "voice.state", state: "speaking" });
-  t.send({ type: "voice.state", state: "idle" });
+  const { t, f, happy } = bare();
+  f.setState("speaking");
+  f.setState("idle");
   t.tick(20 * MIN - 1);
-  assert.equal(happy(t), false, "not before 20 minutes");
+  assert.equal(happy(), false, "not before 20 minutes");
   t.tick(1);
-  assert.equal(happy(t), true, "plays at 20 minutes");
+  assert.equal(happy(), true, "plays at 20 minutes");
   t.tick(499);
-  assert.equal(happy(t), true);
+  assert.equal(happy(), true);
   t.tick(1);
-  assert.equal(happy(t), false, "over after 500 ms");
+  assert.equal(happy(), false, "over after 500 ms");
   t.tick(60 * MIN);
-  assert.equal(happy(t), false, "plays once, not again");
+  assert.equal(happy(), false, "plays once, not again");
 });
 
 test("activity resets the idle clock for the happy moment", () => {
-  const t = setup();
-  t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: true });
-  t.send({ type: "voice.state", state: "speaking" });
-  t.send({ type: "voice.state", state: "idle" });
-  t.tick(15 * MIN);
-  t.send({ type: "subtitle", speaker: "user", text: "hello", final: true }); // a caption is activity
-  t.tick(15 * MIN);
-  assert.equal(happy(t), false, "15 + 15 minutes is not 20 of continuous idle");
-  t.tick(5 * MIN);
-  assert.equal(happy(t), true, "20 minutes after the last activity");
+  const a = bare();
+  a.t.tick(15 * MIN);
+  a.f.poke(); // a caption or other activity
+  a.t.tick(15 * MIN);
+  assert.equal(a.happy(), false, "15 + 15 minutes is not 20 of continuous idle");
+  a.t.tick(5 * MIN);
+  assert.equal(a.happy(), true, "20 minutes after the last activity");
 
-  const u = setup();
-  u.send({ type: "subtitle", speaker: "agent", text: "Hi", final: true });
-  u.send({ type: "voice.state", state: "listening" });
-  u.send({ type: "voice.state", state: "idle" });
-  u.tick(19 * MIN);
-  u.send({ type: "voice.state", state: "listening" });
-  u.send({ type: "voice.state", state: "idle" });
-  u.tick(19 * MIN);
-  assert.equal(happy(u), false, "a state change restarts the clock");
-  u.tick(MIN);
-  assert.equal(happy(u), true);
+  const b = bare();
+  b.t.tick(19 * MIN);
+  b.f.setState("listening");
+  b.f.setState("idle");
+  b.t.tick(19 * MIN);
+  assert.equal(b.happy(), false, "a state change restarts the clock");
+  b.t.tick(MIN);
+  assert.equal(b.happy(), true);
+
+  const c = bare();
+  c.t.tick(19 * MIN);
+  c.f.setState("thinking");
+  c.t.tick(MIN);
+  assert.equal(c.happy(), false, "cancelled when work starts");
 });
 
 test("never plays the happy moment while listening, thinking or speaking", () => {
@@ -409,6 +415,9 @@ test("no happy moment and no live motion under reduced motion", () => {
   t.send({ type: "voice.state", state: "idle" });
   t.tick(60 * MIN);
   assert.equal(happy(t), false);
+  const lone = bare({ reduce: true });
+  lone.t.tick(60 * MIN);
+  assert.equal(lone.happy(), false, "never, even when visible");
   const root = t.getShadow();
   const css = [...root.adoptedStyleSheets || []].flatMap((s) => [...s.cssRules].map((r) => r.cssText)).join("\n")
     || root.querySelector("style")?.textContent || "";
@@ -430,4 +439,15 @@ test("a live level drives the swell and the mouth, then falls back to the loop",
   assert.equal(face(t).style.getPropertyValue("--ccf-open"), "", "reset on state change");
   t.send({ type: "voice.level", level: 1 });
   assert.equal(face(t).classList.contains("ccf-live"), false, "no level motion while thinking");
+});
+
+test("the happy moment does not play while the card is hidden", () => {
+  const t = setup();
+  t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
+  t.send({ type: "voice.state", state: "speaking" });
+  t.send({ type: "voice.state", state: "idle" });
+  t.tick(11_000); // the card hides after the reading time
+  assert.equal(t.visible(), false);
+  t.tick(20 * MIN);
+  assert.equal(happy(t), false, "nobody can see it");
 });

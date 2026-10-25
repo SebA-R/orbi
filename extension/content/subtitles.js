@@ -73,6 +73,7 @@
   -webkit-backdrop-filter: blur(28px) saturate(180%); backdrop-filter: blur(28px) saturate(180%);
 }
 .card > .ccf { margin: 1px 0 0 !important; }
+.wrap:not(.on) .ccf, .wrap:not(.on) .ccf * { animation: none !important; } /* no work while hidden */
 .lines { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .user {
   font-size: 13.5px; line-height: 1.4; font-weight: 400; letter-spacing: -.005em; color: var(--muted);
@@ -146,7 +147,7 @@
     wrap.dataset.state = ui.state;
     const card = document.createElement("div");
     card.className = "card";
-    const face = FACE ? FACE.create(document) : null;
+    const face = FACE ? FACE.create(document, { canPlay: () => wrap.classList.contains("on") }) : null;
     if (face) face.setState(ui.state);
     const lines = document.createElement("div");
     lines.className = "lines";

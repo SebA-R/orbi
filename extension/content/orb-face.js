@@ -5,7 +5,7 @@
 // of subtitles.js and as a plain <script> in the popup. It defines
 // globalThis.__clearcartOrbFace = { CSS, STATES, HAPPY_AFTER_MS, HAPPY_MS, create }.
 //
-// create(doc) returns { el, setState, setLevel, poke, destroy }. The caller
+// create(doc, { canPlay }) returns { el, setState, setLevel, poke, destroy }. The caller
 // puts el (aria-hidden, decorative) wherever it likes and adds CSS to the
 // same root, ideally a closed shadow root. The state is always said in text
 // elsewhere; the face never carries meaning on its own.
@@ -110,7 +110,9 @@
     return node;
   }
 
-  function create(doc = document) {
+  // canPlay (optional): returns false while the face can't be seen, so the
+  // happy moment never plays to an empty room.
+  function create(doc = document, { canPlay = () => true } = {}) {
     const win = doc.defaultView || globalThis;
     const el = doc.createElement("span");
     el.className = "ccf";
@@ -153,7 +155,7 @@
       if (state !== "idle" || reduced()) return;
       happyTimer = setTimeout(() => {
         happyTimer = 0;
-        if (state !== "idle" || reduced()) return;
+        if (state !== "idle" || reduced() || !canPlay()) return;
         el.classList.add("ccf-happy");
         happyEnd = setTimeout(() => { happyEnd = 0; el.classList.remove("ccf-happy"); }, HAPPY_MS);
       }, HAPPY_AFTER_MS);
