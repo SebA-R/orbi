@@ -1,21 +1,44 @@
 import {
   CARTESIA_VERSION, TTS_URL, TTS_MODEL, TTS_OUTPUT_FORMAT, TTS_SAMPLE_RATE, SONIC_MAX_SPEED,
 } from './config.js';
+import { WordClock } from './karaoke.js';
 
 // Speaks text with Sonic over one shared TTS websocket. Each utterance is its own context;
 // requests go out immediately, audio plays strictly in order, and stop() cuts everything (barge-in).
 // duck() fades our speech to near silence while the talk key is touched; unduck() brings it back.
+//
+// Captions follow the audio, not the text: onCaption gets
+//   { kind: "line", utteranceId, text, karaoke }   when a line starts to be heard
+//   { kind: "word", utteranceId, index }            each time the heard word changes
+//   { kind: "word", utteranceId, index, done }      the whole line has been heard
+//   { kind: "word", utteranceId, index, frozen }    stop() cut it off at that word
+//   { kind: "word", utteranceId, fallback }         Sonic sent no timestamps: show it plainly
+// using the word timestamps Sonic sends (add_timestamps) mapped onto the
+// AudioContext clock (karaoke.js). A line that produced no audio is still
+// shown, plainly, once the lines before it have been heard.
 export const DUCK_LEVEL = 0.03;
 export const DUCK_SECONDS = 0.08;
+export const CAPTION_TICK_MS = 40;
+// A line playing this long without any timestamps is shown plainly.
+export const NO_TIMESTAMPS_AFTER_S = 1;
 
 export class Speaker {
-  constructor({ ctx, getToken, getSpeed, voiceId, log, onSpeakingChange }) {
+  constructor({
+    ctx, getToken, getSpeed, voiceId, log, onSpeakingChange, onCaption,
+    setInterval: every = (fn, ms) => setInterval(fn, ms), clearInterval: unevery = (t) => clearInterval(t),
+  }) {
     this.ctx = ctx;
     this.getToken = getToken;
     this.getSpeed = getSpeed;
     this.voiceId = voiceId;
     this.log = log;
     this.onSpeakingChange = onSpeakingChange || (() => {});
+    this.onCaption = onCaption || (() => {});
+    this.captions = true; // the controller leaves agent captions to us
+    this.every = every;
+    this.unevery = unevery;
+    this.ticker = null;
+    this.lines = []; // utterances in play order whose caption is still to show or advance
     this.out = this.#newOut();
     this.ws = null;
     this.connecting = null;
@@ -34,9 +57,13 @@ export class Speaker {
       id: `cc-${Date.now().toString(36)}-${(this.seq++).toString(36)}`,
       pending: [], rem: null, done: false,
       rate: speed > SONIC_MAX_SPEED ? speed / SONIC_MAX_SPEED : 1,
+      text, clock: new WordClock({ text, sampleRate: TTS_SAMPLE_RATE }),
+      shown: false, index: -1, plain: false,
     };
     this.queue.push(utt);
     this.byId.set(utt.id, utt);
+    this.lines.push(utt);
+    this.#startTicker();
     this.#setSpeaking(true);
     try {
       const ws = await this.#socket();
@@ -49,6 +76,8 @@ export class Speaker {
         context_id: utt.id,
         output_format: TTS_OUTPUT_FORMAT,
         generation_config: { speed: Math.min(speed, SONIC_MAX_SPEED) },
+        add_timestamps: true,
+        use_normalized_timestamps: false, // the words as written, to match the caption
         continue: false,
       }));
     } catch (err) {
@@ -78,6 +107,7 @@ export class Speaker {
 
   // Barge-in: silence now, cancel anything still generating.
   stop() {
+    this.#freezeCaption();
     const ws = this.ws;
     for (const utt of this.queue) {
       if (!utt.done && ws && ws.readyState === WebSocket.OPEN) {
@@ -136,6 +166,8 @@ export class Speaker {
     if (m.type === 'chunk' && m.data) {
       const samples = this.#decode(utt, m.data);
       if (samples) utt.pending.push(samples);
+    } else if (m.type === 'timestamps') {
+      utt.clock.addTimestamps(m.word_timestamps);
     } else if (m.type === 'error') {
       this.log(`TTS error: ${m.title || ''} ${m.message || m.error || ''}`.trim());
       utt.done = true;
@@ -160,7 +192,7 @@ export class Speaker {
   #pump() {
     while (this.queue.length) {
       const head = this.queue[0];
-      for (const samples of head.pending) this.#schedule(samples, head.rate);
+      for (const samples of head.pending) this.#schedule(samples, head);
       head.pending = [];
       if (!head.done) break;
       this.queue.shift();
@@ -169,7 +201,8 @@ export class Speaker {
     this.#checkIdle();
   }
 
-  #schedule(samples, rate) {
+  #schedule(samples, utt) {
+    const rate = utt.rate;
     const buf = this.ctx.createBuffer(1, samples.length, TTS_SAMPLE_RATE);
     buf.copyToChannel(samples, 0);
     const src = this.ctx.createBufferSource();
@@ -178,12 +211,74 @@ export class Speaker {
     src.connect(this.out);
     const start = Math.max(this.playHead, this.ctx.currentTime + 0.05);
     src.start(start);
+    utt.clock.addChunk(samples.length, start, rate);
     this.playHead = start + buf.duration / rate;
     this.sources.add(src);
     src.onended = () => {
       this.sources.delete(src);
       this.#checkIdle();
     };
+  }
+
+  // Advances the caption to what is being heard. Lines go strictly in order:
+  // the next one shows only after the one before has been heard to the end.
+  tick() {
+    const now = this.ctx.currentTime;
+    while (this.lines.length) {
+      const utt = this.lines[0];
+      const c = utt.clock;
+      if (!c.chunks.length) {
+        if (!utt.done) break; // still generating
+        // No audio at all (TTS failed): show the words anyway.
+        this.#line(utt, false);
+        this.lines.shift();
+        continue;
+      }
+      if (now < c.firstAt) break;
+      if (!utt.shown) this.#line(utt, true);
+      const heardAll = utt.done && !utt.pending.length && !this.byId.has(utt.id) && now >= c.endAt;
+      if (!utt.plain) {
+        if (!c.timed && (heardAll || utt.done || now - c.firstAt >= NO_TIMESTAMPS_AFTER_S)) {
+          utt.plain = true;
+          this.onCaption({ kind: 'word', utteranceId: utt.id, fallback: true });
+        } else if (c.timed) {
+          const i = c.indexAt(now);
+          if (i > utt.index) {
+            utt.index = i;
+            this.onCaption({ kind: 'word', utteranceId: utt.id, index: i });
+          }
+        }
+      }
+      if (!heardAll) break;
+      if (!utt.plain) this.onCaption({ kind: 'word', utteranceId: utt.id, index: c.words.length, done: true });
+      this.lines.shift();
+    }
+    if (!this.lines.length) this.#stopTicker();
+  }
+
+  #line(utt, karaoke) {
+    utt.shown = true;
+    if (!karaoke) utt.plain = true;
+    this.onCaption({ kind: 'line', utteranceId: utt.id, text: utt.text, karaoke });
+  }
+
+  // stop() mid-line: the highlight stays on the word that was being heard.
+  #freezeCaption() {
+    const utt = this.lines[0];
+    if (utt && utt.shown && !utt.plain) {
+      this.onCaption({ kind: 'word', utteranceId: utt.id, index: utt.index, frozen: true });
+    }
+    this.lines = [];
+    this.#stopTicker();
+  }
+
+  #startTicker() {
+    if (this.ticker == null) this.ticker = this.every(() => this.tick(), CAPTION_TICK_MS);
+  }
+
+  #stopTicker() {
+    if (this.ticker != null) this.unevery(this.ticker);
+    this.ticker = null;
   }
 
   #checkIdle() {
