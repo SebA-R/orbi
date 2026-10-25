@@ -15,7 +15,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { parseBlockLines, type BlockEntry } from "./blocklist.ts";
 import { extensionOrigins } from "./hostcheck.ts";
 import { parseClaudeModel, parseLocalBaseUrl, parseLocalModel, parseProvider, type ClaudeModel, type Provider } from "./local/config.ts";
-import { SEARCH_ENGINES, type SearchEngine } from "./prompt.ts";
+import { SEARCH_ENGINES, type SearchEngine } from "./search-engines.ts";
 
 // Mirrors extension/lib/protocol.js (the test checks they agree). Kept as a
 // copy because that file is plain JS outside this tsconfig.
