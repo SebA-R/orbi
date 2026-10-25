@@ -34,6 +34,7 @@ To switch back to Open Claude in Chrome, remove `CLEARCART_BROWSER=ext` and rest
 | Speech speed | 1 | 0.6 to 2 |
 | Subtitles | on | |
 | Quiet other tabs while talking | on | fades out and mutes audible tabs while you talk and Clearcart answers |
+| Use the Clearcart new tab page | on | off: new tabs forward to `chrome://new-tab-page/`, see [New tab page](#new-tab-page) |
 
 Allowed sites take one site address per line (`https://www.etsy.com`; a path is dropped, a login in the address is refused). Only extension pages can change these settings; the agent server cannot.
 
@@ -88,6 +89,7 @@ The agent server sends `{ type: "request", id, method, params }` and the worker 
 - Follow (`background/follow.js`, setting "Follow Clearcart to its tab", on by default): when Clearcart opens a tab or navigates, clicks, types, presses a key or scrolls in one, that tab is made active and its window focused. Reads (`read_page`, `find`, `get_page_text`, `screenshot`...) never switch. If you switch to another tab or window yourself during a turn, following stops until your next turn. Subtitles come along through the relay's tab-switch replay. `tabs_close` only closes tabs Clearcart opened.
 - The prompt tells the agent to open a new tab rather than navigate away from a page you had open. The agent server's tab sweep only looks at tabs Clearcart opened itself, through `agent_tabs`. Navigating, clicking or typing in one of your own tabs never makes it sweepable, so a blocked site you later open there is left alone.
 - The tab being acted on shows a small "Clearcart is using this tab" pill at the top right (`content/indicator.js`): top layer, closed shadow root, `aria-hidden`, `pointer-events: none`, gone 10 s after the last call.
+- A tab on a new tab page (Chrome's, or Clearcart's, which tabs report as `chrome://newtab/`) is listed with that url, and `navigate` may open a store in it; every other call refuses it, and `page_context` reports it as an empty new tab rather than a blocked site.
 - Earlier versions kept agent tabs in a "Clearcart" tab group. On install or update the worker takes those tabs out of it, closing none.
 
 ### What you are pointing at
@@ -147,6 +149,10 @@ npm --prefix agent run test:e2e:ext            # full flow: store on 4300, agent
 ```
 
 Browser tests that load the real extension use a temp copy whose default agent URL points at the test's own server (`tests/extension/browser/lock.test.mjs`, the e2e), so they never connect to a live agent on :5050. `tests/extension/browser/load.test.mjs` and `extension/test/voice/pages.browser.test.mjs` still load `extension/` as is, so their worker tries `ws://localhost:5050` while they run; stop a live agent server first or expect it to see a second extension for a few seconds.
+
+### New tab page
+
+Content scripts can't run on Chrome's own pages, so on Chrome's new tab page Space does nothing (the toggle command still works, but without subtitles). `chrome_url_overrides` replaces it with `newtab/newtab.html`, which loads `content/hotkey.js` and `content/subtitles.js` unchanged as plain script tags. `newtab/guard.js` runs first and keeps their `runtime.onMessage` listeners to what the worker sends this tab, since an extension page also hears the offscreen document's raw broadcasts. The worker treats the page as any tab: talking from it, the latch, double-tap, single-session rules and the tab-switch replay; the page also asks for the state when it loads. It shows the popup's orb and voice state, a search box (`chrome.search.query`, default engine) and the toggle shortcut. Chrome asks once whether to keep the new tab page; "Change it back" turns the whole extension off. Overrides can't change at runtime, so with the setting off the page forwards to `chrome://new-tab-page/` (`chrome.tabs.update`). A new tab opens with the keyboard in the address bar; the page says to press F6 or click it before holding Space.
 
 ## Known gaps
 
