@@ -8,6 +8,13 @@
 // the host is aria-hidden and inert, takes no pointer events and never
 // receives focus. It lives in a closed shadow root with its own reset so page
 // CSS cannot reach it, and it is only added to the page on the first message.
+//
+// It must sit above everything, cookie banners and modal dialogs included.
+// The host is a manual popover, so it renders in the browser's top layer
+// (above any z-index), and it is re-raised to the top of that layer every
+// time it shows, so a dialog or banner opened later can't cover it. Every
+// host style is set inline with !important, and it stays the last child of
+// <html> in case a page appends its own max z-index overlay after it.
 
 (() => {
   "use strict";
@@ -22,7 +29,11 @@
   const STATES = new Set(["idle", "listening", "thinking", "speaking"]);
 
   const CSS = `
-:host { all: initial !important; }
+:host {
+  all: initial !important;
+  position: fixed !important; inset: 0 !important; z-index: 2147483647 !important;
+  display: block !important; pointer-events: none !important;
+}
 * { box-sizing: border-box; }
 .wrap {
   --ink: #1d1d1f; --muted: #6e6e73;
@@ -30,7 +41,7 @@
   --shadow: 0 10px 40px rgb(30 34 60 / .14), 0 1px 3px rgb(30 34 60 / .08);
   --s1: #2e8bff; --s2: #b65cff; --s3: #ff4d7a; --s4: #ffa14a;
   --ease: cubic-bezier(.25, .8, .25, 1);
-  position: fixed; left: 50%; bottom: 28px;
+  position: fixed !important; left: 50% !important; bottom: 28px !important; z-index: 2147483647 !important;
   width: max-content; max-width: min(720px, calc(100vw - 32px));
   transform: translate(-50%, 8px) scale(.985);
   opacity: 0; visibility: hidden;
@@ -115,11 +126,8 @@
     host.setAttribute("aria-hidden", "true");
     host.setAttribute("inert", "");
     host.setAttribute("translate", "no");
-    const hs = host.style;
-    for (const [k, v] of [
-      ["all", "initial"], ["position", "fixed"], ["inset", "0"], ["display", "block"],
-      ["pointer-events", "none"], ["z-index", "2147483647"], ["contain", "layout style"],
-    ]) hs.setProperty(k, v, "important");
+    if ("popover" in host) host.setAttribute("popover", "manual");
+    pinHostStyle(host);
 
     const shadow = host.attachShadow({ mode: "closed" });
     let adopted = false;
@@ -154,12 +162,56 @@
     shadow.append(wrap);
     root.append(host);
     Object.assign(ui, { host, wrap, user, agent });
+    keepLast(root);
     return true;
+  }
+
+  // Inline !important beats any page rule, and also the UA popover styles
+  // (margin auto, border, padding, Canvas background).
+  const HOST_STYLE = [
+    ["all", "initial"], ["position", "fixed"], ["inset", "0"], ["display", "block"],
+    ["width", "100vw"], ["height", "100vh"], ["max-width", "none"], ["max-height", "none"],
+    ["margin", "0"], ["padding", "0"], ["border", "0"], ["background", "transparent"],
+    ["overflow", "visible"], ["color", "inherit"], ["opacity", "1"], ["visibility", "visible"],
+    ["transform", "none"], ["filter", "none"], ["clip-path", "none"],
+    ["pointer-events", "none"], ["z-index", "2147483647"], ["contain", "layout style"],
+  ];
+  function pinHostStyle(host) {
+    const hs = host.style;
+    for (const [k, v] of HOST_STYLE) hs.setProperty(k, v, "important");
+  }
+
+  // Move to the very top of the top layer (a later showPopover/showModal on
+  // the page would otherwise stack above us).
+  function raise() {
+    const host = ui.host;
+    if (!host || typeof host.showPopover !== "function") return;
+    try {
+      if (host.matches(":popover-open")) host.hidePopover();
+      host.showPopover();
+    } catch {}
+  }
+
+  // Pages that append their own overlay after us, or rewrite our inline style.
+  let watcher = null;
+  function keepLast(root) {
+    if (watcher || typeof MutationObserver !== "function") return;
+    watcher = new MutationObserver(() => {
+      const host = ui.host;
+      if (!host) return;
+      if (host.parentNode !== root || root.lastElementChild !== host) {
+        root.append(host);
+        if (ui.wrap && ui.wrap.classList.contains("on")) raise();
+      }
+      if (host.style.getPropertyPriority("z-index") !== "important") pinHostStyle(host);
+    });
+    watcher.observe(root, { childList: true });
   }
 
   function show() {
     if (!ui.enabled || !mount()) return;
     ui.wrap.classList.add("on");
+    raise();
   }
 
   function hide() {
@@ -259,6 +311,8 @@
     ui.enabled = on !== false;
     if (!ui.enabled) {
       hide();
+      if (watcher) watcher.disconnect();
+      watcher = null;
       if (ui.host) ui.host.remove();
       ui.host = ui.wrap = ui.user = ui.agent = null;
     }
