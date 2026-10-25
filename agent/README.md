@@ -18,6 +18,9 @@ Needs `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` in the repo-root `.env`, the st
 | `CLEARCART_SHIP_ADDRESS` | a demo Berkeley address | used by `pay_now` when the address field is empty |
 | `CLEARCART_DEBUG=1` | off | print the Claude Code subprocess stderr |
 | `CLEARCART_ALLOW_ANY_SITE=1` | off | allow `navigate` outside localhost:4000 |
+| `CLEARCART_BROWSER=ext` | off | drive the browser through the Clearcart extension instead of Open Claude in Chrome: adds the `/ext` WebSocket (`extbridge.ts`), gives Claude the 12 extension tools as the in-process `browser` MCP server (`exttools.ts`), and `pay_now` fills the card with one `fill_payment` bridge call then clicks `#place-order`. Unset, nothing changes |
+
+Tests: `npm test` (fake extension over a real socket; the server test uses ports 5170 and 5171).
 
 ## Files
 
