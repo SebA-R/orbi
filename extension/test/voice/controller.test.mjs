@@ -15,6 +15,8 @@ function rig({ micFails } = {}) {
     speaking: false,
     stop() { log.push("tts.stop"); },
     speak(text) { log.push(`speak:${text}`); },
+    duck() { log.push("tts.duck"); },
+    unduck() { log.push("tts.unduck"); },
   };
   const mic = {
     sink: null,
@@ -63,7 +65,7 @@ test("stop: stop chime now, finish after the tail; a final becomes user_text + s
   assert.equal(r.mic.sink, null);
   r.stt.h.onFinal("cheapest allergy pills");
   r.stt.h.onClosed();
-  assert.deepEqual(r.agent.sent, [{ type: "user_text", text: "cheapest allergy pills" }]);
+  assert.deepEqual(r.agent.sent, [{ type: "interrupt" }, { type: "user_text", text: "cheapest allergy pills" }]);
   assert.deepEqual(r.emitted.filter((m) => m.type === RT.SUBTITLE), [
     { type: RT.SUBTITLE, speaker: "user", text: "cheap aller", final: false },
     { type: RT.SUBTITLE, speaker: "user", text: "cheapest allergy pills", final: true },
@@ -183,24 +185,24 @@ test("token source surfaces server errors", async () => {
 test("silent start records from the first moment but shows nothing until confirm", async () => {
   const r = rig();
   await r.c.start({ silent: true });
-  assert.deepEqual(r.log, []);
+  assert.deepEqual(r.log, ["tts.duck"]);
   assert.deepEqual(states(r.emitted), []);
   assert.equal(r.stt.opened, true);
   r.mic.sink("first-word");
   assert.deepEqual(r.stt.audio, ["first-word"]);
   r.stt.h.onTurnStart();
   r.stt.h.onPartial("reorder");
-  assert.deepEqual(r.log, []);
+  assert.deepEqual(r.log, ["tts.duck"]);
   assert.equal(r.emitted.length, 0);
   r.c.confirm();
-  assert.deepEqual(r.log, ["tts.stop", "chime:start", "tts.stop"]);
+  assert.deepEqual(r.log, ["tts.duck", "tts.stop", "chime:start", "tts.stop"]);
   assert.deepEqual(states(r.emitted), ["listening"]);
   assert.ok(r.emitted.some((m) => m.type === RT.SUBTITLE && m.text === "reorder"));
   r.c.stop();
   r.timers.shift().fn();
   assert.equal(r.stt.finished, true);
   r.stt.h.onFinal("reorder my allergy pills");
-  assert.deepEqual(r.agent.sent, [{ type: "user_text", text: "reorder my allergy pills" }]);
+  assert.deepEqual(r.agent.sent, [{ type: "interrupt" }, { type: "user_text", text: "reorder my allergy pills" }]);
 });
 
 test("cancel after a silent start drops the audio with no chime, state or agent message", async () => {
@@ -210,23 +212,53 @@ test("cancel after a silent start drops the audio with no chime, state or agent 
   r.c.cancel();
   assert.equal(r.stt.aborted, true);
   assert.equal(r.mic.sink, null);
-  assert.deepEqual(r.log, []);
+  assert.deepEqual(r.log, ["tts.duck", "tts.unduck"]);
   assert.deepEqual(states(r.emitted), []);
   assert.deepEqual(r.agent.sent, []);
   assert.equal(r.c.listening, false);
   r.c.confirm(); // too late, nothing happens
-  assert.deepEqual(r.log, []);
+  assert.deepEqual(r.log, ["tts.duck", "tts.unduck"]);
 });
 
-test("a silent start does not interrupt the agent speaking; confirm barges in", async () => {
+test("a silent start ducks the agent speaking; a tap brings it back without interrupting", async () => {
   const r = rig();
   r.c.onSpeakingChange(true);
   await r.c.start({ silent: true });
-  assert.deepEqual(r.log, []);
+  assert.deepEqual(r.log, ["tts.duck"]);
   assert.deepEqual(states(r.emitted), ["speaking"]);
   r.c.stop(); // released before confirm counts as a tap
   assert.equal(r.stt.aborted, true);
-  assert.deepEqual(r.log, []);
+  assert.deepEqual(r.log, ["tts.duck", "tts.unduck"]);
+  assert.deepEqual(r.agent.sent, []);
+});
+
+test("confirm hard-stops the speaker and sends interrupt to the agent", async () => {
+  const r = rig();
+  r.c.onAgentMessage({ type: "agent_text", text: "Here are three options" });
+  r.c.onSpeakingChange(true);
+  r.log.length = 0;
+  await r.c.start({ silent: true });
+  r.c.confirm();
+  assert.deepEqual(r.log.slice(0, 3), ["tts.duck", "tts.stop", "chime:start"]);
+  assert.deepEqual(r.agent.sent, [{ type: "interrupt" }]);
+});
+
+test("agent_text from the interrupted turn is not spoken; the next turn is", async () => {
+  const r = rig();
+  r.c.agent.send({ type: "user_text", text: "find allergy pills" });
+  r.c.onAgentMessage({ type: "agent_text", text: "Searching the store now." });
+  await r.c.start({ silent: true });
+  r.c.confirm();
+  r.log.length = 0;
+  r.c.onAgentMessage({ type: "agent_text", text: "I found Reactine for $18." });
+  assert.ok(!r.log.some((l) => l.startsWith("speak:")), "late line from the old turn is dropped");
+  assert.ok(r.emitted.some((m) => m.type === RT.STATUS && /not spoken.*Reactine/.test(m.text)));
+  assert.ok(!r.emitted.some((m) => m.type === RT.SUBTITLE && m.speaker === "agent" && /Reactine/.test(m.text)));
+  r.c.stop();
+  r.timers.shift().fn();
+  r.stt.h.onFinal("actually the cheapest one");
+  r.c.onAgentMessage({ type: "agent_text", text: "The cheapest is $9." });
+  assert.ok(r.log.includes("speak:The cheapest is $9."));
 });
 
 test("token source says plainly when voice is off on the server", async () => {

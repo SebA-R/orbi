@@ -4,10 +4,14 @@
 //   start()  PTT_START: barge-in (stop TTS), start chime, open an STT session,
 //            route mic audio to it. state -> listening
 //   start({ silent: true }) the key was just touched: record into the STT
-//            session right away but show nothing (no chime, no state, no
-//            barge-in, transcripts held back). confirm() once the key is held
-//            makes it a normal start, keeping the audio from the first moment;
-//            cancel() on a quick tap throws it all away.
+//            session right away and duck our own speech to near silence, but
+//            show nothing (no chime, no state, transcripts held back).
+//            confirm() once the key is held makes it a normal start, keeping
+//            the audio from the first moment; cancel() on a quick tap throws
+//            it all away and brings the speech back up.
+//   confirm() barge-in: hard-stop the speaker, send {type:"interrupt"} so the
+//            agent stops the turn, and drop any agent_text that still arrives
+//            from it until the next user_text goes out.
 //   stop()   PTT_STOP: stop chime, 300 ms tail, then finish() so Ink flushes.
 //            state -> thinking once something was said, else idle
 //   each STT turn.end -> {type:"user_text"} to the agent + VOICE_FINAL + SUBTITLE
@@ -29,6 +33,7 @@ export class VoiceController {
     this.state = STATES.IDLE;
     this.confirmed = false;
     this.held = []; // transcript events from a silent start, replayed on confirm()
+    this.muted = false; // after a barge-in: agent_text from the interrupted turn is not spoken
   }
 
   #setState(state) {
@@ -54,7 +59,8 @@ export class VoiceController {
     this.confirmed = false;
     this.held = [];
     this.resumeAudio();
-    if (!silent) this.confirm();
+    if (silent) this.speaker.duck?.();
+    else this.confirm();
 
     // Until confirm(), transcript events wait in this.held.
     const gate = (fn) => (...args) => (this.confirmed ? fn(...args) : this.held.push(() => fn(...args)));
@@ -66,6 +72,7 @@ export class VoiceController {
       }),
       onFinal: gate((text) => {
         this.awaitingReply = true;
+        this.muted = false; // a fresh turn: its replies are spoken
         this.agent.send({ type: "user_text", text });
         this.emit({ type: RT.VOICE_FINAL, text });
         this.emit({ type: RT.SUBTITLE, speaker: "user", text, final: true });
@@ -104,7 +111,7 @@ export class VoiceController {
   confirm() {
     if (!this.listening || this.confirmed) return;
     this.confirmed = true;
-    this.speaker.stop(); // barge-in
+    this.#bargeIn();
     this.chime("start");
     this.#setState(STATES.LISTENING);
     const held = this.held;
@@ -121,7 +128,16 @@ export class VoiceController {
     const s = this.session;
     this.session = null;
     if (s) s.abort();
+    this.speaker.unduck?.();
     this.#settle();
+  }
+
+  // Silence our speech now and tell the agent to drop the rest of its turn.
+  #bargeIn() {
+    this.speaker.stop();
+    this.muted = true;
+    this.awaitingReply = false;
+    this.agent.send({ type: "interrupt" });
   }
 
   stop() {
@@ -152,6 +168,11 @@ export class VoiceController {
     switch (m.type) {
       case "agent_text":
         if (!m.text) return;
+        if (this.muted) {
+          // Sent before the agent saw our interrupt: log it, never speak it.
+          this.emit({ type: RT.STATUS, kind: "status", text: `(not spoken) ${m.text.slice(0, 120)}` });
+          return;
+        }
         // agent_text arrives whole (not streamed), so its subtitle is final at once.
         // Stay "thinking" until the speaker reports it started (onSpeakingChange clears it).
         this.emit({ type: RT.SUBTITLE, speaker: "agent", text: m.text, final: true });
