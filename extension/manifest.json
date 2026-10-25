@@ -22,6 +22,48 @@
     "service_worker": "background/worker.js",
     "type": "module"
   },
-  "permissions": ["storage"],
-  "host_permissions": ["http://localhost/*"]
+  "permissions": [
+    "storage",
+    "tabs",
+    "tabGroups",
+    "debugger",
+    "scripting",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "http://localhost/*"
+  ],
+  "options_page": "options/options.html",
+  "commands": {
+    "toggle-listening": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Space",
+        "mac": "MacCtrl+Shift+Space"
+      },
+      "description": "Start or stop listening (toggle, for when holding a key is hard)"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/hotkey.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/subtitles.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
 }
