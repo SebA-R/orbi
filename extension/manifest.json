@@ -18,6 +18,10 @@
       "32": "icons/icon32.png"
     }
   },
+  "background": {
+    "service_worker": "background/worker.js",
+    "type": "module"
+  },
   "permissions": ["storage"],
   "host_permissions": ["http://localhost/*"]
 }
