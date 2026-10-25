@@ -444,10 +444,18 @@ function sendToAgent(obj) {
   else outbox.push(msg);
 }
 
+// After a barge-in, agent_text from the interrupted turn (sent before the agent saw our
+// interrupt) is logged, not spoken, until our next user_text starts a fresh turn.
+let muted = false;
+
 function handleAgentMessage(m) {
   switch (m.type) {
     case 'agent_text':
       if (!m.text) return;
+      if (muted) {
+        logEvent(`Agent (not spoken): ${m.text}`);
+        return;
+      }
       addTurn('Clearcart', m.text);
       showAgentCaption(m.text);
       ui.thinking = false;
@@ -515,7 +523,9 @@ function setListeningUi(on) {
 async function startTalking() {
   if (listening) return;
   listening = true;
-  speaker.stop(); // barge-in
+  speaker.stop(); // barge-in: silence now, and tell the agent to drop the rest of its turn
+  muted = true;
+  sendToAgent({ type: 'interrupt' });
   resumeAudio();
   setListeningUi(true);
   earcon('start');
@@ -530,6 +540,7 @@ async function startTalking() {
       onFinal: (text) => {
         setUserCaption(text);
         addTurn('You', text);
+        muted = false;
         sendToAgent({ type: 'user_text', text });
         ui.thinking = true;
         ui.awaitingYes = false;
