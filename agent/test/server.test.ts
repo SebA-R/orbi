@@ -20,7 +20,7 @@ async function startServer(port: number, env: Record<string, string>): Promise<C
   const child = spawn(TSX, ["server.ts"], {
     cwd: AGENT,
     // The desktop token goes to a scratch file, never the user's own.
-    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", ORBI_DESKTOP_TOKEN_FILE: path.join(os.tmpdir(), `orbi-test-${process.pid}`, "desktop.token"), ...env, AGENT_PORT: String(port), AGENT_MODE: "echo" },
+    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", ORBI_DESKTOP_TOKEN_FILE: path.join(os.tmpdir(), `orbi-test-${process.pid}`, "desktop.token"), ORBI_DESKTOP_SOCKET: path.join(os.tmpdir(), `orbi-test-${process.pid}-${port}`, "desktop.sock"), ...env, AGENT_PORT: String(port), AGENT_MODE: "echo" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise<void>((resolve, reject) => {

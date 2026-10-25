@@ -181,6 +181,7 @@ public func planTyping(_ text: String, rng: inout Rng, budgetMs: Double = Pace.t
 
 public struct ScrollStep: Equatable, Sendable {
   public let dx: Int, dy: Int, ms: Double
+  public init(dx: Int, dy: Int, ms: Double) { self.dx = dx; self.dy = dy; self.ms = ms }
 }
 
 // Eased wheel steps whose integer deltas add up exactly to (dx, dy).

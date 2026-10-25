@@ -24,7 +24,7 @@ function key(code, mods = {}, extra = {}) {
   return e;
 }
 
-function detector(hotkey = "Alt+Space") {
+function detector(hotkey = "Alt+Space", opts = {}) {
   const { createHoldDetector } = load();
   const sent = [];
   const extras = [];
@@ -36,6 +36,7 @@ function detector(hotkey = "Alt+Space") {
     onTap: (e) => taps.push(e.code),
     setTimer: (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length - 1; },
     clearTimer: (i) => { timers[i].cleared = true; },
+    ...opts,
   });
   const fire = () => { for (const t of timers) if (!t.cleared) { t.cleared = true; t.fn(); } };
   return { d, sent, extras, timers, taps, fire };
@@ -496,4 +497,130 @@ test("synthetic key events from the page never talk", () => {
   fire("keydown", key("Space", { altKey: true }, { isTrusted: false }));
   fire("keyup", key("Space", { altKey: true }, { isTrusted: false }));
   assert.deepEqual(messages, []);
+});
+
+test("a frame rewritten with document.open() gets its listeners back", () => {
+  const { install } = load();
+  // Like the DOM: adding the same listener twice keeps one.
+  let listeners = {};
+  const add = (k, fn) => { (listeners[k] ||= new Set()).add(fn); };
+  let rewritten;
+  const win = {
+    addEventListener: (t, fn) => add(t, fn),
+    MutationObserver: class { constructor(fn) { rewritten = fn; } observe() {} disconnect() {} },
+  };
+  const doc = { visibilityState: "visible", addEventListener: (t, fn) => add(`doc:${t}`, fn) };
+  const messages = [];
+  install({ win, doc, chromeApi: { runtime: { sendMessage: (m) => { messages.push(m); } } } });
+  const fire = (t, e) => (listeners[t] || []).forEach((fn) => fn(e));
+  // document.open() erases every listener and replaces the document's children.
+  listeners = {};
+  fire("keydown", key("Space", { altKey: true }));
+  assert.deepEqual(messages, []);
+  rewritten();
+  rewritten();
+  assert.equal(listeners.keydown.size, 1);
+  fire("keydown", key("Space", { altKey: true }));
+  assert.deepEqual(messages.map((m) => m.type), ["ptt.start"]);
+});
+
+// Google Docs' caret lives in a hidden contenteditable in a frame 1px tall
+// at top -10000 (.docs-texteventtarget-iframe).
+const DOCS_BOX = { tagName: "DIV", isContentEditable: true, getAttribute: () => null };
+
+test("Space in a hidden text field types, and a hold talks with nothing recorded before", () => {
+  const { d, sent, extras, timers, fire } = detector("Space", { isHidden: () => true });
+  const down = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyDown(down);
+  assert.equal(down.prevented, false, "the space is typed");
+  assert.deepEqual(sent, [], "no silent start while typing");
+  assert.equal(timers[0].ms, load().HIDDEN_HOLD_MS, "longer than a resting thumb");
+  // The key's first auto-repeat: a finger is holding it.
+  const first = key("Space", {}, { target: DOCS_BOX, repeat: true });
+  d.onKeyDown(first);
+  assert.equal(first.prevented, true);
+  assert.deepEqual(sent, ["ptt.start"]);
+  assert.equal(extras[0].silent, true);
+  fire();
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm"]);
+  const rep = key("Space", {}, { target: DOCS_BOX, repeat: true });
+  d.onKeyDown(rep);
+  assert.equal(rep.prevented, true, "no run of spaces while talking");
+  const up = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyUp(up);
+  assert.equal(up.prevented, true);
+  assert.deepEqual(sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+  // Key repeat turned off: a hold after HIDDEN_HOLD_MS.
+  const b = detector("Space", { isHidden: () => true });
+  b.d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  b.fire();
+  b.d.onKeyUp(key("Space", {}, { target: DOCS_BOX }));
+  assert.deepEqual(b.sent, ["ptt.start", "ptt.confirm", "ptt.stop"]);
+});
+
+test("a hidden-field hold let go right after it started is dropped, not sent", () => {
+  const { d, sent } = detector("Space", { isHidden: () => true });
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX, repeat: true }));
+  const up = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyUp(up);
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel"]);
+  // A letter during the hold: typing, dropped too.
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX, repeat: true }));
+  d.onKeyDown(key("KeyA", {}, { target: DOCS_BOX }));
+  assert.deepEqual(sent, ["ptt.start", "ptt.cancel", "ptt.start", "ptt.cancel"]);
+});
+
+test("a CDP-style Space (down, a slow check, up) in a hidden field never talks", () => {
+  const { d, sent, timers } = detector("Space", { isHidden: () => true });
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  // 300 ms pass (the router's checks): the hold timer has not fired.
+  assert.ok(timers[0].ms > 300);
+  d.onKeyUp(key("Space", {}, { target: DOCS_BOX }));
+  assert.ok(timers[0].cleared);
+  assert.deepEqual(sent, []);
+});
+
+test("a tap, or Space then another key, in a hidden text field is just typing", () => {
+  const { d, sent, taps, timers, fire } = detector("Space", { isHidden: () => true });
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  const up = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyUp(up);
+  assert.equal(up.prevented, false);
+  fire();
+  // Space down, the next letter before Space comes up: a fast typist.
+  d.onKeyDown(key("Space", {}, { target: DOCS_BOX }));
+  const b = key("KeyB", {}, { target: DOCS_BOX });
+  d.onKeyDown(b);
+  assert.equal(b.prevented, false);
+  fire();
+  d.onKeyUp(key("Space", {}, { target: DOCS_BOX }));
+  assert.deepEqual(sent, []);
+  assert.deepEqual(taps, [], "no replayed tap: the space was typed");
+  assert.ok(timers.length >= 2);
+});
+
+test("a visible text field still never talks on Space", () => {
+  const { d, sent, fire } = detector("Space", { isHidden: () => false });
+  const down = key("Space", {}, { target: DOCS_BOX });
+  d.onKeyDown(down);
+  fire();
+  assert.equal(down.prevented, false);
+  assert.deepEqual(sent, []);
+});
+
+test("isHiddenEntry: the Docs text frame off the top is hidden, a field on screen is not", () => {
+  const { isHiddenEntry } = load();
+  const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+  const top = { innerWidth: 1280, innerHeight: 900 };
+  const frameEl = { getBoundingClientRect: () => rect(0, -10000, 625, 1), ownerDocument: { defaultView: top } };
+  const inner = { innerWidth: 625, innerHeight: 1, frameElement: frameEl };
+  const box = { ownerDocument: { defaultView: inner }, getBoundingClientRect: () => rect(0, 0, 625, 18) };
+  assert.equal(isHiddenEntry(box), true);
+  const field = { ownerDocument: { defaultView: { ...top, frameElement: null } }, getBoundingClientRect: () => rect(10, 10, 200, 30) };
+  assert.equal(isHiddenEntry(field), false);
+  const offTextarea = { ownerDocument: { defaultView: { ...top, frameElement: null } }, getBoundingClientRect: () => rect(-9999, 10, 1, 1) };
+  assert.equal(isHiddenEntry(offTextarea), true);
+  assert.equal(isHiddenEntry({}), false);
 });

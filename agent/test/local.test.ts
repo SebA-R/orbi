@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -619,7 +620,7 @@ const EXT_ORIGIN = "chrome-extension://dhgknfenfoidnchmjfaicafhieepefoc";
 async function startServer(port: number, env: Record<string, string>): Promise<ChildProcess> {
   const child = spawn(path.join(AGENT, "node_modules", ".bin", "tsx"), ["server.ts"], {
     cwd: AGENT,
-    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", ...env, AGENT_PORT: String(port), AGENT_MODE: "echo" },
+    env: { ...process.env, CLEARCART_BROWSER: "", CLEARCART_VOICE: "false", ORBI_DESKTOP_TOKEN_FILE: path.join(os.tmpdir(), `orbi-local-${process.pid}-${port}`, "desktop.token"), ORBI_DESKTOP_SOCKET: path.join(os.tmpdir(), `orbi-local-${process.pid}-${port}`, "desktop.sock"), ...env, AGENT_PORT: String(port), AGENT_MODE: "echo" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   await new Promise<void>((resolve, reject) => {

@@ -50,9 +50,23 @@ export function isAttached(tabId) {
   return attached.has(tabId);
 }
 
+// How long a fresh attach waits for Chrome's "started debugging this
+// browser" bar to open: it slides in over about 150 ms and shrinks the
+// viewport, which moves anything not pinned to the top of the page.
+const BAR_WAIT_MS = 400;
+const BAR_SETTLE_MS = 150;
+const BAR_POLL_MS = 50;
+export const _barTiming = { wait: BAR_WAIT_MS, settle: BAR_SETTLE_MS, poll: BAR_POLL_MS };
+// Off in the unit tests that check the exact commands sent.
+let settleOnAttach = true;
+
+// Attaches if needed. Answers true when this call attached and the
+// viewport changed size meanwhile (the debugging bar opened): points and
+// screenshots taken before it are stale.
 export async function attach(tabId) {
   assertTabId(tabId);
-  if (attached.has(tabId)) return;
+  if (attached.has(tabId)) return false;
+  let ours = true;
   try {
     await api().debugger.attach({ tabId }, PROTOCOL);
   } catch (e) {
@@ -61,8 +75,40 @@ export async function attach(tabId) {
       if (/no tab/i.test(message(e))) throw new BridgeError(ERR.NO_TAB, `no tab ${tabId}`);
       throw new BridgeError(ERR.INTERNAL, `debugger attach failed: ${message(e)}`);
     }
+    ours = false;
   }
   attached.add(tabId);
+  return ours && settleOnAttach ? barSettled(tabId) : false;
+}
+
+// Waits for the viewport to stop changing after an attach: up to
+// _barTiming.wait for the bar to start, then until the height holds for
+// _barTiming.settle. Answers whether it changed.
+async function barSettled(tabId) {
+  const height = async () => {
+    try {
+      const m = (await api().debugger.sendCommand({ tabId }, "Page.getLayoutMetrics")) || {};
+      return (m.cssLayoutViewport || m.cssVisualViewport || {}).clientHeight ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const { wait, settle, poll } = _barTiming;
+  const first = await height();
+  if (first == null) return false;
+  let last = first;
+  let changedAt = 0;
+  const t0 = Date.now();
+  while (Date.now() - t0 < wait + settle * 4) {
+    await new Promise((r) => setTimeout(r, poll));
+    const h = await height();
+    if (h == null) break;
+    if (h !== last) {
+      last = h;
+      changedAt = Date.now();
+    } else if (changedAt ? Date.now() - changedAt >= settle : Date.now() - t0 >= wait) break;
+  }
+  return last !== first;
 }
 
 export async function detach(tabId) {
@@ -257,6 +303,7 @@ export async function screenshot({ tabId } = {}) {
   return { data, mimeType: "image/jpeg", ...css, scale: ratio };
 }
 
-export function _resetForTests() {
+export function _resetForTests({ settle = false } = {}) {
   attached.clear();
+  settleOnAttach = settle;
 }

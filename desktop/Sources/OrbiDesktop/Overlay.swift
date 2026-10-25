@@ -1,23 +1,28 @@
 import AppKit
 import OrbiDesktopCore
-import QuartzCore
+import WebKit
 
 // The overlay: one transparent, click-through, borderless window over the
-// main display, on every Space and above full-screen apps. Styled like the
-// extension's overlays:
-//   - ring (content/frame.js, design R6b): a conic spectrum band around the
-//     screen edge, 8 pt visible, inner corners rounded at 11 pt, opacity .45,
-//     turning once every 6 s, fading over 300 ms. Shown while the server
-//     asks (ring: true) and while the helper is executing an action.
-//   - cursor (content/cursor.js, "Orb tag arrow"): a white arrow with a
-//     spectrum outline that glides on a minimum-jerk path; a press plays a
-//     ripple at the point.
-//   - subtitle pill (content/subtitles.js): a frosted white card 28 pt above
-//     the bottom, 22 pt corners, 21 pt medium ink text, the small orb at its
-//     left.
-// Reduced motion: the ring holds still and the cursor jumps.
-let spectrum: [NSColor] = [0xff9f6b, 0xff5f8f, 0xb56cff, 0x5e8bff, 0x4fd1ff].map { NSColor(hex: $0) }
-
+// main display, on every Space and above full-screen apps. It holds a web
+// view that runs the extension's own overlay scripts, unchanged
+// (desktop/Resources/overlay: the card with the orb face, its lip-sync and
+// karaoke words, the R6b frame ring, the agent cursor and the earcons), so
+// the desktop looks and moves exactly like Chrome. bridge.js there turns
+// the calls below into the runtime messages those scripts already handle.
+//
+// The window ignores the mouse and the web view hit-tests to nothing, so it
+// never takes a click, a key or the focus. CSS pixels are points, and the
+// window's top left is the main display's, so AX/Quartz points are used as
+// they are.
+//
+// The card's own backdrop blur only sees the empty page, so a native blur
+// sits behind it, placed from the card's box (sent by bridge.js).
+//
+// The frame ring is on while a turn is in progress (any state but idle),
+// while the helper is acting, and while the server asks (ring: true), like
+// the extension's background/frame.js. It goes around the window Orbi acts
+// in (the app of the last action, else the frontmost app's front window),
+// followed while it is on. At idle the cursor rests where it is.
 extension NSColor {
   convenience init(hex: Int, alpha: CGFloat = 1) {
     self.init(srgbRed: CGFloat((hex >> 16) & 0xff) / 255, green: CGFloat((hex >> 8) & 0xff) / 255,
@@ -25,459 +30,446 @@ extension NSColor {
   }
 }
 
-private func reduceMotion() -> Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+enum OverlayAssets {
+  // The overlay's files, by the path the page asks for, and where each is
+  // in the repo. scripts/bundle.sh copies them to Resources/overlay.
+  static let files: [String: String] = [
+    "index.html": "desktop/Resources/overlay/index.html",
+    "shim.js": "desktop/Resources/overlay/shim.js",
+    "bridge.js": "desktop/Resources/overlay/bridge.js",
+    "ext/orb-face.js": "extension/content/orb-face.js",
+    "ext/subtitles.js": "extension/content/subtitles.js",
+    "ext/frame.js": "extension/content/frame.js",
+    "ext/cursor.js": "extension/content/cursor.js",
+    "ext/karaoke.js": "extension/lib/voice/karaoke.js",
+    "ext/chime.js": "extension/lib/voice/chime.js",
+  ]
+  static let scheme = "orbi-overlay"
+  static let start = URL(string: "\(scheme)://app/index.html")!
 
-private func noAnim(_ body: () -> Void) {
-  CATransaction.begin()
-  CATransaction.setDisableActions(true)
-  body()
-  CATransaction.commit()
+  // The bundled copy, or for a plain swift build the repo's own files.
+  static func url(_ path: String) -> URL? {
+    guard let repoPath = files[path] else { return nil }
+    if let res = Bundle.main.resourceURL?.appendingPathComponent("overlay/\(path)"),
+       FileManager.default.fileExists(atPath: res.path) { return res }
+    var repo = URL(fileURLWithPath: #filePath)
+    for _ in 0..<4 { repo.deleteLastPathComponent() } // Sources/OrbiDesktop/Overlay.swift
+    let file = repo.appendingPathComponent(repoPath)
+    return FileManager.default.fileExists(atPath: file.path) ? file : nil
+  }
 }
 
-// A view whose layer tree uses the top-left, y-down space of the screen, so
-// AX/Quartz points can be used as they are.
-private class FlippedLayerView: NSView {
-  let root = CALayer()
-  override init(frame: NSRect) {
-    super.init(frame: frame)
-    layer = root
-    wantsLayer = true
-    root.isGeometryFlipped = true
+// Serves only the files above, read-only, from orbi-overlay://app/.
+private final class AssetHandler: NSObject, WKURLSchemeHandler {
+  func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
+    guard let url = task.request.url, url.host == "app",
+          let file = OverlayAssets.url(String(url.path.dropFirst())),
+          let data = try? Data(contentsOf: file) else {
+      task.didFailWithError(URLError(.fileDoesNotExist))
+      return
+    }
+    let mime = file.pathExtension == "html" ? "text/html" : "text/javascript"
+    let res = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                              headerFields: ["Content-Type": "\(mime); charset=utf-8", "Cache-Control": "no-store"])!
+    task.didReceive(res)
+    task.didReceive(data)
+    task.didFinish()
   }
-  required init?(coder: NSCoder) { nil }
+
+  func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {}
+}
+
+private final class ClickThroughWebView: WKWebView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+  override var acceptsFirstResponder: Bool { false }
+}
+
+private final class ClickThroughBlur: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-private final class RingView: FlippedLayerView {
-  private let band = CALayer()
-  private let gradient = CAGradientLayer()
-  private let mask = CAShapeLayer()
-  private(set) var on = false
-
-  override init(frame: NSRect) {
-    super.init(frame: frame)
-    gradient.type = .conic
-    gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-    gradient.endPoint = CGPoint(x: 0.5, y: 0)
-    gradient.colors = (spectrum + [spectrum[0]]).map(\.cgColor)
-    band.addSublayer(gradient)
-    mask.fillRule = .evenOdd
-    band.mask = mask
-    band.opacity = 0
-    root.addSublayer(band)
-    layout(for: frame.size)
-  }
-  required init?(coder: NSCoder) { nil }
-
-  func layout(for size: CGSize) {
-    noAnim {
-      let b = CGRect(origin: .zero, size: size)
-      band.frame = b
-      mask.frame = b
-      let path = CGMutablePath()
-      path.addRect(b)
-      path.addRoundedRect(in: b.insetBy(dx: 8, dy: 8), cornerWidth: 11, cornerHeight: 11)
-      mask.path = path
-      let d = hypot(size.width, size.height)
-      gradient.bounds = CGRect(x: 0, y: 0, width: d, height: d)
-      gradient.position = CGPoint(x: b.midX, y: b.midY)
-    }
-  }
-
-  func set(_ visible: Bool) {
-    guard visible != on else { return }
-    on = visible
-    let fade = CABasicAnimation(keyPath: "opacity")
-    fade.fromValue = band.presentation()?.opacity ?? band.opacity
-    fade.toValue = visible ? 0.45 : 0
-    fade.duration = 0.3
-    band.opacity = visible ? 0.45 : 0
-    band.add(fade, forKey: "fade")
-    if visible, !reduceMotion() {
-      let turn = CABasicAnimation(keyPath: "transform.rotation.z")
-      turn.fromValue = 0
-      turn.toValue = Double.pi * 2
-      turn.duration = 6
-      turn.repeatCount = .infinity
-      gradient.add(turn, forKey: "turn")
-    } else if !visible {
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-        if self?.on == false { self?.gradient.removeAnimation(forKey: "turn") }
-      }
-    }
-  }
-}
-
-private final class CursorView: FlippedLayerView {
-  private let arrow = CALayer()
-  private var shown = false
-  private(set) var at: CGPoint?
-
-  override init(frame: NSRect) {
-    super.init(frame: frame)
-    // design 7's arrow, an 18 x 24 box with its tip at (2, 2)
-    let path = CGMutablePath()
-    path.move(to: CGPoint(x: 2, y: 2))
-    for (x, y) in [(2, 19.5), (6.6, 15.4), (9.6, 22), (12.6, 20.7), (9.7, 14.3), (15.8, 14.3)] {
-      path.addLine(to: CGPoint(x: x, y: y))
-    }
-    path.closeSubpath()
-    arrow.bounds = CGRect(x: 0, y: 0, width: 18, height: 24)
-    arrow.anchorPoint = CGPoint(x: 2.0 / 18, y: 2.0 / 24)
-    arrow.shadowColor = NSColor(hex: 0x141628).cgColor
-    arrow.shadowOpacity = 0.28
-    arrow.shadowRadius = 2
-    arrow.shadowOffset = CGSize(width: 0, height: 2)
-    let fill = CAShapeLayer()
-    fill.path = path
-    fill.fillColor = NSColor.white.cgColor
-    let stroke = CAGradientLayer()
-    stroke.frame = arrow.bounds
-    stroke.startPoint = .zero
-    stroke.endPoint = CGPoint(x: 1, y: 1)
-    stroke.colors = spectrum.map(\.cgColor)
-    let strokeMask = CAShapeLayer()
-    strokeMask.path = path
-    strokeMask.fillColor = nil
-    strokeMask.strokeColor = NSColor.black.cgColor
-    strokeMask.lineWidth = 1.7
-    strokeMask.lineJoin = .round
-    stroke.mask = strokeMask
-    arrow.addSublayer(fill)
-    arrow.addSublayer(stroke)
-    arrow.opacity = 0
-    root.addSublayer(arrow)
-  }
-  required init?(coder: NSCoder) { nil }
-
-  func move(to p: CGPoint) {
-    at = p
-    noAnim {
-      arrow.position = p
-      if !shown { arrow.opacity = 1; shown = true }
-    }
-  }
-
-  // The extension's .hl: a 2 pt spectrum outline 5 pt around the target,
-  // held, then faded (1.4 s in all).
-  func highlight(_ r: CGRect) {
-    let box = r.insetBy(dx: -5, dy: -5)
-    let g = CAGradientLayer()
-    g.frame = box
-    g.startPoint = CGPoint(x: 0, y: 0.5)
-    g.endPoint = CGPoint(x: 1, y: 0.5)
-    g.colors = spectrum.map(\.cgColor)
-    let m = CAShapeLayer()
-    m.path = CGPath(roundedRect: CGRect(origin: .zero, size: box.size).insetBy(dx: 1, dy: 1), cornerWidth: 14, cornerHeight: 14, transform: nil)
-    m.fillColor = nil
-    m.strokeColor = NSColor.black.cgColor
-    m.lineWidth = 2
-    g.mask = m
-    g.opacity = 0
-    root.insertSublayer(g, below: arrow)
-    let fade = CAKeyframeAnimation(keyPath: "opacity")
-    fade.values = [1, 1, 0]
-    fade.keyTimes = [0, 0.7, 1]
-    fade.duration = 1.4
-    g.add(fade, forKey: "hl")
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.45) { g.removeFromSuperlayer() }
-  }
-
-  func press(at p: CGPoint) {
-    move(to: p)
-    let squeeze = CAKeyframeAnimation(keyPath: "transform.scale")
-    squeeze.values = [1, 0.86, 1]
-    squeeze.duration = 0.25
-    arrow.add(squeeze, forKey: "press")
-    guard !reduceMotion() else { return }
-    let rip = CAShapeLayer()
-    rip.bounds = CGRect(x: 0, y: 0, width: 46, height: 46)
-    rip.path = CGPath(ellipseIn: rip.bounds.insetBy(dx: 1, dy: 1), transform: nil)
-    rip.fillColor = NSColor(hex: 0xff5f8f, alpha: 0.14).cgColor
-    rip.strokeColor = NSColor(hex: 0xb56cff, alpha: 0.9).cgColor
-    rip.lineWidth = 2
-    rip.opacity = 0
-    noAnim { rip.position = p }
-    root.insertSublayer(rip, below: arrow)
-    let grow = CABasicAnimation(keyPath: "transform.scale")
-    grow.fromValue = 0.25
-    grow.toValue = 1
-    let fade = CABasicAnimation(keyPath: "opacity")
-    fade.fromValue = 0.75
-    fade.toValue = 0
-    let g = CAAnimationGroup()
-    g.animations = [grow, fade]
-    g.duration = 0.52
-    g.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.7, 0.3, 1)
-    rip.add(g, forKey: "rip")
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { rip.removeFromSuperlayer() }
-  }
-}
-
-// The small status orb: the extension's radial body (white to #c9b8ff to
-// #5e8bff) with its F1 face, a spectrum swirl while thinking, and a pulse
-// while listening or speaking.
-private final class OrbView: NSView {
-  private let body = CAGradientLayer()
-  private let swirl = CAGradientLayer()
-  private let face = CAShapeLayer()
-
-  override init(frame: NSRect) {
-    super.init(frame: frame)
-    wantsLayer = true
-    let b = CGRect(origin: .zero, size: frame.size)
-    body.frame = b
-    body.type = .radial
-    body.colors = [NSColor.white, NSColor(hex: 0xc9b8ff), NSColor(hex: 0x5e8bff)].map(\.cgColor)
-    body.locations = [0, 0.4, 0.75]
-    body.startPoint = CGPoint(x: 0.35, y: 0.7)
-    body.endPoint = CGPoint(x: 1.2, y: -0.1)
-    body.cornerRadius = b.width / 2
-    body.masksToBounds = true
-    swirl.frame = b
-    swirl.type = .conic
-    swirl.startPoint = CGPoint(x: 0.5, y: 0.5)
-    swirl.endPoint = CGPoint(x: 0.5, y: 1)
-    swirl.colors = (spectrum + [spectrum[0]]).map(\.cgColor)
-    swirl.opacity = 0
-    body.addSublayer(swirl)
-    // F1: dot eyes, soft smile (100 x 100 board scaled to the orb)
-    let s = b.width / 100
-    let p = CGMutablePath()
-    p.addEllipse(in: CGRect(x: 31 * s, y: 50 * s, width: 10 * s, height: 12 * s))
-    p.addEllipse(in: CGRect(x: 59 * s, y: 50 * s, width: 10 * s, height: 12 * s))
-    face.path = p
-    face.fillColor = NSColor(hex: 0x1d1d3a, alpha: 0.85).cgColor
-    let smile = CAShapeLayer()
-    let m = CGMutablePath()
-    m.move(to: CGPoint(x: 38 * s, y: 36 * s))
-    m.addQuadCurve(to: CGPoint(x: 62 * s, y: 36 * s), control: CGPoint(x: 50 * s, y: 26 * s))
-    smile.path = m
-    smile.fillColor = nil
-    smile.strokeColor = NSColor(hex: 0x1d1d3a, alpha: 0.85).cgColor
-    smile.lineWidth = max(1.2, 5 * s)
-    smile.lineCap = .round
-    body.addSublayer(face)
-    body.addSublayer(smile)
-    layer?.addSublayer(body)
-    layer?.shadowColor = NSColor(hex: 0x5e8bff).cgColor
-    layer?.shadowOpacity = 0.35
-    layer?.shadowRadius = 5
-  }
-  required init?(coder: NSCoder) { nil }
-
-  func set(_ state: Overlay.State) {
-    body.removeAnimation(forKey: "pulse")
-    swirl.removeAnimation(forKey: "spin")
-    swirl.opacity = state == .thinking ? 0.55 : 0
-    guard !reduceMotion() else { return }
-    let pulse = CABasicAnimation(keyPath: "transform.scale")
-    pulse.autoreverses = true
-    pulse.repeatCount = .infinity
-    pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-    switch state {
-    case .idle: pulse.toValue = 1.03; pulse.duration = 1.6
-    case .listening: pulse.toValue = 1.12; pulse.duration = 0.45
-    case .thinking: pulse.toValue = 1.04; pulse.duration = 0.8
-    case .speaking: pulse.toValue = 1.08; pulse.duration = 0.22
-    }
-    pulse.fromValue = 1
-    body.add(pulse, forKey: "pulse")
-    if state == .thinking {
-      let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-      spin.fromValue = 0
-      spin.toValue = -Double.pi * 2
-      spin.duration = 1.6
-      spin.repeatCount = .infinity
-      swirl.add(spin, forKey: "spin")
-    }
-  }
-}
-
-private final class PillView: NSView {
-  let orb = OrbView(frame: NSRect(x: 0, y: 0, width: 26, height: 26))
-  let text = NSTextField(wrappingLabelWithString: "")
-  let hint = NSTextField(labelWithString: "")
-  private let blur = NSVisualEffectView()
-  private let tint = NSView()
-
-  override init(frame: NSRect) {
-    super.init(frame: frame)
-    wantsLayer = true
-    appearance = NSAppearance(named: .aqua)
-    blur.material = .popover
-    blur.blendingMode = .behindWindow
-    blur.state = .active
-    blur.wantsLayer = true
-    blur.layer?.cornerRadius = 22
-    blur.layer?.masksToBounds = true
-    tint.wantsLayer = true
-    tint.layer?.backgroundColor = NSColor(white: 1, alpha: 0.6).cgColor
-    tint.layer?.cornerRadius = 22
-    tint.layer?.borderWidth = 1
-    tint.layer?.borderColor = NSColor(white: 0, alpha: 0.08).cgColor
-    layer?.shadowColor = NSColor(hex: 0x1e223c).cgColor
-    layer?.shadowOpacity = 0.14
-    layer?.shadowRadius = 20
-    layer?.shadowOffset = CGSize(width: 0, height: -10)
-
-    text.font = .systemFont(ofSize: 21, weight: .medium)
-    text.textColor = NSColor(hex: 0x1d1d1f)
-    text.maximumNumberOfLines = 3
-    text.lineBreakMode = .byTruncatingTail
-    text.cell?.truncatesLastVisibleLine = true
-    hint.font = .systemFont(ofSize: 13.5, weight: .regular)
-    hint.textColor = NSColor(hex: 0x6e6e73)
-
-    let lines = NSStackView(views: [hint, text])
-    lines.orientation = .vertical
-    lines.alignment = .leading
-    lines.spacing = 3
-    let row = NSStackView(views: [orb, lines])
-    row.orientation = .horizontal
-    row.alignment = .centerY
-    row.spacing = 12
-    row.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 15, right: 20)
-    for v in [blur, tint, row] as [NSView] {
-      v.translatesAutoresizingMaskIntoConstraints = false
-      addSubview(v)
-      NSLayoutConstraint.activate([
-        v.leadingAnchor.constraint(equalTo: leadingAnchor), v.trailingAnchor.constraint(equalTo: trailingAnchor),
-        v.topAnchor.constraint(equalTo: topAnchor), v.bottomAnchor.constraint(equalTo: bottomAnchor),
-      ])
-    }
-    orb.translatesAutoresizingMaskIntoConstraints = false
-    NSLayoutConstraint.activate([orb.widthAnchor.constraint(equalToConstant: 26), orb.heightAnchor.constraint(equalToConstant: 26)])
-    alphaValue = 0
-  }
-  required init?(coder: NSCoder) { nil }
-  override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-  func show(_ on: Bool) {
-    NSAnimationContext.runAnimationGroup { ctx in
-      ctx.duration = on ? 0.32 : 0.6
-      animator().alphaValue = on ? 1 : 0
-    }
+// Script messages without a retain cycle through the content controller.
+private final class WeakHandler: NSObject, WKScriptMessageHandler {
+  weak var overlay: Overlay?
+  init(_ o: Overlay) { overlay = o }
+  func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+    let (name, body) = (m.name, m.body)
+    MainActor.assumeIsolated { overlay?.message(name, body) }
   }
 }
 
 @MainActor
-final class Overlay {
-  enum State: String { case idle, listening, thinking, speaking }
+final class Overlay: NSObject, WKNavigationDelegate {
+  typealias State = OverlayUpdate.State
 
+  private(set) var state = State.idle
   private var window: NSWindow?
-  private var ring: RingView?
-  private var cursor: CursorView?
-  private var pill: PillView?
+  private var web: WKWebView?
+  private var blur: NSVisualEffectView?
+  private var ready = false
+  private var pending: [String] = []
+  private var latched = false
   private var serverRing = false
   private var acting = 0
-  private var state = State.idle
-  private var hideTimer: Timer?
+  private var frameSent: Bool?
+  private var target: (rect: CGRect, at: Date)?
+  private var drawn: CGPoint?
   private var glide: Task<Void, Never>?
   private var rng = Rng()
   private var screenObserver: NSObjectProtocol?
+  private var showCursor = true
+  // The app whose window gets the frame, and the box last sent.
+  private var actingPid: pid_t?
+  private var frameRect: CGRect?
+  private var frameRectSent = false
+  private var follow: Timer?
+  // Off for the snapshot harness, which places the frame itself.
+  var tracksWindows = true
 
-  var cursorPoint: CGPoint? { cursor?.at }
+  var cursorPoint: CGPoint? { drawn }
+  var isReady: Bool { ready }
 
+  // The live overlay over the main display.
   func start() {
     guard window == nil, let screen = NSScreen.screens.first else { return }
-    let w = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    let w = build(frame: screen.frame)
     w.level = .screenSaver
     w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+    w.orderFrontRegardless()
+    screenObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self, let w = self.window, let s = NSScreen.screens.first else { return }
+        w.setFrame(s.frame, display: true)
+      }
+    }
+  }
+
+  // A window at frame holding the page. The snapshot harness uses it off
+  // screen, where WebKit would pause animation frames for a window it
+  // thinks is hidden, so there it is told the window is never occluded.
+  @discardableResult
+  func build(frame: NSRect, offscreen: Bool = false) -> NSWindow {
+    let w = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
     w.ignoresMouseEvents = true
     w.isOpaque = false
     w.backgroundColor = .clear
     w.hasShadow = false
     w.isReleasedWhenClosed = false
     w.animationBehavior = .none
-    let content = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
-    let ring = RingView(frame: content.bounds)
-    let cursor = CursorView(frame: content.bounds)
-    let pill = PillView(frame: .zero)
-    ring.autoresizingMask = [.width, .height]
-    cursor.autoresizingMask = [.width, .height]
-    content.addSubview(ring)
-    pill.translatesAutoresizingMaskIntoConstraints = false
-    content.addSubview(pill)
-    NSLayoutConstraint.activate([
-      pill.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-      pill.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -28),
-      pill.widthAnchor.constraint(lessThanOrEqualToConstant: 720),
-      pill.widthAnchor.constraint(lessThanOrEqualTo: content.widthAnchor, constant: -32),
-    ])
-    content.addSubview(cursor)
+    // Not an accessibility element, so hit tests look through it.
+    w.setAccessibilityElement(false)
+    let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
+
+    let blur = ClickThroughBlur(frame: .zero)
+    blur.material = .popover
+    blur.blendingMode = .behindWindow
+    blur.state = .active
+    blur.wantsLayer = true
+    blur.layer?.cornerRadius = 22
+    blur.layer?.masksToBounds = true
+    blur.alphaValue = 0
+    content.addSubview(blur)
+
+    let config = WKWebViewConfiguration()
+    config.setURLSchemeHandler(AssetHandler(), forURLScheme: OverlayAssets.scheme)
+    config.mediaTypesRequiringUserActionForPlayback = [] // the earcons
+    config.suppressesIncrementalRendering = true
+    let handler = WeakHandler(self)
+    config.userContentController.add(handler, name: "orbiReady")
+    config.userContentController.add(handler, name: "orbiCard")
+    let web = ClickThroughWebView(frame: content.bounds, configuration: config)
+    web.autoresizingMask = [.width, .height]
+    web.setValue(false, forKey: "drawsBackground")
+    web.underPageBackgroundColor = .clear
+    web.allowsMagnification = false
+    web.allowsBackForwardNavigationGestures = false
+    web.navigationDelegate = self
+    // WebKit's private setter, only when this WebKit has it (KVC on a
+    // missing key would raise).
+    let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+    if offscreen, web.responds(to: occlusion) { web.perform(occlusion, with: false as NSNumber) }
+    content.addSubview(web)
     w.contentView = content
-    w.orderFrontRegardless()
-    (self.window, self.ring, self.cursor, self.pill) = (w, ring, cursor, pill)
-    screenObserver = NotificationCenter.default.addObserver(
-      forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
-    ) { [weak self] _ in Task { @MainActor in self?.fitScreen() } }
+    web.load(URLRequest(url: OverlayAssets.start))
+    (self.window, self.web, self.blur) = (w, web, blur)
+    return w
   }
 
-  private func fitScreen() {
-    guard let w = window, let screen = NSScreen.screens.first else { return }
-    w.setFrame(screen.frame, display: true)
-    ring?.layout(for: screen.frame.size)
+  // ------------------------------------------------------------ page
+
+  // Only the overlay's own page ever loads.
+  func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
+    action.request.url?.scheme == OverlayAssets.scheme ? .allow : .cancel
   }
 
-  // overlay {state, subtitle?, cursor?, ring?}
-  func apply(state s: State, subtitle: String?, cursor to: CGPoint?, ring: Bool?) {
-    state = s
-    if let ring { serverRing = ring }
-    updateRing()
-    if let pill {
-      pill.orb.set(s)
-      if let subtitle { pill.text.stringValue = String(subtitle.prefix(600)) }
-      let words: [State: String] = [.listening: "Listening", .thinking: "Thinking"]
-      pill.hint.stringValue = pill.text.stringValue.isEmpty ? (words[s] ?? "") : ""
-      pill.hint.isHidden = pill.hint.stringValue.isEmpty
-      pill.text.isHidden = pill.text.stringValue.isEmpty
-      let visible = s != .idle || !pill.text.stringValue.isEmpty
-      hideTimer?.invalidate()
-      hideTimer = nil
-      pill.show(visible)
-      if visible, s == .idle {
-        // Idle with words on the card: leave time to read them, then fade.
-        let words = pill.text.stringValue.split(separator: " ").count
-        let secs = min(60, max(10, 10 + Double(max(0, words - 15)) * 0.3))
-        hideTimer = Timer.scheduledTimer(withTimeInterval: secs, repeats: false) { [weak self] _ in
-          Task { @MainActor in
-            guard let self, self.state == .idle else { return }
-            self.pill?.show(false)
-            self.pill?.text.stringValue = ""
-          }
-        }
-      }
+  // The page died (WebContent crashed): load it again and replay the state.
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    ready = false
+    frameSent = nil
+    webView.load(URLRequest(url: OverlayAssets.start))
+  }
+
+  fileprivate func message(_ name: String, _ body: Any) {
+    switch name {
+    case "orbiReady":
+      ready = true
+      let queued = pending
+      pending = []
+      var u = OverlayUpdate()
+      u.state = state
+      u.latched = latched
+      call("settings", ["showCursor": .bool(showCursor)])
+      frameRectSent = false
+      send(u)
+      for js in queued { web?.evaluateJavaScript(js) }
+    case "orbiCard":
+      guard let o = body as? [String: Any], let blur, let host = blur.superview else { return }
+      let n = { (k: String) in (o[k] as? NSNumber)?.doubleValue ?? 0 }
+      let (x, y, w, h) = (n("x"), n("y"), n("w"), n("h"))
+      guard [x, y, w, h].allSatisfy(\.isFinite), w >= 0, h >= 0 else { return }
+      blur.frame = NSRect(x: x, y: host.bounds.height - y - h, width: w, height: h)
+      blur.alphaValue = CGFloat(min(1, max(0, n("opacity"))))
+    default:
+      break
     }
-    if let to { glide(to: to) }
   }
 
-  func beginAction() { acting += 1; updateRing() }
-  func endAction() { acting = max(0, acting - 1); updateRing() }
+  private func run(_ js: String) {
+    guard let web else { return }
+    if ready { web.evaluateJavaScript(js) }
+    else if pending.count < 500 { pending.append(js) }
+  }
 
-  private func updateRing() { ring?.set(serverRing || acting > 0) }
+  private func call(_ fn: String, _ arg: JSON) { run("orbi.\(fn)(\(arg.encoded()))") }
+
+  private var frameWanted: Bool { serverRing || acting > 0 || state != .idle }
+
+  private func send(_ u: OverlayUpdate) {
+    let on = frameWanted
+    let frame: Bool? = on == frameSent ? nil : on
+    frameSent = on
+    var o = u.webJSON(frame: frame).object ?? [:]
+    if on, tracksWindows { trackWindow() }
+    if !frameRectSent { o["frameRect"] = rectJSON(frameRect); frameRectSent = true }
+    call("apply", .object(o))
+    following(on && tracksWindows)
+  }
+
+  private func rectJSON(_ r: CGRect?) -> JSON {
+    guard let r else { return .null }
+    return ["x": JSON(Double(r.minX)), "y": JSON(Double(r.minY)), "w": JSON(Double(r.width)), "h": JSON(Double(r.height))]
+  }
+
+  // ------------------------------------------------------------ frame
+
+  // The window the frame goes around, or nil for the whole screen.
+  func setFrameRect(_ r: CGRect?) {
+    guard r != frameRect else { return }
+    frameRect = r
+    frameRectSent = true
+    call("apply", ["frameRect": rectJSON(r)])
+  }
+
+  private func trackWindow() {
+    let pid = actingPid ?? NSWorkspace.shared.frontmostApplication?.processIdentifier
+    setFrameRect(pid.flatMap(Self.frontWindow))
+  }
+
+  // While the frame is on, it follows the window as it moves or resizes.
+  private func following(_ on: Bool) {
+    if !on { follow?.invalidate(); follow = nil; return }
+    guard follow == nil else { return }
+    follow = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.trackWindow() }
+    }
+  }
+
+  // pid's frontmost normal window on screen, in the overlay's points (the
+  // main display's top left), or nil when it has none or it fills the
+  // screen (then the frame goes round the screen, as before).
+  static func frontWindow(of pid: pid_t) -> CGRect? {
+    guard pid != getpid() else { return nil }
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    for w in list {
+      guard w[kCGWindowOwnerPID as String] as? pid_t == pid, w[kCGWindowLayer as String] as? Int == 0,
+            (w[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+            let b = w[kCGWindowBounds as String] as? NSDictionary,
+            let r = CGRect(dictionaryRepresentation: b), r.width >= 80, r.height >= 80 else { continue }
+      if let screen = NSScreen.screens.first?.frame, r.insetBy(dx: -1, dy: -1).contains(CGRect(origin: .zero, size: screen.size)) { return nil }
+      return r
+    }
+    return nil
+  }
+
+  // ------------------------------------------------------------ server
+
+  func apply(_ u: OverlayUpdate) {
+    let wasIdle = state == .idle
+    if let s = u.state { state = s }
+    if let l = u.latched { latched = l } else if u.state != nil { latched = false }
+    if let r = u.ring { serverRing = r }
+    if let t = u.target { target = (CGRect(x: t.x, y: t.y, width: t.w, height: t.h), Date()) }
+    send(u)
+    // The end of a turn: the cursor rests where it is (its action line goes).
+    if state == .idle, !wasIdle {
+      cursor(["phase": "hide"])
+      if acting == 0 { actingPid = nil }
+    }
+    if let c = u.cursor { glide(to: CGPoint(x: c.x, y: c.y)) }
+  }
+
+  // pid: the app acted on, whose window gets the frame.
+  func beginAction(pid: pid_t? = nil) {
+    if let pid { actingPid = pid }
+    acting += 1
+    send(OverlayUpdate())
+  }
+  func endAction() { acting = max(0, acting - 1); send(OverlayUpdate()) }
+
+  // The server went away.
+  func reset() {
+    glide?.cancel()
+    state = .idle
+    latched = false
+    serverRing = false
+    target = nil
+    frameSent = false
+    actingPid = nil
+    following(false)
+    run("orbi.reset()")
+  }
+
+  // ------------------------------------------------------------ voice
+
+  // n samples of speech scheduled, first heard `inSeconds` from now.
+  func speechAudio(samples n: Int, inSeconds: Double) {
+    run("orbi.chunk(\(n), \(Int((inSeconds * 1000).rounded())))")
+  }
+
+  func stopSpeech() { run("orbi.stopSpeech()") }
+
+  func cue(_ name: String, afterCut: Bool = false) {
+    call("apply", ["cue": .string(name), "cueAfterCut": .bool(afterCut)])
+  }
+
+  func link(up: Bool) { call("apply", ["link": .bool(up)]) }
+
+  // The menu's Show Cursor (content/cursor.js reads it as the extension's
+  // showCursor setting).
+  func setShowCursor(_ on: Bool) {
+    showCursor = on
+    call("settings", ["showCursor": .bool(on)])
+  }
+
+  // ------------------------------------------------------------ cursor
+
+  // Pointer samples, as background/actor.js sends content/cursor.js: the
+  // real pointer's path as Input posts it, so the drawn arrow is where the
+  // events land.
+  private func cursor(_ s: [String: JSON]) { call("cursor", .object(s)) }
+
+  private func pt(_ p: CGPoint) -> [String: JSON] { ["x": JSON(Double(p.x)), "y": JSON(Double(p.y))] }
+
+  func cursorMove(_ p: CGPoint, to: CGPoint, action: String) {
+    drawn = p
+    var s = pt(p)
+    s["phase"] = "move"
+    s["action"] = .string(action)
+    s["to"] = .object(pt(to))
+    cursor(s)
+  }
 
   func cursorAt(_ p: CGPoint) {
     glide?.cancel()
-    cursor?.move(to: p)
+    cursorMove(p, to: p, action: "hover")
   }
 
-  func press(_ p: CGPoint) { cursor?.press(at: p) }
+  // A press plays the ripple; inside the target the server named, also the
+  // ring pulse and the spectrum highlight on it.
+  func press(_ p: CGPoint) {
+    drawn = p
+    var s = pt(p)
+    s["phase"] = "press"
+    if let t = target, Date().timeIntervalSince(t.at) < 4, t.rect.insetBy(dx: -4, dy: -4).contains(p) {
+      s["rect"] = ["x": JSON(Double(t.rect.minX)), "y": JSON(Double(t.rect.minY)),
+                   "width": JSON(Double(t.rect.width)), "height": JSON(Double(t.rect.height))]
+    }
+    cursor(s)
+  }
 
-  func highlight(_ r: CGRect) { cursor?.highlight(r) }
+  func release(_ p: CGPoint) {
+    var s = pt(p)
+    s["phase"] = "release"
+    cursor(s)
+  }
 
-  // Only the drawn cursor, not the real pointer (that is input's job).
+  func wheel(_ p: CGPoint) {
+    drawn = p
+    var s = pt(p)
+    s["phase"] = "wheel"
+    s["action"] = "scroll"
+    cursor(s)
+  }
+
+  func typing(_ text: String) {
+    var s = drawn.map(pt) ?? [:]
+    s["phase"] = "type"
+    s["action"] = "type"
+    // background/cursor.js CAPTION_CHARS
+    s["text"] = .string(String(text.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(60)))
+    cursor(s)
+  }
+
+  func keyPressed() {
+    var s = drawn.map(pt) ?? [:]
+    s["phase"] = "key"
+    s["action"] = "type"
+    cursor(s)
+  }
+
+  // overlay {cursor}: only the drawn cursor, not the real pointer.
+
+  // Runs body with the overlay window off screen, for a hit test that must
+  // see what is under it. Put back at once, within the same run loop turn.
+  func withoutWindow<T>(_ body: () -> T) -> T {
+    guard let w = window, w.isVisible else { return body() }
+    w.orderOut(nil)
+    defer { w.orderFrontRegardless() }
+    return body()
+  }
+
   private func glide(to p: CGPoint) {
     glide?.cancel()
-    guard let cursor else { return }
-    guard let from = cursor.at, !reduceMotion() else { cursor.move(to: p); return }
+    guard let from = drawn, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+      cursorMove(p, to: p, action: "hover")
+      return
+    }
     let path = planPath(from: Point(x: from.x, y: from.y), to: Point(x: p.x, y: p.y), rng: &rng)
     glide = Task { @MainActor [weak self] in
       for step in path {
         if step.ms > 0 { try? await Task.sleep(nanoseconds: UInt64(step.ms * 1_000_000)) }
         if Task.isCancelled { return }
-        self?.cursor?.move(to: CGPoint(x: step.x, y: step.y))
+        self?.cursorMove(CGPoint(x: step.x, y: step.y), to: p, action: "hover")
       }
     }
+  }
+
+  // ------------------------------------------------------------ snapshots
+
+  func script(_ js: String) { run(js) }
+
+  func evaluate(_ js: String) async -> String {
+    guard let web else { return "no page" }
+    do { return String(describing: try await web.evaluateJavaScript(js) ?? "undefined") } catch { return "error: \(error)" }
+  }
+
+  func snapshot() async -> NSImage? {
+    guard let web else { return nil }
+    // Off screen there are no screen updates to wait for.
+    let c = WKSnapshotConfiguration()
+    c.afterScreenUpdates = false
+    return try? await web.takeSnapshot(configuration: c)
   }
 }

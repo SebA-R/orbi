@@ -146,14 +146,23 @@ const TRANSCRIPT_SENSITIVE: Array<[RegExp, string]> = SENSITIVE.map(([re, what])
 // Orbi's own replies (which may repeat page text) are kept short and
 // dropped when they read like an instruction.
 export const REDACTED = "(removed: it was about a card, password, ID, bank detail or long number)";
+const DROP_RULE = "instruction or link";
+
+// Which scrubber rule a turn trips, or null: the name only, for the log.
+export function redactRule(text: string, role: "user" | "assistant" = "user"): string | null {
+  const f = fold(clean(text));
+  if (longNumber(f, 6)) return "long number";
+  if (/@[a-z0-9-]+\.[a-z]/.test(f)) return "email";
+  const hit = TRANSCRIPT_SENSITIVE.find(([re]) => re.test(f));
+  if (hit) return hit[1];
+  if (role === "assistant" && /\b(ignore|disregard|override|instructions?|system prompt|you must|always)\b|https?:|www\./.test(f)) return DROP_RULE;
+  return null;
+}
 export function redactTurn(text: string, role: "user" | "assistant" = "user"): string {
   let t = clean(text);
-  const f = fold(t);
-  if (longNumber(f, 6) || /@[a-z0-9-]+\.[a-z]/.test(f) || TRANSCRIPT_SENSITIVE.some(([re]) => re.test(f))) return REDACTED;
-  if (role === "assistant") {
-    if (/\b(ignore|disregard|override|instructions?|system prompt|you must|always)\b|https?:|www\./.test(f)) return "";
-    if (t.length > ASSISTANT_MAX_CHARS) t = t.slice(0, ASSISTANT_MAX_CHARS - 1) + "…";
-  }
+  const rule = redactRule(t, role);
+  if (rule) return rule === DROP_RULE ? "" : REDACTED;
+  if (role === "assistant" && t.length > ASSISTANT_MAX_CHARS) t = t.slice(0, ASSISTANT_MAX_CHARS - 1) + "…";
   if (t.length > TURN_MAX_CHARS) t = t.slice(0, TURN_MAX_CHARS - 1) + "…";
   return t;
 }
@@ -283,7 +292,8 @@ export class MemoryStore {
 export type Turn = { role: "user" | "assistant"; text: string; at: number };
 
 export class Transcript {
-  constructor(readonly file = path.join(dataDir(), "transcript.json"), private windowMs = TRANSCRIPT_WINDOW_MS) {}
+  // log: which scrubber rule fired on a turn being saved, never its text.
+  constructor(readonly file = path.join(dataDir(), "transcript.json"), private windowMs = TRANSCRIPT_WINDOW_MS, private log: (line: string) => void = () => {}) {}
 
   recent(now = Date.now()): Turn[] {
     const turns: unknown = readJson(this.file)?.turns;
@@ -296,6 +306,8 @@ export class Transcript {
   }
 
   add(role: Turn["role"], text: string, now = Date.now()) {
+    const rule = redactRule(text, role);
+    if (rule) this.log(`transcript: ${role} turn scrubbed (${rule})`);
     const t = redactTurn(text, role);
     if (!t) return;
     try {
@@ -315,7 +327,7 @@ export function memoryStore(): MemoryStore {
   return (store ??= new MemoryStore());
 }
 export function conversationLog(): Transcript {
-  return (transcript ??= new Transcript());
+  return (transcript ??= new Transcript(undefined, undefined, (l) => console.log(l)));
 }
 // Tests point both at a fresh directory.
 export function resetMemoryForTests() {
