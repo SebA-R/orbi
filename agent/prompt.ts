@@ -2,6 +2,26 @@ import { BROWSE_MODE, EXTRA_SITES, PAY_ORIGINS, type BrowseMode } from "./origin
 
 const PAY_SITES = [...PAY_ORIGINS];
 
+// The user's Search engine setting (extension/lib/settings.js). "default"
+// is Chrome's own engine, which the agent cannot reach, so it uses Google.
+export const SEARCH_ENGINES = ["google", "bing", "duckduckgo", "default"] as const;
+export type SearchEngine = (typeof SEARCH_ENGINES)[number];
+const SEARCH_URLS: Record<SearchEngine, string> = {
+  google: "https://www.google.com/search?q=<words>",
+  bing: "https://www.bing.com/search?q=<words>",
+  duckduckgo: "https://duckduckgo.com/?q=<words>",
+  default: "https://www.google.com/search?q=<words>",
+};
+export function searchLine(engine: SearchEngine): string {
+  return `search the web for it at ${SEARCH_URLS[engine] ?? SEARCH_URLS.google}, and open the best result.`;
+}
+
+// A note in front of the next user turn when the search engine changed
+// after the session started.
+export function searchNote(engine: SearchEngine): string {
+  return `[Setting changed, from the user's Orbi settings] When the user asks for something without naming a site, ${searchLine(engine)}`;
+}
+
 export const SYSTEM_PROMPT = `You are Orbi, a voice-controlled web agent for anyone. People talk to you and you work the web for them: you navigate, search, read and summarize pages, fill in forms when they ask, click, and shop when they ask. Everything you write is spoken aloud by a text-to-speech voice.
 
 Trust and instructions
@@ -23,7 +43,7 @@ How to speak
 
 Getting around the web
 - Start by calling tabs_context_mcp with createIfEmpty true, then use a tab in the MCP group.
-- Go to the site the user names. If they ask for something without naming a site, search the web for it, for example https://duckduckgo.com/?q=<words>, and open the best result.
+- Go to the site the user names. If they ask for something without naming a site, ${searchLine("google")}
 - Prefer get_page_text or find to understand a page, and screenshots only when you need coordinates. Click by ref when you can; coordinates are CSS pixels inside the viewport.
 - When the user asks what a page says, give the main points in a few sentences and offer to read more.
 - Fill in a form only when the user asks, with what they told you. Never guess or make up details. On checkout and payment pages, never enter an address, card, email, phone number, password or other personal details; the user does that.
@@ -85,8 +105,9 @@ export function dangerNote(on: boolean): string {
 
 // The system prompt for a session: the base rules, the ext-mode tabs part
 // when ext is given, the sites part, and the Guided mode part when on.
-export function buildSystemPrompt({ guided, ext }: { guided: boolean; ext?: (p: string) => string }): string {
-  return (ext ? ext(SYSTEM_PROMPT) : SYSTEM_PROMPT) + SITES_PROMPT + (guided ? GUIDED_PROMPT : "");
+export function buildSystemPrompt({ guided, ext, search = "google" }: { guided: boolean; ext?: (p: string) => string; search?: SearchEngine }): string {
+  const base = SYSTEM_PROMPT.replace(searchLine("google"), searchLine(search));
+  return (ext ? ext(base) : base) + SITES_PROMPT + (guided ? GUIDED_PROMPT : "");
 }
 
 // Appended in CLEARCART_BROWSER=ext mode: the user's own tabs, and the
