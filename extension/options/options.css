@@ -1,7 +1,8 @@
 /* Options page: the popup's look (tokens and controls in lib/ui.css) as a
    centered column of settings groups, like iOS Settings. Each group is an
    h2, a white card of rows split by 1px lines, and an optional footnote. */
-html { background: var(--bg); }
+/* Keeps a focused control clear of the sticky save bar when tabbing down. */
+html { background: var(--bg); scroll-padding-bottom: 96px; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
   font: 16px/1.45 var(--font);
@@ -93,7 +94,7 @@ textarea.field { resize: vertical; }
   border-top: 1px solid var(--line);
 }
 #status { flex: 1 1 240px; min-height: 1.45em; font-weight: 500; }
-@media (max-height: 520px) { .savebar { position: static; } }
+@media (max-height: 520px) { .savebar { position: static; } html { scroll-padding-bottom: 0; } }
 
 @media (max-width: 520px) {
   main { width: calc(100% - 24px); padding-top: 24px; }

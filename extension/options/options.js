@@ -63,18 +63,24 @@ const simpleDefaults = () => Object.fromEntries([...simple.keys()].map((k) => [k
 // Saves on its own (not with the Save button), after the confirm press.
 const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no") }, saveSettings);
 
+// Leaves Danger mode alone, so an open confirm is not closed by another save.
 function fillSimple(s) {
   for (const key of simple.keys()) writeSetting(key, s[key]);
-  danger.fill(s);
   showSpeed();
 }
 
 function fill(s) {
   fillSimple(s);
+  danger.fill(s);
   els.agentUrl.value = s.agentUrl;
   els.allowlist.value = s.allowlist.join("\n");
   els.blocklist.value = s.blocklist.join("\n");
 }
+
+// Whether the text fields differ from what is stored (they save with Save).
+const textDirty = (s) => els.agentUrl.value.trim() !== s.agentUrl
+  || els.allowlist.value.trim() !== s.allowlist.join("\n")
+  || els.blocklist.value.trim() !== s.blocklist.join("\n").trim();
 
 function say(el, text) {
   el.textContent = "";
@@ -96,7 +102,7 @@ for (const [key, inputs] of simple) {
       const saved = await saveSettings({ [key]: readSetting(key) });
       fillSimple(saved);
       notify(saved);
-      say(els.status, "Saved.");
+      say(els.status, textDirty(saved) ? "Saved. Site lists and the server address still need Save." : "Saved.");
     });
   }
 }
@@ -198,10 +204,18 @@ async function refreshSetup() {
   tag(els.agentState, agent.connected ? "ok" : "todo", agent.connected ? "Connected" : "Not reachable");
 }
 
-// Switches and menus changed elsewhere (the popup) show up here. Text being
-// edited is left alone.
+// Switches and menus changed elsewhere (the popup) show up here. Only the
+// changed keys are refilled: text being edited is left alone, and an open
+// Danger mode confirm stays open unless dangerMode itself changed.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local") loadSettings().then(fillSimple);
+  if (area !== "local") return;
+  const keys = [...simple.keys()].filter((k) => k in changes);
+  if (!keys.length && !changes.dangerMode) return;
+  loadSettings().then((s) => {
+    for (const k of keys) writeSetting(k, s[k]);
+    if (changes.dangerMode) danger.fill(s);
+    showSpeed();
+  });
 });
 
 try { $("version").textContent = chrome.runtime.getManifest().version; } catch {}
