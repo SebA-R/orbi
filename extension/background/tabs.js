@@ -1,19 +1,33 @@
-// Agent tabs. Every tab the agent drives lives in one tab group titled
-// "Clearcart"; its id is kept in chrome.storage.session so it survives a
-// service-worker restart (but not a browser restart, where the group is
-// recovered by title).
+// Agent tabs: the user's own open tabs plus the tabs Clearcart opens. There
+// is no tab group. Instead every tab is judged by its current page:
+//
+//   - A tab on a page the browse mode does not allow (the blocked sites, or
+//     the fixed rules: non-web pages, local and private addresses, addresses
+//     with a login in them) or served from a local address (netguard.js) is
+//     left out of tabsContext and refused for every call.
+//   - That check runs again on every call (resolveAllowedTab), not only when
+//     the tabs are listed: a tab can move between calls.
+//   - Clearcart only closes tabs it opened itself.
+//   - New tabs open in the background next to the user's tab; a tab is only
+//     brought to the front by tabsActivate (when the user asks to see it).
+//
+// Which tabs Clearcart opened or drove (navigated, clicked, typed in) is kept
+// in chrome.storage.session so it survives a service-worker restart. The
+// agent server's tab sweep only looks at those (agentTabs).
 
 import { BridgeError, ERR } from "../lib/protocol.js";
-import { assertAllowed, isAllowed, isPaySite } from "./allowlist.js";
-import { assertNetSafe } from "./netguard.js";
+import { loadSettings } from "../lib/settings.js";
+import { assertAllowed, blockReason, isAllowed, isPaySite } from "./allowlist.js";
+import { assertNetSafe, flagOf } from "./netguard.js";
 
 export { isPaySite };
 
-export const GROUP_TITLE = "Clearcart";
-export const GROUP_COLOR = "blue";
-export const GROUP_KEY = "clearcartGroupId";
+// The tab group earlier versions made. Only used to undo it (ungroupLegacy).
+export const LEGACY_GROUP_TITLE = "Clearcart";
+export const STATE_KEY = "clearcartTabs";
 export const NAV_TIMEOUT_MS = 20_000;
-const NO_GROUP = -1;
+const TITLE_MAX = 120;
+const BLANK = /^(about:blank|chrome:\/\/newtab\/?)$/;
 
 const api = () => globalThis.chrome;
 
@@ -21,76 +35,141 @@ function info(tab) {
   return { tabId: tab.id, url: tab.url || tab.pendingUrl || "", title: tab.title || "" };
 }
 
-async function groupExists(id) {
-  if (typeof id !== "number" || id === NO_GROUP) return false;
+// Origin and path only: no query string, fragment or login. What Claude sees.
+export function originPath(url) {
   try {
-    await api().tabGroups.get(id);
-    return true;
+    const u = new URL(String(url));
+    if (u.origin === "null") return u.protocol;
+    return u.origin + u.pathname;
   } catch {
-    return false;
+    return "";
   }
 }
 
-// Returns the live group id, recovering it by title if the stored one is gone.
-// Returns null when there is no agent group yet.
-export async function groupId() {
-  const { [GROUP_KEY]: stored } = await api().storage.session.get(GROUP_KEY);
-  if (await groupExists(stored)) return stored;
-  const [found] = await api().tabGroups.query({ title: GROUP_TITLE });
-  if (found) {
-    await api().storage.session.set({ [GROUP_KEY]: found.id });
-    return found.id;
-  }
-  if (stored != null) await api().storage.session.remove(GROUP_KEY);
+// ------------------------------------------------------------ tab state
+
+async function loadState() {
+  const { [STATE_KEY]: s } = await api().storage.session.get(STATE_KEY);
+  return { created: [...(s?.created || [])], driven: [...(s?.driven || [])], last: s?.last ?? null };
+}
+
+async function saveState(s) {
+  await api().storage.session.set({ [STATE_KEY]: s });
+}
+
+// Serializes read-modify-write of the state.
+let chain = Promise.resolve();
+function update(fn) {
+  const run = async () => {
+    const s = await loadState();
+    fn(s);
+    await saveState(s);
+  };
+  chain = chain.then(run, run);
+  return chain;
+}
+
+const add = (list, id) => (list.includes(id) ? list : list.push(id));
+
+export const markCreated = (tabId) => update((s) => add(s.created, tabId));
+export const markDriven = (tabId) => update((s) => add(s.driven, tabId));
+export const markUsed = (tabId) => update((s) => (s.last = tabId));
+
+// tabs.onRemoved: forget the tab.
+export function onTabRemoved(tabId) {
+  return update((s) => {
+    s.created = s.created.filter((id) => id !== tabId);
+    s.driven = s.driven.filter((id) => id !== tabId);
+    if (s.last === tabId) s.last = null;
+  });
+}
+
+export async function isCreated(tabId) {
+  return (await loadState()).created.includes(tabId);
+}
+
+// ------------------------------------------------------------ the check
+
+// Why Clearcart may not use this tab's current page, or null. A blank tab
+// Clearcart opened itself may be navigated (blankOk), nothing else.
+function hiddenReason(tab, settings, { blankOk = false } = {}) {
+  const url = tab.url || tab.pendingUrl || "";
+  if (blankOk && BLANK.test(url)) return null;
+  const why = blockReason(url, settings);
+  if (why) return why;
+  if (flagOf(tab.id)) return "served from a local address";
   return null;
 }
 
-// Puts a tab into the agent group, creating the group if needed.
-async function addToGroup(tab) {
-  const existing = await groupId();
-  if (existing != null) {
-    await api().tabs.group({ groupId: existing, tabIds: [tab.id] });
-    return existing;
+async function getTab(tabId) {
+  try {
+    return await api().tabs.get(tabId);
+  } catch {
+    throw new BridgeError(ERR.NO_TAB, `no tab ${tabId}`);
   }
-  const id = await api().tabs.group({ tabIds: [tab.id], createProperties: { windowId: tab.windowId } });
-  await api().tabGroups.update(id, { title: GROUP_TITLE, color: GROUP_COLOR });
-  await api().storage.session.set({ [GROUP_KEY]: id });
+}
+
+// The tab the user is looking at: the active tab of the last focused window.
+export async function activeTab() {
+  const [tab] = await api().tabs.query({ active: true, lastFocusedWindow: true });
+  return tab || null;
+}
+
+// Every tab Clearcart may see: the user's tabs on allowed pages, and the
+// tabs it opened (blank ones too). Blocked tabs are left out entirely.
+export async function tabsContext() {
+  const [all, settings, state, active] = await Promise.all([api().tabs.query({}), loadSettings(), loadState(), activeTab()]);
+  const tabs = [];
+  for (const t of all) {
+    const mine = state.created.includes(t.id);
+    if (hiddenReason(t, settings, { blankOk: mine })) continue;
+    tabs.push({
+      tabId: t.id,
+      title: String(t.title || "").slice(0, TITLE_MAX),
+      url: originPath(t.url || t.pendingUrl || ""),
+      active: !!active && active.id === t.id,
+      openedByClearcart: mine,
+    });
+  }
+  return { tabs };
+}
+
+// The tab a call acts on. Default: the tab Clearcart used last, else the
+// user's active tab. `nav` lets a navigate call reach a tab Clearcart opened
+// or drove even when it sits on a blocked page (that is how the sweep sends
+// it back); the user's own tabs on blocked pages are never reachable.
+export async function resolveTab(tabId, { nav = false } = {}) {
+  if (tabId != null && !Number.isInteger(tabId)) throw new BridgeError(ERR.BAD_REQUEST, "tabId must be an integer");
+  const state = await loadState();
+  let tab = null;
+  if (tabId != null) tab = await getTab(tabId);
+  else {
+    if (state.last != null) tab = await api().tabs.get(state.last).catch(() => null);
+    if (!tab) tab = await activeTab();
+    if (!tab) throw new BridgeError(ERR.NO_TAB, "no open tab; call tabs_create");
+  }
+  const mine = state.created.includes(tab.id);
+  const touched = mine || state.driven.includes(tab.id);
+  if (!(nav && touched) && hiddenReason(tab, await loadSettings(), { blankOk: mine && nav })) {
+    // No origin in the message: a blocked tab of the user's stays private.
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Clearcart does not use it`);
+  }
+  return tab.id;
+}
+
+// Every call that touches a page: resolve the tab and check its current page
+// again (browse mode, blocked sites, connected address) right before acting.
+// `peek` (page_context) checks without making it the default tab.
+export async function resolveAllowedTab(tabId, { peek = false } = {}) {
+  const id = await resolveTab(tabId);
+  const tab = await api().tabs.get(id);
+  await assertAllowed(tab.url);
+  assertNetSafe(id);
+  if (!peek) await markUsed(id);
   return id;
 }
 
-// Forget the stored id when Chrome removes the group (last tab closed).
-export async function onGroupRemoved(group) {
-  const { [GROUP_KEY]: stored } = await api().storage.session.get(GROUP_KEY);
-  if (group && stored === group.id) await api().storage.session.remove(GROUP_KEY);
-}
-
-export async function tabsContext() {
-  const gid = await groupId();
-  const tabs = gid == null ? [] : await api().tabs.query({ groupId: gid });
-  return { tabs: tabs.map((t) => ({ ...info(t), active: !!t.active })), groupId: gid };
-}
-
-// Given id must be in the agent group; default is the group's active tab
-// (or its first tab if none of them is active).
-export async function resolveTab(tabId) {
-  const gid = await groupId();
-  if (gid == null) throw new BridgeError(ERR.NO_TAB, "no agent tabs; call tabs_create first");
-  if (tabId != null) {
-    if (!Number.isInteger(tabId)) throw new BridgeError(ERR.BAD_REQUEST, "tabId must be an integer");
-    let tab;
-    try {
-      tab = await api().tabs.get(tabId);
-    } catch {
-      throw new BridgeError(ERR.NO_TAB, `no tab ${tabId}`);
-    }
-    if (tab.groupId !== gid) throw new BridgeError(ERR.NO_TAB, `tab ${tabId} is not an agent tab`);
-    return tab.id;
-  }
-  const tabs = await api().tabs.query({ groupId: gid });
-  const pick = tabs.find((t) => t.active) || tabs[0];
-  if (!pick) throw new BridgeError(ERR.NO_TAB, "no agent tabs; call tabs_create first");
-  return pick.id;
-}
+// ------------------------------------------------------------ navigation
 
 // Resolves once the tab reaches status "complete" after `start()` runs.
 // The listener is installed before start() so no event is missed. If no
@@ -143,10 +222,16 @@ export function navigateAndWait(tabId, start, timeoutMs = NAV_TIMEOUT_MS) {
   });
 }
 
+// Opens a tab in the background, right after the user's current tab, so the
+// user stays where they are.
 export async function tabsCreate({ url } = {}) {
   if (url != null) await assertAllowed(url);
-  const tab = await api().tabs.create({ url: "about:blank", active: true });
-  await addToGroup(tab);
+  const cur = await activeTab();
+  const props = { url: "about:blank", active: false };
+  if (cur) Object.assign(props, { windowId: cur.windowId, index: cur.index + 1 });
+  const tab = await api().tabs.create(props);
+  await markCreated(tab.id);
+  await markUsed(tab.id);
   if (url != null) {
     await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
     assertNetSafe(tab.id);
@@ -156,7 +241,7 @@ export async function tabsCreate({ url } = {}) {
 
 export async function navigate({ tabId, url } = {}) {
   if (typeof url !== "string" || !url) throw new BridgeError(ERR.BAD_REQUEST, "url is required");
-  const id = await resolveTab(tabId);
+  const id = await resolveTab(tabId, { nav: true });
   let start;
   const history = (fn, dir) => async () => {
     try {
@@ -172,6 +257,9 @@ export async function navigate({ tabId, url } = {}) {
     await assertAllowed(url);
     start = () => api().tabs.update(id, { url });
   }
+  // Before it moves: if it lands somewhere blocked, the sweep must see it.
+  await markDriven(id);
+  await markUsed(id);
   await navigateAndWait(id, start);
   const tab = await api().tabs.get(id);
   // History or a redirect can lead to a site that is not allowed; report it
@@ -187,19 +275,54 @@ export async function navigate({ tabId, url } = {}) {
   return info(tab);
 }
 
-export async function tabInfo({ tabId } = {}) {
+// Closes a tab, only one Clearcart opened.
+export async function tabsClose({ tabId } = {}) {
+  if (!Number.isInteger(tabId)) throw new BridgeError(ERR.BAD_REQUEST, "tabId must be an integer");
+  if (!(await isCreated(tabId))) throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tabId} is one of the user's tabs; Clearcart only closes tabs it opened`);
+  await getTab(tabId);
+  await api().tabs.remove(tabId);
+  return { ok: true };
+}
+
+// Brings a tab to the front. Only for when the user asks to see it.
+export async function tabsActivate({ tabId } = {}) {
   const id = await resolveTab(tabId);
+  const tab = await api().tabs.update(id, { active: true });
+  if (tab?.windowId != null) await api().windows?.update(tab.windowId, { focused: true }).catch(() => {});
+  return { ok: true, tabId: id };
+}
+
+// Full URL of a tab Clearcart may see. INTERNAL: the agent server's pay flow
+// and unlock gate, never Claude.
+export async function tabInfo({ tabId } = {}) {
+  const id = await resolveTab(tabId, { nav: true });
   return info(await api().tabs.get(id));
 }
 
-// For the worker: resolve an agent tab (always one in the Clearcart group)
-// and check its current page is allowed (allowlist, or open web minus the
-// blocklist, and not served from a local address: netguard.js) before any
-// CDP input or page call touches it.
-export async function resolveAllowedTab(tabId) {
-  const id = await resolveTab(tabId);
-  const tab = await api().tabs.get(id);
-  await assertAllowed(tab.url);
-  assertNetSafe(id);
-  return id;
+// The tabs Clearcart opened or drove, with full URLs, blocked ones included.
+// INTERNAL: the agent server's tab sweep. The user's other tabs never appear.
+export async function agentTabs() {
+  const state = await loadState();
+  const ids = [...new Set([...state.created, ...state.driven])];
+  const tabs = [];
+  for (const id of ids) {
+    const t = await api().tabs.get(id).catch(() => null);
+    if (t) tabs.push({ ...info(t), openedByClearcart: state.created.includes(id) });
+  }
+  return { tabs };
+}
+
+// Earlier versions kept agent tabs in a "Clearcart" tab group. On install or
+// update, take those tabs out of it (the group goes away with its last tab)
+// without closing any of them.
+export async function ungroupLegacy() {
+  const groups = api().tabGroups;
+  if (!groups?.query) return 0;
+  let n = 0;
+  for (const g of await groups.query({ title: LEGACY_GROUP_TITLE })) {
+    const ids = (await api().tabs.query({ groupId: g.id })).map((t) => t.id);
+    if (ids.length) await api().tabs.ungroup(ids);
+    n += ids.length;
+  }
+  return n;
 }

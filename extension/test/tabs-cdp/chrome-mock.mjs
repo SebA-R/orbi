@@ -74,8 +74,9 @@ export function installChrome({ local = {}, session = {}, autoComplete = true } 
     tabs: {
       onUpdated,
       onRemoved,
-      async create({ url = "about:blank", active = true, windowId = 1 } = {}) {
-        const tab = { id: nextTab++, url, title: "", status: "complete", active, windowId, groupId: -1 };
+      async create({ url = "about:blank", active = true, windowId = 1, index } = {}) {
+        calls.push(["tabs.create", { url, active, windowId, index }]);
+        const tab = { id: nextTab++, url, title: "", status: "complete", active, windowId, groupId: -1, index: index ?? tabs.size };
         if (active) for (const t of tabs.values()) if (t.windowId === windowId) t.active = false;
         tabs.set(tab.id, tab);
         history.set(tab.id, { back: [], fwd: [] });
@@ -89,13 +90,16 @@ export function installChrome({ local = {}, session = {}, autoComplete = true } 
       },
       async query(q = {}) {
         return [...tabs.values()]
-          .filter((t) => Object.entries(q).every(([k, v]) => t[k] === v))
+          .filter((t) => Object.entries(q).every(([k, v]) => k === "lastFocusedWindow" || t[k] === v))
           .map(snapshot);
       },
       async update(id, { url, active }) {
         const t = tabs.get(id);
         if (!t) throw new Error(`No tab with id: ${id}.`);
-        if (active) t.active = true;
+        if (active) {
+          for (const x of tabs.values()) if (x.windowId === t.windowId) x.active = false;
+          t.active = true;
+        }
         if (url) {
           const h = history.get(id);
           h.back.push(t.url);
@@ -129,6 +133,14 @@ export function installChrome({ local = {}, session = {}, autoComplete = true } 
         }
         for (const id of ids) tabs.get(id).groupId = gid;
         return gid;
+      },
+      async ungroup(ids) {
+        for (const id of Array.isArray(ids) ? ids : [ids]) {
+          const t = tabs.get(id);
+          const gid = t.groupId;
+          t.groupId = -1;
+          if (![...tabs.values()].some((x) => x.groupId === gid)) groups.delete(gid);
+        }
       },
       async remove(id) {
         const t = tabs.get(id);
