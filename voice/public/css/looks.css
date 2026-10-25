@@ -1,6 +1,68 @@
 /* Design variants for the voice console, picked with ?look=<name> (see looks.html).
    Each look only restyles the shared markup; behavior, labels and live regions are identical.
-   The default look ("aurora") is console.css on its own. --level (0..1) is set on <body> every frame. */
+   The default look ("canvas") is console.css on its own. --level (0..1) is set on <body> by app.js. */
+
+/* Parts only the canvas look uses. */
+[data-look] .orb-ripple,
+[data-look] .orb-core::before { display: none; }
+
+/* ======================================================================
+   AURORA: the previous default. Four-color spectrum orb, iridescent glass
+   core and a spinning glow around the screen edge.
+   ====================================================================== */
+[data-look="aurora"] {
+  --s1: #2e8bff; --s2: #b65cff; --s3: #ff4d7a; --s4: #ffa14a;
+  --spectrum: conic-gradient(from 0deg, var(--s1), var(--s2), var(--s3), var(--s4), var(--s1));
+  --core-hi: #ffffff; --core-mid: #eef0f5; --core-lo: #d9dbe2; --core-shadow: rgb(30 34 60 / .16);
+  --aura-strength: .55; --sheen-opacity: .14; --sheen-blend: soft-light;
+}
+@media (prefers-color-scheme: dark) {
+  [data-look="aurora"]:not([data-theme="light"]) {
+    --core-hi: #3a3a42; --core-mid: #16161b; --core-lo: #050506; --core-shadow: rgb(0 0 0 / .6);
+    --aura-strength: .75; --sheen-opacity: .28; --sheen-blend: screen;
+  }
+}
+[data-look="aurora"][data-theme="dark"] {
+  --core-hi: #3a3a42; --core-mid: #16161b; --core-lo: #050506; --core-shadow: rgb(0 0 0 / .6);
+  --aura-strength: .75; --sheen-opacity: .28; --sheen-blend: screen;
+}
+[data-look="aurora"] .orb-aura { inset: -14%; filter: blur(34px) saturate(1.1); opacity: calc(var(--aura-strength) * .45); }
+[data-look="aurora"] .orb-ring {
+  inset: 2%; opacity: .55;
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+}
+[data-look="aurora"] .orb-core {
+  inset: 5%;
+  background: radial-gradient(circle at 34% 28%, var(--core-hi) 0%, var(--core-mid) 46%, var(--core-lo) 100%);
+  box-shadow: 0 24px 60px -20px var(--core-shadow), inset 0 1px 1px rgb(255 255 255 / .5), inset 0 -12px 30px rgb(0 0 0 / .06);
+}
+[data-look="aurora"] .orb-sheen { filter: blur(44px); opacity: var(--sheen-opacity); mix-blend-mode: var(--sheen-blend); }
+[data-look="aurora"] body[data-ui="listening"] .orb-aura { opacity: var(--aura-strength); }
+[data-look="aurora"] body[data-ui="listening"] .orb-ring { opacity: 1; }
+[data-look="aurora"] body[data-ui="thinking"] .orb-aura { opacity: calc(var(--aura-strength) * .7); }
+[data-look="aurora"] body[data-ui="thinking"] .orb-ring { opacity: .8; }
+[data-look="aurora"] body[data-ui="thinking"] .orb-sheen { opacity: .5; }
+[data-look="aurora"] body[data-ui="speaking"] .orb-aura { opacity: calc(var(--aura-strength) * .85); }
+[data-look="aurora"] body[data-ui="speaking"] .orb-ring { opacity: .9; }
+@property --edge-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+[data-look="aurora"] .edge-glow {
+  box-shadow: none;
+  background: conic-gradient(from var(--edge-angle), var(--s1), var(--s2), var(--s3), var(--s4), var(--s1));
+  -webkit-mask:
+    linear-gradient(to right, #000, transparent 16px, transparent calc(100% - 16px), #000),
+    linear-gradient(to bottom, #000, transparent 16px, transparent calc(100% - 16px), #000);
+  mask:
+    linear-gradient(to right, #000, transparent 16px, transparent calc(100% - 16px), #000),
+    linear-gradient(to bottom, #000, transparent 16px, transparent calc(100% - 16px), #000);
+}
+[data-look="aurora"] body[data-ui="listening"] .edge-glow { opacity: .6; }
+@media (prefers-reduced-motion: no-preference) {
+  [data-look="aurora"] body[data-ui="idle"] .orb-core { animation: breathe 6s ease-in-out infinite; }
+  [data-look="aurora"] body[data-ui="listening"] .edge-glow { animation: edge-spin 4s linear infinite; }
+  @keyframes breathe { 50% { transform: scale(1.025); } }
+  @keyframes edge-spin { to { --edge-angle: 360deg; } }
+}
 
 /* ======================================================================
    HALO: monochrome ring and dot. Color appears only while listening.
@@ -30,8 +92,8 @@
 [data-look="halo"] body[data-ui="thinking"] .orb-core { inset: 42%; opacity: .5; }
 [data-look="halo"] body[data-ui="speaking"] .orb-ring { opacity: .5; }
 [data-look="halo"] body[data-ui="speaking"] .orb-core { inset: 34%; }
-[data-look="halo"] .edge-glow { background: var(--accent); }
-[data-look="halo"] body[data-ui="listening"] .edge-glow { opacity: .3; }
+[data-look="halo"] .edge-glow { --edge-a: color-mix(in srgb, var(--accent) 45%, transparent); --edge-b: transparent; }
+[data-look="halo"] body[data-ui="listening"] .edge-glow { opacity: .5; animation: none; }
 @media (prefers-reduced-motion: no-preference) {
   [data-look="halo"] .orb::before,
   [data-look="halo"] .orb::after {
@@ -93,9 +155,7 @@
 [data-look="liquid"] body[data-ui="listening"] .orb-core { filter: saturate(1.2) brightness(1.05); }
 [data-look="liquid"] body[data-ui="thinking"] .orb-sheen { opacity: .9; }
 [data-look="liquid"] body[data-ui="speaking"] .orb-sheen { opacity: calc(.5 + var(--level, 0) * .5); }
-[data-look="liquid"] .edge-glow {
-  background: conic-gradient(from var(--edge-angle), var(--liq-1), var(--liq-2), var(--liq-3), var(--liq-2), var(--liq-1));
-}
+[data-look="liquid"] .edge-glow { --edge-a: rgb(90 162 255 / .5); --edge-b: rgb(20 80 255 / .25); }
 @media (prefers-reduced-motion: no-preference) {
   [data-look="liquid"] .orb-core::after { animation: liquid-drift 9s ease-in-out infinite alternate; }
   [data-look="liquid"] body[data-ui="thinking"] .orb-core::after { animation-duration: 2.6s; }
@@ -141,8 +201,8 @@
   background: linear-gradient(180deg, var(--s1), var(--s2));
 }
 [data-look="bars"] body[data-ui="thinking"] .orb-bars i { opacity: .6; }
-[data-look="bars"] .edge-glow { background: linear-gradient(90deg, var(--s1), var(--s2)); }
-[data-look="bars"] body[data-ui="listening"] .edge-glow { opacity: .4; }
+[data-look="bars"] .edge-glow { --edge-a: color-mix(in srgb, var(--s1) 45%, transparent); }
+[data-look="bars"] body[data-ui="listening"] .edge-glow { opacity: .6; animation: none; }
 @media (prefers-reduced-motion: no-preference) {
   [data-look="bars"] body[data-ui="idle"] .orb-bars i { animation: bars-idle 3.2s ease-in-out infinite; }
   [data-look="bars"] body[data-ui="thinking"] .orb-bars i { animation: bars-wave 1.1s ease-in-out infinite; }
@@ -181,12 +241,10 @@
 [data-look="ambient"] body[data-ui="listening"]::before { opacity: calc(.5 + var(--level, 0) * .35); }
 [data-look="ambient"] body[data-ui="thinking"]::before { opacity: .34; }
 [data-look="ambient"] body[data-ui="speaking"]::before { opacity: calc(.32 + var(--level, 0) * .35); }
-[data-look="ambient"] .bar,
+[data-look="ambient"] .bar { z-index: 2; }
 [data-look="ambient"] main { position: relative; z-index: 1; }
 [data-look="ambient"] .edge-glow { display: none; }
 
-[data-look="ambient"] main { max-width: 56rem; }
-[data-look="ambient"] .stage { padding-top: clamp(1.5rem, 9vh, 6rem); }
 [data-look="ambient"] .talk { --size: clamp(112px, 18vh, 152px); }
 [data-look="ambient"] .orb-aura,
 [data-look="ambient"] .orb-ring { display: none; }
@@ -201,7 +259,6 @@
     0 24px 50px -24px rgb(0 0 0 / .3);
 }
 [data-look="ambient"] .orb-sheen { opacity: .45; mix-blend-mode: normal; filter: blur(22px); }
-[data-look="ambient"] .status-line { margin-top: 1.75rem; }
 [data-look="ambient"] .captions { max-width: 48rem; }
 [data-look="ambient"] .caption-user { max-width: 40rem; font-size: 1.25rem; }
 [data-look="ambient"] .caption-agent {
