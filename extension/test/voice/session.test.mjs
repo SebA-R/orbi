@@ -130,8 +130,8 @@ test("two tabs pressing at once share one turn: one offscreen document, one STT 
   assert.equal(v.controller.state, "listening");
   relay.onMessage({ type: RT.PTT_STOP }, { tab: { id: 1 }, frameId: 0 });
   await relay.idle();
-  v.stts[0].h.onFinal("buy the advil");
-  assert.deepEqual(v.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "buy the advil" }]);
+  v.stts[0].h.onFinal("buy the blue mug");
+  assert.deepEqual(v.agent.sent.filter((m) => m.type === "user_text"), [{ type: "user_text", text: "buy the blue mug" }]);
 });
 
 test("worker restart mid-turn: the new worker asks the open document for its state and keeps other tabs quiet", async () => {
@@ -186,7 +186,7 @@ test("standby moved ends a hands-free latch too, and its held phrases are never 
   const emitted = [];
   const v = voice((m) => emitted.push(m));
   await v.controller.start({ latch: true });
-  v.stts[0].h.onFinal("add the advil"); // held until the latch ends
+  v.stts[0].h.onFinal("add the blue mug"); // held until the latch ends
   v.controller.onAgentMessage({ type: "standby", reason: "moved", text: "Clearcart moved to another window." });
   assert.equal(v.controller.listening, false);
   assert.equal(v.controller.latched, false);
@@ -207,7 +207,7 @@ test("standby stale: waiting for a reply ends, but a newer turn already listenin
   const v = voice();
   await v.controller.start();
   v.controller.stop();
-  v.stts[0].h.onFinal("buy the advil"); // sent, but the server dropped it
+  v.stts[0].h.onFinal("buy the blue mug"); // sent, but the server dropped it
   assert.equal(v.controller.state, "thinking");
   v.controller.onAgentMessage({ type: "standby", reason: "stale", text: "Not sent." });
   assert.equal(v.controller.state, "idle", "not stuck thinking, so other tabs are not kept quiet");

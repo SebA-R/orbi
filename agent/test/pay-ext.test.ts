@@ -15,7 +15,7 @@ const getCard = async () => ({ ...CARD });
 function confirmed(total = "$14.27", tab: number | null = 7, extra: Partial<Confirmation> = {}): PayState {
   return {
     lastTabId: tab,
-    confirmation: { item: "Advil 50 count", quantity: 1, total, state: "confirmed", confirmedAt: Date.now(), tabId: tab, ...extra },
+    confirmation: { item: "Blue mug", quantity: 1, total, state: "confirmed", confirmedAt: Date.now(), tabId: tab, ...extra },
     cardFieldsLive: false,
   };
 }
@@ -97,7 +97,7 @@ test("happy path: fill_payment, press place order through the unlock, receipt", 
   const s = fakeCheckout();
   const state = confirmed();
   const r = await payNowExt(state, { ...fast, bridge: s.bridge as any });
-  assert.deepEqual(r, { ok: true, last4: "4242", receipt: { item: "Advil 50 count", total: "$14.27", last4: "4242" } });
+  assert.deepEqual(r, { ok: true, last4: "4242", receipt: { item: "Blue mug", total: "$14.27", last4: "4242" } });
   noCard(r);
   assert.equal(state.cardFieldsLive, false);
   assert.equal(state.confirmation?.state, "used");
@@ -265,7 +265,7 @@ test("a yes given on another tab is refused", async () => {
 test("a cart that changed since the yes is refused, an unchanged one pays", async () => {
   const page = "Shipping\nOrder total $14.27\nPlace order · $14.27";
   const s = fakeCheckout();
-  const changed = confirmed("$14.27", 7, { cart: cartLines("1 × Advil 50 count: $9.99\n" + page) });
+  const changed = confirmed("$14.27", 7, { cart: cartLines("1 × Blue mug: $9.99\n" + page) });
   const r = await payNowExt(changed, { ...fast, bridge: s.bridge as any });
   assert.equal(r.ok, false);
   assert.match((r as any).error, /cart changed/);
