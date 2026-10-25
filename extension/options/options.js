@@ -14,7 +14,7 @@
 // - Text that has to be checked first (allowed sites, blocked sites, the
 //   agent address) saves only with the Save button, after validation.
 // Danger mode has its own two-press switch (lib/danger-toggle.js).
-import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, saveSettings, normalizeAgentUrl, parseOriginLines, speakRepliesNote } from "../lib/settings.js";
+import { DEFAULTS, HOTKEYS, SPEED_MIN, SPEED_MAX, loadSettings, localModels, saveSettings, normalizeAgentUrl, normalizeLocalBaseUrl, normalizeLocalModel, parseOriginLines, speakRepliesNote } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/blocklist.js";
 import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
@@ -29,6 +29,10 @@ const els = {
   grant: $("grant-mic"), micStatus: $("mic-status"), reset: $("reset"),
   allowlist: $("allowlist"), blocklist: $("blocklist"), blockErrors: $("blocklist-errors"), restore: $("restore-blocklist"),
   setupState: $("setup-state"), agentState: $("agent-state"),
+  localUrl: $("local-base-url"), localUrlError: $("local-base-url-error"),
+  localModel: $("local-model"), localModelError: $("local-model-error"),
+  localPick: $("local-model-pick"), localPickLine: $("local-pick-line"),
+  localTest: $("local-test"), localState: $("local-state"), localStatus: $("local-test-status"),
 };
 
 for (const value of Object.keys(HOTKEYS)) els.hotkey.append(new Option(keyName(value), value));
@@ -86,12 +90,16 @@ function fill(s) {
   fillSimple(s);
   danger.fill(s);
   els.agentUrl.value = s.agentUrl;
+  els.localUrl.value = s.localBaseUrl;
+  els.localModel.value = s.localModel;
   els.allowlist.value = s.allowlist.join("\n");
   els.blocklist.value = s.blocklist.join("\n");
 }
 
 // Whether the text fields differ from what is stored (they save with Save).
 const textDirty = (s) => els.agentUrl.value.trim() !== s.agentUrl
+  || els.localUrl.value.trim() !== s.localBaseUrl
+  || els.localModel.value.trim() !== s.localModel
   || els.allowlist.value.trim() !== s.allowlist.join("\n")
   || els.blocklist.value.trim() !== s.blocklist.join("\n").trim();
 
@@ -130,6 +138,7 @@ els.form.addEventListener("submit", async (e) => {
     return;
   }
   els.agentUrl.removeAttribute("aria-invalid");
+  if (!checkLocalFields()) return;
   const allow = parseOriginLines(els.allowlist.value);
   els.allowlist.removeAttribute("aria-invalid");
   if (allow.bad.length) {
@@ -160,6 +169,8 @@ els.form.addEventListener("submit", async (e) => {
     allowlist: allow.origins,
     blocklist: block.lines,
     agentUrl: url,
+    localBaseUrl: normalizeLocalBaseUrl(els.localUrl.value),
+    localModel: normalizeLocalModel(els.localModel.value),
   });
   fill(saved);
   notify(saved);
@@ -170,6 +181,7 @@ els.form.addEventListener("submit", async (e) => {
 els.reset.addEventListener("click", async () => {
   const saved = await saveSettings({
     ...simpleDefaults(), agentUrl: DEFAULTS.agentUrl,
+    localBaseUrl: DEFAULTS.localBaseUrl, localModel: DEFAULTS.localModel,
     allowlist: [...DEFAULTS.allowlist], blocklist: [...DEFAULTS.blocklist],
     dangerMode: DEFAULTS.dangerMode,
   });
@@ -186,6 +198,82 @@ els.restore.addEventListener("click", () => {
   const mine = parseBlockLines(els.blocklist.value).entries.map((e) => e.text).filter((t) => !ours.has(t));
   els.blocklist.value = [...SUGGESTED_BLOCKLIST, ...(mine.length ? ["", "# Your sites", ...mine] : [])].join("\n");
   els.form.requestSubmit();
+});
+
+// Local model: the address and model name are checked inline (the address
+// may only be on this computer) and save with Save or Test connection.
+function fieldError(input, errorEl, text) {
+  errorEl.hidden = !text;
+  errorEl.textContent = text || "";
+  if (text) input.setAttribute("aria-invalid", "true");
+  else input.removeAttribute("aria-invalid");
+}
+function checkLocalFields() {
+  const urlOk = !!normalizeLocalBaseUrl(els.localUrl.value);
+  const modelOk = !!normalizeLocalModel(els.localModel.value);
+  fieldError(els.localUrl, els.localUrlError, urlOk ? "" : "Use an http:// or https:// address on this computer: localhost, 127.0.0.1 or [::1].");
+  fieldError(els.localModel, els.localModelError, modelOk ? "" : "Use the model name only: letters, numbers and . _ : / - characters.");
+  if (urlOk && modelOk) return true;
+  (urlOk ? els.localModel : els.localUrl).focus();
+  say(els.status, urlOk ? "Fix the local model name first." : "Fix the local server address first.");
+  return false;
+}
+els.localUrl.addEventListener("change", () => {
+  if (normalizeLocalBaseUrl(els.localUrl.value)) fieldError(els.localUrl, els.localUrlError, "");
+});
+els.localModel.addEventListener("change", () => {
+  if (normalizeLocalModel(els.localModel.value)) fieldError(els.localModel, els.localModelError, "");
+});
+
+// The installed models from the agent server's GET /local-models. A server
+// without it (404) leaves just the text field.
+function showPicker(models, current) {
+  els.localPickLine.hidden = !models.length;
+  els.localPick.replaceChildren(
+    new Option(models.includes(current) ? "Choose a model" : "Choose an installed model", ""),
+    ...models.map((m) => new Option(m, m)),
+  );
+  els.localPick.value = models.includes(current) ? current : "";
+}
+els.localPick.addEventListener("change", async () => {
+  const name = normalizeLocalModel(els.localPick.value);
+  if (!name) return;
+  els.localModel.value = name;
+  fieldError(els.localModel, els.localModelError, "");
+  const saved = await saveSettings({ localModel: name });
+  notify(saved);
+  say(els.status, `Saved. Local model: ${name}.`);
+});
+let localRun = 0;
+async function refreshLocal() {
+  const run = ++localRun;
+  const s = await loadSettings();
+  const result = await localModels(s.agentUrl);
+  if (run !== localRun) return result;
+  showPicker(result.models, s.localModel);
+  if (result.state === "ok") tag(els.localState, "ok", "Connected");
+  else if (result.state === "down") tag(els.localState, "todo", "Not reachable");
+  else tag(els.localState, "wait", "Can't check");
+  return result;
+}
+els.localTest.addEventListener("click", async () => {
+  if (!checkLocalFields()) return;
+  const saved = await saveSettings({ localBaseUrl: normalizeLocalBaseUrl(els.localUrl.value), localModel: normalizeLocalModel(els.localModel.value) });
+  fill(saved);
+  notify(saved);
+  tag(els.localState, "wait", "Checking");
+  els.localStatus.textContent = "";
+  // Give the worker a moment to send the saved address to the agent server.
+  await new Promise((r) => setTimeout(r, 400));
+  const result = await refreshLocal();
+  const msg = result.state === "missing"
+    ? "This agent server can't check local models yet. Type the model name above."
+    : result.state === "down"
+      ? `Local model not reachable at ${saved.localBaseUrl}. Check that Ollama or LM Studio is running.`
+      : !result.models.length ? "Connected, but the local server lists no models."
+        : result.models.includes(saved.localModel) ? `Connected. ${saved.localModel} is ready.`
+          : `Connected, but ${saved.localModel} is not installed. Choose one of the installed models.`;
+  say(els.localStatus, msg);
 });
 
 async function showMicState() {
@@ -309,6 +397,7 @@ fill(await loadSettings());
 await showMicState();
 refreshSetup();
 refreshMemory();
+refreshLocal();
 // The popup's "Blocked sites" link and the setup page's talk key link land here.
 const target = { "#blocked-sites": els.blocklist, "#hotkey": els.hotkey }[location.hash];
 if (target) { target.scrollIntoView({ block: "center" }); target.focus(); }
