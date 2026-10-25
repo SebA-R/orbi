@@ -9,6 +9,8 @@
   --soft: #3a3a3f;
   --line: #e3e4e8;
   --hint: #6e6e76;
+  /* "Hold Space to talk": lighter than the body text, still 4.5:1 on --bg. */
+  --talk: #707079;
   --key: #ffffff;
   --key-line: #d6d6dc;
   --shadow: 0 1px 2px rgba(20, 22, 40, .05), 0 8px 28px rgba(20, 22, 40, .06);
@@ -17,6 +19,12 @@
   --btn: #1d1d1f;
   --btn-fg: #ffffff;
   --error: #a3221a;
+  /* Karaoke inks, as in the subtitle card: said words lighter, coming darker. */
+  --k-said: #48484e;
+  --k-next: #1d1d1f;
+  --you-bg: #e8e8ed;
+  --you-fg: #1d1d1f;
+  --glide: cubic-bezier(.32, .72, 0, 1);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -27,6 +35,7 @@
     --soft: #c9c9d2;
     --line: #34343c;
     --hint: #85858f;
+    --talk: #7f7f89;
     --key: #2e2e36;
     --key-line: #4a4a54;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px rgba(0, 0, 0, .35);
@@ -35,6 +44,10 @@
     --btn: #ececf1;
     --btn-fg: #16161a;
     --error: #ff9a90;
+    --k-said: #ffffff;
+    --k-next: #d4d4d9;
+    --you-bg: #2e2e36;
+    --you-fg: #ececf1;
   }
 }
 
@@ -75,10 +88,14 @@ main {
 @keyframes ring-turn { to { --ring-a: 360deg; } }
 @keyframes orb-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
 .orb {
-  position: relative; display: block; flex: none; width: 128px; height: 128px; margin-bottom: 48px; border-radius: 50%;
+  --orb: 128px;
+  position: relative; display: block; flex: none; width: var(--orb); height: var(--orb); border-radius: 50%; transform-origin: 0 0;
   background: radial-gradient(circle at 34% 28%, #ffffff 0%, #ffd9e6 18%, #c9b8ff 42%, #5e8bff 72%, #4fd1ff 100%);
   box-shadow: 0 18px 48px rgba(94, 139, 255, .35), inset 0 -10px 24px rgba(60, 40, 140, .25);
 }
+/* On the error page the orb sits straight in main; on the new tab page it
+   is in the conversation row. */
+main > .orb { margin-bottom: 48px; }
 .orb[data-state="idle"] { filter: saturate(.75); }
 .orb:not([data-state="idle"]) { animation: orb-breathe 1.6s ease-in-out infinite; }
 .orb:not([data-state="idle"])::after {
@@ -94,14 +111,90 @@ main {
 /* With the face inside, the orb is its frame: the face (content/orb-face.js)
    paints, breathes and pulses at hero size and wears its own spectrum ring. */
 .orb:has(> .ccf) {
-  --ccf-size: 128px;
+  --ccf-size: var(--orb);
   --ccf-glow: 0 18px 48px rgba(94, 139, 255, .35);
   display: grid; place-items: center; background: none; box-shadow: none; filter: none; animation: none;
 }
 /* The face's ring replaces the frame's ring. */
 .orb:has(> .ccf)::after { content: none; }
-/* Search: one capsule, the icon is its submit button. */
-@keyframes cap-turn { to { --ring-a: 360deg; } }
+/* The conversation (convo.js). At rest the orb is centred above the dock.
+   While talking it glides left; Orbi's bubble grows out of it on the
+   right, tail at the orb, and the user's bubble sits under it, aligned
+   right, tail on the right. The bubble row is reserved from the first
+   moment, so nothing jumps when the bubbles come in. */
+.convo { width: 100%; display: flex; flex-direction: column; gap: 18px; }
+.row1 { display: flex; align-items: center; justify-content: center; gap: 24px; }
+.row2 { display: none; justify-content: flex-end; min-height: 48px; align-items: flex-start; }
+main[data-layout="active"] .row1 { justify-content: flex-start; }
+main[data-layout="active"] .row2 { display: flex; }
+.obub {
+  display: none; position: relative; flex: 1; min-width: 0; padding: 18px 22px; border-radius: 24px;
+  background: var(--field); border: 1px solid var(--line); box-shadow: var(--shadow); text-align: left;
+  opacity: 0; transform: translateX(-14px) scale(.96); transform-origin: left center;
+  transition: opacity .32s ease-out, transform .42s var(--glide);
+}
+.obub::before {
+  content: ""; position: absolute; left: -8px; top: 50%; width: 16px; height: 16px; margin-top: -8px;
+  background: var(--field); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  border-radius: 0 0 0 4px; transform: rotate(45deg);
+}
+main[data-layout="active"] .obub { display: block; }
+main[data-orbi="on"] .obub { opacity: 1; transform: none; }
+.rep { position: relative; min-height: 1.36em; font-size: 21px; line-height: 1.36; font-weight: 500; letter-spacing: -.018em; color: var(--fg); }
+main[data-mode="dots"] .rep .txt { visibility: hidden; }
+.dots { position: absolute; left: 0; top: 50%; display: none; gap: 6px; transform: translateY(-50%); }
+main[data-mode="dots"] .dots { display: flex; }
+.dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--hint); animation: dot 1.1s ease-in-out infinite; }
+.dots i:nth-child(2) { animation-delay: .15s; }
+.dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes dot { 0%, 100% { opacity: .3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+/* Karaoke, as in content/subtitles.js: said (ks), being heard (kc, a sweep
+   timed to the word by --k-dur and --k-delay), still to come (kp). */
+.rep.karaoke .w { color: var(--k-next); }
+.rep.karaoke .w.ks { color: var(--k-said); }
+.rep.karaoke .w.kc {
+  position: relative; color: var(--k-next);
+  background: linear-gradient(90deg, var(--k-said) 0 45%, var(--k-next) 55% 100%) no-repeat;
+  background-size: 220% 100%; background-position: 100% 0;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  animation: k-sweep var(--k-dur, 250ms) linear var(--k-delay, 0ms) both;
+}
+.rep.karaoke .w.kc::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 1px; height: 2px; border-radius: 2px;
+  background: linear-gradient(90deg, #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff);
+  transform-origin: left center; animation: k-line var(--k-dur, 250ms) linear var(--k-delay, 0ms) both;
+}
+.rep.karaoke.frozen .w.kc, .rep.karaoke.frozen .w.kc::after { animation-play-state: paused; }
+@keyframes k-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes k-line { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.ububble {
+  position: relative; max-width: min(440px, 82%); padding: 11px 18px; border-radius: 20px;
+  background: var(--you-bg); color: var(--you-fg); font-size: 16px; line-height: 1.4; text-align: left;
+  opacity: 0; transform: translateX(22px); transform-origin: right center;
+  transition: opacity .3s ease-out, transform .44s var(--glide);
+}
+.ububble::after {
+  content: ""; position: absolute; right: -6px; top: 50%; width: 14px; height: 14px; margin-top: -7px;
+  background: var(--you-bg); border-radius: 0 4px 0 0; transform: rotate(45deg);
+}
+main[data-you="on"] .ububble { opacity: 1; transform: none; }
+.ububble .u { animation: u-in .16s ease-out both; }
+@keyframes u-in { from { opacity: 0; } }
+main[data-leaving] .obub, main[data-leaving] .ububble { opacity: 0; transform: none; transition: opacity .26s ease-in; }
+.dock { width: 100%; margin-top: 48px; display: flex; flex-direction: column; align-items: center; transform-origin: 0 0; }
+main[data-layout="active"] .dock { margin-top: 36px; }
+/* Narrow windows: the orb steps down to 80 px as it moves aside, so the
+   bubble keeps a readable width. */
+@media (max-width: 560px) {
+  main[data-layout="active"] .orb { --orb: 80px; }
+  .row1 { gap: 16px; }
+  .obub { padding: 14px 16px; border-radius: 20px; }
+  .rep { font-size: 17px; line-height: 1.38; }
+  .ububble { font-size: 15px; }
+}
+
+/* Search: one capsule, the icon is its submit button. It stays plain in
+   every voice state. */
 .search { width: 100%; max-width: 640px; }
 .cap {
   display: flex; align-items: center; gap: 4px; height: 60px; padding: 0 10px 0 24px;
@@ -121,18 +214,10 @@ main {
 }
 .go:hover { background: var(--hover); color: var(--fg); }
 .go:focus-visible { outline-offset: 0; }
-/* While Orbi is listening, thinking or speaking the capsule takes the
-   orb's turning spectrum. */
-body:not([data-state="idle"]) .cap:not(:focus-within) {
-  border: 2px solid transparent;
-  background: linear-gradient(var(--field), var(--field)) padding-box,
-    conic-gradient(from var(--ring-a), #ff9f6b, #ff5f8f, #b56cff, #5e8bff, #4fd1ff, #ff9f6b) border-box;
-  animation: cap-turn 6s linear infinite;
-}
 
 /* The quiet talk line. */
 .voice { margin-top: 22px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.voice-title { font-size: 16px; font-weight: 400; color: var(--hint); }
+.voice-title { font-size: 16px; font-weight: 400; color: var(--talk); }
 kbd {
   display: inline-flex; align-items: center; height: 24px; padding: 0 8px; margin: 0 2px;
   border: 1px solid var(--key-line); border-radius: 7px; background: var(--key); box-shadow: 0 1px 0 var(--key-line);
@@ -155,13 +240,21 @@ kbd {
 @media (forced-colors: active) {
   .orb { forced-color-adjust: none; border: 2px solid CanvasText; }
   .orb:not([data-state="idle"])::after { background: Highlight; }
-  .cap { border: 2px solid CanvasText !important; animation: none; }
-  body:not([data-state="idle"]) .cap { border-color: Highlight !important; }
+  .cap { border: 2px solid CanvasText !important; }
+  .obub, .ububble { border: 1px solid CanvasText; }
+  .obub::before, .ububble::after { display: none; }
+  .rep.karaoke .w, .rep.karaoke .w.ks, .rep.karaoke .w.kc { color: CanvasText; }
+  .rep.karaoke .w.kc { background: none; -webkit-text-fill-color: CanvasText; text-decoration: underline 3px; text-underline-offset: 4px; }
+  .rep.karaoke .w.kc::after { display: none; }
   .cap:focus-within { border-color: Highlight !important; }
   kbd { border-color: CanvasText; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .orb, .orb::after, .cap { animation: none !important; }
+  .orb, .orb::after, .dots i, .ububble .u { animation: none !important; }
+  .obub, .ububble { transition: none !important; }
+  /* The karaoke steps word by word: the word being heard takes the said ink. */
+  .rep.karaoke .w.kc { animation: none; background: none; -webkit-text-fill-color: currentColor; color: var(--k-said); }
+  .rep.karaoke .w.kc::after { animation: none; }
 }
 
 /* The "Can't reach this site" page (error.html). */
