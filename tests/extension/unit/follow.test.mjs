@@ -71,7 +71,7 @@ function setup({ followTab = true, session } = {}) {
       return { tabId: 9 };
     },
   };
-  const cdp = { click: async () => {}, type: async () => {}, key: async () => {}, scroll: async () => {}, screenshot: async () => ({ data: "" }) };
+  const cdp = { click: async () => {}, type: async () => {}, key: async () => {}, scroll: async () => {}, screenshot: async () => ({ data: "" }), send: async () => {} };
   const router = createRouter({ chromeApi, tabs, cdp, follow });
   // The user picks a tab themselves, a moment after Clearcart's last switch.
   const userSwitch = (id) => {

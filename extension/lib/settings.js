@@ -46,6 +46,10 @@ export const DEFAULTS = Object.freeze({
   // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
   // masking, the blocklist and the CAPTCHA hand-off never change with it.
   dangerMode: false,
+  // Clicks and scrolls go at a pace the user can follow
+  // (background/actor.js). Off, they happen at once. Typing is always
+  // key by key at a typist's cadence, either way.
+  watchablePace: true,
 });
 
 export const DANGER_MODE_COPY = "Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.";
@@ -94,6 +98,7 @@ export function normalize(raw = {}) {
   if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
   if (typeof raw.sounds === "boolean") out.sounds = raw.sounds;
   if (typeof raw.guidedMode === "boolean") out.guidedMode = raw.guidedMode;
+  if (typeof raw.watchablePace === "boolean") out.watchablePace = raw.watchablePace;
   if (typeof raw.newTabPage === "boolean") out.newTabPage = raw.newTabPage;
   // Only a stored true turns it on.
   out.dangerMode = raw.dangerMode === true;

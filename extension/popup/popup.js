@@ -95,6 +95,7 @@ function fill(s) {
   $("quiet-tabs").checked = s.quietTabs;
   danger.fill(s);
   $("follow-tab").checked = s.followTab;
+  $("watchable-pace").checked = s.watchablePace;
   $("guided-mode").checked = s.guidedMode;
   showSpeed();
   showVoice();
@@ -111,6 +112,7 @@ $("subtitles").addEventListener("change", () => save({ subtitles: $("subtitles")
 $("sounds").addEventListener("change", () => save({ sounds: $("sounds").checked }));
 $("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));
 $("follow-tab").addEventListener("change", () => save({ followTab: $("follow-tab").checked }));
+$("watchable-pace").addEventListener("change", () => save({ watchablePace: $("watchable-pace").checked }));
 $("guided-mode").addEventListener("change", () => save({ guidedMode: $("guided-mode").checked }));
 
 // Links

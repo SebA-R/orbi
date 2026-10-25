@@ -40,6 +40,7 @@ function fakes({ locked = new Set(), url = "http://localhost:4100/checkout", cdp
       calls.push(["cdp.click", o]);
     },
     type: async (o) => calls.push(["cdp.type", o]),
+    send: async (_t, method, p) => calls.push(["cdp.send", method, p]),
     key: async (o) => calls.push(["cdp.key", o]),
   };
   const router = createRouter({ chromeApi, tabs, cdp, now: () => clock, newNonce: () => `nonce-${++n}` });
@@ -89,7 +90,8 @@ test("typing a newline counts as Enter", async () => {
   const f = fakes({ locked: new Set(["guard_key"]) });
   await assert.rejects(f.router.route("type", { text: "1 Main St\n" }), { code: "locked" });
   await f.router.route("type", { text: "1 Main St" });
-  assert.deepEqual(f.sent().map((c) => c[0]), ["cdp.type"]);
+  // Typed key by key; the text arrives whole.
+  assert.equal(f.sent().filter((c) => c[1] === "Input.insertText" || c[2]?.type === "char").map((c) => c[2].text).join(""), "1 Main St");
 });
 
 test("form_input lock errors keep their code", async () => {
@@ -235,9 +237,9 @@ test("typing into a password field is refused before CDP", async () => {
   const router = createRouter({
     chromeApi: { scripting: { executeScript: async () => {} }, tabs: { sendMessage: async (_t, m) => (calls.push(m.method), m.method === "focused_field" ? { ok: true, result: { kind: "other", payment: false, password: true } } : { ok: true, result: { ok: true } }) } },
     tabs: { resolveAllowedTab: async () => 7, assertPageAllowed: async () => {}, tabInfo: async () => ({ url: "https://www.etsy.com/signin" }) },
-    cdp: { type: async () => calls.push("cdp.type"), key: async () => calls.push("cdp.key") },
+    cdp: { type: async () => calls.push("cdp.type"), key: async () => calls.push("cdp.key"), send: async () => calls.push("cdp.send") },
   });
   await assert.rejects(router.route("type", { text: "hunter2" }), { code: "payment_field" });
   await assert.rejects(router.route("key", { key: "a" }), { code: "payment_field" });
-  assert.ok(!calls.includes("cdp.type") && !calls.includes("cdp.key"));
+  assert.ok(!calls.includes("cdp.type") && !calls.includes("cdp.key") && !calls.includes("cdp.send"));
 });

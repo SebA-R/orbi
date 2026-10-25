@@ -442,6 +442,7 @@ export class Session {
   // The user started talking over us.
   interrupt() {
     if (this.closed) return;
+    this.stopActions();
     this.held.forEach((t) => this.unspoken(t));
     this.held = [];
     // A read-back waiting for an answer is not cancelled or confirmed by a
@@ -459,6 +460,12 @@ export class Session {
     this.awaitingAnswer = null;
     this.input.close();
     this.abort.abort();
+  }
+
+  // Stops any paced click, typing or scroll the extension is still playing.
+  private stopActions() {
+    if (!extMode() || !extBridge.connected()) return;
+    extBridge.call("actions_stop", {}, 5_000).catch(() => {});
   }
 
   private say(text: string) {
@@ -892,6 +899,8 @@ export class Session {
       if (this.held.length) this.say(this.held.join(" "));
       this.held = [];
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
+      // Nothing paced (a click on its way, typing) outlives its turn.
+      this.stopActions();
       // The interrupted turn is over; the next one speaks again.
       this.muted = false;
       if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
