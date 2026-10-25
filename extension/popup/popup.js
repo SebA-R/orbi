@@ -79,6 +79,7 @@ function fill(s) {
   $("quiet-tabs").checked = s.quietTabs;
   danger.fill(s);
   $("follow-tab").checked = s.followTab;
+  $("guided-mode").checked = s.guidedMode;
   showSpeed();
   showVoice();
 }
@@ -93,6 +94,7 @@ $("speed").addEventListener("change", () => save({ speed: Number($("speed").valu
 $("subtitles").addEventListener("change", () => save({ subtitles: $("subtitles").checked }));
 $("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));
 $("follow-tab").addEventListener("change", () => save({ followTab: $("follow-tab").checked }));
+$("guided-mode").addEventListener("change", () => save({ guidedMode: $("guided-mode").checked }));
 
 // Links
 const allSettings = (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); window.close(); };

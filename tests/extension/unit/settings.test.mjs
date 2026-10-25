@@ -95,3 +95,16 @@ test("parseOriginLines takes one site per line and reports bad lines", () => {
   assert.deepEqual(r.origins, ["https://www.etsy.com", "https://www.aritzia.com", "http://localhost:4000"]);
   assert.deepEqual(r.bad, ["javascript:alert(1)", "https://me:pw@shop.example"]);
 });
+
+test("guidedMode defaults on, keeps booleans only, and round-trips through storage", async () => {
+  assert.equal(DEFAULTS.guidedMode, true);
+  assert.equal(normalize({}).guidedMode, true);
+  assert.equal(normalize({ guidedMode: "false" }).guidedMode, true, "non-boolean falls back");
+  assert.equal(normalize({ guidedMode: false }).guidedMode, false);
+  const store = memoryStorage();
+  assert.equal((await loadSettings(store)).guidedMode, true);
+  assert.equal((await saveSettings({ guidedMode: false }, store)).guidedMode, false);
+  assert.equal(store.data.guidedMode, false);
+  assert.equal((await loadSettings(store)).guidedMode, false);
+  assert.equal((await saveSettings({ guidedMode: true }, store)).guidedMode, true);
+});
