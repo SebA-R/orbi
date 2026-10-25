@@ -9,15 +9,17 @@
 // The socket that owns the session is the one the user last talked into:
 //   - {type:"interrupt"}, sent when the talk key goes down, claims it.
 //     {type:"user_text"} claims it too, except from a socket that lost the
-//     session since it last claimed: those words were said before the user
-//     moved to another window, so they are dropped and the socket is told.
+//     session since it last claimed while another one still owns it: those
+//     words were said before the user moved to another window, so they are
+//     dropped and the socket is told.
 //   - Opening a socket never claims, so opening the console, or a reconnect
 //     after a server restart, takes nothing from the window in use.
 //   - Replies, read-backs, statuses and receipts go to the owner only.
 //   - When the owner changes or goes away the Session hands off
 //     (Session.handOff): a read-back or unlock question still waiting is
 //     declined, never confirmed, so only the window that heard it can answer
-//     it, and the turn in progress stops talking. The old owner gets
+//     it; a yes pay_now has not used is withdrawn; the turn in progress
+//     stops talking. The old owner gets
 //     {type:"standby", reason:"moved"} and stops speaking and listening.
 //   - The Session ends when the last socket closes, or when its agent loop
 //     stops; the next message starts a fresh one. Messages from a Session
@@ -127,6 +129,9 @@ export class SessionHub {
     if (this.owner === peer) {
       this.owner = null;
       this.session?.handOff();
+      // Nobody owns it now, so no window is "elsewhere": the next words from
+      // any of them claim it (a client that only sends user_text included).
+      for (const p of this.peers) p.lost = false;
     }
     if (!this.peers.size && this.session) {
       const s = this.session;

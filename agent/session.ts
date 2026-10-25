@@ -475,10 +475,16 @@ export class Session {
     this.passwordAsk = null;
     this.lastUser = noWords();
     pending?.(null);
+    // Dropped rather than marked, so a read-back whose yes is still being
+    // pinned to its tab (request_checkout awaiting the snapshot) can't turn
+    // confirmed afterwards either.
     const yes = this.state.confirmation;
-    if (yes && yes.state === "confirmed") {
-      yes.state = "declined";
-      this.status("checkout yes withdrawn: the user moved to another Clearcart window");
+    if (yes && yes.state !== "used") {
+      this.state.confirmation = null;
+      if (yes.state === "confirmed") {
+        yes.state = "declined";
+        this.status("checkout yes withdrawn: the user moved to another Clearcart window");
+      }
     }
     this.interrupt("interrupted: the user moved to another Clearcart window");
   }
@@ -724,7 +730,11 @@ export class Session {
     conf.state = "declined";
     this.status("checkout declined");
     this.send({ type: "confirm_done", outcome: "declined" });
-    const why = answer === null ? NO_ANSWER : `The user said: ${JSON.stringify(answer)}`;
+    const why = answer === null
+      ? NO_ANSWER
+      : this.state.confirmation === null && isExplicitYes(answer)
+        ? "The user moved to another Clearcart window before their yes could count."
+        : `The user said: ${JSON.stringify(answer)}`;
     return { content: [{ type: "text" as const, text: `declined. ${why}` }] };
   }
 
