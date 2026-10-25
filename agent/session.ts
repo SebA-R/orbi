@@ -88,7 +88,7 @@ const ALLOWED = [
   "javascript_tool",
   "read_console_messages",
   "set_tab_focus",
-].map((t) => B + t).concat([C + "request_checkout", C + "pay_now"]);
+].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now"]);
 
 // Blocked while card values sit in the checkout form: anything that can read
 // or screenshot the page, or change it.
@@ -99,7 +99,7 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
 // CLEARCART_BROWSER=ext: Claude's browser tools are the Clearcart extension's
 // TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
 // key and scroll stand in for "computer" in the card-live block list.
-const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "request_checkout", C + "pay_now"]);
+const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now"]);
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
   ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
@@ -269,10 +269,15 @@ export class Session {
         item: z.string().describe("Product name and size or count, as the user would say it"),
         quantity: z.number().int().positive(),
         total: z.string().describe("Order total from the page, e.g. $14.27"),
+        changes: z
+          .string()
+          .optional()
+          .describe("One short sentence on anything you changed for the user, e.g. \"I removed a pre-checked Subscribe and Save membership that would have added $4.99.\" Omit if nothing changed."),
       },
-      async ({ item, quantity, total }) => {
+      async ({ item, quantity, total, changes }) => {
         this.state.confirmation = { item, quantity, total, state: "pending" };
-        this.say(`You're buying ${quantity} ${item} for ${total}. Say yes to pay, or no to change it.`);
+        const note = changes?.trim() ? ` ${changes.trim().replace(/([^.!?])$/, "$1.")}` : "";
+        this.say(`You're buying ${quantity} ${item} for ${total}.${note} Say yes to pay, or no to change it.`);
         const answer = await new Promise<string | null>((resolve) => {
           this.awaitingAnswer = resolve;
         });
@@ -284,6 +289,18 @@ export class Session {
         this.state.confirmation.state = "declined";
         this.status("checkout declined");
         return { content: [{ type: "text", text: `declined. The user said: ${JSON.stringify(answer ?? "")}` }] };
+      }
+    );
+
+    // Progress notes go through this tool. Free text written alongside tool
+    // calls is reasoning, not speech, so it is never spoken (see the loop).
+    const sayTool = tool(
+      "say",
+      "Speak one short progress note to the user right now, for example \"Searching the store now.\" Use it only before a slow step. Never for reasoning, page details or ids.",
+      { text: z.string().max(160) },
+      async ({ text }) => {
+        this.say(text.trim());
+        return { content: [{ type: "text", text: "spoken" }] };
       }
     );
 
@@ -307,7 +324,7 @@ export class Session {
     return createSdkMcpServer({
       name: "clearcart",
       version: "0.1.0",
-      tools: [requestCheckout, payNowTool],
+      tools: [sayTool, requestCheckout, payNowTool],
       alwaysLoad: true,
       // request_checkout waits on a person; give it room.
       timeout: 10 * 60_000,
@@ -356,9 +373,15 @@ export class Session {
           const servers = (m as any).mcp_servers as Array<{ name: string; status: string }> | undefined;
           this.status(`agent ready (${(servers || []).map((s) => `${s.name}: ${s.status}`).join(", ")})`);
         } else if (m.type === "assistant" && !m.parent_tool_use_id) {
-          for (const block of m.message.content as any[]) {
-            if (block.type === "text" && block.text?.trim()) this.say(block.text.trim());
-            else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
+          const blocks = m.message.content as any[];
+          // Only a message with no tool calls is a reply to the user. Text next
+          // to tool calls is the model thinking aloud: log it, never speak it.
+          const working = blocks.some((b) => b.type === "tool_use");
+          for (const block of blocks) {
+            if (block.type === "text" && block.text?.trim()) {
+              if (working) this.status(`(not spoken) ${block.text.trim().slice(0, 120)}`);
+              else this.say(block.text.trim());
+            } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
           }
         } else if (m.type === "result") {
           if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
