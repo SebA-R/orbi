@@ -20,7 +20,7 @@ let missing = [];
 const VOICE = {
   idle: (key) => missing.length
     ? ["Not ready", `Finish setup to talk. Needed: ${missing.map((m) => MISSING[m]).join(", ")}.`]
-    : ["Ready", key === "Space" ? "Hold Space to talk, or Option\u00a0+\u00a0Space in a text field." : `Hold ${key} on any page to talk.`],
+    : ["Ready", key === "Space" ? "Hold Space to talk. Option\u00a0+\u00a0Space keeps listening until you press Space." : `Hold ${key} on any page to talk.`],
   listening: (key) => ["Listening", `Let go of ${key} when you're done.`],
   thinking: () => ["Thinking", "Working on your request."],
   speaking: (key) => ["Speaking", `Clearcart is answering. Hold ${key} to interrupt.`],
@@ -74,6 +74,7 @@ function fill(s) {
   $("speed").value = String(s.speed);
   $("subtitles").checked = s.subtitles;
   $("quiet-tabs").checked = s.quietTabs;
+  $("follow-tab").checked = s.followTab;
   showSpeed();
   showVoice();
 }
@@ -87,6 +88,7 @@ $("speed").addEventListener("input", showSpeed);
 $("speed").addEventListener("change", () => save({ speed: Number($("speed").value) }));
 $("subtitles").addEventListener("change", () => save({ subtitles: $("subtitles").checked }));
 $("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));
+$("follow-tab").addEventListener("change", () => save({ followTab: $("follow-tab").checked }));
 
 // Links
 const allSettings = (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); window.close(); };

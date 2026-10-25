@@ -8,6 +8,7 @@ import * as tabs from "./tabs.js";
 import * as cdp from "./cdp.js";
 import * as netguard from "./netguard.js";
 import { createRouter } from "./router.js";
+import { createFollower } from "./follow.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
 import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
@@ -86,7 +87,13 @@ const voice = installVoiceRelay({ onVoiceState: frame.onVoiceState });
 
 // Bridge to the agent server: each request is routed to tabs/CDP or the page
 // script. Results never include card values (fill_payment answers last4).
-const router = createRouter({ onAgentTab: frame.onAgentTab });
+// Follow: the tab Clearcart acts on comes to the front (follow.js). A tab or
+// window the user picks themselves pauses that until their next turn.
+const follow = createFollower();
+chrome.tabs.onActivated.addListener((info) => follow.onActivated(info));
+chrome.windows?.onFocusChanged?.addListener((id) => follow.onWindowFocused(id));
+chrome.tabs.onRemoved.addListener((tabId) => follow.forget(tabId));
+const router = createRouter({ follow, onAgentTab: frame.onAgentTab });
 
 // The user started talking: snapshot what they are looking at and pointing
 // at now, for the page_context call that comes with their words.

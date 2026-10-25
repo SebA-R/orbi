@@ -48,7 +48,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 - Either way: blocked tabs stay hidden and refused, and the button lock and the agent server's checkout page block (on every site but the store) stay on, and `lock_arm` only arms on an allowed site, so open browsing never widens the unlock.
 - The manifest asks for host access to all sites (`<all_urls>`), which page calls and CDP input need on whatever store you pick. The worker sends the blocked sites to the agent server over the bridge (`{ type: "blocklist", lines }`, on connect and on every change), so its navigation guard and tab sweep use the same list; the agent server cannot change it.
 
-`chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. Don't pick the same keys as the hold key.
+`chrome://extensions/shortcuts` sets the **toggle-listening** command (suggested Control+Shift+Space) for people who can't hold a key. It latches like Option+Space: Space sends, and a minute without speech stops it. Don't pick the same keys as the hold key.
 
 ## How it fits together
 
@@ -62,7 +62,7 @@ Allowed sites take one site address per line (`https://www.etsy.com`; a path is 
 | `content/mask.js`, `content/protect.js`, `content/page.js` | Injected on demand into agent tabs, in that order: refs, `read_page`, `find`, `get_page_text`, `form_input`, `rect`, `click_ref`, `read_fields`, `fill_payment`, `clear_payment`, `focused_field`, the button lock classifier, its checks and badges |
 | `content/context.js` | Declared content script (top frame): remembers the element under the mouse and the last one clicked or focused, for `page_context` |
 | `content/indicator.js` | Injected on each call that touches a tab: the "Clearcart is using this tab" pill |
-| `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP` |
+| `content/hotkey.js` | Declared content script (all frames, `document_start`): hold-to-talk key → `PTT_START`/`PTT_STOP`, Option+Space latch, double-tap Space hush |
 | `content/subtitles.js` | Declared content script (top frame, `document_idle`): the caption overlay |
 | `content/frame.js`, `background/frame.js` | Active-tab frame: a faint rotating spectrum ring around the tab Clearcart is acting on during a turn or within 10 s of an agent call (declared content script, top frame; the worker sends `FRAME {on}`) |
 | `offscreen/` | Offscreen document: mic, Cartesia Ink STT and Sonic TTS, chimes, its own `/session` socket |
@@ -84,7 +84,8 @@ The agent server sends `{ type: "request", id, method, params }` and the worker 
 
 - `tabs_context` lists every open tab the agent may use, plus the ones it opened: `{ tabId, title, url, active, openedByClearcart }`, where `url` is the origin and path only (no query string or fragment). Tabs on blocked pages (your blocked sites, non-web pages, local and private addresses, addresses with a login in them, or served from a local address) are left out entirely.
 - Every call checks its tab again, so a tab that moved to a blocked site since it was listed is refused. A user's blocked tab is never named in the refusal.
-- `tabs_create` opens the tab in the background, right after your current tab (`active: false`); you stay where you are. `tabs_activate` brings a tab to the front, only when you ask to see it. `tabs_close` only closes tabs Clearcart opened.
+- `tabs_create` opens the tab right after your current tab. `tabs_activate` brings a tab to the front, only when you ask to see it.
+- Follow (`background/follow.js`, setting "Follow Clearcart to its tab", on by default): when Clearcart opens a tab or navigates, clicks, types, presses a key or scrolls in one, that tab is made active and its window focused. Reads (`read_page`, `find`, `get_page_text`, `screenshot`...) never switch. If you switch to another tab or window yourself during a turn, following stops until your next turn. Subtitles come along through the relay's tab-switch replay. `tabs_close` only closes tabs Clearcart opened.
 - The prompt tells the agent to open a new tab rather than navigate away from a page you had open. The agent server's tab sweep only looks at tabs Clearcart opened itself, through `agent_tabs`. Navigating, clicking or typing in one of your own tabs never makes it sweepable, so a blocked site you later open there is left alone.
 - The tab being acted on shows a small "Clearcart is using this tab" pill at the top right (`content/indicator.js`): top layer, closed shadow root, `aria-hidden`, `pointer-events: none`, gone 10 s after the last call.
 - Earlier versions kept agent tabs in a "Clearcart" tab group. On install or update the worker takes those tabs out of it, closing none.

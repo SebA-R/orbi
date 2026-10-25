@@ -46,7 +46,8 @@
         <legend>Talking</legend>
         <label for="hotkey">Hold-to-talk key</label>
         <select id="hotkey" name="hotkey"></select>
-        <p class="hint">Hold the key while you speak, let go to send. A separate toggle shortcut can be set at
+        <p class="hint">Hold Space to talk. Option+Space keeps listening until you press Space. Double-tap Space to stop Clearcart talking.
+          With another key, hold it while you speak and let go to send. A separate toggle shortcut can be set at
           <span id="shortcuts-link">chrome://extensions/shortcuts</span>.</p>
 
         <label for="speed">Speaking speed: <output id="speed-out" for="speed"></output></label>
@@ -55,6 +56,8 @@
         <label class="row"><input id="subtitles" name="subtitles" type="checkbox"> Show subtitles on the page</label>
         <label class="row"><input id="quiet-tabs" name="quietTabs" type="checkbox" aria-describedby="quiet-tabs-hint"> Quiet other tabs while talking</label>
         <p class="hint" id="quiet-tabs-hint">Fades out and mutes videos and music in other tabs while you talk and while Clearcart answers, then turns them back on. Tabs you muted yourself stay muted.</p>
+        <label class="row"><input id="follow-tab" name="followTab" type="checkbox" aria-describedby="follow-tab-hint"> Follow Clearcart to its tab</label>
+        <p class="hint" id="follow-tab-hint">When Clearcart opens a tab, or navigates, clicks, types or scrolls in one, you are brought to that tab. Reading a tab never moves you. If you switch away yourself, it stops until you talk again.</p>
       </fieldset>
 
       <fieldset id="sites">
