@@ -76,6 +76,13 @@ textarea.field { resize: vertical; }
 .btn.primary { min-width: 120px; background: var(--primary-bg); color: var(--primary-fg); font-weight: 600; }
 .btn.amber { background: var(--amber); color: var(--on-amber); font-weight: 600; }
 
+/* Memory: saved facts, one row each with its Delete button. */
+.row-title { margin: 0; padding: 0; font-size: 16px; font-weight: 400; color: var(--fg); letter-spacing: 0; }
+.facts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.facts:empty { display: none; }
+.facts li { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+.facts .fact { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+
 /* Status tags */
 .tag {
   display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px; border-radius: 999px;

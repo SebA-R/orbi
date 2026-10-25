@@ -18,6 +18,12 @@
 // is "click", "hover" or "scroll" and phase is "move", "press", "release"
 // or "wheel". t is Date.now() when the sample was sent. The "press" event
 // also carries rect { x, y, width, height }, the target's box, when known.
+// Every "move" carries to { x, y }, where the gesture is headed. Typing
+// sends one { action: "type", phase: "type", text } before the first key
+// and { action: "type", phase: "key" } after each one, at the last pointer
+// position (x and y are null when the tab has none).
+// abortAll sends { tabId: null, phase: "stop" }. Coordinates are CSS pixels
+// in the top frame's viewport, the space CDP input uses.
 //
 // Typing always goes through here, key by key, whatever the setting; the
 // setting only decides whether clicks and scrolls are paced.
@@ -45,8 +51,17 @@ export function createActor({
   const listeners = new Set();
 
   function emit(tabId, x, y, action, phase, extra) {
-    pointers.set(tabId, { x, y });
-    const ev = { tabId, x, y, t: now(), action, phase, ...extra };
+    if (x != null && y != null) pointers.set(tabId, { x, y });
+    tell({ tabId, x, y, t: now(), action, phase, ...extra });
+  }
+
+  // One typed character went in.
+  function key_(tabId) {
+    const at = pointers.get(tabId);
+    tell({ tabId, x: at ? at.x : null, y: at ? at.y : null, t: now(), action: "type", phase: "key" });
+  }
+
+  function tell(ev) {
     for (const fn of listeners) {
       try { fn(ev); } catch {}
     }
@@ -103,10 +118,12 @@ export function createActor({
   const mouse = (tabId, params) => cdp.send(tabId, "Input.dispatchMouseEvent", params);
 
   async function travel(run, path, action) {
+    const end = path[path.length - 1];
+    const to = end ? { x: end.x, y: end.y } : null;
     for (const p of path) {
       await sleep(run, p.ms);
       await mouse(run.tabId, { type: "mouseMoved", x: p.x, y: p.y, button: "none", buttons: 0 });
-      emit(run.tabId, p.x, p.y, action, "move");
+      emit(run.tabId, p.x, p.y, action, "move", { to });
     }
   }
 
@@ -152,7 +169,7 @@ export function createActor({
         live(run);
         if (at.x !== to.x || at.y !== to.y) {
           await mouse(tabId, { type: "mouseMoved", x: at.x, y: at.y, button: "none", buttons: 0 });
-          emit(tabId, at.x, at.y, "click", "move");
+          emit(tabId, at.x, at.y, "click", "move", { to: { x: at.x, y: at.y } });
           live(run);
         }
         const base = { x: at.x, y: at.y, button: "left", clickCount: 1 };
@@ -204,6 +221,8 @@ export function createActor({
   function type(tabId, text, { check = async () => ({ keys: false }), epoch } = {}) {
     return within(tabId, async (run) => {
       run.kind = "type";
+      const at = pointers.get(tabId);
+      emit(tabId, at ? at.x : null, at ? at.y : null, "type", "type", { text: String(text) });
       let spent = 0;
       for (const k of planTyping(text, rng)) {
         // Time spent checking and holding counts toward the next gap.
@@ -215,6 +234,7 @@ export function createActor({
         if (!key) {
           // No key for it, or not a text field: no key event at all.
           await cdp.send(tabId, "Input.insertText", { text: k.ch });
+          key_(tabId);
           spent = now() - t0;
           continue;
         }
@@ -231,6 +251,7 @@ export function createActor({
           await new Promise((r) => setTimer(r, k.holdMs));
           await cdp.send(tabId, "Input.dispatchKeyEvent", { ...ev, type: "keyUp" });
         }
+        key_(tabId);
         spent = now() - t0;
       }
       return { via: "keys" };
@@ -241,6 +262,7 @@ export function createActor({
     stopEpoch++;
     lastAbort = reason;
     for (const run of runs) stop(run, reason);
+    tell({ tabId: null, x: null, y: null, t: now(), action: null, phase: "stop" });
   }
 
   function abortTab(tabId, reason) {

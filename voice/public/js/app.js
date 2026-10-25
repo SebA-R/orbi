@@ -479,9 +479,36 @@ function handleAgentMessage(m) {
       logEvent(`Checkout ${m.outcome}`);
       if (m.outcome !== 'paid') endConfirm();
       break;
+    case 'standby':
+      standby(m);
+      break;
     default:
       logEvent(`Unknown agent message type: ${m.type}`);
   }
+}
+
+// The agent server keeps one conversation for every Clearcart window and the
+// one the user last talked into owns it. "moved": another window (or the
+// extension) just took it, so stop talking and listening here, unsent.
+// "stale": what we just sent was dropped; a newer press here is left alone.
+function standby(m) {
+  speaker.stop();
+  muted = true;
+  if (m.reason === 'moved' && listening) {
+    listening = false;
+    spaceHeld = false;
+    setListeningUi(false);
+    const s = session;
+    session = null;
+    if (sinkOwner === s) { mic.sink = null; sinkOwner = null; }
+    if (s) s.abort();
+  }
+  endConfirm();
+  ui.thinking = false;
+  renderUi();
+  const text = m.text || 'Clearcart is in use in another window. Talk here to use it here.';
+  setConnection('standby', text);
+  alertUser(text);
 }
 
 function showReceipt(r) {
@@ -525,7 +552,8 @@ async function startTalking() {
   listening = true;
   speaker.stop(); // barge-in: silence now, and tell the agent to drop the rest of its turn
   muted = true;
-  sendToAgent({ type: 'interrupt' });
+  sendToAgent({ type: 'interrupt' }); // also takes the conversation back to this window
+  if (els.connection.dataset.state === 'standby') setConnection('open', 'Connected to your shopping assistant.');
   resumeAudio();
   setListeningUi(true);
   earcon('start');

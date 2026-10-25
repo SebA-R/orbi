@@ -282,3 +282,112 @@ test("VOICE_STATE_QUERY answers the asking tab with the current state", async ()
   assert.deepEqual(to5[0], { type: RT.VOICE_STATE, state: "idle" });
   assert.deepEqual(to5.at(-1), { type: RT.VOICE_STATE, state: "listening", latched: true });
 });
+
+test("karaoke: a tab switched to mid-line gets the line, then the word being heard", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  const off = (m) => relay.onMessage({ ...m, from: "offscreen" });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  off({ type: RT.VOICE_STATE, state: "speaking" });
+  off({ type: RT.SUBTITLE, speaker: "agent", text: "Found it, nine dollars.", final: true, utteranceId: "u1", karaoke: true });
+  off({ type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 1 });
+  off({ type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 2 });
+  await relay.idle();
+  assert.ok(state.tabSent.some((x) => x.tabId === 3 && x.m.type === RT.SUBTITLE_WORD && x.m.index === 2), "live words go to the tab");
+  state.tabSent.length = 0;
+  await relay.onTabActivated({ tabId: 8 });
+  assert.deepEqual(state.tabSent.map((x) => [x.tabId, x.m.type, x.m.index ?? x.m.text ?? x.m.state]), [
+    [8, RT.VOICE_STATE, "speaking"], [8, RT.SUBTITLE, "Found it, nine dollars."], [8, RT.SUBTITLE_WORD, 2],
+  ]);
+});
+
+test("karaoke: a line still being heard replays after REPLAY_MS; a frozen word replays frozen", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  const off = (m) => relay.onMessage({ ...m, from: "offscreen" });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  try {
+    off({ type: RT.VOICE_STATE, state: "speaking" });
+    off({ type: RT.SUBTITLE, speaker: "agent", text: "A long answer", final: true, utteranceId: "u1", karaoke: true });
+    now += 8000; // a long line: its words keep it fresh
+    off({ type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 1, frozen: true });
+    off({ type: RT.VOICE_STATE, state: "idle" }); // double-tap hush
+    await relay.idle();
+    state.tabSent.length = 0;
+    now += 1000;
+    await relay.onTabActivated({ tabId: 8 });
+  } finally {
+    Date.now = real;
+  }
+  assert.deepEqual(state.tabSent.map((x) => x.m.type), [RT.VOICE_STATE, RT.SUBTITLE, RT.SUBTITLE_WORD]);
+  assert.deepEqual(state.tabSent.at(-1).m, { type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 1, frozen: true });
+});
+
+test("karaoke: a word for another line is not replayed; a barge-in or a new line drops it", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  const off = (m) => relay.onMessage({ ...m, from: "offscreen" });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  off({ type: RT.VOICE_STATE, state: "speaking" });
+  off({ type: RT.SUBTITLE, speaker: "agent", text: "First.", final: true, utteranceId: "u1", karaoke: true });
+  off({ type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 0 });
+  off({ type: RT.SUBTITLE, speaker: "agent", text: "Second one.", final: true, utteranceId: "u2", karaoke: true });
+  off({ type: RT.SUBTITLE_WORD, utteranceId: "u9", index: 0 }); // not the line on record
+  await relay.idle();
+  state.tabSent.length = 0;
+  await relay.onTabActivated({ tabId: 8 });
+  assert.deepEqual(state.tabSent.map((x) => x.m.type), [RT.VOICE_STATE, RT.SUBTITLE]);
+
+  off({ type: RT.SUBTITLE_WORD, utteranceId: "u2", index: 1 });
+  off({ type: RT.VOICE_STATE, state: "listening" }); // barge-in
+  await new Promise((r) => setTimeout(r, 0));
+  state.tabSent.length = 0;
+  await relay.onTabActivated({ tabId: 9 });
+  assert.deepEqual(state.tabSent.map((x) => x.m.type), [RT.VOICE_STATE]);
+});
+
+test("karaoke: a replayed word is skipped once a newer live word has gone out", async () => {
+  const { relay, state, chromeApi } = make({ activeTab: 3 });
+  const off = (m) => relay.onMessage({ ...m, from: "offscreen" });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  off({ type: RT.VOICE_STATE, state: "speaking" });
+  off({ type: RT.SUBTITLE, speaker: "agent", text: "one two three", final: true, utteranceId: "u1", karaoke: true });
+  off({ type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 0 });
+  await relay.idle();
+  state.tabSent.length = 0;
+  const send = chromeApi.tabs.sendMessage;
+  let first = true;
+  chromeApi.tabs.sendMessage = async (tabId, m) => {
+    await send(tabId, m);
+    if (first) { first = false; off({ type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 1 }); }
+  };
+  await relay.onTabActivated({ tabId: 8 });
+  await new Promise((r) => setTimeout(r, 0));
+  const words = state.tabSent.filter((x) => x.m.type === RT.SUBTITLE_WORD).map((x) => x.m.index);
+  assert.deepEqual(words, [1], "the stale word 0 never follows the live word 1");
+});
+
+test("karaoke: a replayed word's progress is moved on by the time since it was heard", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  const off = (m) => relay.onMessage({ ...m, from: "offscreen" });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  try {
+    off({ type: RT.VOICE_STATE, state: "speaking" });
+    off({ type: RT.SUBTITLE, speaker: "agent", text: "Extraordinarily cheap", final: true, utteranceId: "u1", karaoke: true });
+    off({ type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 0, ms: 600, elapsed: 100 });
+    await relay.idle();
+    now += 250;
+    state.tabSent.length = 0;
+    await relay.onTabActivated({ tabId: 8 });
+    assert.deepEqual(state.tabSent.at(-1).m, { type: RT.SUBTITLE_WORD, utteranceId: "u1", index: 0, ms: 600, elapsed: 350 });
+    now += 1000;
+    state.tabSent.length = 0;
+    await relay.onTabActivated({ tabId: 3 });
+    assert.equal(state.tabSent.at(-1).m.elapsed, 600, "never past the end of the word");
+  } finally {
+    Date.now = real;
+  }
+});

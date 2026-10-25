@@ -15,7 +15,8 @@ Node 20+, TypeScript where it helps, no build step required to run (`npx tsx` is
 
 - Claude Agent SDK (TypeScript), model `claude-sonnet-5-5`. Browser tools come from the Open Claude in Chrome MCP server (see vendor/open-claude-in-chrome/README.md for how its MCP server runs; reuse the user's existing install if a second server instance would conflict).
 - WebSocket `/session` messages (JSON):
-  - client to server: `{ "type": "user_text", "text": "..." }` (a final transcript turn)
+  - client to server: `{ "type": "user_text", "text": "..." }` (a final transcript turn), `{ "type": "interrupt" }` (the talk key went down: barge-in)
+  - every socket shares one conversation; the one the user last talked into owns it, and the one that lost it gets `{ "type": "standby", "reason": "moved" | "stale", "text": "..." }` (stop speaking; "moved" also stops listening). See `agent/hub.ts`.
   - server to client: `{ "type": "agent_text", "text": "..." }` (speak this), `{ "type": "status", "text": "..." }` (optional, for the console log), `{ "type": "receipt", "item": "...", "total": "...", "last4": "4242" }`
 - `GET /cartesia-token` returns a short-lived Cartesia access token for the browser (the API key stays on the server).
 - Custom tools exposed to Claude (in-process MCP via the SDK):

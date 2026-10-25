@@ -202,8 +202,13 @@ test("settings: guidedMode from the current socket is kept; non-booleans are ign
     assert.equal(b.bridge.guidedMode(), null, "a string is not a setting");
     const got = onceEvent(b.bridge, "settings");
     ext.ws.send(JSON.stringify({ type: proto.MSG.SETTINGS, guidedMode: false }));
-    assert.deepEqual(await got, { guidedMode: false });
+    assert.deepEqual(await got, { guidedMode: false, memory: null });
     assert.equal(b.bridge.guidedMode(), false);
+    assert.equal(b.bridge.memoryEnabled(), null, "an older extension sends no memory setting");
+    const mem = onceEvent(b.bridge, "settings");
+    ext.ws.send(JSON.stringify({ type: proto.MSG.SETTINGS, guidedMode: false, memory: false }));
+    assert.deepEqual(await mem, { guidedMode: false, memory: false });
+    assert.equal(b.bridge.memoryEnabled(), false);
     ext.close();
     await onceEvent(b.bridge, "disconnect");
     assert.equal(b.bridge.guidedMode(), false, "kept across a disconnect");

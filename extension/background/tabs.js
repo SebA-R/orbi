@@ -5,8 +5,11 @@
 //     the fixed rules: non-web pages, local and private addresses, addresses
 //     with a login in them) or served from a local address (netguard.js) is
 //     left out of tabsContext and refused for every call.
-//   - A new tab page (Chrome's or Clearcart's, isNewTabPage) is listed and
-//     may be navigated to a store, but is never read or acted on.
+//   - A new tab page (Chrome's or Clearcart's, isNewTabPage) and Clearcart's
+//     "Can't reach this site" page (errpage.js) are listed and may be
+//     navigated to a store, but are never read or acted on. The error page
+//     is listed as chrome-error://chromewebdata/, without the address that
+//     failed; a user's error page for a blocked site is hidden.
 //   - That check runs again on every call (resolveAllowedTab), not only when
 //     the tabs are listed: a tab can move between calls.
 //   - Clearcart only closes tabs it opened itself.
@@ -23,6 +26,7 @@ import { BridgeError, ERR } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
 import { assertAllowed, blockReason, isAllowed } from "./allowlist.js";
 import { assertNetSafe, flagOf } from "./netguard.js";
+import { ERROR_URL, isErrorPage, recordFor } from "./errpage.js";
 
 // The router's lock_arm checks the site again with it.
 export { isAllowed };
@@ -32,6 +36,7 @@ export const LEGACY_GROUP_TITLE = "Clearcart";
 export const STATE_KEY = "clearcartTabs";
 export const NAV_TIMEOUT_MS = 20_000;
 const TITLE_MAX = 120;
+export const ERROR_TITLE = "Can't reach this site";
 const BLANK = /^(about:blank|chrome:\/\/newtab\/?)$/;
 // Chrome's own new tab pages. Tabs report Clearcart's new tab page
 // (newtab/newtab.html) as chrome://newtab/ too.
@@ -40,9 +45,12 @@ export const NEW_TAB_PATH = "newtab/newtab.html";
 
 const api = () => globalThis.chrome;
 
-// Full URL: INTERNAL replies (tab_info, agent_tabs) only.
+// Full URL: INTERNAL replies (tab_info, agent_tabs) only. Clearcart's error
+// page is chrome-error://chromewebdata/ there too, the address Chrome's own
+// error page would have.
 function info(tab) {
-  return { tabId: tab.id, url: tab.url || tab.pendingUrl || "", title: tab.title || "" };
+  const url = onErrorPage(tab) ? ERROR_URL : tab.url || tab.pendingUrl || "";
+  return { tabId: tab.id, url, title: tab.title || "" };
 }
 
 // Origin and path only: no query string, fragment or login. What Claude sees.
@@ -72,6 +80,36 @@ export function onNewTab(tab) {
   if (!tab) return false;
   const pending = tab.pendingUrl;
   return isNewTabPage(tab.url || pending) && (!pending || isNewTabPage(pending));
+}
+
+// The tab is on Clearcart's "Can't reach this site" page and not on its way
+// somewhere else.
+export function onErrorPage(tab) {
+  if (!tab) return false;
+  const pending = tab.pendingUrl;
+  return isErrorPage(tab.url || pending) && (!pending || isErrorPage(pending));
+}
+
+// A page of Clearcart's own with nothing on it to read: a new tab page or
+// the error page. Listed, may be navigated, never read or acted on.
+export const onEmptyPage = (tab) => onNewTab(tab) || onErrorPage(tab);
+
+// The user's tab is on Clearcart's error page for a site the browse mode
+// does not allow: hidden like Chrome's own error page for it would be.
+async function errorPageHidden(tab, settings, mine) {
+  if (mine || !onErrorPage(tab)) return false;
+  const rec = await recordFor(tab.url || tab.pendingUrl).catch(() => null);
+  return !!rec && !!blockReason(rec.url, settings);
+}
+
+// The address Clearcart's error page in this tab failed on, origin and path
+// only, or null. Null too when that address is not allowed: a blocked
+// site's address never reaches the agent.
+export async function failedAddress(tab) {
+  if (!onErrorPage(tab)) return null;
+  const rec = await recordFor(tab.url || tab.pendingUrl).catch(() => null);
+  if (!rec || !(await isAllowed(rec.url).catch(() => false))) return null;
+  return originPath(rec.url) || null;
 }
 
 // ------------------------------------------------------------ tab state
@@ -124,7 +162,7 @@ function hiddenReason(tab, settings, { blankOk = false } = {}) {
   if (tab.incognito) return "incognito";
   const url = tab.url || tab.pendingUrl || "";
   if (blankOk && BLANK.test(url)) return null;
-  if (onNewTab(tab)) return null;
+  if (onEmptyPage(tab)) return null;
   const why = blockReason(url, settings);
   if (why) return why;
   if (flagOf(tab.id)) return "served from a local address";
@@ -152,12 +190,13 @@ export async function tabsContext() {
   const tabs = [];
   for (const t of all) {
     const mine = state.created.includes(t.id);
-    if (hiddenReason(t, settings, { blankOk: mine })) continue;
+    if (hiddenReason(t, settings, { blankOk: mine }) || (await errorPageHidden(t, settings, mine))) continue;
     const newTab = onNewTab(t);
+    const errorPage = !newTab && onErrorPage(t);
     tabs.push({
       tabId: t.id,
-      title: String(t.title || "").slice(0, TITLE_MAX),
-      url: newTab ? "chrome://newtab/" : originPath(t.url || t.pendingUrl || ""),
+      title: errorPage ? ERROR_TITLE : String(t.title || "").slice(0, TITLE_MAX),
+      url: newTab ? "chrome://newtab/" : errorPage ? ERROR_URL : originPath(t.url || t.pendingUrl || ""),
       active: !!active && active.id === t.id,
       openedByClearcart: mine,
     });
@@ -178,12 +217,13 @@ export async function resolveTab(tabId, { nav = false } = {}) {
   else {
     // The last used tab, unless it has since moved somewhere blocked.
     if (state.last != null) tab = await api().tabs.get(state.last).catch(() => null);
-    if (tab && hiddenReason(tab, settings, { blankOk: state.created.includes(tab.id) })) tab = null;
+    const mine0 = tab && state.created.includes(tab.id);
+    if (tab && (hiddenReason(tab, settings, { blankOk: mine0 }) || (await errorPageHidden(tab, settings, mine0)))) tab = null;
     if (!tab) tab = await activeTab();
     if (!tab) throw new BridgeError(ERR.NO_TAB, "no open tab; call tabs_create");
   }
   const mine = state.created.includes(tab.id);
-  if (!(nav && mine) && hiddenReason(tab, settings, { blankOk: mine && nav })) {
+  if (!(nav && mine) && (hiddenReason(tab, settings, { blankOk: mine && nav }) || (await errorPageHidden(tab, settings, mine)))) {
     // No origin in the message: a blocked tab of the user's stays private.
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Clearcart does not use it`);
   }
@@ -198,6 +238,9 @@ export async function resolveAllowedTab(tabId, { peek = false } = {}) {
   const tab = await api().tabs.get(id);
   if (onNewTab(tab)) {
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page with nothing to use; navigate it to a store first`);
+  }
+  if (onErrorPage(tab)) {
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a page saying Chrome could not reach the site; navigate it somewhere else first`);
   }
   await assertAllowed(tab.url);
   assertNetSafe(id);
@@ -284,10 +327,11 @@ export async function navigate({ tabId, url } = {}) {
   if (typeof url !== "string" || !url) throw new BridgeError(ERR.BAD_REQUEST, "url is required");
   const id = await resolveTab(tabId, { nav: true });
   const mine = await isCreated(id);
-  // A user's new tab may only be sent to an allowed address: its history
-  // can hold sites the user visited, blocked ones included.
-  if ((url === "back" || url === "forward") && !mine && onNewTab(await api().tabs.get(id))) {
-    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page; navigate it to a web address instead`);
+  // A user's new tab or error page may only be sent to an allowed address:
+  // its history can hold sites the user visited, blocked ones included
+  // (Back from the error page loads the address that failed).
+  if ((url === "back" || url === "forward") && !mine && onEmptyPage(await api().tabs.get(id))) {
+    throw new BridgeError(ERR.NOT_ALLOWED, `tab ${id} is a new tab page or an error page; navigate it to a web address instead`);
   }
   let start;
   const history = (fn, dir) => async () => {
@@ -311,6 +355,8 @@ export async function navigate({ tabId, url } = {}) {
   await markUsed(id);
   await navigateAndWait(id, start);
   const tab = await api().tabs.get(id);
+  // The address did not load and the tab is already on Clearcart's error page.
+  if (onErrorPage(tab)) return { tabId: tab.id, url: ERROR_URL, title: ERROR_TITLE };
   // History or a redirect can lead to a site that is not allowed; report it
   // so callers stop driving. A blank page in a tab Clearcart opened is fine.
   if (!(mine && BLANK.test(tab.url || "")) && !(await isAllowed(tab.url))) {

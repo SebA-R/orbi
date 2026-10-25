@@ -1,5 +1,6 @@
 // Options page, grouped like iOS Settings (see options.html): talk key,
 // speech speed, Guided mode, browse mode and site lists, follow tab, Danger mode,
+// Memory (on or off, saved facts, Forget everything),
 // subtitles, sounds, quiet other tabs, setup status, the agent URL and the one-time
 // microphone grant (getUserMedia here, on an extension page, so the
 // offscreen document, same origin, inherits the permission).
@@ -19,6 +20,7 @@ import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/
 import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
 import { bindDangerToggle } from "../lib/danger-toggle.js";
 import { SETUP_STEPS, agentHealth, hasSiteAccess, keyName, setupDone } from "../lib/setup.js";
+import { forgetAll, forgetFact, listMemory } from "../lib/memory.js";
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -151,7 +153,7 @@ els.form.addEventListener("submit", async (e) => {
   fill(saved);
   notify(saved);
   say(els.status, "Saved.");
-  if (saved.agentUrl !== before) refreshSetup();
+  if (saved.agentUrl !== before) { refreshSetup(); refreshMemory(); }
 });
 
 els.reset.addEventListener("click", async () => {
@@ -190,6 +192,75 @@ $("open-shortcuts").addEventListener("click", () => {
   chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
 });
 
+// Memory: the saved facts live on the agent server (lib/memory.js). Each
+// has a Delete button; Forget everything takes two presses, like Danger
+// mode. Facts are shown as text only.
+const mem = {
+  list: $("memory-list"), state: $("memory-state"), all: $("memory-forget-all"),
+  confirm: $("memory-confirm"), yes: $("memory-forget-yes"), no: $("memory-forget-no"),
+};
+let memoryRun = 0;
+async function refreshMemory() {
+  const run = ++memoryRun;
+  const { agentUrl } = await loadSettings();
+  let data = null;
+  try { data = await listMemory(agentUrl); } catch {}
+  if (run !== memoryRun) return;
+  if (!data) {
+    mem.list.replaceChildren();
+    mem.all.disabled = true;
+    mem.state.textContent = "The agent server is not reachable, so saved facts can't be shown.";
+    return;
+  }
+  mem.all.disabled = !data.facts.length;
+  mem.state.textContent = data.facts.length ? `${data.facts.length} saved.` : "Nothing saved yet.";
+  mem.list.replaceChildren(...data.facts.map((f) => {
+    const li = document.createElement("li");
+    const text = document.createElement("span");
+    text.className = "fact";
+    text.textContent = f.text;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", `Delete: ${f.text}`);
+    del.dataset.id = f.id;
+    li.append(text, del);
+    return li;
+  }));
+}
+mem.list.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-id]");
+  if (!btn) return;
+  const li = btn.closest("li");
+  const next = li.nextElementSibling || li.previousElementSibling;
+  const nextId = next?.querySelector("button")?.dataset.id;
+  const fact = li.querySelector(".fact").textContent;
+  try {
+    await forgetFact((await loadSettings()).agentUrl, btn.dataset.id);
+    say(els.status, `Forgot: ${fact}.`);
+  } catch {
+    say(els.status, "Could not delete it: the agent server is not reachable.");
+  }
+  await refreshMemory();
+  (mem.list.querySelector(`button[data-id="${nextId}"]`) || $("memory-list-label")).focus?.();
+});
+mem.all.addEventListener("click", () => { mem.confirm.hidden = false; mem.yes.focus(); });
+mem.no.addEventListener("click", () => { mem.confirm.hidden = true; mem.all.focus(); });
+mem.yes.addEventListener("click", async () => {
+  mem.confirm.hidden = true;
+  try {
+    await forgetAll((await loadSettings()).agentUrl);
+    say(els.status, "Forgot everything.");
+  } catch {
+    say(els.status, "Could not forget: the agent server is not reachable.");
+  }
+  await refreshMemory();
+  mem.all.focus();
+});
+// Facts saved by voice while this page is open show up when it is back in front.
+window.addEventListener("focus", () => void refreshMemory());
+
 // Setup and server status tags. Checks can overlap (each health check takes
 // up to 3 s); only the latest counts. Plain text, not announced on load.
 const tag = (el, state, text) => { el.dataset.state = state; el.textContent = text; };
@@ -223,6 +294,7 @@ try { $("version").textContent = chrome.runtime.getManifest().version; } catch {
 fill(await loadSettings());
 await showMicState();
 refreshSetup();
+refreshMemory();
 // The popup's "Blocked sites" link and the setup page's talk key link land here.
 const target = { "#blocked-sites": els.blocklist, "#hotkey": els.hotkey }[location.hash];
 if (target) { target.scrollIntoView({ block: "center" }); target.focus(); }

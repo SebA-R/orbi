@@ -27,7 +27,7 @@ export const MSG = Object.freeze({
   PING: "ping",
   PONG: "pong",
   BLOCKLIST: "blocklist",
-  // { type: "settings", guidedMode }: agent behavior settings, worker to agent.
+  // { type: "settings", guidedMode, memory }: agent behavior settings, worker to agent.
   SETTINGS: "settings",
   DANGER_MODE: "danger_mode",
 });
@@ -129,9 +129,18 @@ export const RT = Object.freeze({
   TTS_SPEAK: "tts.speak",
   TTS_STOP: "tts.stop",
   SUBTITLE: "subtitle",
+  // offscreen -> worker -> active tab: the word of the agent line being heard
+  // ({utteranceId, index, done?, frozen?, fallback?}).
+  SUBTITLE_WORD: "subtitle.word",
   FRAME: "frame",
+  // worker -> top frame: an agent pointer sample for content/cursor.js.
+  CURSOR: "cursor",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
+  // Clearcart's "Can't reach this site" page: the user pressed Retry.
+  ERROR_PAGE_RETRY: "errorpage.retry",
+  // worker -> offscreen: say your VOICE_STATE again (a restarted worker asks).
+  VOICE_SYNC: "voice.sync",
 });
 
 export class BridgeError extends Error {

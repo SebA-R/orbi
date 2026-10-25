@@ -68,7 +68,7 @@ export interface ExtBridgeEvents {
   connect: [ExtInfo];
   disconnect: [{ reason: string }];
   blocklist: [readonly BlockEntry[]];
-  settings: [{ guidedMode: boolean }];
+  settings: [{ guidedMode: boolean; memory: boolean | null }];
   danger_mode: [boolean];
 }
 
@@ -81,6 +81,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   private entries: readonly BlockEntry[] | null = null;
   private guided: boolean | null = null;
   private danger = false;
+  private memory: boolean | null = null;
 
   constructor(private log: (line: string) => void = (l) => console.log(l)) {
     super();
@@ -105,6 +106,13 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   // across a reconnect), or null before the first one arrives.
   guidedMode(): boolean | null {
     return this.guided;
+  }
+
+  // The user's Memory setting as the extension last sent it (kept across a
+  // reconnect), or null before the first one arrives (an older extension
+  // never sends it).
+  memoryEnabled(): boolean | null {
+    return this.memory;
   }
 
   // The user's Danger mode setting as the extension last sent it (false
@@ -229,8 +237,9 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       }
       if (m.type === "settings" && ws === this.current && typeof m.guidedMode === "boolean") {
         this.guided = m.guidedMode;
-        this.log(`ext: guided mode ${this.guided ? "on" : "off"}`);
-        this.emit("settings", { guidedMode: m.guidedMode });
+        if (typeof m.memory === "boolean") this.memory = m.memory;
+        this.log(`ext: guided mode ${this.guided ? "on" : "off"}, memory ${this.memory === false ? "off" : "on"}`);
+        this.emit("settings", { guidedMode: m.guidedMode, memory: this.memory });
       }
       if (m.type === "danger_mode" && ws === this.current) {
         this.danger = m.on === true;

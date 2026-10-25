@@ -32,9 +32,15 @@
     return e;
   }
 
-  // Throws ERR.LOCKED with the message for Claude when lock is set.
-  function refuse(lock) {
-    if (lock) throw PageError(ERR.LOCKED, Protect.message(lock));
+  // Throws ERR.LOCKED with the message for Claude when lock is set. The
+  // message names the control's ref (el, else the control the lock was
+  // found on) so Claude can pass it to request_unlock. A control in another
+  // document (a frame) has no ref Claude could use.
+  function refuse(lock, el) {
+    if (!lock) return;
+    var target = el || lock.el;
+    var ref = target && target.nodeType === 1 && target.ownerDocument === document ? refFor(target) : null;
+    throw PageError(ERR.LOCKED, Protect.message(lock, ref, target));
   }
 
   // Lock marker for read_page and find: only on the control itself (or the
@@ -386,7 +392,30 @@
     text = Mask.maskCardRuns(text);
     var truncated = text.length > maxChars;
     if (truncated) text = text.slice(0, maxChars) + "\n… (truncated)";
-    return { url: pageUrl(), title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
+    var out = { url: pageUrl(), title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
+    var locked = lockedList();
+    if (locked.length) out.locked = locked;
+    return out;
+  }
+
+  // The page's locked controls for get_page_text, which has no refs of its
+  // own: [{ ref, name, uncheckOnly?, userOnly? }], so Claude knows them without a
+  // read_page and can pass the ref to request_unlock. An uncheck-only box
+  // that is already off is listed too (it may never be turned on).
+  var LOCKED_LIST_MAX = 40;
+  function lockedList() {
+    var out = [];
+    var locks = Protect.listLocks(document, 300);
+    for (var i = 0; i < locks.length && out.length < LOCKED_LIST_MAX; i++) {
+      var x = locks[i];
+      if (!Protect.blocks(x.lock) || hiddenByStyle(x.el) || (x.el.closest && x.el.closest("[hidden],[aria-hidden=true]"))) continue;
+      var m = { ref: refFor(x.el), name: x.lock.label };
+      if (x.lock.optin) m.uncheckOnly = true;
+      // Never unlocks on request (Place order, wallets, card forms, marked).
+      if (!Protect.unlockClass(x.lock, x.el)) m.userOnly = true;
+      out.push(m);
+    }
+    return out;
   }
 
   // ------------------------------------------------------------ form_input
@@ -427,7 +456,7 @@
     if (el.disabled) throw PageError(ERR.BAD_REQUEST, "element is disabled");
     // Locked controls: an uncheck-only box may be turned off, nothing else.
     var lk = Protect.lockOf(el);
-    if (lk && !(lk.optin && (!truthy(value) || lk.checked))) refuse(lk);
+    if (lk && !(lk.optin && (!truthy(value) || lk.checked))) refuse(lk, el);
     var tag = el.tagName;
     if (tag === "INPUT" && (el.type === "checkbox" || el.type === "radio")) {
       var want = truthy(value);
@@ -452,7 +481,7 @@
           Protect.classifyLabel(clean(hit.value).replace(/[-_]+/g, " "), { checkable: true });
         if (optKind) {
           throw PageError(ERR.LOCKED, "Locked: '" + Mask.maskCardRuns(clean(hit.label || hit.textContent)).replace(/'/g, "\u2019").slice(0, 60) +
-            "' turns on a subscription, saved card, account or one-tap payment. The AI may choose another option, but only the user can choose this one.");
+            "' turns on a subscription, saved card, account or one-tap payment, so nothing was changed. The AI may choose another option, but only the user can choose this one; tell them if they want it.");
         }
       }
       nativeSet(el, hit.value);

@@ -196,6 +196,17 @@ async function pageText(bridge: Pick<ExtBridge, "call">, tabId: number): Promise
   }
 }
 
+// True only when the page answers and none of its card fields holds a
+// value.
+async function formEmpty(bridge: Pick<ExtBridge, "call">, tabId: number): Promise<boolean> {
+  try {
+    const fields = (await bridge.call<{ fields?: Array<{ kind?: string; filled?: boolean }> }>("read_fields", { tabId }, 10_000))?.fields;
+    return Array.isArray(fields) && !fields.some((f) => String(f.kind || "").startsWith("cc-") && f.filled);
+  } catch {
+    return false;
+  }
+}
+
 // Place order is locked for every agent tool; only the grant plus the
 // extension's lock_arm nonce gets one press through press_protected.
 async function clickPlaceOrder(bridge: Pick<ExtBridge, "call">, tabId: number, grant: Grant, gate: UnlockGate): Promise<void> {
@@ -244,7 +255,10 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
   }
 
   // Button lock: issue the grant while the yes is fresh (see unlock.ts).
-  const issued = gate.issue({ confirmation: claimedYes(c), tabId, href: await extTabUrl(bridge, tabId), pageTotal });
+  // startHref: where the press happens, so only a move to another page
+  // counts as the order page.
+  const startHref = await extTabUrl(bridge, tabId);
+  const issued = gate.issue({ confirmation: claimedYes(c), tabId, href: startHref, pageTotal });
   if (!issued.ok) return { ok: false, error: issued.error };
 
   let card: Card;
@@ -281,8 +295,12 @@ export async function payNowExt(state: PayState, deps: ExtPayDeps = {}): Promise
     await sleep(Math.min(600, pollMs));
     while (Date.now() < deadline) {
       const href = await extTabUrl(bridge, tabId);
-      if (onPayOrder(href)) {
-        state.cardFieldsLive = false;
+      // The order page: a different address, an order path, and not a
+      // checkout page ("/order/checkout" is still checkout).
+      if (href && href !== startHref && onPayOrder(href) && !onPayCheckout(href)) {
+        // The guard stays up (and finally clears the form) unless the page
+        // shows no filled card field any more.
+        state.cardFieldsLive = !(await formEmpty(bridge, tabId));
         const text = await pageText(bridge, tabId);
         const total = pageMoney(text, /Total charged\s*:?\s*\$?\s*([0-9][0-9,]*\.[0-9]{2})/i) || c.total;
         const shown = /ending in\s*(\d{4})/i.exec(text)?.[1];

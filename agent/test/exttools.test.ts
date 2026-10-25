@@ -91,3 +91,11 @@ test("errors come back as isError text; screenshot as an image", async () => {
   const shot: any = await defs.screenshot.handler({}, {});
   assert.deepEqual(shot.content[0], { type: "image", data: "AAAA", mimeType: "image/jpeg" });
 });
+
+test("tool descriptions tell Claude locked means request_unlock, not give up", () => {
+  const defs = Object.fromEntries(extToolDefinitions({ call: async () => ({}) } as any).map((t: any) => [t.name, t.description]));
+  for (const name of ["read_page", "find", "click"]) assert.match(defs[name], /request_unlock/, name);
+  assert.match(defs.read_page, /never for Place order, Buy now, Pay or wallets/);
+  assert.match(defs.get_page_text, /locked/);
+  assert.match(defs.click, /names the control and its ref/);
+});

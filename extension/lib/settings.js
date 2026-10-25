@@ -41,6 +41,11 @@ export const DEFAULTS = Object.freeze({
   // Clearcart's new tab page (newtab/newtab.html), so Space to talk and
   // subtitles work on new tabs. Off: it forwards to Chrome's own.
   newTabPage: true,
+  // A main-frame network error (no connection, unknown address, refused)
+  // in a normal tab goes to Clearcart's "Can't reach this site" page
+  // (background/errpage.js), where Space to talk works. Off: Chrome's own
+  // error page stays.
+  errorPages: true,
   // Danger mode: Clearcart presses sign in and sign up without asking
   // (content/protect.js says what it lifts). Off unless the user turns it
   // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
@@ -50,6 +55,13 @@ export const DEFAULTS = Object.freeze({
   // (background/actor.js). Off, they happen at once. Typing is always
   // key by key at a typist's cadence, either way.
   watchablePace: true,
+  // Memory: the agent keeps facts the user asked it to remember and the
+  // last two hours of the conversation, on this computer only
+  // (agent/memory.ts). Off, it neither uses nor saves them.
+  memory: true,
+  // Clearcart's own pointer on the page while it clicks, types and scrolls
+  // (content/cursor.js). Purely visual.
+  showCursor: true,
 });
 
 export const DANGER_MODE_COPY = "Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.";
@@ -99,7 +111,10 @@ export function normalize(raw = {}) {
   if (typeof raw.sounds === "boolean") out.sounds = raw.sounds;
   if (typeof raw.guidedMode === "boolean") out.guidedMode = raw.guidedMode;
   if (typeof raw.watchablePace === "boolean") out.watchablePace = raw.watchablePace;
+  if (typeof raw.showCursor === "boolean") out.showCursor = raw.showCursor;
   if (typeof raw.newTabPage === "boolean") out.newTabPage = raw.newTabPage;
+  if (typeof raw.memory === "boolean") out.memory = raw.memory;
+  if (typeof raw.errorPages === "boolean") out.errorPages = raw.errorPages;
   // Only a stored true turns it on.
   out.dangerMode = raw.dangerMode === true;
   return out;
@@ -140,6 +155,27 @@ export async function seedBlocklist(storage = globalThis.chrome?.storage?.local)
   if (blocklist !== undefined) return false;
   await storage.set({ blocklist: [...SUGGESTED_BLOCKLIST] });
   return true;
+}
+
+// Earlier versions allowed one local test page by default, and saving any
+// setting stored that list. It is gone now: on update the old default is
+// taken out of the stored allowlist once, so only sites the user added stay
+// allowed. Answers true when it removed something.
+export const RETIRED_ALLOWED = Object.freeze(["http://localhost:4000"]);
+export const MIGRATIONS_KEY = "settingsMigrations";
+const DROP_RETIRED_ALLOWED = "drop-retired-allowed-site";
+
+export async function migrateSettings(storage = globalThis.chrome?.storage?.local) {
+  const got = await storage.get([MIGRATIONS_KEY, "allowlist"]);
+  const done = Array.isArray(got[MIGRATIONS_KEY]) ? got[MIGRATIONS_KEY] : [];
+  if (done.includes(DROP_RETIRED_ALLOWED)) return false;
+  const patch = { [MIGRATIONS_KEY]: [...done, DROP_RETIRED_ALLOWED] };
+  if (Array.isArray(got.allowlist)) {
+    const kept = got.allowlist.filter((o) => !RETIRED_ALLOWED.includes(normalizeOrigin(o)));
+    if (kept.length !== got.allowlist.length) patch.allowlist = kept;
+  }
+  await storage.set(patch);
+  return "allowlist" in patch;
 }
 
 export async function saveSettings(patch, storage = globalThis.chrome?.storage?.local) {

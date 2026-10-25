@@ -22,18 +22,23 @@ Needs `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` in the repo-root `.env`, and Ch
 | `CLEARCART_ALLOWED_ORIGINS` | none | comma-separated origins always accepted, in both modes, local addresses included (parsed-origin match; set on the command line, it is read before `.env` loads). In allowlist mode they are the only sites |
 | `CLEARCART_BLOCKED_ORIGINS` | none | comma-separated origins never opened, in both modes (exact origins) |
 | `CLEARCART_PAY_ORIGINS` | none | the only origins where the unlock gate issues grants (set on the command line). Independent of the browse mode, so open browsing never makes a site payable. The agent is told to stop at the cart on every other site |
+| `CLEARCART_MEMORY` | `1` | Memory outside ext mode (`0`: off). In ext mode the extension's Memory setting decides. Off: saved facts are not used or saved and the conversation is not kept for a restart |
+| `CLEARCART_DATA_DIR` | `agent/.data` | where `memory.json` (saved facts) and `transcript.json` (the last 2 hours of what was said) live; gitignored, files 0600 |
+| `CLEARCART_EXT_IDS` | from `extension/manifest.json`'s key | comma-separated extension ids allowed at `/memory` |
 | `CLEARCART_BROWSER=ext` | off | drive the browser through the Clearcart extension instead of Open Claude in Chrome: adds the `/ext` WebSocket (`extbridge.ts`), gives Claude the extension tools as the in-process `browser` MCP server (`exttools.ts`), and `pay_now` fills the card with one `fill_payment` bridge call then presses Place order. Paying runs only on this path. Unset, nothing changes |
 
-Tests: `npm test` (fake extension over a real socket; the server test uses ports 5170 to 5173).
+Tests: `npm test` (fake extension over a real socket; the server test uses ports 5170 to 5176).
 
 ## Files
 
-- `server.ts`: static `voice/public` at `/`, `GET /cartesia-token` (POST `https://api.cartesia.ai/access-token`, `Cartesia-Version: 2026-08-14`, TTS and STT grants, returns `{ token, expires_in: 300 }`), `GET /healthz`, WebSocket `/session`; requests must carry a local `Host` header.
-- `session.ts`: one `query()` per WebSocket with streamed user turns, the `request_checkout` and `pay_now` tools, and the PreToolUse guard.
+- `server.ts`: static `voice/public` at `/`, `GET /cartesia-token` (POST `https://api.cartesia.ai/access-token`, `Cartesia-Version: 2026-08-14`, TTS and STT grants, returns `{ token, expires_in: 300 }`), `GET /healthz`, WebSocket `/session`; requests must carry a local `Host` header, and WebSocket upgrades an `Origin` that is the Clearcart extension or this server's own page (or none, for clients that are not browsers), so a web page cannot open `/session` and speak as the user.
+- `hub.ts`: one voice session for every `/session` socket. The socket the user last talked into owns it (`interrupt` claims it; `user_text` does too, unless that socket lost the session since, then it gets `{ type: "standby", reason: "stale" }` and the words are dropped). Output goes to the owner only. On a change of owner the old one gets `{ type: "standby", reason: "moved" }`, a read-back or unlock question still waiting is declined (never confirmed) and the turn in progress is muted. The session ends with the last socket or when its agent stops.
+- `session.ts`: one `query()` for that session with streamed user turns, the `request_checkout` and `pay_now` tools, and the PreToolUse guard.
 - `pay.ts`: the `pay_now` logic. `bridge.ts`: our own client for the extension's bridge socket.
 - `hostcheck.ts`: the `Host` header check (DNS rebinding defense).
 - `unlock.ts`: the button lock's unlock gate. `ocic-lock.ts`: the button lock checks for the Open Claude in Chrome path. `origins.ts`: the browse mode, allowed, blocked and pay origins. `blocklist.ts`: the blocked sites check, imported from `extension/lib/blocklist.js`.
 - `prompt.ts`: the system prompt.
+- `memory.ts`: saved facts and the recent conversation, on this computer only. Facts are saved only by the `remember` tool, at once when the user's own last words asked to remember it and the fact is made of their words, otherwise after a spoken yes; `forget` works the same way and `recall` lists them. A filter refuses card numbers, security codes, passwords, government IDs, bank details, emails, long numbers and anything that reads like an instruction. The conversation keeps only the user's words and Clearcart's spoken replies (never page text or the context block, long numbers removed) and is put in front of the next session's first turn as quoted data, so a restart picks up where it left off. Facts about shipping, addresses, paying or pressing buttons are refused too, at most one fact per spoken ask saves without a question, and a memory question is never asked while a checkout read-back or unlock question waits. In ext mode Memory is off until the extension says it is on. `GET /memory`, `DELETE /memory/<id>` and `DELETE /memory` serve the extension's settings page: loopback peers with the Clearcart extension's `Origin` only.
 
 ## How the browser is wired
 
