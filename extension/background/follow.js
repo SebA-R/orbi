@@ -23,6 +23,7 @@ export const ACT_METHODS = new Set([
   "form_input",
   "click_ref",
   "press_protected",
+  "press_unlocked",
   "fill_payment",
   "clear_payment",
 ]);

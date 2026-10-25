@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  agentHealth, allReady, hasSiteAccess, missingSetup, onInstalledSetup, requestSiteAccess, shouldOpenSetup, talkKeyHelp, SETUP_PATH,
+  agentHealth, allReady, hasSiteAccess, missingSetup, onInstalledSetup, requestSiteAccess, setupDone, shouldOpenSetup, talkKeyHelp, SETUP_PATH, SETUP_STEPS,
 } from "../../../extension/lib/setup.js";
 import { grantMic } from "../../../extension/lib/mic-grant.js";
 
@@ -129,4 +129,36 @@ test("setup and popup buttons keep 4.5:1 text contrast in light and dark", async
     assert.ok(ratio(v("on-accent"), v("accent")) >= 4.5, block);
   }
   assert.match(css, /button \{[^}]*color: var\(--on-accent\)/);
+});
+
+test("setupDone counts the four setup checks; the talk key is always done", () => {
+  assert.equal(SETUP_STEPS, 4);
+  assert.equal(setupDone({ site: true, mic: "granted", agent: { connected: true } }), 4);
+  assert.equal(setupDone({ site: false, mic: "prompt", agent: { connected: false } }), 1);
+  assert.equal(setupDone({ site: true, mic: "unknown", agent: null }), 2);
+  assert.equal(setupDone({ site: false, mic: "granted", agent: { connected: true } }), 3);
+});
+
+test("popup text keeps 4.5:1 contrast and the switch track 3:1", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("../../../extension/popup/popup.css", import.meta.url), "utf8");
+  const blocks = css.match(/:root \{[^}]*\}/g);
+  assert.equal(blocks.length, 2, "light and dark tokens");
+  const lum = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  for (const block of blocks) {
+    const v = (name) => block.match(new RegExp(`--${name}: (#[0-9a-f]{6})`, "i"))[1];
+    const ratio = (a, b) => { const [x, y] = [lum(v(a)), lum(v(b))].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    for (const [fg, bg] of [["fg", "bg"], ["muted", "bg"], ["fg", "sheet"], ["soft", "fill"], ["fg", "fill"],
+      ["ok-fg", "ok-bg"], ["warn-fg", "warn-bg"], ["wait-fg", "wait-bg"]]) {
+      assert.ok(ratio(fg, bg) >= 4.5, `${fg} on ${bg}: ${ratio(fg, bg).toFixed(2)}`);
+    }
+    for (const [a, b] of [["switch-off", "sheet"], ["sw-on", "sheet"], ["knob", "sw-on"], ["focus", "bg"], ["focus", "sheet"]]) {
+      assert.ok(ratio(a, b) >= 3, `${a} on ${b}: ${ratio(a, b).toFixed(2)}`);
+    }
+  }
+  assert.doesNotMatch(css, /@import|url\(\s*["']?https?:/, "no remote fonts or images");
 });
