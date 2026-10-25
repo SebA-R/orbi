@@ -87,7 +87,7 @@ test("a click moves along a path, rests, then presses and releases on the target
   assert.deepEqual(actor.pointer(5), { x: 400, y: 300 });
   // The hook: every sample, with the action and phase.
   assert.equal(events.length, moves.length + 2);
-  assert.deepEqual(Object.keys(events[0]).sort(), ["action", "phase", "t", "tabId", "x", "y"]);
+  assert.deepEqual(Object.keys(events[0]).sort(), ["action", "phase", "t", "tabId", "to", "x", "y"]);
   assert.deepEqual(events.slice(-2).map((e) => e.phase), ["press", "release"]);
   assert.ok(events.every((e) => e.action === "click" && e.tabId === 5));
 });

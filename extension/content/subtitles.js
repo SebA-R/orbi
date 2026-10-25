@@ -83,6 +83,9 @@
   font-size: 21px; line-height: 1.36; font-weight: 500; letter-spacing: -.018em; color: var(--ink);
   max-height: calc(21px * 1.36 * 3); overflow: hidden; overflow-wrap: anywhere;
 }
+.act { font-size: 12px; line-height: 1.3; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act:empty { display: none; }
+.lines:has(> .user:empty):has(> .agent:empty) { align-self: center; } /* the action line alone */
 .hint { font-size: 12px; line-height: 1.3; font-weight: 500; letter-spacing: .01em; color: var(--muted); }
 .user:empty, .agent:empty, .hint:empty { display: none; }
 .w { display: inline; animation: word-in .46s var(--ease) both; animation-delay: calc(var(--i, 0) * 55ms); }
@@ -203,14 +206,17 @@
     user.className = "user";
     const agent = document.createElement("div");
     agent.className = "agent";
-    lines.append(hint, user, agent);
+    // The agent's current action (content/cursor.js), under the words.
+    const act = document.createElement("div");
+    act.className = "act";
+    lines.append(hint, user, agent, act);
     if (face) card.append(face.el);
     card.append(lines);
     wrap.append(card);
     shadow.append(wrap);
     place(root, host);
     if (ui.face) ui.face.destroy();
-    Object.assign(ui, { host, wrap, hint, user, agent, face });
+    Object.assign(ui, { host, wrap, hint, user, agent, face, act });
     keepLast(root);
     return true;
   }
@@ -350,6 +356,7 @@
     ui.lastSpeaker = null;
     if (ui.agent) ui.agent.textContent = "";
     if (ui.user) ui.user.textContent = "";
+    if (ui.act) ui.act.textContent = "";
   }
 
   // Fade out first, then empty the card, so the words don't vanish mid-fade.
@@ -549,6 +556,20 @@
     cancelHide();
   }
 
+  // The action line: a small secondary line that never replaces what was
+  // said. It shows the card when it is hidden and lets the usual timers
+  // hide it again.
+  function setAction(text) {
+    text = typeof text === "string" ? text.replace(/\s+/g, " ").trim().slice(0, 80) : "";
+    if (!text) { if (ui.act) ui.act.textContent = ""; return; }
+    if (!ui.enabled || !mount()) return;
+    flushPendingClear();
+    ui.act.textContent = text;
+    show();
+    if (!ui.hideTimer && (ui.state === "idle" || ui.state === "thinking")) scheduleHide();
+  }
+  globalThis.__clearcartCaption = Object.freeze({ set: setAction });
+
   function setEnabled(on) {
     ui.enabled = on !== false;
     if (!ui.enabled) {
@@ -557,13 +578,16 @@
       watcher = null;
       if (ui.face) ui.face.destroy();
       if (ui.host) ui.host.remove();
-      ui.host = ui.wrap = ui.hint = ui.user = ui.agent = ui.face = null;
+      ui.host = ui.wrap = ui.hint = ui.user = ui.agent = ui.face = ui.act = null;
     }
   }
 
   // A click anywhere on the page (the card itself takes no clicks) fades the
   // card out early, like dismissing a toast.
+  // The agent's own clicks (content/cursor.js saw its pointer just now) don't.
   document.addEventListener("pointerdown", () => {
+    const agent = globalThis.__clearcartAgentPointer;
+    if (agent && typeof agent.busy === "function" && agent.busy()) return;
     if (ui.wrap && ui.wrap.classList.contains("on")) hide();
   }, { capture: true, passive: true });
 
