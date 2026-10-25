@@ -2,9 +2,9 @@
 //
 // The button lock (extension/content/protect.js) keeps Claude's tools off
 // checkout, sign in, subscribe, saved card and marked controls. When the
-// user's own words ask for that action as an imperative ("sign me in", "go
-// to checkout"), request_unlock presses the control once; otherwise it asks
-// one short question and needs an explicit yes (isExplicitYes). Marked
+// user's own words ask for that action ("sign me in", "go to checkout", "I
+// want to check out"), request_unlock presses the control once; otherwise it
+// asks one short question and needs a clear yes (isUnlockYes). Marked
 // controls never unlock this way.
 //
 // What never unlocks here: placing an order, buy now, pay, wallets, marked
@@ -49,6 +49,7 @@ const USER_INTENTS: Array<[Intent, RegExp]> = [
   ["checkout", /^ (take|bring|get) (me|us) (to|into) (the )?check ?out /],
   ["checkout", /^ check ?out( (now|please|for me|thanks|thank you|right now))* $/],
   ["checkout", /^ (start|begin|open) (the )?check ?out /],
+  ["checkout", /^ (press|click|tap|hit|push) (on )?(the )?check ?out( button| link)?( (now|please|for me))* $/],
   ["signin", /^ (sign|log) (me |us )?(back )?in(to)? /],
   ["signin", /^ (signin|login)( me)? /],
   ["signout", /^ (sign|log) (me |us )?out /],
@@ -102,8 +103,25 @@ const HEDGE = new RegExp(
     ")(?= )"
 );
 
-// Polite lead-ins stripped from the start of a clause.
-const FILLER = /^ (please|ok|okay|yes|yeah|yep|alright|all right|now|great|cool|sure|just|hey|so|and|then|lets|can you|could you|would you|will you|can we|could we|go ahead and) /;
+// Polite lead-ins stripped from the start of a clause, including the ways
+// people state what they want ("I want to check out", "I'd like to
+// subscribe", "I'm giving you permission to check out"). The action verb
+// must still come right after them; HEDGE runs on the whole text first.
+const FILLER = new RegExp(
+  "^ (" +
+    [
+      "please", "ok", "okay", "yes", "yeah", "yep", "alright", "all right", "now", "great", "cool", "sure", "just", "hey", "so",
+      "and", "then", "uh", "um", "lets", "can you", "could you", "would you", "will you", "can we", "could we", "go ahead and",
+      "you can", "you may", "feel free to",
+      // norm() drops apostrophes: "I'd" is "id", "I'm" is "im".
+      "(i|we) (really )?(want|need|wanna|would like|wish)( you| us)?( to)?",
+      "(id|wed) (really )?like( you| us)? to",
+      "(i am|im|we are) ready to",
+      "(i am|im|i|we are|we) (giving|give) you (my |our )?(explicit |full )?permission to",
+      "you have (my |our )?(explicit |full )?permission to",
+    ].join("|") +
+    ") "
+);
 
 // A question that is really a request: "can you sign me in?".
 const POLITE = /^ (please |ok |okay |yes |yeah |now |great |cool )*(can you|could you|would you|will you|can we|could we) /;
@@ -161,6 +179,35 @@ export function isDirectAsk(userText: string, cls: UnlockClass | null, label: st
   const want = userIntents(raw);
   for (const intent of labelIntents(label)) if (want.has(intent) && INTENT_CLASS[intent] === cls) return true;
   return false;
+}
+
+// The answer to request_unlock's own question ("Do you want me to go to
+// checkout?"). Wider than the pay read-back's isExplicitYes (session.ts),
+// which this never replaces: a clear yes may say more ("yes, that's what I
+// just said", "yes, press checkout"), and an answer that is itself a direct
+// ask for this control counts. Any no, hedge, "but", condition or question
+// is not a yes. Only ever pass the user's transcribed answer.
+const YES_LEAD = /^ (yes|yeah|yep|yup|ya|yea|go ahead|do it|please do|absolutely|definitely|of course|correct|affirmative) /;
+const YES_FILLER = /^ (ok|okay|alright|all right|sure|uh|um|oh|well|so|please) /;
+const NOT_YES = new RegExp(
+  " (" +
+    [
+      "no", "nope", "nah", "not", "dont", "do not", "never", "stop", "wait", "hold on", "hang on", "cancel", "nevermind", "never mind",
+      "later", "but", "instead", "unless", "if", "maybe", "might", "perhaps", "actually", "hmm", "why", "how", "which", "should",
+      "shouldnt", "wont", "cant", "isnt", "rather", "else", "other",
+    ].join("|") +
+    ")(?= )"
+);
+
+export function isUnlockYes(answer: string, cls: UnlockClass | null, label: string): boolean {
+  const raw = String(answer ?? "");
+  let n = norm(raw);
+  if (!n.trim() || n.trim().split(" ").length > 30 || /\?/.test(raw) || NOT_YES.test(n)) return false;
+  for (let prev = ""; prev !== n; ) {
+    prev = n;
+    n = n.replace(YES_FILLER, " ");
+  }
+  return YES_LEAD.test(n) || isDirectAsk(raw, cls, label);
 }
 
 // ------------------------------------------------------------------ grant
