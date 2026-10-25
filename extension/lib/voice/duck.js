@@ -75,7 +75,7 @@ export function createDucker({
 
   async function fade(tabId, down, ms) {
     const run = chromeApi.scripting.executeScript({ target: { tabId, allFrames: true }, func: fadeMedia, args: [down, ms] });
-    const cap = new Promise((r) => timers.setTimeout(r, ms + 400)); // never wait on a stuck frame
+    const cap = new Promise((r) => timers.setTimeout(r, ms + 1000)); // never wait on a stuck frame
     try {
       await Promise.race([run, cap]);
     } catch {
