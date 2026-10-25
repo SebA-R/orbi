@@ -435,7 +435,7 @@ test("extension settings: provider, a loopback-only base URL and a safe model na
     assert.deepEqual(await changed, { provider: "local", localBaseUrl: "http://127.0.0.1:1234/v1", localModel: "qwen2.5:7b", localVision: null });
     let events = 0;
     b.bridge.on("provider", () => events++);
-    for (const localBaseUrl of ["https://api.openai.com/v1", "http://localhost.evil.example/v1", "http://localhost@evil.example/v1", "http://localhost./v1", "http://[::ffff:127.0.0.1]:11434/v1", "http://192.168.1.5:11434/v1", "file:///etc/passwd", "http://localhost:11434/v1?x=1", 42]) {
+    for (const localBaseUrl of ["https://api.openai.com/v1", "http://localhost.evil.example/v1", "http://localhost@evil.example/v1", "http://localhost./v1", "http://[::ffff:127.0.0.1]:11434/v1", "http://192.168.1.5:11434/v1", "file:///etc/passwd", "http://localhost:11434/v1?x=1", "http://localhost:11434//evil.example/v1", 42]) {
       send({ provider: "local", localBaseUrl, localModel: "qwen2.5:7b" });
     }
     for (const localModel of ["llama; rm -rf /", "../../etc/passwd", "a".repeat(200), "", 7]) send({ provider: "local", localModel });

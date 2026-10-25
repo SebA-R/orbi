@@ -35,8 +35,8 @@ export function parseProvider(v: unknown): Provider | null {
 
 // The endpoint's base URL, normalized (no trailing slash; /v1 when no path
 // is given), or null unless it is http(s) to this computer. Other hosts,
-// "localhost." and IPv4-mapped spellings, user names, a query or a
-// fragment are refused.
+// "localhost." and IPv4-mapped spellings, user names, a query, a fragment
+// and a path starting "//" (it reads as a host once joined) are refused.
 export function parseLocalBaseUrl(v: unknown): string | null {
   if (typeof v !== "string" || v.length > 300) return null;
   let u: URL;
@@ -47,7 +47,7 @@ export function parseLocalBaseUrl(v: unknown): string | null {
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   if (!LOOPBACK_HOSTS.has(u.hostname)) return null;
-  if (u.username || u.password || u.search || u.hash) return null;
+  if (u.username || u.password || u.search || u.hash || u.pathname.startsWith("//")) return null;
   const pathname = u.pathname.replace(/\/+$/, "");
   return `${u.protocol}//${u.host}${pathname || "/v1"}`;
 }
