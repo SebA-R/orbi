@@ -11,7 +11,7 @@ import { createRouter } from "./router.js";
 import { createFollower } from "./follow.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
-import { endpoints, loadSettings, seedBlocklist } from "../lib/settings.js";
+import { endpoints, loadSettings, migrateSettings, seedBlocklist } from "../lib/settings.js";
 import { MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 import { installFrame } from "./frame.js";
@@ -24,6 +24,10 @@ const log = createLogger("worker");
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   console.info(`[clearcart] installed (${reason}), version ${VERSION}`);
   seedBlocklist().catch((e) => log.warn(`blocklist seed failed: ${e.message}`));
+  // An update takes the old default allowed site out of stored settings.
+  migrateSettings()
+    .then((removed) => removed && log.info("removed the old default allowed site"))
+    .catch((e) => log.warn(`settings migration failed: ${e.message}`));
   // Earlier versions kept agent tabs in a "Clearcart" tab group: take them
   // out of it, closing nothing.
   tabs.ungroupLegacy().then((n) => n && log.info(`ungrouped ${n} tab(s) from the old Clearcart group`)).catch(() => {});

@@ -142,6 +142,27 @@ export async function seedBlocklist(storage = globalThis.chrome?.storage?.local)
   return true;
 }
 
+// Earlier versions allowed one local test page by default, and saving any
+// setting stored that list. It is gone now: on update the old default is
+// taken out of the stored allowlist once, so only sites the user added stay
+// allowed. Answers true when it removed something.
+export const RETIRED_ALLOWED = Object.freeze(["http://localhost:4000"]);
+export const MIGRATIONS_KEY = "settingsMigrations";
+const DROP_RETIRED_ALLOWED = "drop-retired-allowed-site";
+
+export async function migrateSettings(storage = globalThis.chrome?.storage?.local) {
+  const got = await storage.get([MIGRATIONS_KEY, "allowlist"]);
+  const done = Array.isArray(got[MIGRATIONS_KEY]) ? got[MIGRATIONS_KEY] : [];
+  if (done.includes(DROP_RETIRED_ALLOWED)) return false;
+  const patch = { [MIGRATIONS_KEY]: [...done, DROP_RETIRED_ALLOWED] };
+  if (Array.isArray(got.allowlist)) {
+    const kept = got.allowlist.filter((o) => !RETIRED_ALLOWED.includes(normalizeOrigin(o)));
+    if (kept.length !== got.allowlist.length) patch.allowlist = kept;
+  }
+  await storage.set(patch);
+  return "allowlist" in patch;
+}
+
 export async function saveSettings(patch, storage = globalThis.chrome?.storage?.local) {
   const next = normalize({ ...(await loadSettings(storage)), ...patch });
   await storage.set(next);

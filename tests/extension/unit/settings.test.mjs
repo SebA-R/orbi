@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  DEFAULTS, endpoints, loadSettings, normalize, normalizeAgentUrl, normalizeOrigin, parseOriginLines, saveSettings, seedBlocklist,
+  DEFAULTS, endpoints, loadSettings, migrateSettings, MIGRATIONS_KEY, normalize, normalizeAgentUrl, normalizeOrigin, parseOriginLines,
+  RETIRED_ALLOWED, saveSettings, seedBlocklist,
 } from "../../../extension/lib/settings.js";
 import { SUGGESTED_BLOCKLIST } from "../../../extension/lib/blocklist.js";
 
@@ -121,4 +122,22 @@ test("guidedMode (the blind and low-vision mode) defaults off, keeps booleans on
   assert.equal(store.data.guidedMode, true);
   assert.equal((await loadSettings(store)).guidedMode, true);
   assert.equal((await saveSettings({ guidedMode: false }, store)).guidedMode, false);
+});
+
+test("an update takes the old default allowed site out of stored settings, once", async () => {
+  const old = RETIRED_ALLOWED[0];
+  // Saving any setting on an earlier version stored its default list.
+  const st = memoryStorage({ allowlist: [old, "https://shop.example"], browseMode: "allowlist", speed: 1.2 });
+  assert.equal(await migrateSettings(st), true);
+  assert.deepEqual((await loadSettings(st)).allowlist, ["https://shop.example"]);
+  assert.equal((await loadSettings(st)).speed, 1.2, "other settings stay");
+  // Runs once: a site the user adds again later stays.
+  await saveSettings({ allowlist: [old] }, st);
+  assert.equal(await migrateSettings(st), false);
+  assert.deepEqual((await loadSettings(st)).allowlist, [old]);
+  // Nothing stored, or nothing to drop: only the marker is written.
+  const fresh = memoryStorage();
+  assert.equal(await migrateSettings(fresh), false);
+  assert.deepEqual(Object.keys(fresh.data), [MIGRATIONS_KEY]);
+  assert.equal("allowlist" in fresh.data, false);
 });
