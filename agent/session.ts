@@ -367,6 +367,11 @@ export class Session {
       },
     }));
 
+    // Text-only messages are held until the turn ends: the SDK can send the
+    // text and the tool call of one step as separate messages, so a tool call
+    // that follows turns the held text into thinking aloud.
+    let held: string[] = [];
+    const unspoken = (text: string) => this.status(`(not spoken) ${text.slice(0, 120)}`);
     try {
       for await (const m of q) {
         if (m.type === "system" && m.subtype === "init") {
@@ -377,13 +382,19 @@ export class Session {
           // Only a message with no tool calls is a reply to the user. Text next
           // to tool calls is the model thinking aloud: log it, never speak it.
           const working = blocks.some((b) => b.type === "tool_use");
+          if (working) {
+            held.forEach(unspoken);
+            held = [];
+          }
           for (const block of blocks) {
             if (block.type === "text" && block.text?.trim()) {
-              if (working) this.status(`(not spoken) ${block.text.trim().slice(0, 120)}`);
-              else this.say(block.text.trim());
+              if (working) unspoken(block.text.trim());
+              else held.push(block.text.trim());
             } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
           }
         } else if (m.type === "result") {
+          if (held.length) this.say(held.join(" "));
+          held = [];
           if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
         }
       }
