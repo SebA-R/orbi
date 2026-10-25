@@ -126,6 +126,9 @@ export const RT = Object.freeze({
   TTS_SPEAK: "tts.speak",
   TTS_STOP: "tts.stop",
   SUBTITLE: "subtitle",
+  // offscreen -> worker -> active tab: the word of the agent line being heard
+  // ({utteranceId, index, done?, frozen?, fallback?}).
+  SUBTITLE_WORD: "subtitle.word",
   FRAME: "frame",
   SETTINGS_CHANGED: "settings.changed",
   STATUS: "status",
