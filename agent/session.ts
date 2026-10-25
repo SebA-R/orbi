@@ -12,7 +12,8 @@ import { z } from "zod";
 import { callBrowserTool, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
-import { payNow, STORE_ORIGIN, type PayState } from "./pay.ts";
+import { ALLOWED_ORIGINS, allowedSite, EXTRA_SITES, STORE_ORIGIN } from "./origins.ts";
+import { payNow, type PayState } from "./pay.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -20,31 +21,8 @@ const MODEL = process.env.CLEARCART_MODEL || "claude-sonnet-5-5";
 const BROWSER_SERVER =
   process.env.OCIC_SERVER || "/Users/sebastianarellano-rubach/code/open-claude-in-chrome/host/mcp-server.js";
 
-// CLEARCART_ALLOWED_ORIGINS: comma-separated origins navigate and the tab
-// sweep accept (default: the store only). pay_now stays store-only.
-const ALLOWED_ORIGINS = new Set(
-  [STORE_ORIGIN, ...(process.env.CLEARCART_ALLOWED_ORIGINS || "").split(",")]
-    .map((o) => o.trim())
-    .filter(Boolean)
-    .map((o) => {
-      try {
-        return new URL(o).origin;
-      } catch {
-        return null;
-      }
-    })
-    .filter((o): o is string => !!o && o !== "null")
-);
-const EXTRA_SITES = [...ALLOWED_ORIGINS].filter((o) => o !== STORE_ORIGIN);
-
-function allowedSite(href: string | null | undefined): boolean {
-  if (!href) return false;
-  try {
-    return ALLOWED_ORIGINS.has(new URL(href).origin);
-  } catch {
-    return false;
-  }
-}
+// Allowed origins come from origins.ts (CLEARCART_ALLOWED_ORIGINS plus the
+// store). pay_now stays store-only.
 
 const SITES_PROMPT = EXTRA_SITES.length
   ? `\n\nOther sites\n- You may also browse ${EXTRA_SITES.join(", ")}. On those sites stop once the item is in the cart and the cart page is open: never start checkout, never log in or create an account, never enter an address, card or other personal details, and decline marketing sign-ups and non-essential cookies. If a CAPTCHA, bot check or access-denied page appears, do not try to get around it; tell the user.`
