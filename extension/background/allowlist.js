@@ -3,16 +3,16 @@
 // agent server cannot widen it.
 //
 // browseMode "allowlist": only the allowlist origins.
-// browseMode "open": any http(s) site except the built-in blocklist
-// (lib/blocklist.js) and the user's blocklist. Allowlist origins are always
-// allowed (that is how the local demo store gets past the localhost block),
-// unless the user also put them on the blocklist.
+// browseMode "open": any http(s) site except the fixed rules and the user's
+// blocked sites (lib/blocklist.js). Allowlist origins get past the
+// localhost rule (that is how the local demo store opens), not past the
+// user's blocked sites.
 //
 // Pay sites (isPaySite) are the allowlist in both modes: open browsing does
 // not let the pay flow arm an unlock anywhere new.
 
 import { loadSettings, normalizeOrigin } from "../lib/settings.js";
-import { builtinBlockReason } from "../lib/blocklist.js";
+import { blocklistReason, parseBlockLines } from "../lib/blocklist.js";
 import { BridgeError, ERR } from "../lib/protocol.js";
 
 export async function allowedOrigins() {
@@ -25,9 +25,7 @@ export function blockReason(url, settings) {
   const origin = normalizeOrigin(url);
   const listed = !!origin && settings.allowlist.includes(origin);
   if (settings.browseMode !== "open") return listed ? null : "not on the allowlist";
-  if (origin && settings.blocklist.includes(origin)) return "on your blocklist";
-  if (listed) return null;
-  return builtinBlockReason(url, new Set(settings.allowlist));
+  return blocklistReason(url, parseBlockLines(settings.blocklist).entries, new Set(settings.allowlist));
 }
 
 export async function isAllowed(url) {

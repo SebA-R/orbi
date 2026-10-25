@@ -1,5 +1,8 @@
 // User settings, kept in chrome.storage.local. Only extension pages and the
-// worker can write them; the agent server cannot change any of this.
+// worker can write them; the agent server cannot change any of this (the
+// worker only tells it the current blocklist).
+
+import { SUGGESTED_BLOCKLIST, parseBlockLines } from "./blocklist.js";
 
 export const HOTKEYS = Object.freeze({
   Space: "Space (hold it; a quick tap still scrolls or presses)",
@@ -8,8 +11,9 @@ export const HOTKEYS = Object.freeze({
   F9: "F9",
 });
 
-// browseMode "open": any web site except the blocklist (lib/blocklist.js
-// plus `blocklist`). "allowlist": only the `allowlist` origins. In both
+// browseMode "open": any web site except the fixed rules in lib/blocklist.js
+// and `blocklist`, the user's blocked sites (lines in lib/blocklist.js's
+// format, seeded with SUGGESTED_BLOCKLIST until the user saves their own). "allowlist": only the `allowlist` origins. In both
 // modes the allowlist sites are the only ones where the pay flow may arm an
 // unlock; open browsing never widens that.
 export const BROWSE_MODES = Object.freeze(["open", "allowlist"]);
@@ -18,7 +22,7 @@ export const DEFAULTS = Object.freeze({
   agentUrl: "ws://localhost:5050",
   allowlist: Object.freeze(["http://localhost:4000"]),
   browseMode: "open",
-  blocklist: Object.freeze([]),
+  blocklist: SUGGESTED_BLOCKLIST,
   hotkey: "Space",
   speed: 1,
   subtitles: true,
@@ -62,7 +66,7 @@ export function normalize(raw = {}) {
     if (list.length) out.allowlist = list;
   }
   if (BROWSE_MODES.includes(raw.browseMode)) out.browseMode = raw.browseMode;
-  if (Array.isArray(raw.blocklist)) out.blocklist = [...new Set(raw.blocklist.map(normalizeOrigin).filter(Boolean))];
+  if (Array.isArray(raw.blocklist)) out.blocklist = parseBlockLines(raw.blocklist).lines;
   if (typeof raw.hotkey === "string" && Object.hasOwn(HOTKEYS, raw.hotkey)) out.hotkey = raw.hotkey;
   const speed = Number(raw.speed);
   if (raw.speed != null && Number.isFinite(speed)) out.speed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, speed));
@@ -95,6 +99,16 @@ const KEYS = Object.keys(DEFAULTS);
 export async function loadSettings(storage = globalThis.chrome?.storage?.local) {
   const raw = storage ? await storage.get(KEYS) : {};
   return normalize(raw);
+}
+
+// First install: store the suggested blocked sites, so the list the user
+// sees and edits is the one in force. A stored list, even an empty one, is
+// left alone.
+export async function seedBlocklist(storage = globalThis.chrome?.storage?.local) {
+  const { blocklist } = await storage.get("blocklist");
+  if (blocklist !== undefined) return false;
+  await storage.set({ blocklist: [...SUGGESTED_BLOCKLIST] });
+  return true;
 }
 
 export async function saveSettings(patch, storage = globalThis.chrome?.storage?.local) {

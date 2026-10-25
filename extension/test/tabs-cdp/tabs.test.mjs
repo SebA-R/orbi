@@ -7,6 +7,7 @@ import {
   isPaySite, tabInfo, tabsContext, tabsCreate,
 } from "../../background/tabs.js";
 import { ERR } from "../../lib/protocol.js";
+import { SUGGESTED_BLOCKLIST } from "../../lib/blocklist.js";
 
 const STORE = "http://localhost:4000";
 
@@ -146,7 +147,7 @@ test("open mode: tabs may load any ordinary store", async () => {
 });
 
 test("open mode: blocked sites are refused before the tab moves", async () => {
-  const c = installChrome({ local: { blocklist: ["https://www.nordstrom.com"] } });
+  const c = installChrome({ local: { blocklist: [...SUGGESTED_BLOCKLIST, "nordstrom.com"] } });
   const { tabId } = await tabsCreate({ url: "https://www.etsy.com/" });
   for (const url of [
     "https://mail.google.com/", "https://vault.bitwarden.com/", "https://secure.chase.com/", "https://www.irs.gov/",

@@ -72,12 +72,20 @@ for (const url of [
   });
 }
 
-test("blockReason: the user blocklist beats the allowlist; allowlist beats the built-in list", () => {
-  const s = normalize({ allowlist: ["http://localhost:4000", "https://www.paypal.com"], blocklist: ["https://www.etsy.com", "http://localhost:4000"] });
-  assert.match(blockReason("https://www.etsy.com/", s), /your blocklist/);
-  assert.match(blockReason("http://localhost:4000/", s), /your blocklist/);
-  assert.equal(blockReason("https://www.paypal.com/", s), null);
+test("blockReason: the user's blocked sites beat the allowlist; the allowlist only gets past the localhost rule", () => {
+  const s = normalize({ allowlist: ["http://localhost:4000", "https://www.paypal.com"], blocklist: ["etsy.com", "paypal.com"] });
+  assert.match(blockReason("https://www.etsy.com/", s), /blocked sites list: etsy\.com/);
+  assert.match(blockReason("https://www.paypal.com/", s), /paypal/);
+  assert.equal(blockReason("http://localhost:4000/", s), null);
+  assert.equal(blockReason("https://mail.google.com/", s), null, "only what the user lists");
+  assert.match(blockReason("http://localhost:5050/", { ...s, blocklist: [] }), /local address/, "fixed rules with an empty list");
   assert.equal(blockReason("https://www.etsy.com/", { ...s, browseMode: "allowlist" }), "not on the allowlist");
+});
+
+test("open mode with no saved list uses the suggested one", async () => {
+  installChrome();
+  await assert.rejects(assertAllowed("https://mail.google.com/"), (e) => e.code === ERR.NOT_ALLOWED && /blocked sites list/.test(e.message));
+  assert.equal(await isAllowed("https://www.etsy.com/"), true);
 });
 
 test("isPaySite is the allowlist in both modes", async () => {

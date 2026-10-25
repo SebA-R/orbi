@@ -2,15 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  DEFAULTS, endpoints, loadSettings, normalize, normalizeAgentUrl, normalizeOrigin, parseOriginLines, saveSettings,
+  DEFAULTS, endpoints, loadSettings, normalize, normalizeAgentUrl, normalizeOrigin, parseOriginLines, saveSettings, seedBlocklist,
 } from "../../../extension/lib/settings.js";
+import { SUGGESTED_BLOCKLIST } from "../../../extension/lib/blocklist.js";
 
 function memoryStorage(init = {}) {
   const data = { ...init };
   return {
     data,
     async get(keys) {
-      return Object.fromEntries(keys.filter((k) => k in data).map((k) => [k, data[k]]));
+      return Object.fromEntries([keys].flat().filter((k) => k in data).map((k) => [k, data[k]]));
     },
     async set(obj) {
       Object.assign(data, obj);
@@ -34,7 +35,7 @@ test("origins are parsed and credentials are refused", () => {
 });
 
 test("normalize falls back to defaults for bad values", () => {
-  assert.deepEqual(normalize({}), { ...DEFAULTS, allowlist: ["http://localhost:4000"], blocklist: [] });
+  assert.deepEqual(normalize({}), { ...DEFAULTS, allowlist: ["http://localhost:4000"], blocklist: [...SUGGESTED_BLOCKLIST] });
   const s = normalize({ agentUrl: "ws://x.example", hotkey: "Nope", speed: 9, subtitles: "yes", allowlist: ["bad"] });
   assert.equal(s.agentUrl, DEFAULTS.agentUrl);
   assert.equal(s.hotkey, DEFAULTS.hotkey);
@@ -68,9 +69,25 @@ test("browse mode defaults to open and only takes known values", () => {
   assert.equal(normalize({ browseMode: "anything" }).browseMode, "open");
 });
 
-test("the blocklist keeps valid origins and may be empty", () => {
-  assert.deepEqual(normalize({ blocklist: ["https://shop.example/x", "bad", "https://u:p@x.example", "https://shop.example"] }).blocklist, ["https://shop.example"]);
-  assert.deepEqual(normalize({ blocklist: [] }).blocklist, []);
+test("the blocklist keeps valid entries and comments, and may be empty", () => {
+  assert.deepEqual(
+    normalize({ blocklist: ["# mine", "https://shop.example/x", "bad", "https://u:p@x.example", "SHOP.example/x", "*bank*"] }).blocklist,
+    ["# mine", "shop.example/x", "*bank*"]
+  );
+  assert.deepEqual(normalize({ blocklist: [] }).blocklist, [], "an emptied list stays empty");
+  assert.deepEqual(normalize({}).blocklist, [...SUGGESTED_BLOCKLIST], "no stored list: the suggested one");
+});
+
+test("first install seeds the suggested list once; a stored list is left alone", async () => {
+  const st = memoryStorage();
+  assert.equal(await seedBlocklist(st), true);
+  assert.deepEqual(st.data.blocklist, [...SUGGESTED_BLOCKLIST]);
+  st.data.blocklist = ["etsy.com"];
+  assert.equal(await seedBlocklist(st), false);
+  assert.deepEqual(st.data.blocklist, ["etsy.com"]);
+  const empty = memoryStorage({ blocklist: [] });
+  assert.equal(await seedBlocklist(empty), false);
+  assert.deepEqual(empty.data.blocklist, []);
 });
 
 test("parseOriginLines takes one site per line and reports bad lines", () => {
