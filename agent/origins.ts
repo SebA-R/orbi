@@ -117,8 +117,47 @@ function decodedPath(pathname: string): string {
   return p.replace(/\\/g, "/");
 }
 
+// Stripe's hosted test checkout, by host and path. Test mode only, so a
+// live Stripe page is never treated as a checkout Orbi can pay on:
+//   https://checkout.stripe.com/c/pay/cs_test_...   a Checkout Session
+//   https://buy.stripe.com/test_...                  a test Payment Link
+//   https://js.stripe.com/v3/embedded-checkout-inner.html?checkoutSessionId=cs_test_...
+//                                                    the embedded checkout
+//                                                    (checkout.stripe.dev's
+//                                                    preview) opened as a page
+// The card fields on these pages are in the page itself, not in iframes.
+const STRIPE_CHECKOUT_HOSTS = new Set(["checkout.stripe.com", "buy.stripe.com", "js.stripe.com"]);
+
+// A page on one of the hosts above, test mode or not.
+export function onStripeCheckoutHost(href: string | null | undefined): boolean {
+  try {
+    return STRIPE_CHECKOUT_HOSTS.has(new URL(String(href)).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+export function isStripeCheckoutUrl(href: string | null | undefined): boolean {
+  if (!href) return false;
+  let u: URL;
+  try {
+    u = new URL(href);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:" || u.port || u.username || u.password) return false;
+  const host = u.hostname.toLowerCase();
+  if (host === "checkout.stripe.com") return /^\/(c\/)?pay\/cs_test_[A-Za-z0-9]+\/?$/.test(u.pathname);
+  if (host === "buy.stripe.com") return /^\/test_[A-Za-z0-9]+\/?$/.test(u.pathname);
+  if (host === "js.stripe.com") {
+    return u.pathname === "/v3/embedded-checkout-inner.html" && /^cs_test_[A-Za-z0-9]+$/.test(u.searchParams.get("checkoutSessionId") || "");
+  }
+  return false;
+}
+
 export function isCheckoutUrl(href: string | null | undefined): boolean {
   if (!href) return false;
+  if (isStripeCheckoutUrl(href)) return true;
   let pathname: string;
   try {
     pathname = new URL(href).pathname;

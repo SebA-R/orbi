@@ -3,7 +3,8 @@
 
 import { execFile } from "node:child_process";
 
-export type Card = { name: string; number: string; exp: string; csc: string };
+// zip and email are optional: hosted checkouts such as Stripe's ask for them.
+export type Card = { name: string; number: string; exp: string; csc: string; zip?: string; email?: string };
 
 const SERVICE = "clearcart-card";
 const ACCOUNT = "demo";
@@ -30,6 +31,8 @@ export function getCard(): Promise<Card> {
             number: String(card.number).replace(/[\s-]/g, ""),
             exp: String(card.exp),
             csc: String(card.csc),
+            ...(card.zip ? { zip: String(card.zip) } : {}),
+            ...(card.email ? { email: String(card.email) } : {}),
           });
         } catch {
           reject(new Error("The vault entry is not valid card JSON. Run vault/setup-test-card.sh again."));

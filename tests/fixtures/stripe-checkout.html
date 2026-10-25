@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  A local copy of the structure of Stripe's hosted test checkout (Checkout
+  Session, test Payment Link, or the embedded preview opened as a page),
+  read headless from Stripe's own test pages without entering anything.
+  Kept to what pay_now and the extension rely on: the input ids, names and
+  autocomplete tokens, the "Pay with card" accordion, the Link and wallet
+  buttons, the submit button's labels and the summary amount. Tests load
+  this file; they never touch a live Stripe page.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stripe Checkout</title>
+</head>
+<body>
+<div class="App-Container">
+  <div class="App-Overview">
+    <div class="TestModeBadge">TEST MODE</div>
+    <div class="ProductSummary">
+      <div class="ProductSummary-name">Pay Orbi Demo Store</div>
+      <div class="ProductSummary-totalsRead">
+        <span id="ProductSummary-totalAmount" class="ProductSummary-totalAmount">$14.00</span>
+      </div>
+      <div class="ProductSummary-info">
+        <span class="ProductSummary-productName">Blue mug</span>
+      </div>
+      <button class="Button" type="button" data-testid="product-summary-view-details">View details</button>
+    </div>
+  </div>
+  <div class="App-Payment">
+    <div class="ExpressCheckout">
+      <button class="Button LinkButton" type="button" aria-label="Pay with Link">Pay with Link</button>
+    </div>
+    <div class="Divider">OR</div>
+    <form class="PaymentForm-form" novalidate>
+      <div class="ContactInfo">
+        <label for="email">Email</label>
+        <input class="CheckoutInput Input Input--empty" autocomplete="email" id="email" name="email" type="text" inputmode="email" placeholder="email@example.com" value="">
+      </div>
+      <div class="PaymentMethod">
+        <div>Payment method</div>
+        <button class="Button AccordionButton" type="button" aria-label="Pay with card" data-testid="card-accordion-item-button">Card</button>
+        <fieldset class="CardForm">
+          <div>Card information</div>
+          <input class="CheckoutInput Input Input--empty" autocomplete="cc-number" autocorrect="off" spellcheck="false" id="cardNumber" name="cardNumber" type="text" inputmode="numeric" aria-label="Card number" placeholder="1234 1234 1234 1234" aria-invalid="false" value="">
+          <input class="CheckoutInput Input Input--empty" autocomplete="cc-exp" autocorrect="off" spellcheck="false" id="cardExpiry" name="cardExpiry" type="text" inputmode="numeric" aria-label="Expiration" placeholder="MM / YY" aria-invalid="false" value="">
+          <input class="CheckoutInput Input Input--empty" autocomplete="cc-csc" autocorrect="off" spellcheck="false" id="cardCvc" name="cardCvc" type="text" inputmode="numeric" aria-label="Credit or debit card CVC/CVV" placeholder="CVC" aria-invalid="false" value="">
+          <label for="billingName">Cardholder name</label>
+          <input class="CheckoutInput Input Input--empty" autocomplete="cc-name" autocorrect="off" spellcheck="false" id="billingName" name="billingName" type="text" placeholder="Full name on card" aria-invalid="false" value="">
+          <label for="billingCountry">Country or region</label>
+          <select id="billingCountry" name="billingCountry" autocomplete="billing country" aria-label="Country or region" class="Select-source">
+            <option value="CA">Canada</option>
+            <option value="US" selected>United States</option>
+          </select>
+          <input class="CheckoutInput Input Input--empty" autocomplete="billing postal-code" autocorrect="off" spellcheck="false" id="billingPostalCode" name="billingPostalCode" type="text" inputmode="numeric" aria-label="ZIP" placeholder="ZIP" aria-invalid="false" value="">
+        </fieldset>
+      </div>
+      <div class="LinkOptIn">
+        <input id="enableStripePass" name="enableStripePass" type="checkbox">
+        <label for="enableStripePass">Save my information for faster checkout</label>
+      </div>
+      <button class="SubmitButton SubmitButton--clickable" type="submit" data-testid="hosted-payment-submit-button">
+        <div class="SubmitButton-TextContainer">
+          <span class="SubmitButton-Text SubmitButton-Text--current" aria-hidden="false">Pay</span>
+          <span class="SubmitButton-Text SubmitButton-Text--pre" aria-hidden="true" data-testid="submit-button-processing-label">Processing</span>
+        </div>
+      </button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

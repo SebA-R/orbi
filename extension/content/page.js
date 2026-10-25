@@ -774,6 +774,19 @@
         if (!el.value) put(el, addr);
       });
     }
+    // What a hosted checkout asks for next to the card (Stripe Checkout:
+    // the billing ZIP, and the email). Empty fields only; a billing ZIP
+    // only, never a shipping one.
+    if (params.billing && typeof params.billing === "object") {
+      var zip = params.billing.postal ? String(params.billing.postal) : "";
+      var email = params.billing.email ? String(params.billing.email) : "";
+      fields.forEach(function (el) {
+        if (el.value || el.tagName === "SELECT") return;
+        var tokens = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+        if (zip && tokens.indexOf("billing") !== -1 && tokens.indexOf("postal-code") !== -1) put(el, zip);
+        else if (email && tokens.indexOf("email") !== -1 && tokens.indexOf("shipping") === -1) put(el, email);
+      });
+    }
     return { ok: true, last4: number.slice(-4) };
   }
 
