@@ -133,6 +133,10 @@ chrome.runtime.onMessage.addListener((msg) => {
     case RT.SETTINGS_CHANGED:
       applySettings(msg.settings);
       break;
+    // A restarted worker knows nothing of a turn in progress; tell it.
+    case RT.VOICE_SYNC:
+      controller.announce();
+      break;
   }
 });
 
