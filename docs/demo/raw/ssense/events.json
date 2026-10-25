@@ -1,0 +1,220 @@
+[
+ {
+  "t": 0.01,
+  "kind": "open"
+ },
+ {
+  "t": 0.01,
+  "kind": "status",
+  "text": "connected"
+ },
+ {
+  "t": 1.14,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Hi, I'm looking on SSENSE for a black Acne Studios crewneck sweater in a medium. Can you help me find one?"
+ },
+ {
+  "t": 1.16,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 2.62,
+  "kind": "status",
+  "text": "tabs_context_mcp"
+ },
+ {
+  "t": 4,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Those are existing tabs, so I'll open a new one."
+ },
+ {
+  "t": 4,
+  "kind": "status",
+  "text": "tabs_create_mcp"
+ },
+ {
+  "t": 5.32,
+  "kind": "status",
+  "text": "navigate https://www.ssense.com/en-us/men?q=acne%20studios%20black%20crewneck%20sweater"
+ },
+ {
+  "t": 6.41,
+  "kind": "recorder",
+  "text": "recording tab 582729775"
+ },
+ {
+  "t": 8.23,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 10.32,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "I found three Acne Studios results on SSENSE. The Black Metallic Knit Sweater is $468, marked down from $1,200. The Black Printed Logo Sweatshirt is $500. The Gray Sweater Logo Patch Sweatshirt is $510, but it isn't black. I haven't checked whether any of them come in a medium. Which one should I open?"
+ },
+ {
+  "t": 19.34,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "The black metallic knit sweater sounds closest. Can you open that one and tell me if it's a crewneck, if it comes in medium, and what it's made of?"
+ },
+ {
+  "t": 19.35,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 21.3,
+  "kind": "status",
+  "text": "find \"Black Metallic Knit Sweater product link\""
+ },
+ {
+  "t": 22.81,
+  "kind": "status",
+  "text": "javascript_tool"
+ },
+ {
+  "t": 24.36,
+  "kind": "status",
+  "text": "navigate https://www.ssense.com/en-us/men/product/acne-studios/black-metallic-knit-sweater/18514261"
+ },
+ {
+  "t": 24.43,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 28.75,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Yes, it's a crewneck, with a rib-knit neck, hem, and cuffs. But medium is sold out. Only extra small and small are left, with one of each. It's a black and gold shag knit with an argyle pattern. It's 55 percent nylon and 45 percent metallic fiber. Do you want me to check the black printed logo sweatshirt instead?"
+ },
+ {
+  "t": 37.05,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Yeah, please check that one. Is it a crewneck, is it in medium, and what's it made of?"
+ },
+ {
+  "t": 37.06,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 38.59,
+  "kind": "status",
+  "text": "navigate https://www.ssense.com/en-us/men/product/acne-studios/black-printed-logo-sweatshirt/18166121"
+ },
+ {
+  "t": 38.61,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 41.63,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "This one is a crewneck, with a rib-knit neck, hem, and cuffs. It comes in medium, and four are left. It's a black melange French terry sweatshirt, 85 percent cotton and 15 percent polyester, for $500. Do you want me to add the medium to your bag?"
+ },
+ {
+  "t": 50.35,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Yes, please add the medium to my bag."
+ },
+ {
+  "t": 50.37,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 51.73,
+  "kind": "status",
+  "text": "find \"size selector and add to bag button\""
+ },
+ {
+  "t": 52.95,
+  "kind": "status",
+  "text": "computer screenshot"
+ },
+ {
+  "t": 54.32,
+  "kind": "status",
+  "text": "read_page"
+ },
+ {
+  "t": 55.9,
+  "kind": "status",
+  "text": "form_input"
+ },
+ {
+  "t": 57.15,
+  "kind": "status",
+  "text": "computer left_click"
+ },
+ {
+  "t": 58.41,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Adding it to your bag now, then I'll open the bag page."
+ },
+ {
+  "t": 58.78,
+  "kind": "status",
+  "text": "navigate https://www.ssense.com/en-us/shopping-bag"
+ },
+ {
+  "t": 58.92,
+  "kind": "status",
+  "text": "get_page_text"
+ },
+ {
+  "t": 61.67,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "The medium Acne Studios Black Printed Logo Sweatshirt is in your SSENSE bag, and the bag page is open. The total is $500, before shipping and duties, which are worked out at checkout. I can't go through checkout on SSENSE, so you'll need to finish the order there yourself."
+ },
+ {
+  "t": 71.72,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Perfect, thanks so much for your help. I'll finish up the order myself later."
+ },
+ {
+  "t": 71.73,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 72.82,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "You're welcome. The sweatshirt in medium will be in your bag when you're ready. Happy shopping!"
+ },
+ {
+  "t": 81.59,
+  "kind": "speech",
+  "speaker": "shopper",
+  "text": "Thanks, take care!"
+ },
+ {
+  "t": 81.6,
+  "kind": "status",
+  "text": "agent ready (browser: connected, clearcart: connected)"
+ },
+ {
+  "t": 82.67,
+  "kind": "speech",
+  "speaker": "clearcart",
+  "text": "Take care!"
+ },
+ {
+  "t": 83.73,
+  "kind": "end",
+  "text": "shopper finished"
+ }
+]

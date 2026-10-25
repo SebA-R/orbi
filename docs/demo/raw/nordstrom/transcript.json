@@ -1,0 +1,161 @@
+{
+ "site": "nordstrom",
+ "clock": "t_start = seconds since the /session WebSocket opened (same clock as frames.json and footage_realtime.mp4)",
+ "seq_start": "start of the line in conversation_sequential.wav (lines back to back, 0.45 s gaps)",
+ "voices": {
+  "shopper": {
+   "id": "3a01612e-07da-4a85-bba8-ce10481df477",
+   "name": "Gareth"
+  },
+  "clearcart": {
+   "id": "6ccbfb76-1fc6-48f7-b71d-91ac6298247b",
+   "name": "Tessa"
+  }
+ },
+ "tts_model": "sonic-3.6",
+ "lines": [
+  {
+   "i": 0,
+   "speaker": "shopper",
+   "text": "Hi, I'm looking for women's white Nike Air Force 1 '07 sneakers in size 8 on Nordstrom. Can you find those and tell me the price and how they're rated?",
+   "t_start": 1.31,
+   "audio": "audio/00_shopper.wav",
+   "audio_duration_s": 11.04,
+   "seq_start": 0.0,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 1,
+   "speaker": "clearcart",
+   "text": "Those tabs are existing ones, so I'll open a new one.",
+   "t_start": 4.57,
+   "audio": "audio/01_clearcart.wav",
+   "audio_duration_s": 3.52,
+   "seq_start": 11.49,
+   "aside": true,
+   "tail": false
+  },
+  {
+   "i": 2,
+   "speaker": "clearcart",
+   "text": "I'm checking the search results on Nordstrom now. Two listings look like the classic white pair, so I'll open one to confirm the women's size 8 and the rating.",
+   "t_start": 18.33,
+   "audio": "audio/02_clearcart.wav",
+   "audio_duration_s": 9.36,
+   "seq_start": 15.46,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 3,
+   "speaker": "clearcart",
+   "text": "Open the first one and the fourth to check which is women's.",
+   "t_start": 30.88,
+   "audio": "audio/03_clearcart.wav",
+   "audio_duration_s": 3.44,
+   "seq_start": 25.27,
+   "aside": true,
+   "tail": false
+  },
+  {
+   "i": 4,
+   "speaker": "clearcart",
+   "text": "Now I'll check that size 8 is available.",
+   "t_start": 44.24,
+   "audio": "audio/04_clearcart.wav",
+   "audio_duration_s": 2.96,
+   "seq_start": 29.16,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 5,
+   "speaker": "clearcart",
+   "text": "I found them. The women's Nike Air Force 1 '07 Basketball Sneaker in white is $115 on Nordstrom. It's rated about 4.5 out of 5 stars from 799 reviews, and size 8 is listed with no sold-out note. I haven't added anything to your cart.",
+   "t_start": 57.05,
+   "audio": "audio/05_clearcart.wav",
+   "audio_duration_s": 18.24,
+   "seq_start": 32.57,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 6,
+   "speaker": "shopper",
+   "text": "Great, thanks. Can you add the white size 8 to my bag, please?",
+   "t_start": 65.42,
+   "audio": "audio/06_shopper.wav",
+   "audio_duration_s": 4.8,
+   "seq_start": 51.26,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 7,
+   "speaker": "clearcart",
+   "text": "Size 8 is selected. Adding to bag.",
+   "t_start": 75.5,
+   "audio": "audio/07_clearcart.wav",
+   "audio_duration_s": 2.96,
+   "seq_start": 56.51,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 8,
+   "speaker": "clearcart",
+   "text": "I added the white women's Nike Air Force 1 '07 in size 8 to your bag, and the bag page is open. The shoes are $115, shipping is free, and the estimated total with tax is $124.92. I haven't started checkout, because I can't do that on Nordstrom.",
+   "t_start": 85.27,
+   "audio": "audio/08_clearcart.wav",
+   "audio_duration_s": 18.96,
+   "seq_start": 59.92,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 9,
+   "speaker": "shopper",
+   "text": "Perfect, that's exactly what I needed. Thanks so much for your help!",
+   "t_start": 93.72,
+   "audio": "audio/09_shopper.wav",
+   "audio_duration_s": 4.8,
+   "seq_start": 79.33,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 10,
+   "speaker": "clearcart",
+   "text": "You're welcome! Your shoes are in the Nordstrom bag whenever you're ready to check out. Enjoy them!",
+   "t_start": 95.78,
+   "audio": "audio/10_clearcart.wav",
+   "audio_duration_s": 5.28,
+   "seq_start": 84.58,
+   "aside": false,
+   "tail": false
+  },
+  {
+   "i": 11,
+   "speaker": "shopper",
+   "text": "Thanks, take care!",
+   "t_start": 104.17,
+   "audio": "audio/11_shopper.wav",
+   "audio_duration_s": 1.76,
+   "seq_start": 90.31,
+   "aside": false,
+   "tail": true
+  },
+  {
+   "i": 12,
+   "speaker": "clearcart",
+   "text": "Take care!",
+   "t_start": 105.6,
+   "audio": "audio/12_clearcart.wav",
+   "audio_duration_s": 1.2,
+   "seq_start": 92.52,
+   "aside": false,
+   "tail": true
+  }
+ ]
+}
