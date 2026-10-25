@@ -68,7 +68,8 @@
       ],
       "js": [
         "content/orb-face.js",
-        "content/subtitles.js"
+        "content/subtitles.js",
+        "content/cursor.js"
       ],
       "run_at": "document_idle",
       "all_frames": false
