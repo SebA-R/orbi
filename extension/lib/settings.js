@@ -31,6 +31,8 @@ export const DEFAULTS = Object.freeze({
   quietTabs: true,
   // Bring the user to the tab Clearcart acts on (background/follow.js).
   followTab: true,
+  // Earcons: listening, sent, cut off, order result, errors (lib/voice/chime.js).
+  sounds: true,
   // Guided mode: the agent describes each page and lets the user choose.
   // Off, it picks and acts on its own (agent/prompt.ts GUIDED_PROMPT).
   guidedMode: true,
@@ -91,6 +93,7 @@ export function normalize(raw = {}) {
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
   if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
+  if (typeof raw.sounds === "boolean") out.sounds = raw.sounds;
   if (typeof raw.guidedMode === "boolean") out.guidedMode = raw.guidedMode;
   if (typeof raw.watchablePace === "boolean") out.watchablePace = raw.watchablePace;
   // Only a stored true turns it on.

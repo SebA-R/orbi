@@ -91,6 +91,7 @@ function fill(s) {
   $("hotkey").value = s.hotkey;
   $("speed").value = String(s.speed);
   $("subtitles").checked = s.subtitles;
+  $("sounds").checked = s.sounds;
   $("quiet-tabs").checked = s.quietTabs;
   danger.fill(s);
   $("follow-tab").checked = s.followTab;
@@ -108,6 +109,7 @@ $("hotkey").addEventListener("change", () => save({ hotkey: $("hotkey").value })
 $("speed").addEventListener("input", showSpeed);
 $("speed").addEventListener("change", () => save({ speed: Number($("speed").value) }));
 $("subtitles").addEventListener("change", () => save({ subtitles: $("subtitles").checked }));
+$("sounds").addEventListener("change", () => save({ sounds: $("sounds").checked }));
 $("quiet-tabs").addEventListener("change", () => save({ quietTabs: $("quiet-tabs").checked }));
 $("follow-tab").addEventListener("change", () => save({ followTab: $("follow-tab").checked }));
 $("watchable-pace").addEventListener("change", () => save({ watchablePace: $("watchable-pace").checked }));

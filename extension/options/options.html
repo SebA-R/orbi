@@ -3,112 +3,196 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Clearcart options</title>
-  <style>
-    :root { color-scheme: light dark; --fg: #1b1b1f; --muted: #5b5b66; --bg: #ffffff; --line: #d6d6de; --accent: #0b5cff; --on-accent: #ffffff; --error: #b3261e; }
-    @media (prefers-color-scheme: dark) { :root { --fg: #ececf1; --muted: #a3a3b0; --bg: #16161a; --line: #34343c; --accent: #7aa7ff; --on-accent: #0b1020; --error: #ff8a80; } }
-    body { font: 16px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 24px 16px; }
-    main { max-width: 560px; margin: 0 auto; }
-    h1 { font-size: 1.5rem; margin: 0 0 1rem; }
-    fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px 16px; margin: 0 0 16px; }
-    legend { font-weight: 600; padding: 0 4px; }
-    label { display: block; margin: 10px 0 4px; }
-    .hint { color: var(--muted); font-size: 0.9rem; margin: 4px 0 0; }
-    select, input[type="text"], textarea { font: inherit; padding: 6px 8px; width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
-    input[type="range"] { width: 100%; }
-    textarea { font-family: ui-monospace, monospace; font-size: 0.9rem; resize: vertical; }
-    .radio { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
-    .radio input { margin-top: 0.35em; }
-    .row { display: flex; gap: 8px; align-items: center; }
-    button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent); cursor: pointer; }
-    button.secondary { background: transparent; color: var(--accent); }
-    button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-    a { color: var(--accent); }
-    code { font-family: ui-monospace, monospace; font-size: 0.9em; }
-    .error { color: var(--error); margin: 4px 0 0; white-space: pre-line; }
-    #status, #mic-status { min-height: 1.5em; margin: 8px 0 0; }
-    #danger-confirm[hidden] { display: none; }
-  </style>
+  <title>Clearcart settings</title>
+  <link rel="stylesheet" href="../lib/ui.css">
+  <link rel="stylesheet" href="options.css">
 </head>
 <body>
+  <!--
+    Adding a setting: one row inside a group's .card. Give the input
+    data-setting="<storage key from lib/settings.js DEFAULTS>" and
+    options.js fills it, saves it on change, includes it in Save and resets
+    it with Reset to defaults. Nothing else to wire up.
+
+    On or off (checkbox, saved as true or false):
+      <label class="row" for="my-key">
+        <span class="row-text"><span id="my-key-label">Short name</span>
+          <span class="hint" id="my-key-hint">One or two sentences.</span></span>
+        <input id="my-key" class="sw" type="checkbox" role="switch" data-setting="myKey"
+          aria-labelledby="my-key-label" aria-describedby="my-key-hint">
+      </label>
+    A list (select, saved as the option value):
+      <div class="row"><label for="my-key">Short name</label>
+        <select id="my-key" class="sel" data-setting="myKey"></select></div>
+    A choice of two or three (radios, saved as the checked value): see
+    Browse mode below. Text that needs checking (lists, addresses) saves
+    with the Save button instead; see the submit handler in options.js.
+  -->
   <main>
-    <h1>Clearcart options</h1>
-    <p><a href="../setup/setup.html">Run setup again</a>: check site access, the microphone and the agent server.</p>
-
-    <form id="form">
-      <fieldset>
-        <legend>Microphone</legend>
-        <p class="hint">Clearcart listens through a hidden extension page, which can't ask for the microphone itself. Grant it once here.</p>
-        <div class="row"><button type="button" id="grant-mic">Grant microphone</button></div>
-        <p id="mic-status" role="status" aria-live="polite"></p>
-      </fieldset>
-
-      <fieldset>
-        <legend>Talking</legend>
-        <label for="hotkey">Hold-to-talk key</label>
-        <select id="hotkey" name="hotkey"></select>
-        <p class="hint">Hold Space to talk. Option+Space keeps listening until you press Space. Double-tap Space to stop Clearcart talking.
-          With another key, hold it while you speak and let go to send. A separate toggle shortcut can be set at
-          <span id="shortcuts-link">chrome://extensions/shortcuts</span>.</p>
-
-        <label for="speed">Speaking speed: <output id="speed-out" for="speed"></output></label>
-        <input id="speed" name="speed" type="range" step="0.1">
-
-        <label class="row"><input id="guided-mode" name="guidedMode" type="checkbox" aria-describedby="guided-mode-hint"> Guided mode</label>
-        <p class="hint" id="guided-mode-hint">Clearcart describes each page and lets you choose. Turn off to let it pick and act on its own.</p>
-        <label class="row"><input id="subtitles" name="subtitles" type="checkbox"> Show subtitles on the page</label>
-        <label class="row"><input id="quiet-tabs" name="quietTabs" type="checkbox" aria-describedby="quiet-tabs-hint"> Quiet other tabs while talking</label>
-        <p class="hint" id="quiet-tabs-hint">Fades out and mutes videos and music in other tabs while you talk and while Clearcart answers, then turns them back on. Tabs you muted yourself stay muted.</p>
-        <label class="row"><input id="follow-tab" name="followTab" type="checkbox" aria-describedby="follow-tab-hint"> Follow Clearcart to its tab</label>
-        <p class="hint" id="follow-tab-hint">When Clearcart opens a tab, or navigates, clicks, types or scrolls in one, you are brought to that tab. Reading a tab never moves you. If you switch away yourself, it stops until you talk again.</p>
-        <label class="row"><input id="watchable-pace" name="watchablePace" type="checkbox"> Show actions at a watchable pace</label>
-      </fieldset>
-
-      <fieldset id="sites">
-        <legend>Sites</legend>
-        <p class="hint">Which sites Clearcart may open. It can use your open tabs on these sites and opens its own in the background; tabs on blocked sites stay hidden from it, and it only closes tabs it opened. Checkout, pay and sign in buttons stay locked everywhere except the allowed sites, where only Clearcart's pay flow can press them after you say yes.</p>
-        <div role="radiogroup" aria-labelledby="mode-label">
-          <p id="mode-label" class="hint" style="color: inherit; margin-top: 10px;">Browse mode</p>
-          <label class="radio"><input type="radio" name="browseMode" value="open" id="mode-open">
-            <span>Open web: any store, except the blocked sites below.</span></label>
-          <label class="radio"><input type="radio" name="browseMode" value="allowlist" id="mode-allowlist">
-            <span>Only these sites: just the allowed sites below.</span></label>
-        </div>
-
-        <label for="allowlist">Allowed sites, one per line</label>
-        <textarea id="allowlist" name="allowlist" rows="3" spellcheck="false" autocomplete="off" aria-describedby="allowlist-hint"></textarea>
-        <p class="hint" id="allowlist-hint">Site addresses only, for example https://www.etsy.com. Keep the demo store, http://localhost:4000.</p>
-      </fieldset>
-
-      <fieldset id="blocked-sites">
-        <legend>Blocked sites</legend>
-        <p class="hint" id="blocklist-hint">Clearcart never opens these in open web mode. One per line: <code>chase.com</code> blocks that site and its subdomains, <code>amazon.com/ap</code> only pages under that path (<code>amazon.*/ap</code> for every Amazon store), <code>*bank*</code> any address with that word in its name, <code>*.gov</code> any address with gov as one of its parts. Lines starting with # are notes.</p>
-        <label for="blocklist">Blocked sites, one per line</label>
-        <textarea id="blocklist" name="blocklist" rows="12" spellcheck="false" autocomplete="off" aria-describedby="blocklist-hint blocklist-fixed blocklist-errors"></textarea>
-        <p class="error" id="blocklist-errors" hidden></p>
-        <p class="hint" id="blocklist-fixed">Always blocked: non-web pages, local network addresses, addresses with a login in them.</p>
-        <div class="row"><button type="button" class="secondary" id="restore-blocklist">Restore suggested list</button></div>
-      </fieldset>
-
-      <fieldset id="danger">
-        <legend>Danger mode</legend>
-        <label class="row"><input id="danger-mode" type="checkbox"> Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.</label>
-        <p id="danger-confirm" class="row" hidden><button type="button" id="danger-yes">Turn on Danger mode</button> <button type="button" class="secondary" id="danger-no">Cancel</button></p>
-        <p class="hint">Off by default. It saves as soon as you confirm. Clearcart still never sees or types card numbers or passwords, and blocked sites stay blocked.</p>
-      </fieldset>
-
-      <fieldset>
-        <legend>Agent</legend>
-        <label for="agent-url">Agent server address</label>
-        <input id="agent-url" name="agentUrl" type="text" spellcheck="false" autocomplete="off" aria-describedby="agent-hint">
-        <p class="hint" id="agent-hint">Must be on this computer, for example ws://localhost:5050.</p>
-      </fieldset>
-
-      <div class="row">
-        <button type="submit">Save</button>
-        <button type="button" class="secondary" id="reset">Reset to defaults</button>
+    <header class="masthead">
+      <span class="orb-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Clearcart settings</h1>
+        <p class="lede">Switches and menus save as soon as you change them. Site lists and the server address save with the Save button at the bottom.</p>
       </div>
-      <p id="status" role="status" aria-live="polite"></p>
+    </header>
+
+    <form id="form" novalidate>
+      <section class="group" id="voice" aria-labelledby="voice-h">
+        <h2 id="voice-h">Voice and talk keys</h2>
+        <div class="card">
+          <div class="row">
+            <label for="hotkey">Talk key</label>
+            <select id="hotkey" name="hotkey" class="sel" data-setting="hotkey" aria-describedby="hotkey-hint"></select>
+          </div>
+          <div class="row">
+            <label for="speed">Speaking speed</label>
+            <span class="speed"><input id="speed" name="speed" type="range" step="0.1" data-setting="speed"><output id="speed-out" for="speed"></output></span>
+          </div>
+          <label class="row" for="guided-mode">
+            <span class="row-text"><span id="guided-mode-label">Guided mode</span>
+              <span class="hint" id="guided-mode-hint">Clearcart describes each page and lets you choose. Turn off to let it pick and act on its own.</span></span>
+            <input id="guided-mode" name="guidedMode" class="sw" type="checkbox" role="switch" data-setting="guidedMode" aria-labelledby="guided-mode-label" aria-describedby="guided-mode-hint">
+          </label>
+        </div>
+        <p class="foot" id="hotkey-hint">Hold Space to talk. Option+Space keeps listening until you press Space. Double-tap Space to stop Clearcart talking.
+          With another key, hold it while you speak and let go to send. A separate toggle shortcut can be set at
+          <span id="shortcuts-link">chrome://extensions/shortcuts</span>. On Windows, Option is the Alt key.</p>
+      </section>
+
+      <section class="group" id="sites" aria-labelledby="sites-h">
+        <h2 id="sites-h">Browsing and blocked sites</h2>
+        <div class="card">
+          <div class="row">
+            <span class="row-text"><span id="mode-label">Browse mode</span>
+              <span class="hint" id="mode-hint">Open web: any store, except the blocked sites below. Only allowed sites: just the allowed sites below.</span></span>
+            <div class="seg" role="radiogroup" aria-labelledby="mode-label" aria-describedby="mode-hint">
+              <label>Open web<input type="radio" name="browseMode" value="open" id="mode-open" data-setting="browseMode"></label>
+              <label>Only allowed sites<input type="radio" name="browseMode" value="allowlist" id="mode-allowlist" data-setting="browseMode"></label>
+            </div>
+          </div>
+          <label class="row" for="follow-tab">
+            <span class="row-text"><span id="follow-tab-label">Follow Clearcart to its tab</span>
+              <span class="hint" id="follow-tab-hint">When Clearcart opens a tab, or navigates, clicks, types or scrolls in one, you are brought to that tab. Reading a tab never moves you. If you switch away yourself, it stops until you talk again.</span></span>
+            <input id="follow-tab" name="followTab" class="sw" type="checkbox" role="switch" data-setting="followTab" aria-labelledby="follow-tab-label" aria-describedby="follow-tab-hint">
+          </label>
+          <label class="row" for="watchable-pace">
+            <span class="row-text"><span id="watchable-pace-label">Show actions at a watchable pace</span>
+              <span class="hint" id="watchable-pace-hint">Clearcart moves the pointer, types and scrolls at a pace you can follow. Off, it acts at once.</span></span>
+            <input id="watchable-pace" name="watchablePace" class="sw" type="checkbox" role="switch" data-setting="watchablePace" aria-labelledby="watchable-pace-label" aria-describedby="watchable-pace-hint">
+          </label>
+          <div class="row stack">
+            <label for="allowlist">Allowed sites, one per line</label>
+            <textarea id="allowlist" name="allowlist" class="field" rows="3" spellcheck="false" autocomplete="off" aria-describedby="allowlist-hint"></textarea>
+            <p class="hint" id="allowlist-hint">Site addresses only, for example https://www.etsy.com. Keep the demo store, http://localhost:4000.</p>
+          </div>
+        </div>
+        <p class="foot">Which sites Clearcart may open. It can use your open tabs on these sites and opens its own in the background. Tabs on blocked sites stay hidden from it, and it only closes tabs it opened.</p>
+
+        <div id="blocked-sites" class="subgroup">
+          <h3>Blocked sites</h3>
+          <div class="card">
+            <div class="row stack">
+              <label for="blocklist">Blocked sites, one per line</label>
+              <textarea id="blocklist" name="blocklist" class="field mono" rows="12" spellcheck="false" autocomplete="off" aria-describedby="blocklist-hint blocklist-fixed blocklist-errors"></textarea>
+              <p class="error" id="blocklist-errors" hidden></p>
+              <p class="hint" id="blocklist-hint">Clearcart never opens these in open web mode. One per line: <code>chase.com</code> blocks that site and its subdomains, <code>amazon.com/ap</code> only pages under that path (<code>amazon.*/ap</code> for every Amazon store), <code>*bank*</code> any address with that word in its name, <code>*.gov</code> any address with gov as one of its parts. Lines starting with # are notes.</p>
+            </div>
+            <div class="row">
+              <p class="row-text hint" id="blocklist-fixed">Always blocked: non-web pages, local network addresses, addresses with a login in them.</p>
+              <button type="button" class="btn" id="restore-blocklist">Restore suggested list</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="group" id="safety" aria-labelledby="safety-h">
+        <h2 id="safety-h">Safety</h2>
+        <div class="card">
+          <div class="row">
+            <span class="row-text"><span>Checkout lock</span>
+              <span class="hint">Checkout, pay and sign in buttons stay locked everywhere except the allowed sites, where only Clearcart's pay flow can press them after you say yes.</span></span>
+            <span class="tag" data-state="ok">Always on</span>
+          </div>
+          <div id="danger">
+            <label class="row" for="danger-mode">
+              <span class="row-text" id="danger-label">Danger mode. Clearcart can press any button without asking first. You still say yes out loud before anything is bought.</span>
+              <input id="danger-mode" class="sw" type="checkbox" role="switch" aria-labelledby="danger-label" aria-describedby="danger-hint">
+            </label>
+            <p id="danger-confirm" class="row confirm" hidden><button type="button" class="btn amber" id="danger-yes">Turn on Danger mode</button> <button type="button" class="btn" id="danger-no">Cancel</button></p>
+          </div>
+        </div>
+        <p class="foot" id="danger-hint">Danger mode is off by default. It saves as soon as you confirm. Clearcart still never sees or types card numbers or passwords, and blocked sites stay blocked.</p>
+      </section>
+
+      <section class="group" id="sound" aria-labelledby="sound-h">
+        <h2 id="sound-h">Sounds and subtitles</h2>
+        <div class="card">
+          <label class="row" for="subtitles">
+            <span class="row-text"><span id="subtitles-label">Show subtitles on the page</span></span>
+            <input id="subtitles" name="subtitles" class="sw" type="checkbox" role="switch" data-setting="subtitles" aria-labelledby="subtitles-label">
+          </label>
+          <label class="row" for="sounds">
+            <span class="row-text"><span id="sounds-label">Play sounds</span>
+              <span class="hint" id="sounds-hint">Short sounds for listening, sent, order result and errors.</span></span>
+            <input id="sounds" name="sounds" class="sw" type="checkbox" role="switch" data-setting="sounds" aria-labelledby="sounds-label" aria-describedby="sounds-hint">
+          </label>
+          <label class="row" for="quiet-tabs">
+            <span class="row-text"><span id="quiet-tabs-label">Quiet other tabs while talking</span>
+              <span class="hint" id="quiet-tabs-hint">Fades out and mutes videos and music in other tabs while you talk and while Clearcart answers, then turns them back on. Tabs you muted yourself stay muted.</span></span>
+            <input id="quiet-tabs" name="quietTabs" class="sw" type="checkbox" role="switch" data-setting="quietTabs" aria-labelledby="quiet-tabs-label" aria-describedby="quiet-tabs-hint">
+          </label>
+        </div>
+      </section>
+
+      <section class="group" id="setup" aria-labelledby="setup-h">
+        <h2 id="setup-h">Setup and agent server</h2>
+        <div class="card">
+          <div class="row">
+            <span class="row-text"><span>Setup</span>
+              <span class="hint">Checks site access, the microphone, the agent server and the talk key.</span></span>
+            <span class="row-end"><span class="tag" id="setup-state" data-state="wait">Checking</span>
+              <a class="btn" href="../setup/setup.html">Run setup again</a></span>
+          </div>
+          <div class="row">
+            <span class="row-text"><span>Microphone</span>
+              <span class="hint">Clearcart listens through a hidden extension page, which can't ask for the microphone itself. Grant it once here.</span>
+              <span class="hint strong" id="mic-status" role="status" aria-live="polite"></span></span>
+            <button type="button" class="btn" id="grant-mic">Grant microphone</button>
+          </div>
+          <div class="row stack">
+            <span class="label-line"><label for="agent-url">Agent server address</label>
+              <span class="tag" id="agent-state" data-state="wait">Checking</span></span>
+            <input id="agent-url" name="agentUrl" class="field mono" type="text" spellcheck="false" autocomplete="off" aria-describedby="agent-hint agent-state">
+            <p class="hint" id="agent-hint">Must be on this computer, for example ws://localhost:5050.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="group" id="about" aria-labelledby="about-h">
+        <h2 id="about-h">About</h2>
+        <div class="card">
+          <div class="row">
+            <span>Version</span>
+            <span class="value" id="version"></span>
+          </div>
+          <div class="row">
+            <span class="row-text"><span>Keyboard shortcuts</span>
+              <span class="hint">Set a key that turns listening on and off, for when holding a key is hard.</span></span>
+            <button type="button" class="btn" id="open-shortcuts">Open shortcuts</button>
+          </div>
+          <div class="row">
+            <span class="row-text"><span>Reset to defaults</span>
+              <span class="hint">Puts every setting on this page back, including the suggested blocked sites.</span></span>
+            <button type="button" class="btn" id="reset">Reset to defaults</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="savebar">
+        <p id="status" role="status" aria-live="polite"></p>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
     </form>
   </main>
   <script type="module" src="options.js"></script>
