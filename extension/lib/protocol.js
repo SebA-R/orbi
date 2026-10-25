@@ -48,9 +48,10 @@ export const TOOLS = Object.freeze([
 // Methods only the agent server's own code calls (pay_now, the store guard).
 // Never exposed to Claude as tools. lock_arm and press_protected are the
 // button lock's unlock: a single-use nonce, then one press of an order
-// button (see background/router.js). agent_tabs feeds the server's tab
-// sweep; page_context is what the user is looking at, attached to their
-// words.
+// button (see background/router.js). press_unlocked is the same for a
+// control the user asked for (lock_arm scope "user"); lock_info reads what
+// a ref is locked as. agent_tabs feeds the server's tab sweep;
+// page_context is what the user is looking at, attached to their words.
 export const INTERNAL = Object.freeze([
   "tab_info",
   "agent_tabs",
@@ -62,6 +63,8 @@ export const INTERNAL = Object.freeze([
   "click_ref",
   "lock_arm",
   "press_protected",
+  "press_unlocked",
+  "lock_info",
 ]);
 
 export const METHODS = Object.freeze([...TOOLS, ...INTERNAL]);
