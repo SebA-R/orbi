@@ -10,17 +10,18 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { extBridge } from "../extbridge.ts";
-import { SessionHub, type HubMessage } from "../hub.ts";
+import { SessionHub, type HubMessage, type HubSession } from "../hub.ts";
 import { envProviderSettings, parseLocalBaseUrl, parseLocalModel } from "../local/config.ts";
+import { localQuery, type ToolServer } from "../local/query.ts";
 import { claimConfirmation } from "../pay.ts";
-import { DISALLOWED_BROWSER, Session, type ServerMessage } from "../session.ts";
+import { DISALLOWED_BROWSER, EXT_ALLOWED, Session, type ServerMessage } from "../session.ts";
 import { FakeExt, onceEvent, startBridge } from "./fake-ext.ts";
 
 process.env.CLEARCART_BROWSER = "ext";
 process.env.CLEARCART_VOICE = "false";
 const B = "mcp__browser__";
 const C = "mcp__clearcart__";
-const EXT_ALLOWED_SHORT = ["tabs_context", "tabs_create", "tabs_close", "tabs_activate", "navigate", "read_page", "find", "get_page_text", "form_input", "click", "type", "key", "scroll", "screenshot", "say", "request_checkout", "pay_now", "request_unlock", "remember", "forget", "recall"];
+const EXT_ALLOWED_SHORT = EXT_ALLOWED.map((t) => t.replace(/^mcp__(browser|clearcart)__/, ""));
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 async function until(ok: () => boolean, what: string, ms = 5_000) {
@@ -336,8 +337,7 @@ test("max steps: a model that keeps calling tools is stopped after 25 calls", as
 // allowedTools or inside disallowedTools (dontAsk), then runs the
 // PreToolUse hooks with this input shape (sdk.d.ts PreToolUseHookInput).
 async function sdkDecision(s: Session, tool: string, args: Record<string, unknown>): Promise<string | null> {
-  const allowed: string[] = EXT_ALLOWED_SHORT.map((t) => (["say", "request_checkout", "pay_now", "request_unlock", "remember", "forget", "recall"].includes(t) ? C : B) + t);
-  if (!allowed.includes(tool) || DISALLOWED_BROWSER.includes(tool)) return "not allowed";
+  if (!EXT_ALLOWED.includes(tool) || DISALLOWED_BROWSER.includes(tool)) return "not allowed";
   for (const m of s.hooks().PreToolUse!) {
     for (const h of m.hooks) {
       const out: any = await h({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: args, tool_use_id: "toolu_1", session_id: "s", transcript_path: "", cwd: "" } as any, "toolu_1", { signal: new AbortController().signal });
@@ -363,6 +363,7 @@ const CASES: Case[] = [
   { name: "screenshot while card details are in the form", tool: B + "screenshot", setup: (s) => ((s as any).state.cardFieldsLive = true) },
   { name: "read_page while card details are in the form", tool: B + "read_page", setup: (s) => ((s as any).state.cardFieldsLive = true) },
   { name: "tabs_context while card details are in the form", tool: B + "tabs_context", setup: (s) => ((s as any).state.cardFieldsLive = true) },
+  { name: "dismiss_overlay while card details are in the form", tool: B + "dismiss_overlay", setup: (s) => ((s as any).state.cardFieldsLive = true) },
   {
     name: "read_page while the tab sweep is broken",
     tool: B + "read_page",
@@ -493,6 +494,117 @@ test("switching the provider retires the session like a hand-off: a waiting read
   assert.equal(claimConfirmation((s as any).state).ok, false, "pay_now has nothing to use");
   assert.equal(made.length, 3);
   peer.leave();
+});
+
+test("a switch waits for a payment under way; the next session keeps the card guard and the paused sweep", async () => {
+  type Fake = HubSession & { paying: boolean; retired: boolean; send: (m: ServerMessage) => void };
+  const made: Fake[] = [];
+  const carries: unknown[] = [];
+  const hub = new SessionHub((send, _ended, carry) => {
+    carries.push(carry);
+    const s: Fake = {
+      backend: "claude",
+      paying: false,
+      retired: false,
+      send,
+      userText() {},
+      interrupt() {},
+      handOff() {},
+      close() {},
+      retire: () => void (s.retired = true),
+      busy: () => s.paying,
+      carry: () => ({ cardFieldsLive: true, sweepBroken: true }),
+    };
+    made.push(s);
+    return s;
+  });
+  const got: HubMessage[] = [];
+  const peer = hub.join((m) => got.push(m));
+  peer.userText("pay for it");
+  made[0].paying = true;
+  assert.equal(hub.switchBackend("local x", "your local model x"), false, "not while pay_now runs");
+  made[0].send({ type: "receipt", item: "Mug", total: "$9.00", last4: "1111" });
+  assert.ok(got.some((m) => m.type === "receipt"), "its receipt reaches the window");
+  assert.equal(made.length, 1);
+  made[0].paying = false;
+  await until(() => made.length === 2, "the switch once the payment is done");
+  assert.equal(made[0].retired, true);
+  assert.deepEqual(carries[1], { cardFieldsLive: true, sweepBroken: true });
+  peer.leave();
+
+  // A Session that starts with that state guards like the one before it.
+  const down = useBrowser((m) => (m === "agent_tabs" ? Promise.reject(new Error("bridge down")) : {}));
+  const s = new Session(() => {}, { carry: { cardFieldsLive: true, sweepBroken: true } });
+  try {
+    assert.match((await sdkDecision(s, B + "read_page", {})) || "", /browser tools are paused/);
+  } finally {
+    down.restore();
+  }
+  const up = useBrowser(quietBrowser);
+  try {
+    assert.match((await sdkDecision(s, B + "screenshot", {})) || "", /card details are in the checkout form/);
+  } finally {
+    up.restore();
+  }
+});
+
+test("a question whose tool call is cancelled stops waiting: the next yes is a new turn and confirms nothing", async () => {
+  const s = new Session(() => {});
+  s.pageContext = null;
+  s.userText("buy the mug");
+  const call = new AbortController();
+  const done = s.requestCheckout({ item: "Mug", quantity: 1, total: "$9.00" }, call.signal);
+  await tick();
+  call.abort();
+  assert.match((await done).content[0].text, /^declined/);
+  assert.equal((s as any).awaitingAnswer, null);
+  const open = (s as any).turnsOpen;
+  s.userText("yes");
+  assert.equal((s as any).turnsOpen, open + 1, "the yes went to the model as a new turn");
+  assert.equal(claimConfirmation((s as any).state).ok, false);
+
+  // The local loop cancels a tool that runs out of time.
+  let cancelled = false;
+  const slow: ToolServer = {
+    timeoutMs: 50,
+    start: async () => {},
+    list: () => [{ name: "wait", description: "waits", parameters: { type: "object", properties: {} } }],
+    call: (_t, _a, signal) => new Promise((r) => signal.addEventListener("abort", () => ((cancelled = true), r({ content: [{ type: "text", text: "late" }] })))),
+    status: () => ({ name: "clearcart", status: "connected" }),
+    close() {},
+  };
+  const model = await fakeModel((_b, n) => (n === 1 ? { calls: [{ name: "wait" }] } : { text: "ok" }));
+  try {
+    const turns = (async function* () {
+      yield { type: "user", message: { role: "user", content: "go" }, parent_tool_use_id: null } as any;
+    })();
+    for await (const _ of localQuery({ prompt: turns, options: { baseUrl: model.url, model: "tiny:1b", systemPrompt: "rules", servers: { clearcart: slow }, allowedTools: [C + "wait"] } }));
+    assert.equal(cancelled, true, "the call's signal fired");
+    assert.match(toolMessages(model.requests[1])[0].content, /^Error: wait timed out/);
+  } finally {
+    await model.close();
+  }
+});
+
+test("the local loop rebuilds the system prompt for each request, so a setting holds after old turns are dropped", async () => {
+  const model = await fakeModel(() => ({ text: "ok" }));
+  const br = useBrowser(quietBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("hi");
+    await until(() => model.requests.length === 1 && (r.s as any).turnsOpen === 0, "the first turn");
+    assert.doesNotMatch(model.requests[0].messages[0].content, /\n\nGuided mode\n/);
+    (extBridge as any).guided = true;
+    r.s.userText("hi again");
+    await until(() => model.requests.length === 2, "the second request");
+    assert.match(model.requests[1].messages[0].content, /\n\nGuided mode\n/, "the current setting is in the system prompt itself");
+  } finally {
+    (extBridge as any).guided = null;
+    await r.stop();
+    br.restore();
+    await model.close();
+    resetEnv();
+  }
 });
 
 // GET /local-models on the real server (echo mode, spare port).
