@@ -11,7 +11,9 @@ import { getCard, last4, type Card } from "../vault/index.ts";
 import { extBridge, extMode, type ExtBridge } from "./extbridge.ts";
 import { clickRef } from "./exttools.ts";
 
-export const STORE_ORIGIN = "http://localhost:4000";
+// CLEARCART_STORE_ORIGIN moves the demo store (tests run one on a spare port).
+// Read at import, so set it on the command line rather than in .env.
+export const STORE_ORIGIN = new URL(process.env.CLEARCART_STORE_ORIGIN || "http://localhost:4000").origin;
 const CHECKOUT_PREFIX = `${STORE_ORIGIN}/checkout`;
 
 // Parsed comparison, so tricks like http://localhost:4000@evil.example/ fail.
