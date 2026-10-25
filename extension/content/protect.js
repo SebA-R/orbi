@@ -25,8 +25,8 @@
   // case, "&" read as "and", everything that is not a letter or digit turned
   // into a space. Keep every list here so the tests cover them in one place.
   var PHRASES = {
-    // Commits an order or moves money. pay_now may press these on an
-    // allowlisted origin after the user's spoken yes.
+    // Commits an order or moves money. pay_now may press one of these once,
+    // after the user's spoken yes to the exact total.
     order: [
       "place order", "place your order", "place my order",
       "submit order", "submit my order", "submit payment",
@@ -88,12 +88,13 @@
   var PRESSABLE = { order: 1, marked: 1, "payment-form": 1 };
   // User-directed unlock (agent request_unlock): the classes of locked
   // control the user may ask Clearcart to press once. "checkout" is only a
-  // control that goes to the checkout page ("Proceed to checkout"), never
-  // one that pays. Placing an order, wallets, card or password form submits,
-  // frames and hidden components never unlock this way: paying goes only
-  // through request_checkout and pay_now.
+  // control that goes to the checkout page ("Proceed to checkout") or on to
+  // its payment step ("Continue to payment"), never one that pays. Placing
+  // an order, wallets, card or password form submits, frames and hidden
+  // components never unlock this way: paying goes only through
+  // request_checkout and pay_now.
   var CHECKOUT_NAV = ["checkout", "check out", "secure checkout", "proceed to checkout", "continue to checkout",
-    "go to checkout"];
+    "go to checkout", "continue to payment", "proceed to payment", "continue to billing"];
 
   // Kinds that make a checkbox or radio uncheck-only.
   var OPTIN_KINDS = { subscription: 1, "payment-method": 1, account: 1, express: 1 };
