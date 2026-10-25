@@ -31,6 +31,9 @@ export const DEFAULTS = Object.freeze({
   quietTabs: true,
   // Bring the user to the tab Clearcart acts on (background/follow.js).
   followTab: true,
+  // Clearcart's new tab page (newtab/newtab.html), so Space to talk and
+  // subtitles work on new tabs. Off: it forwards to Chrome's own.
+  newTabPage: true,
   // Danger mode: Clearcart presses sign in and sign up without asking
   // (content/protect.js says what it lifts). Off unless the user turns it
   // on, with a confirm step (lib/danger-toggle.js). Paying, checkout,
@@ -85,6 +88,7 @@ export function normalize(raw = {}) {
   if (typeof raw.subtitles === "boolean") out.subtitles = raw.subtitles;
   if (typeof raw.quietTabs === "boolean") out.quietTabs = raw.quietTabs;
   if (typeof raw.followTab === "boolean") out.followTab = raw.followTab;
+  if (typeof raw.newTabPage === "boolean") out.newTabPage = raw.newTabPage;
   // Only a stored true turns it on.
   out.dangerMode = raw.dangerMode === true;
   return out;
