@@ -111,7 +111,13 @@ function extPrompt(prompt: string): string {
 export type ServerMessage =
   | { type: "agent_text"; text: string }
   | { type: "status"; text: string }
-  | { type: "receipt"; item: string; total: string; last4: string };
+  | { type: "receipt"; item: string; total: string; last4: string }
+  // Sent just before the read-back is spoken, so a screen can show the order
+  // without parsing the sentence. Clients ignore types they do not know.
+  | { type: "confirm"; item: string; quantity: number; total: string; changes: string }
+  // How that read-back ended: paid, declined by the user, or failed (payment
+  // not completed or the agent hit an error).
+  | { type: "confirm_done"; outcome: "paid" | "declined" | "failed" };
 
 // The whole answer must be a yes: affirmative phrases plus polite filler and
 // nothing else, so "yes, but two of them", "do it later" or "pay attention"
@@ -276,6 +282,26 @@ export class Session {
     };
   }
 
+  // The request_checkout tool body: read the order back and wait for the answer.
+  async requestCheckout({ item, quantity, total, changes }: { item: string; quantity: number; total: string; changes?: string }) {
+    this.state.confirmation = { item, quantity, total, state: "pending" };
+    const changed = changes?.trim() ? changes.trim().replace(/([^.!?])$/, "$1.") : "";
+    this.send({ type: "confirm", item, quantity, total, changes: changed });
+    this.say(`You're buying ${quantity} ${item} for ${total}.${changed ? ` ${changed}` : ""} Say yes to pay, or no to change it.`);
+    const answer = await new Promise<string | null>((resolve) => {
+      this.awaitingAnswer = resolve;
+    });
+    if (answer !== null && isExplicitYes(answer)) {
+      this.state.confirmation.state = "confirmed";
+      this.status("checkout confirmed");
+      return { content: [{ type: "text" as const, text: "confirmed" }] };
+    }
+    this.state.confirmation.state = "declined";
+    this.status("checkout declined");
+    this.send({ type: "confirm_done", outcome: "declined" });
+    return { content: [{ type: "text" as const, text: `declined. The user said: ${JSON.stringify(answer ?? "")}` }] };
+  }
+
   private tools() {
     const requestCheckout = tool(
       "request_checkout",
@@ -289,22 +315,7 @@ export class Session {
           .optional()
           .describe("One short sentence on anything you changed for the user, e.g. \"I removed a pre-checked Subscribe and Save membership that would have added $4.99.\" Omit if nothing changed."),
       },
-      async ({ item, quantity, total, changes }) => {
-        this.state.confirmation = { item, quantity, total, state: "pending" };
-        const note = changes?.trim() ? ` ${changes.trim().replace(/([^.!?])$/, "$1.")}` : "";
-        this.say(`You're buying ${quantity} ${item} for ${total}.${note} Say yes to pay, or no to change it.`);
-        const answer = await new Promise<string | null>((resolve) => {
-          this.awaitingAnswer = resolve;
-        });
-        if (answer !== null && isExplicitYes(answer)) {
-          this.state.confirmation.state = "confirmed";
-          this.status("checkout confirmed");
-          return { content: [{ type: "text", text: "confirmed" }] };
-        }
-        this.state.confirmation.state = "declined";
-        this.status("checkout declined");
-        return { content: [{ type: "text", text: `declined. The user said: ${JSON.stringify(answer ?? "")}` }] };
-      }
+      (args) => this.requestCheckout(args)
     );
 
     // Progress notes go through this tool. Free text written alongside tool
@@ -328,10 +339,12 @@ export class Session {
         const r = await payNow(this.state);
         if (r.ok) {
           this.send({ type: "receipt", ...r.receipt });
+          this.send({ type: "confirm_done", outcome: "paid" });
           this.status("order placed");
           return { content: [{ type: "text", text: JSON.stringify({ ok: true, last4: r.last4, total: r.receipt.total }) }] };
         }
         this.status(`payment not completed: ${r.error}`);
+        this.send({ type: "confirm_done", outcome: "failed" });
         return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: r.error }) }] };
       }
     );
@@ -416,6 +429,7 @@ export class Session {
     } catch (e) {
       if (!this.closed) {
         this.status(`agent error: ${(e as Error).message}`);
+        this.send({ type: "confirm_done", outcome: "failed" });
         this.say("Sorry, something went wrong on my side. Please try again.");
       }
     }
