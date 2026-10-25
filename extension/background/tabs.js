@@ -95,6 +95,8 @@ export async function isCreated(tabId) {
 // Why Clearcart may not use this tab's current page, or null. A blank tab
 // Clearcart opened itself may be navigated (blankOk), nothing else.
 function hiddenReason(tab, settings, { blankOk = false } = {}) {
+  // The manifest keeps Clearcart out of incognito; this is a second line.
+  if (tab.incognito) return "incognito";
   const url = tab.url || tab.pendingUrl || "";
   if (blankOk && BLANK.test(url)) return null;
   const why = blockReason(url, settings);

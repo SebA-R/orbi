@@ -239,3 +239,16 @@ test("pay sites stay the allowlist in open mode", async () => {
   assert.equal(await isPaySite(`${STORE}/checkout`), true);
   assert.equal(await isPaySite("https://www.etsy.com/checkout"), false);
 });
+
+test("incognito: the manifest keeps Clearcart out, and an incognito tab is hidden and refused", async () => {
+  const { readFileSync } = await import("node:fs");
+  const manifest = JSON.parse(readFileSync(new URL("../../manifest.json", import.meta.url), "utf8"));
+  assert.equal(manifest.incognito, "not_allowed");
+  const c = fresh();
+  const id = await userTab(c, "https://www.etsy.com/", { active: true });
+  c._tabs.get(id).incognito = true;
+  assert.deepEqual((await tabsContext()).tabs, []);
+  await assert.rejects(resolveAllowedTab(id), (e) => e.code === ERR.NOT_ALLOWED);
+  await assert.rejects(resolveAllowedTab(), (e) => e.code === ERR.NOT_ALLOWED);
+  await assert.rejects(navigate({ tabId: id, url: "https://www.etsy.com/x" }), (e) => e.code === ERR.NOT_ALLOWED);
+});
