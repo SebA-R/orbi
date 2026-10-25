@@ -9,11 +9,14 @@
 //            confirm() once the key is held makes it a normal start, keeping
 //            the audio from the first moment; cancel() on a quick tap throws
 //            it all away and brings the speech back up.
-//   preDuck() the content script's own PTT_START broadcast, heard before the
-//            worker's VOICE_START (which waits on the worker waking, the
-//            document check and a settings read): duck our speech at once.
-//            start() takes it over; with no start within PREDUCK_MS the
-//            speech comes back.
+//   onPageKey(type) the page's own PTT_* broadcast (pageKey(msg)), heard
+//            before the worker's VOICE_* copy, which waits on the worker
+//            waking, the document check and a settings read. PTT_START ducks
+//            our speech at once; start() takes the duck over. Until then
+//            PTT_CONFIRM keeps it down for as long as the key is held, and
+//            PTT_STOP / CANCEL / HUSH give the start PREDUCK_MS to arrive
+//            before the speech comes back. A cancel() with a newer press on
+//            its way keeps the duck too, so back-to-back presses never blip.
 //   confirm() barge-in: hard-stop the speaker, send {type:"interrupt"} so the
 //            agent stops the turn, and drop any agent_text that still arrives
 //            from it until the next user_text goes out.
@@ -41,7 +44,15 @@ import { cueLength } from "./chime.js";
 export const STATES = Object.freeze({ IDLE: "idle", LISTENING: "listening", THINKING: "thinking", SPEAKING: "speaking" });
 export const TAIL_MS = 300;
 export const LATCH_IDLE_MS = 60_000;
-export const PREDUCK_MS = 1500;
+export const PREDUCK_MS = 4000;
+const PAGE_KEYS = new Set([RT.PTT_START, RT.PTT_CONFIRM, RT.PTT_CANCEL, RT.PTT_STOP, RT.PTT_HUSH]);
+
+// The type of a page's own hotkey broadcast, or null. The worker's copies
+// carry target "offscreen" and the offscreen document's own carry from.
+export function pageKey(msg) {
+  if (!msg || typeof msg !== "object" || msg.target != null || msg.from != null) return null;
+  return PAGE_KEYS.has(msg.type) ? msg.type : null;
+}
 const join = (parts) => parts.join(" ").replace(/\s+/g, " ").trim();
 
 export class VoiceController {
@@ -65,18 +76,38 @@ export class VoiceController {
     this.errorPending = false; // the mic failed before a silent start was confirmed
     this.listenUntil = 0; // now() when the last listen cue ends; the error buzz waits for it
     this.preDuckTimer = null;
+    this.preDucked = false; // ducked by a page press whose start hasn't come yet
+    this.pagePresses = 0; // page PTT_START broadcasts heard
+    this.starts = 0; // of those, how many the worker's VOICE_START has caught up with
   }
 
-  // The key was just touched; VOICE_START is on its way through the worker.
-  preDuck() {
-    if (this.listening || !this.speaking) return;
-    this.speaker.duck?.();
+  // A page's own hotkey broadcast; the worker's copy is still on its way.
+  onPageKey(type) {
+    if (type === RT.PTT_START) {
+      this.pagePresses++;
+      if (this.listening || !this.speaking) return;
+      this.speaker.duck?.();
+      this.preDucked = true;
+      this.#armPreDuck();
+    } else if (type === RT.PTT_CONFIRM) {
+      // Held: stay down however long the worker takes.
+      if (this.preDucked && !this.listening) this.#clearPreDuck();
+    } else if (this.preDucked && !this.listening) {
+      this.#armPreDuck(); // let go: the start still gets its chance
+    }
+  }
+
+  // No start within PREDUCK_MS (the worker never passed it on): speech comes back.
+  #armPreDuck() {
     this.#clearPreDuck();
     const timer = this.setTimer(() => {
       if (this.preDuckTimer !== timer) return;
       this.preDuckTimer = null;
-      // No start came (the worker never passed it on): bring the speech back.
-      if (!this.listening) this.speaker.unduck?.();
+      // A press whose copy never came is not waited for again.
+      this.starts = this.pagePresses;
+      if (!this.preDucked || this.listening) return;
+      this.preDucked = false;
+      this.speaker.unduck?.();
     }, PREDUCK_MS);
     this.preDuckTimer = timer;
   }
@@ -137,6 +168,9 @@ export class VoiceController {
 
   async start({ silent = false, latch = false } = {}) {
     this.errorPending = false;
+    // This start is the worker's copy of the oldest page press not yet caught up.
+    this.starts = Math.min(this.starts + 1, this.pagePresses);
+    this.preDucked = false;
     this.#clearPreDuck();
     if (this.listening) {
       // Talking again from another frame or tab during a latch ends it.
@@ -281,7 +315,11 @@ export class VoiceController {
     const s = this.session;
     this.session = null;
     if (s) s.abort();
-    this.speaker.unduck?.();
+    if (this.pagePresses > this.starts && this.speaking) {
+      // A newer press already ducked and its start is on its way: stay down.
+      this.preDucked = true;
+      this.#armPreDuck();
+    } else this.speaker.unduck?.();
     this.#settle();
   }
 

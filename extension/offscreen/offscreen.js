@@ -9,8 +9,9 @@
 //        TTS_SPEAK {text}, SETTINGS_CHANGED {settings}
 //      Anything else (including PTT_* that content scripts broadcast to every
 //      extension page) is ignored; the worker is the only router. The one
-//      exception: a page's PTT_START broadcast ducks our speech at once
-//      (controller.preDuck), ahead of the worker's VOICE_START.
+//      exception: a page's own PTT_* broadcast (pageKey) goes to
+//      controller.onPageKey, so a press ducks our speech at once, ahead of
+//      the worker's VOICE_START.
 // Out: runtime messages with from "offscreen": VOICE_STATE, VOICE_PARTIAL,
 //      VOICE_FINAL, VOICE_ERROR, SUBTITLE, STATUS.
 import { RT } from "../lib/protocol.js";
@@ -23,7 +24,7 @@ import { Mic } from "../lib/voice/mic.js";
 import { createChime, linkCues } from "../lib/voice/chime.js";
 import { createTokenSource } from "../lib/voice/token.js";
 import { AgentSession } from "../lib/voice/agent-session.js";
-import { VoiceController } from "../lib/voice/controller.js";
+import { VoiceController, pageKey } from "../lib/voice/controller.js";
 
 const log = createLogger("offscreen");
 const say = (msg) => log.info(msg);
@@ -97,9 +98,10 @@ function applySettings(next) {
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg) return;
-  // A page's own PTT_START broadcast (not the worker's copy): duck our speech
+  // A page's own hotkey broadcast (not the worker's copy): duck our speech
   // now, without waiting for VOICE_START to come round through the worker.
-  if (msg.type === RT.PTT_START && msg.target == null && msg.from == null) return void controller.preDuck();
+  const key = pageKey(msg);
+  if (key) return void controller.onPageKey(key);
   if (msg.target !== "offscreen") return;
   switch (msg.type) {
     case RT.VOICE_START:
