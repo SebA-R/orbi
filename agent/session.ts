@@ -24,6 +24,8 @@ import { z } from "zod";
 import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
+import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
+import { DESKTOP_TOOL_NAMES, desktopToolDefinitions, type DesktopHost } from "./desktop/tools.ts";
 import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
 import { localQuery, sdkToolServer, stdioToolServer } from "./local/query.ts";
 import { withContext, type PageContext } from "./context.ts";
@@ -61,6 +63,10 @@ const BROWSER_SERVER =
 
 const B = "mcp__browser__";
 const C = "mcp__clearcart__";
+// Orbi Desktop's tools (desktop/tools.ts), ext mode only. Their own code
+// enforces the desktop lock, blocked apps and masking.
+const D = "mcp__desktop__";
+const DESKTOP_ALLOWED = DESKTOP_TOOL_NAMES.map((t) => D + t);
 
 // Tools Claude never gets. execute_code is the big one: its sandbox can call
 // every browser tool from inside one call, which would step around the
@@ -702,7 +708,7 @@ export class Session {
   // search: whether the model has WebSearch (Claude does, a local model
   // does not).
   systemPrompt(ext = extMode(), search = currentProvider().provider !== "local"): string {
-    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined, search: this.search }) + (search ? SEARCH_PROMPT : "") + (ackOn() ? ACK_PROMPT : "");
+    const base = buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined, search: this.search }) + (ext ? DESKTOP_PROMPT : "") + (search ? SEARCH_PROMPT : "") + (ackOn() ? ACK_PROMPT : "");
     this.memSeen = this.memKey();
     if (!this.mem) return base;
     if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
@@ -886,6 +892,13 @@ export class Session {
         this.status("search refused: personal data in the query");
         return deny(why);
       }
+    }
+
+    // A screenshot of the whole screen would show the card in the checkout form.
+    if (name === D + "desktop_screenshot" && this.state.cardFieldsLive) {
+      if (!(await this.cardGone())) return deny("Blocked: card details are in the checkout form. Wait for pay_with_saved_card to finish.");
+      this.state.cardFieldsLive = false;
+      this.state.cardTabId = null;
     }
 
     if (name.startsWith(B)) {
@@ -1614,6 +1627,28 @@ export class Session {
     return [sayTool, requestCheckout, payNowTool, requestUnlockTool, rememberTool, forgetTool, recallTool, recordPurchaseTool];
   }
 
+  // What the desktop tools may use of this session: the user's own last
+  // words for the direct-ask match, the spoken question, and the settings.
+  desktopHost(): DesktopHost {
+    return {
+      words: () => (this.freshWords() ? { text: this.lastUser.text, spent: this.lastUser.spent } : null),
+      ask: async (question, signal) => {
+        // A memory question still waiting gives way, as for request_unlock.
+        if (this.muted || (this.awaitingAnswer && this.awaitingAnswer !== this.memoryAsk) || this.state.confirmation?.state === "pending") return null;
+        this.cancelMemoryAsk();
+        this.say(question);
+        return new Promise<string | null>((resolve) => {
+          this.awaitingAnswer = this.answerSlot(signal, resolve);
+        });
+      },
+      isYes: isExplicitYes,
+      status: (t) => this.status(t),
+      danger: () => dangerModeOn(),
+      vision: () => currentProvider().provider !== "local" || currentProvider().localVision === true,
+      acted: () => this.withdrawYes("a desktop action came first"),
+    };
+  }
+
   private tools() {
     return createSdkMcpServer({
       name: "clearcart",
@@ -1694,7 +1729,7 @@ export class Session {
     const ext = extMode();
     const p = currentProvider();
     this.backend = backendKey(p);
-    const allowedTools = ext ? EXT_ALLOWED : ALLOWED;
+    const allowedTools = ext ? [...EXT_ALLOWED, ...DESKTOP_ALLOWED] : ALLOWED;
     const q = (this.q =
       p.provider === "local"
         ? localQuery({
@@ -1715,6 +1750,7 @@ export class Session {
                   ? sdkToolServer("browser", extToolDefinitions(), BROWSER_TOOL_TIMEOUT_MS)
                   : stdioToolServer("browser", process.execPath, [BROWSER_SERVER], BROWSER_TOOL_TIMEOUT_MS),
                 clearcart: sdkToolServer("clearcart", this.toolDefinitions(), CLEARCART_TOOL_TIMEOUT_MS),
+                ...(ext ? { desktop: sdkToolServer("desktop", desktopToolDefinitions(this.desktopHost()), CLEARCART_TOOL_TIMEOUT_MS) } : {}),
               },
               allowedTools,
               disallowedTools: DISALLOWED_BROWSER,
@@ -1746,6 +1782,7 @@ export class Session {
                   ? createExtToolsServer()
                   : { type: "stdio", command: process.execPath, args: [BROWSER_SERVER], alwaysLoad: true, timeout: BROWSER_TOOL_TIMEOUT_MS },
                 clearcart: this.tools(),
+                ...(ext ? { desktop: createSdkMcpServer({ name: "desktop", version: "0.1.0", tools: desktopToolDefinitions(this.desktopHost()), alwaysLoad: true, timeout: CLEARCART_TOOL_TIMEOUT_MS }) } : {}),
               },
               allowedTools: [...allowedTools, WEB_SEARCH],
               disallowedTools: DISALLOWED_BROWSER,
