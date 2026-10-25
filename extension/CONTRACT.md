@@ -27,12 +27,13 @@ export async function assertAllowed(url: string): Promise<void> // throws Bridge
 export function blockReason(url, settings): string | null      // browseMode "open": lib/blocklist.js fixed rules + settings.blocklist entries; "allowlist": origin in settings.allowlist
 export async function isPaySite(url: string): Promise<boolean>  // origin in the allowlist, in both modes; lock_arm needs it
 
-// tabs.js  (agent tabs live in one tab group titled "Clearcart"; group id persisted in chrome.storage.session)
-export async function tabsContext(): Promise<{ tabs: {tabId,url,title,active}[], groupId }>
-export async function tabsCreate({ url? }): Promise<{ tabId }>
+// tabs.js  (no tab group: the user's open tabs plus tabs Clearcart opens; which ones it opened is kept in chrome.storage.session)
+export async function tabsContext(): Promise<{ tabs: {tabId,title,url,active,openedByClearcart}[] }> // url = origin+path; tabs on blocked pages left out
+export async function tabsCreate({ url? }): Promise<{ tabId }>                     // background tab (active: false) next to the user's tab
+export async function tabsClose({ tabId }), tabsActivate({ tabId })                // close: only tabs Clearcart opened; activate: when the user asks
 export async function navigate({ tabId, url }): Promise<{ tabId, url, title }>      // "back"/"forward" allowed; waits for status "complete" (timeout 20 s); assertAllowed first
-export async function tabInfo({ tabId }): Promise<{ tabId, url, title }>
-export async function resolveTab(tabId?): Promise<number>                          // given id must be in the group; default = active tab in group
+export async function tabInfo({ tabId }), agentTabs()                               // INTERNAL: full URLs for the pay flow and the tab sweep
+export async function resolveAllowedTab(tabId?): Promise<number>                   // re-checks the tab's page on every call; default = tab used last, else the active tab
 
 // cdp.js  (chrome.debugger, protocol 1.3; attach lazily per tab, detach on tab close)
 export async function click({ tabId, x, y }): Promise<void>         // Input.dispatchMouseEvent moved/pressed/released, button left
@@ -67,12 +68,12 @@ The worker sends `chrome.tabs.sendMessage(tabId, { type: RT.PAGE_CALL, method, p
 
 `protect.js` (button lock, injected between `mask.js` and `page.js`) exports `classifyLabel(label, { checkable })`, `lockOf(el)`, `lockInChain(el)`, `lockAt(doc, x, y)`, `lockForKey(doc, key)`, `listLocks(doc)`, `message(lock)`, `pressable(lock)` and `showBadges(doc)`. A lock is `{ kind, label, optin, checked }`, kinds `order`, `marked`, `payment-form`, `express`, `subscription`, `payment-method`, `account`, `frame`. `read_page` appends `[locked]` or `[uncheck only]` after a protected control's ref; `find` adds `locked: true` or `uncheckOnly: true`; `form_input` refuses locked controls (an uncheck-only box may be set to false). `showBadges` also sets `data-clearcart-locked` (visual only, styled by one injected stylesheet) on controls and fields the agent is locked out of; `release(el)` clears it for the single-use press.
 
-Bridge `INTERNAL` methods for the unlock: `lock_arm { tabId }` → `{ nonce, expiresInMs }` (single use, bound to the tab and its origin, 30 s) and `press_protected { tabId, ref, nonce }` → `{ ok, via }`. The worker checks every `click`, `key` (Enter, Space) and `type` (with a newline) with the page before CDP and refuses with `ERR.LOCKED`.
+Bridge `INTERNAL` methods for the unlock: `lock_arm { tabId }` → `{ nonce, expiresInMs }` (single use, bound to the tab and its origin, 30 s) and `press_protected { tabId, ref, nonce }` → `{ ok, via }`. User-directed unlock (agent `request_unlock`, `agent/user-unlock.ts`): `lock_info { tabId, ref }` → `{ locked, kind, label, cls, password, passwordFilled }` (never values), `lock_arm { tabId, scope: "user" }` (any allowed site, not only pay sites) and `press_unlocked { tabId, ref, label, cls, nonce }`, which takes only a "user" nonce and presses only a control whose `Protect.unlockClass` is `cls` (checkout navigation, account, subscription, payment-method; never a marked control) with that label. The worker hit-tests the click point right before the CDP click (`press_hit_user`) and clears the lock marker only after it (`press_done_user`). A "user" nonce never fits `press_protected`, and Place order, Buy now, wallets and card form submits never have an unlock class. Password fields (ever type=password, autocomplete current-password, new-password or one-time-code, or a name, id or label saying password, passcode or otp; `Protect.isPasswordField`) are masked in `read_page`, refused by `form_input`, and typing into one is refused. The worker checks every `click`, `key` (Enter, Space) and `type` (with a newline) with the page before CDP and refuses with `ERR.LOCKED`.
 
 ### C. Server bridge (agent, TypeScript)
 
 - `agent/extbridge.ts`: attaches a WebSocket endpoint at `/ext` to the existing HTTP server; accepts one extension at a time (newest wins); handshake per `lib/protocol.js` (reply `welcome`); `call(method, params, timeoutMs?)` → result or throws; `connected()`; events for connect/disconnect.
-- `agent/exttools.ts`: in-process MCP server (Agent SDK `createSdkMcpServer` + `tool`) named `browser` exposing the 12 TOOLS with zod schemas; `click` takes `{ tabId?, ref }` (server calls `rect` then `click`) or `{ tabId?, x, y }`.
+- `agent/exttools.ts`: in-process MCP server (Agent SDK `createSdkMcpServer` + `tool`) named `browser` exposing the TOOLS with zod schemas; `click` takes `{ tabId?, ref }` (server calls `rect` then `click`) or `{ tabId?, x, y }`.
 - `CLEARCART_BROWSER=ext` makes `session.ts` use `exttools` instead of the open-claude-in-chrome stdio MCP server, and `pay.ts` use `call("fill_payment")` + `click_ref`/`click` on `#place-order`; default (unset) keeps today's path untouched. Guard/sweep use `call("tab_info")` and `tabs_context`.
 - Test with a fake extension (a ws client in the test) — no browser needed.
 

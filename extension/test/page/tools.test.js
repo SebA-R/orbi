@@ -74,7 +74,7 @@ test("form_input fills search and unticks the add-on checkbox with events", asyn
   let changes = 0;
   box.addEventListener("change", () => changes++);
   assert.equal(box.checked, true);
-  assert.deepEqual(await p.call("form_input", { ref, value: false }), { ok: true, result: { ok: true } });
+  assert.deepEqual((await p.call("form_input", { ref, value: false })).result, { ok: true });
   assert.equal(box.checked, false);
   assert.equal(changes, 1);
   const sref = await refOf(p, "search products", "searchbox");
@@ -154,7 +154,7 @@ test("fill_payment fills by kind, returns last4 only, and nothing leaks after", 
   let inputs = 0;
   d.querySelector('[name="cc-number"]').addEventListener("input", () => inputs++);
   const r = await p.call("fill_payment", { card: CARD, address: "1 Main St, Springfield" });
-  assert.deepEqual(r, { ok: true, result: { ok: true, last4: "1111" } });
+  assert.deepEqual([r.ok, r.result], [true, { ok: true, last4: "1111" }]);
   assert.equal(inputs, 1);
   assert.equal(d.querySelector('[name="cc-number"]').value, "4111111111111111");
   assert.equal(d.querySelector('[name="cc-name"]').value, "Ada Lovelace");
@@ -197,4 +197,12 @@ test("fill_payment handles split month/year selects", async () => {
   assert.equal(r.ok, true);
   assert.equal(p.document.querySelector('[name="m"]').value, "12");
   assert.equal(p.document.querySelector('[name="y"]').value, "2029");
+});
+
+test("read_page and get_page_text report origin and path only, never the query string or fragment", async () => {
+  const p = loadPage(pages.search, { url: store.base + "/search?q=allergy&code=SECRET#access_token=TOKEN" });
+  for (const m of ["read_page", "get_page_text"]) {
+    const r = (await p.call(m, {})).result;
+    assert.equal(r.url, store.base + "/search", m);
+  }
 });

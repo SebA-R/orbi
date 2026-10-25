@@ -3,21 +3,39 @@
 // User turns stream into a single long-lived query() as SDKUserMessages, so
 // the conversation keeps its context across turns. While request_checkout is
 // waiting, the next user_text is routed to it instead of to Claude.
+//
+// Barge-in: {type:"interrupt"} from the client (the user held the talk key)
+// mutes the turn in progress. Its held text is dropped, anything it still
+// says goes out as a "(not spoken)" status, and the SDK turn is interrupted.
+// The next turn speaks again. An interrupt during a checkout read-back only
+// stops the speech: the read-back keeps waiting for a spoken answer.
 
 import dns from "node:dns";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type HookCallback, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
-import { callBrowserTool, resultText } from "./bridge.ts";
+import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
 import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer } from "./exttools.ts";
-import { ocicLockNote, ocicLockReason } from "./ocic-lock.ts";
+import { withContext, type PageContext } from "./context.ts";
+import { ocicLockNote, ocicLockReason, pageScript, Protect } from "./ocic-lock.ts";
 import { isLocalIp } from "./blocklist.ts";
 import { isCheckoutUrl, originOf, SITE_POLICY, siteBlockReason, STORE_ORIGIN, type SitePolicy } from "./origins.ts";
 import { checkoutSnapshot, payNow, type Confirmation, type PayState } from "./pay.ts";
-import { SITES_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
+import { EXT_TABS_PROMPT, SITES_PROMPT, SYSTEM_PROMPT } from "./prompt.ts";
+import {
+  decideUnlock,
+  isDirectAsk,
+  lockInfoExt,
+  ocicLockInfoScript,
+  ocicPressScript,
+  pressUnlockedExt,
+  userUnlockGate,
+  type LockInfo,
+  type UnlockClass,
+} from "./user-unlock.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MODEL = process.env.CLEARCART_MODEL || "claude-sonnet-5-5";
@@ -68,7 +86,7 @@ export const ALLOWED = [
   "read_page",
   "read_console_messages",
   "set_tab_focus",
-].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now"]);
+].map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"]);
 
 // Blocked while card values sit in the checkout form: anything that can read
 // or screenshot the page, or change it.
@@ -79,14 +97,20 @@ const BLOCKED_WHILE_CARD_LIVE = new Set(
 // CLEARCART_BROWSER=ext: Claude's browser tools are the Clearcart extension's
 // TOOLS (exttools.ts), same mcp__browser__ prefix. Screenshot, click, type,
 // key and scroll stand in for "computer" in the card-live block list.
-const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now"]);
+const EXT_ALLOWED = EXT_TOOLS.map((t) => B + t).concat([C + "say", C + "request_checkout", C + "pay_now", C + "request_unlock"]);
 const EXT_BLOCKED_WHILE_CARD_LIVE = new Set(
   ["screenshot", "click", "type", "key", "scroll", "read_page", "get_page_text", "find", "form_input"].map((t) => B + t)
 );
 
 function extPrompt(prompt: string): string {
-  return prompt.replace("calling tabs_context_mcp with createIfEmpty true", "calling tabs_context, and tabs_create if the group has no tabs");
+  return prompt.replace(
+    "calling tabs_context_mcp with createIfEmpty true, then use a tab in the MCP group.",
+    "calling tabs_context. Use a tab already on the store, or open one with tabs_create."
+  ) + EXT_TABS_PROMPT;
 }
+
+// How long a user turn waits for page_context before going without it.
+const CONTEXT_TIMEOUT_MS = 1_500;
 
 // In ext mode the extension's blocked sites list replaces the suggested one
 // once it has sent it.
@@ -177,10 +201,12 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
 
 // Button lock for navigation: checkout and payment pages are off limits on
 // every site except the store, where pay_now runs. Both browser paths, for
-// navigate and for tabs_create / tabs_create_mcp with a url.
-export function navigateLockReason(url: string): string | null {
+// navigate and for tabs_create / tabs_create_mcp with a url. passed: true
+// when the user asked to go to checkout on this tab and origin
+// (request_unlock's checkout pass), which lifts the block for that visit.
+export function navigateLockReason(url: string, passed?: (url: string) => boolean): string | null {
   if (url === "back" || url === "forward") return null;
-  if (isCheckoutUrl(url) && originOf(url) !== STORE_ORIGIN) {
+  if (isCheckoutUrl(url) && originOf(url) !== STORE_ORIGIN && !passed?.(url)) {
     return "Locked: Clearcart does not open checkout or payment pages on this site. Stop at the cart and tell the user.";
   }
   return null;
@@ -267,6 +293,41 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
+// The checkout pass: set only after the user asked to go to checkout and
+// the "Proceed to checkout" control was pressed. That one tab may stay on
+// checkout pages of that origin. It must land within PASS_LAND_MS, ends
+// when the tab leaves checkout pages or after PASS_MAX_MS, and lets Claude
+// navigate there at most once (navUsed). Never covers a blocked site, and
+// never lets Claude pay (Place order stays locked).
+export const PASS_LAND_MS = 30_000;
+export const PASS_MAX_MS = 2 * 60_000;
+export type CheckoutPass = { tabId: number; origin: string; landBy: number; until: number; landed: boolean; navUsed?: boolean };
+
+export function passCovers(pass: CheckoutPass | null, tabId: number | null, url: string | undefined, now = Date.now()): boolean {
+  if (!pass || tabId == null || !url || pass.tabId !== tabId) return false;
+  if (now > pass.until || (!pass.landed && now > pass.landBy)) return false;
+  return originOf(url) === pass.origin && isCheckoutUrl(url);
+}
+
+// How long the user's last words count for request_unlock's direct match.
+export const USER_WORDS_TTL_MS = 60_000;
+
+// The user's most recent words, bound to the tab Clearcart was on when they
+// spoke and that tab's origin then. spent: unlock classes already pressed
+// for these words. passwordYes: these words are an explicit yes to an
+// earlier "type your password, then tell me" for that sign in.
+type UserWords = {
+  text: string;
+  spent: Set<string>;
+  at: number;
+  tabId: number | null;
+  origin: Promise<string | null>;
+  passwordYes: { tabId: number; label: string; origin: string } | null;
+};
+
+type ToolText = { content: Array<{ type: "text"; text: string }> };
+const said = (text: string): ToolText => ({ content: [{ type: "text", text }] });
+
 export class Session {
   private input = new InputQueue();
   private abort = new AbortController();
@@ -274,23 +335,79 @@ export class Session {
   private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false };
   private closed = false;
   private q: Query | null = null;
+  // The user's most recent words, for request_unlock's direct-ask match.
+  private lastUser: UserWords = { text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null };
+  // A sign in the user asked for before typing their own password. Lives
+  // only until the next utterance, which becomes passwordYes if it is an
+  // explicit yes.
+  private passwordAsk: { tabId: number; label: string; origin: string } | null = null;
+  checkoutPass: CheckoutPass | null = null;
   // Set when a tab sweep could not run or could not move a stray tab. Every
   // browser call is refused until a sweep succeeds (fail closed).
   private sweepBroken = false;
   // DNS for localDnsReason; tests replace it.
   lookup: Lookup = systemLookup;
+  // What the user is looking at, attached to each user turn (ext mode).
+  // Null: no context. Tests replace it.
+  pageContext: (() => Promise<PageContext>) | null = extMode()
+    ? () => extBridge.call<PageContext>("page_context", {}, CONTEXT_TIMEOUT_MS)
+    : null;
+  // Keeps user turns in order while their context is fetched.
+  private turns: Promise<void> = Promise.resolve();
+  // User turns sent to the SDK whose result has not come back yet.
+  private turnsOpen = 0;
+  // The turn in progress was interrupted: nothing more from it is spoken.
+  private muted = false;
+  // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
+  private held: string[] = [];
 
   constructor(private send: (m: ServerMessage) => void) {}
 
   userText(text: string) {
     if (this.closed || !text.trim()) return;
+    const tabId = this.state.lastTabId;
+    const pw = this.passwordAsk;
+    this.passwordAsk = null;
+    this.lastUser = {
+      text,
+      spent: new Set(),
+      at: Date.now(),
+      tabId,
+      origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
+      passwordYes: pw && isExplicitYes(text) ? pw : null,
+    };
     if (this.awaitingAnswer) {
       const resolve = this.awaitingAnswer;
       this.awaitingAnswer = null;
       resolve(text);
       return;
     }
-    this.input.push(text);
+    // Counted now, while its context is fetched, so an interrupt sees it.
+    this.turnsOpen++;
+    const fetch = this.pageContext;
+    if (!fetch) return this.input.push(text);
+    const ctx = Promise.race([
+      fetch().catch(() => null),
+      new Promise<null>((r) => setTimeout(() => r(null), CONTEXT_TIMEOUT_MS + 200).unref?.()),
+    ]);
+    this.turns = this.turns.then(async () => {
+      const c = await ctx;
+      if (!this.closed) this.input.push(withContext(text, c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
+    });
+    return this.turns;
+  }
+
+  // The user started talking over us.
+  interrupt() {
+    if (this.closed) return;
+    this.held.forEach((t) => this.unspoken(t));
+    this.held = [];
+    // A read-back waiting for an answer is not cancelled or confirmed by a
+    // barge-in; the user is about to answer it.
+    if (this.awaitingAnswer || this.turnsOpen === 0 || this.muted) return;
+    this.muted = true;
+    this.status("interrupted by the user");
+    this.q?.interrupt().catch((e) => this.status(`interrupt failed: ${(e as Error).message}`));
   }
 
   close() {
@@ -303,7 +420,12 @@ export class Session {
   }
 
   private say(text: string) {
+    if (this.muted) return this.unspoken(text);
     this.send({ type: "agent_text", text });
+  }
+
+  private unspoken(text: string) {
+    this.status(`(not spoken) ${text.slice(0, 120)}`);
   }
 
   private status(text: string) {
@@ -334,7 +456,8 @@ export class Session {
         if (blocked) return deny(blocked);
       }
       if (opens) {
-        const locked = navigateLockReason(String(args.url || ""));
+        const navTab = name === B + "navigate" ? tabIdOf(args) ?? this.state.lastTabId : null;
+        const locked = navigateLockReason(String(args.url || ""), (u) => this.useCheckoutPass(navTab, u));
         if (locked) return deny(locked);
       }
       if (checkSites && !extMode() && TAB_TOOLS.has(name)) {
@@ -369,10 +492,11 @@ export class Session {
     return { hookSpecificOutput: { hookEventName: "PostToolUse" as const, additionalContext: note } };
   };
 
-  // The browser's agent tabs (the MCP group, or the Clearcart group on our
-  // extension). Throws when the list cannot be read.
+  // The browser's agent tabs: the MCP group, or on our extension the tabs
+  // Clearcart opened (agent_tabs; the user's own tabs are never
+  // swept). Throws when the list cannot be read.
   async listTabs(): Promise<Tab[]> {
-    if (extMode()) return (await extBridge.call<{ tabs?: Tab[] }>("tabs_context", {}, 10_000))?.tabs || [];
+    if (extMode()) return (await extBridge.call<{ tabs?: Tab[] }>("agent_tabs", {}, 10_000))?.tabs || [];
     return JSON.parse(resultText(await callBrowserTool("tabs_context_mcp", {})).split("\n")[0]).availableTabs || [];
   }
 
@@ -390,13 +514,50 @@ export class Session {
   // be listed or a stray would not move. Clears sweepBroken on success.
   private async runSweep(): Promise<number> {
     const policy = sitePolicy();
-    const n = await returnStrays(await this.listTabs(), (id, url) => this.navTab(id, url), policy);
+    const n = await returnStrays(this.passTabs(await this.listTabs(), policy), (id, url) => this.navTab(id, url), policy);
     if (n) {
-      const left = (await this.listTabs()).filter((t) => isStrayTab(t.url, policy));
+      const left = this.passTabs(await this.listTabs(), policy).filter((t) => isStrayTab(t.url, policy));
       if (left.length) throw new Error(`${left.length} tab(s) still on a blocked site`);
     }
     this.sweepBroken = false;
     return n;
+  }
+
+  // Claude's one navigate on the checkout pass: true at most once per pass.
+  useCheckoutPass(tabId: number | null, url: string): boolean {
+    const p = this.checkoutPass;
+    if (!p || p.navUsed || !passCovers(p, tabId, url)) return false;
+    p.navUsed = true;
+    return true;
+  }
+
+  // The user's last words if they still count for this tab and its origin
+  // (bound when spoken, USER_WORDS_TTL_MS), else empty words.
+  private async wordsFor(tabId: number, href: string): Promise<UserWords | null> {
+    const w = this.lastUser;
+    if (!w.text || w.tabId !== tabId || Date.now() - w.at > USER_WORDS_TTL_MS) return null;
+    const origin = await w.origin;
+    return origin && origin === originOf(href) ? w : null;
+  }
+
+  // The tabs the sweep checks: the checkout pass tab is left out while it is
+  // on a checkout page of its origin (and not on a blocked site). Updates
+  // the pass: landed once seen there, ended once the tab leaves.
+  private passTabs(tabs: Tab[], policy: SitePolicy): Tab[] {
+    const p = this.checkoutPass;
+    if (!p) return tabs;
+    const now = Date.now();
+    const t = tabs.find((x) => x.tabId === p.tabId);
+    if (!t || now > p.until || (!p.landed && now > p.landBy)) {
+      this.checkoutPass = null;
+      return tabs;
+    }
+    if (passCovers(p, t.tabId, t.url, now) && !siteBlockReason(t.url!, policy)) {
+      p.landed = true;
+      return tabs.filter((x) => x !== t);
+    }
+    if (p.landed) this.checkoutPass = null;
+    return tabs;
   }
 
   // OCIC path: why the tab a page tool would act on may not be touched, or
@@ -453,6 +614,11 @@ export class Session {
 
   // The request_checkout tool body: read the order back and wait for the answer.
   async requestCheckout({ item, quantity, total, changes }: { item: string; quantity: number; total: string; changes?: string }) {
+    // The user cut this turn off: they never heard a read-back, so no yes can count.
+    if (this.muted) {
+      this.status("checkout not read back: the user interrupted");
+      return { content: [{ type: "text" as const, text: "declined. The user interrupted before the order was read back." }] };
+    }
     // Pin the yes to this checkout tab and the cart on it (pay.ts). Taken while
     // the read-back plays; if it can't be read in 5 s the tab stays unknown and
     // pay_now refuses (fail closed).
@@ -480,6 +646,112 @@ export class Session {
     this.status("checkout declined");
     this.send({ type: "confirm_done", outcome: "declined" });
     return { content: [{ type: "text" as const, text: `declined. The user said: ${JSON.stringify(answer ?? "")}` }] };
+  }
+
+  // Where a tab is now, on either browser path, or null.
+  private async tabUrl(tabId: number): Promise<string | null> {
+    try {
+      if (extMode()) return (await extBridge.call<{ url?: string }>("tab_info", { tabId }, 10_000))?.url ?? null;
+      return (await this.listTabs()).find((t) => t.tabId === tabId)?.url ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async lockInfo(tabId: number, ref: string | undefined, label: string): Promise<LockInfo> {
+    if (extMode()) {
+      if (!ref) throw new Error("pass the control's ref from read_page or find");
+      return lockInfoExt(extBridge, tabId, ref);
+    }
+    return (await evalInTab<LockInfo>(tabId, pageScript(ocicLockInfoScript(label)))) || { locked: false };
+  }
+
+  // Presses the control once with a fresh single-use grant.
+  private async pressUnlocked(tabId: number, ref: string, label: string, cls: UnlockClass): Promise<string | null> {
+    const issued = userUnlockGate.issue({ tabId, href: await this.tabUrl(tabId), ref, label, cls });
+    if (!issued.ok) return issued.error;
+    if (extMode()) {
+      await pressUnlockedExt(extBridge, issued.grant, { tabId, ref, label, cls });
+      return null;
+    }
+    if (!userUnlockGate.consume(issued.grant, { tabId, href: await this.tabUrl(tabId), ref, label, cls })) return "The page changed before the press.";
+    const r = await evalInTab<string>(tabId, pageScript(ocicPressScript(label, cls)));
+    return r === "pressed" ? null : `The control is ${r === "covered" ? "covered by something else" : r === "hidden" ? "not visible" : "gone from the page"}.`;
+  }
+
+  // The request_unlock tool body. The direct-ask match reads only the
+  // user's own last words (this.lastUser), never anything Claude passes.
+  async requestUnlock(args: { tabId?: number; ref?: string; label: string; action: string; reason?: string }): Promise<ToolText> {
+    const tabId = args.tabId ?? this.state.lastTabId;
+    if (tabId == null) return said("No tab is open yet. Open the page first, then call request_unlock with its tabId.");
+    const href = await this.tabUrl(tabId);
+    if (!href) return said("Could not check which page that tab is on. Try again in a moment.");
+    if (!process.env.CLEARCART_ALLOW_ANY_SITE && siteBlockReason(href, sitePolicy())) {
+      return said("Blocked: that tab is on a site Clearcart does not use, so nothing there unlocks.");
+    }
+    let info: LockInfo;
+    try {
+      info = await this.lockInfo(tabId, args.ref, args.label);
+    } catch (e) {
+      return said(`Could not check that control: ${(e as Error).message}.`);
+    }
+    const ref = args.ref || "label";
+    const label = String(info.label || args.label);
+    const origin = originOf(href);
+    const words = await this.wordsFor(tabId, href);
+    const userText = words?.text ?? "";
+    const pw = words?.passwordYes;
+    const passwordYes = !!pw && pw.tabId === tabId && pw.origin === origin && Protect.sameLabel(pw.label, label);
+    const d = decideUnlock(info, { userText, spent: words?.spent, passwordYes });
+    if (d.kind === "refuse") {
+      if (info.locked) this.status(`unlock refused: ${info.kind}`);
+      return said(d.message);
+    }
+    if (d.kind === "needs_password") {
+      if (origin && info.cls && isDirectAsk(userText, info.cls as UnlockClass, label)) this.passwordAsk = { tabId, label, origin };
+      this.status("unlock waiting: the user types their password");
+      return said(d.message);
+    }
+    let how = "user asked";
+    if (d.kind === "ask") {
+      this.say(d.question);
+      const answer = await new Promise<string | null>((resolve) => {
+        this.awaitingAnswer = resolve;
+      });
+      if (answer === null || !isExplicitYes(answer)) {
+        this.status(`unlock declined: ${d.cls}`);
+        return said(`declined, nothing was pressed. The user said: ${JSON.stringify(answer ?? "")}`);
+      }
+      how = "user confirmed";
+    } else {
+      words!.spent.add(d.cls);
+    }
+    if (d.cls === "account") this.passwordAsk = null;
+    let failed: string | null;
+    try {
+      failed = await this.pressUnlocked(tabId, ref, label, d.cls);
+    } catch (e) {
+      failed = (e as Error).message;
+    }
+    if (failed) {
+      this.status(`unlock failed: ${d.cls}`);
+      return said(`Not pressed: ${failed}`);
+    }
+    // The pass starts only after the press worked, for this tab alone.
+    if (d.cls === "checkout" && origin) {
+      const now = Date.now();
+      this.checkoutPass = { tabId, origin, landBy: now + PASS_LAND_MS, until: now + PASS_MAX_MS, landed: false };
+    }
+    this.status(`unlocked once: ${d.cls} "${label}" (${how})`);
+    const next =
+      d.cls === "checkout"
+        ? origin === STORE_ORIGIN
+          ? " Continue as usual; paying still goes through request_checkout and pay_now."
+          : " Read the checkout page for the user. Never enter an address, card or other details there, and never press Place order; tell the user they can finish it themselves."
+        : d.cls === "account"
+          ? " Never type a password or card number; the user types those themselves."
+          : "";
+    return said(`pressed ${label} once.${d.kind === "ask" ? " The question was already spoken; do not ask again." : ""}${next}`);
   }
 
   private tools() {
@@ -529,14 +801,59 @@ export class Session {
       }
     );
 
+    const requestUnlockTool = tool(
+      "request_unlock",
+      "Press a [locked] control the user wants pressed: go to checkout, sign in, sign up, subscribe, save a card, or a marked control. If the user's own words just asked for it, it is pressed at once; otherwise this tool asks the user one short question itself and presses only on an explicit yes. Never for Place order, Buy now, Pay or wallet buttons: paying goes through request_checkout and pay_now. Returns what happened.",
+      {
+        tabId: z.number().int().optional().describe("Tab id of the page with the control. Default: the last tab used."),
+        ref: z.string().optional().describe("The control's ref from read_page or find, e.g. ref_12"),
+        label: z.string().describe("The control's name as the page shows it, e.g. \"Proceed to checkout\""),
+        action: z.string().describe("What pressing it does for the user, in a few words, e.g. \"go to checkout\""),
+        reason: z.string().optional().describe("Why, in a few words, e.g. \"the user asked to check out\""),
+      },
+      (args) => this.requestUnlock(args)
+    );
+
     return createSdkMcpServer({
       name: "clearcart",
       version: "0.1.0",
-      tools: [sayTool, requestCheckout, payNowTool],
+      tools: [sayTool, requestCheckout, payNowTool, requestUnlockTool],
       alwaysLoad: true,
       // request_checkout waits on a person; give it room.
       timeout: 10 * 60_000,
     });
+  }
+
+  // Text-only messages are held until the turn ends: the SDK can send the
+  // text and the tool call of one step as separate messages, so a tool call
+  // that follows turns the held text into thinking aloud.
+  onSdkMessage(m: SDKMessage) {
+    if (m.type === "system" && m.subtype === "init") {
+      const servers = (m as any).mcp_servers as Array<{ name: string; status: string }> | undefined;
+      this.status(`agent ready (${(servers || []).map((s) => `${s.name}: ${s.status}`).join(", ")})`);
+    } else if (m.type === "assistant" && !m.parent_tool_use_id) {
+      const blocks = m.message.content as any[];
+      // Only a message with no tool calls is a reply to the user. Text next
+      // to tool calls is the model thinking aloud: log it, never speak it.
+      const working = blocks.some((b) => b.type === "tool_use");
+      if (working) {
+        this.held.forEach((t) => this.unspoken(t));
+        this.held = [];
+      }
+      for (const block of blocks) {
+        if (block.type === "text" && block.text?.trim()) {
+          if (working || this.muted) this.unspoken(block.text.trim());
+          else this.held.push(block.text.trim());
+        } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
+      }
+    } else if (m.type === "result") {
+      if (this.held.length) this.say(this.held.join(" "));
+      this.held = [];
+      this.turnsOpen = Math.max(0, this.turnsOpen - 1);
+      // The interrupted turn is over; the next one speaks again.
+      this.muted = false;
+      if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
+    }
   }
 
   // Connection state of the MCP servers; needs no model call.
@@ -575,39 +892,11 @@ export class Session {
       },
     }));
 
-    // Text-only messages are held until the turn ends: the SDK can send the
-    // text and the tool call of one step as separate messages, so a tool call
-    // that follows turns the held text into thinking aloud.
-    let held: string[] = [];
-    const unspoken = (text: string) => this.status(`(not spoken) ${text.slice(0, 120)}`);
     try {
-      for await (const m of q) {
-        if (m.type === "system" && m.subtype === "init") {
-          const servers = (m as any).mcp_servers as Array<{ name: string; status: string }> | undefined;
-          this.status(`agent ready (${(servers || []).map((s) => `${s.name}: ${s.status}`).join(", ")})`);
-        } else if (m.type === "assistant" && !m.parent_tool_use_id) {
-          const blocks = m.message.content as any[];
-          // Only a message with no tool calls is a reply to the user. Text next
-          // to tool calls is the model thinking aloud: log it, never speak it.
-          const working = blocks.some((b) => b.type === "tool_use");
-          if (working) {
-            held.forEach(unspoken);
-            held = [];
-          }
-          for (const block of blocks) {
-            if (block.type === "text" && block.text?.trim()) {
-              if (working) unspoken(block.text.trim());
-              else held.push(block.text.trim());
-            } else if (block.type === "tool_use") this.status(toolLabel(block.name, block.input));
-          }
-        } else if (m.type === "result") {
-          if (held.length) this.say(held.join(" "));
-          held = [];
-          if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
-        }
-      }
+      for await (const m of q) this.onSdkMessage(m);
     } catch (e) {
       if (!this.closed) {
+        this.muted = false;
         this.status(`agent error: ${(e as Error).message}`);
         this.send({ type: "confirm_done", outcome: "failed" });
         this.say("Sorry, something went wrong on my side. Please try again.");

@@ -14,8 +14,8 @@
 //     # note        a comment, ignored
 //
 // Best effort: the suggested list catches common sensitive sites, it is not
-// complete. The button lock and the Clearcart tab group still apply on every
-// site this lets through.
+// complete. The button lock and the checkout page block still apply on
+// every site this lets through.
 //
 // Plain JS with no imports, so the agent server (agent/blocklist.ts) loads
 // this same file.

@@ -226,9 +226,11 @@
       var t = (el.type || "").toLowerCase();
       if (t !== "checkbox" && t !== "radio" && t !== "submit" && t !== "button" && t !== "reset" && t !== "image" && t !== "hidden") {
         var v = el.value;
-        if (Mask.isPaymentField(el)) parts.push(v ? 'value="' + Mask.MASK + '"' : "empty");
+        var pw = isPassword(el);
+        if (Mask.isPaymentField(el) || pw) parts.push(v ? 'value="' + Mask.MASK + '"' : "empty");
         else if (v) parts.push('value="' + clean(Mask.maskValue(v, null), 120) + '"');
         if (Mask.isPaymentField(el)) parts.push("payment");
+        else if (pw) parts.push("password");
       }
     }
     if (tag === "SELECT") {
@@ -284,7 +286,14 @@
     if (document.body) walk(document.body, 0);
     if (dropped) lines.push("- … " + dropped + " more nodes (raise maxNodes or use find)");
     badges();
-    return { url: location.href, title: Mask.maskCardRuns(document.title), tree: lines.join("\n") };
+    return { url: pageUrl(), title: Mask.maskCardRuns(document.title), tree: lines.join("\n") };
+  }
+
+  // Origin and path only: a query string or fragment can carry login codes
+  // and tokens, and this goes to Claude.
+  function pageUrl() {
+    var o = location.origin;
+    return o && o !== "null" ? o + location.pathname : location.protocol;
   }
 
   // ------------------------------------------------------------------ find
@@ -364,7 +373,7 @@
     text = Mask.maskCardRuns(text);
     var truncated = text.length > maxChars;
     if (truncated) text = text.slice(0, maxChars) + "\n… (truncated)";
-    return { url: location.href, title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
+    return { url: pageUrl(), title: Mask.maskCardRuns(document.title), text: text, truncated: truncated };
   }
 
   // ------------------------------------------------------------ form_input
@@ -387,9 +396,16 @@
     return /^(true|on|yes|1|checked)$/i.test(String(v).trim());
   }
 
+  // A password field, now or ever (Protect.isPasswordField): masked in
+  // read_page, refused by form_input, and typing into it is refused.
+  function isPassword(el) {
+    return !!Protect.isPasswordField(el);
+  }
+
   function formInput(params) {
     var el = elementFor(params.ref);
     if (Mask.isPaymentField(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a payment field; payment is entered only by pay_now");
+    if (isPassword(el)) throw PageError(ERR.PAYMENT_FIELD, "refusing to fill a password field; Clearcart never types passwords, the user types it themselves");
     if (!("value" in params)) throw PageError(ERR.BAD_REQUEST, "value is required");
     var value = params.value;
     if (typeof value !== "boolean" && Mask.luhn(String(value))) {
@@ -521,6 +537,99 @@
     Protect.release(t.el);
     if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", behavior: "instant" });
     t.el.click();
+    return { ok: true };
+  }
+
+  // ------------------------------------------------- user-directed unlock
+  // request_unlock on the agent server, after the user asked for this action
+  // or said yes to it. lock_info says what a ref is; press_check_user and
+  // press_ref_user press it once, after the worker has spent a "user" scope
+  // nonce. The ref must resolve to a control of the expected unlock class
+  // and label (Protect.unlockClass: checkout, account, subscription, saved
+  // card, marked). Order, wallet and card form controls never pass.
+  function lockTarget(el) {
+    var lk = Protect.lockOf(el);
+    if (!lk) {
+      for (var n = el.parentElement; n && !lk; n = n.parentElement) {
+        lk = Protect.lockOf(n);
+        if (lk) el = n;
+      }
+    }
+    return { el: el, lock: lk };
+  }
+
+  function lockInfo(params) {
+    var t = lockTarget(elementFor(params.ref));
+    if (!t.lock) return { locked: false };
+    var pw = Protect.passwordState(t.el);
+    return {
+      locked: Protect.blocks(t.lock),
+      kind: t.lock.kind,
+      label: t.lock.label,
+      optin: !!t.lock.optin,
+      cls: Protect.unlockClass(t.lock, t.el),
+      password: pw.password,
+      passwordFilled: pw.filled,
+    };
+  }
+
+  function userTarget(params) {
+    var t = lockTarget(elementFor(params.ref));
+    var cls = Protect.unlockClass(t.lock, t.el);
+    if (!cls || cls !== params.cls) throw PageError(ERR.LOCKED, "Locked: this control cannot be unlocked on request");
+    if (!Protect.sameLabel(t.lock.label, params.label)) throw PageError(ERR.LOCKED, "Locked: the control changed since the user asked");
+    return t;
+  }
+
+  // Throws unless the point (x, y) lands on t.el or inside it.
+  function hitTest(t, x, y, ref) {
+    if (typeof document.elementFromPoint !== "function") return;
+    var hit = document.elementFromPoint(x, y);
+    if (!hit || !(hit === t.el || t.el.contains(hit))) throw PageError(ERR.NO_ELEMENT, ref + " is covered by another element");
+  }
+
+  // Scrolls the control into view and returns its rect. The lock marker
+  // stays on until the press is done (press_done_user), so the page gets no
+  // early signal to swap the control.
+  function pressCheckUser(params) {
+    var t = userTarget(params);
+    if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    var r = t.el.getBoundingClientRect();
+    var x = r.x !== undefined ? r.x : r.left, y = r.y !== undefined ? r.y : r.top;
+    if (!(r.width > 0 && r.height > 0)) throw PageError(ERR.NO_ELEMENT, params.ref + " is not visible");
+    hitTest(t, x + r.width / 2, y + r.height / 2, params.ref);
+    return { x: x, y: y, width: r.width, height: r.height, cls: params.cls };
+  }
+
+  // Right before the CDP click: the ref still resolves to a control of that
+  // class and label, and the click point (params.x, params.y) still lands
+  // on it.
+  function pressHitUser(params) {
+    var t = userTarget(params);
+    if (typeof params.x !== "number" || typeof params.y !== "number") throw PageError(ERR.BAD_REQUEST, "x and y are required");
+    hitTest(t, params.x, params.y, params.ref);
+    return { ok: true };
+  }
+
+  // After the press: the control stops looking locked.
+  function pressDoneUser(params) {
+    var el = elementFor(params.ref);
+    Protect.release(lockTarget(el).el);
+    return { ok: true };
+  }
+
+  // DOM fallback when CDP cannot attach: check, click and release in one
+  // task, so nothing on the page runs in between.
+  function pressRefUser(params) {
+    var t = userTarget(params);
+    if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", behavior: "instant" });
+    var r = t.el.getBoundingClientRect();
+    if (r && r.width > 0 && r.height > 0) {
+      var x = r.x !== undefined ? r.x : r.left, y = r.y !== undefined ? r.y : r.top;
+      hitTest(t, x + r.width / 2, y + r.height / 2, params.ref);
+    }
+    t.el.click();
+    Protect.release(t.el);
     return { ok: true };
   }
 
@@ -660,11 +769,96 @@
       return { kind: el.isContentEditable ? "other" : "none", payment: false };
     }
     var k = kindOf(el);
-    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el) };
+    return { kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el) };
+  }
+
+  // ---------------------------------------------------------- page_context
+  // What the user is looking at: their text selection, and the element under
+  // the mouse or the one they last clicked or focused (content/context.js
+  // remembers those). Never a field value: a selection inside a text field
+  // is dropped, and a payment or password field is named only as masked.
+  var POINT_MAX_AGE_MS = 30000;
+  var SELECTION_MAX = 300;
+  var PRICE = /(?:[$€£¥]\s?\d[\d,]*(?:\.\d{2})?|\d[\d,]*[.,]\d{2}\s?(?:USD|CAD|EUR|GBP|€))/;
+
+  function isSecretField(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.tagName === "INPUT" && (el.type || "").toLowerCase() === "password") return true;
+    var ac = (el.getAttribute("autocomplete") || "").toLowerCase();
+    if (/password|one-time-code/.test(ac)) return true;
+    return !!Mask.isPaymentField(el);
+  }
+
+  function selectionText() {
+    var active = document.activeElement;
+    if (active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return "";
+    var sel = document.getSelection && document.getSelection();
+    if (!sel || sel.isCollapsed) return "";
+    for (var n = sel.anchorNode; n; n = n.parentNode) {
+      if (n.nodeType === 1 && (isSecretField(n) || n.isContentEditable)) return "";
+    }
+    return clean(Mask.maskCardRuns(sel.toString()), SELECTION_MAX);
+  }
+
+  // The nearest meaningful element: a control or link, else a named element.
+  function meaningful(el) {
+    for (var e = el, i = 0; e && e.nodeType === 1 && i < 6; e = e.parentElement, i++) {
+      if (isInteractive(e, roleOf(e))) return e;
+    }
+    return el;
+  }
+
+  // Title and price of the product card around el, when one is cheap to see:
+  // the nearest ancestor (8 levels up) whose short text holds a price.
+  function productOf(el) {
+    for (var e = el, i = 0; e && e !== document.body && i < 8; e = e.parentElement, i++) {
+      var text = clean(textOf(e), 600);
+      if (text.length >= 600) break;
+      var price = PRICE.exec(text);
+      if (!price) continue;
+      var head = e.querySelector("h1,h2,h3,h4,h5,h6,[itemprop=name],a[href]");
+      var title = head ? clean(nameOf(head, roleOf(head) || "heading") || textOf(head), 120) : "";
+      return { title: Mask.maskCardRuns(title), price: price[0].trim() };
+    }
+    return null;
+  }
+
+  function pageContext() {
+    var snap = globalThis.__clearcartContext ? globalThis.__clearcartContext.snapshot() : {};
+    var t = Date.now();
+    var picks = [];
+    if (snap.hover) picks.push({ via: "hover", el: snap.hover.el, at: snap.hover.at });
+    if (snap.click && t - snap.click.at < POINT_MAX_AGE_MS) picks.push({ via: "click", el: snap.click.el, at: snap.click.at });
+    if (snap.focus && t - snap.focus.at < POINT_MAX_AGE_MS) picks.push({ via: "focus", el: snap.focus.el, at: snap.focus.at });
+    var active = document.activeElement;
+    if (!picks.length && active && active !== document.body && active !== document.documentElement) {
+      picks.push({ via: "focus", el: active, at: t });
+    }
+    picks.sort(function (a, b) { return b.at - a.at; });
+    var pointing = null;
+    var pick = picks[0];
+    if (pick && pick.el && pick.el.isConnected && pick.el !== document.body && pick.el !== document.documentElement) {
+      var el = meaningful(pick.el);
+      var role = roleOf(el) || "generic";
+      var secret = isSecretField(el);
+      pointing = {
+        via: pick.via,
+        ref: refFor(el),
+        role: role,
+        name: secret ? "[masked field]" : Mask.maskCardRuns(clean(nameOf(el, role) || textOf(el), 120)),
+      };
+      if (secret) pointing.masked = true;
+      else {
+        var product = productOf(el);
+        if (product) pointing.product = product;
+      }
+    }
+    return { selection: selectionText(), pointing: pointing };
   }
 
   // ------------------------------------------------------------ dispatcher
   var METHODS = {
+    page_context: pageContext,
     focused_field: focusedField,
     read_page: readPage,
     find: find,
@@ -680,6 +874,11 @@
     guard_key: guardKey,
     press_check: pressCheck,
     press_ref: pressRef,
+    lock_info: lockInfo,
+    press_check_user: pressCheckUser,
+    press_hit_user: pressHitUser,
+    press_done_user: pressDoneUser,
+    press_ref_user: pressRefUser,
   };
 
   function call(method, params) {
@@ -696,15 +895,22 @@
     return Promise.resolve()
       .then(function () { return call(msg.method, msg.params); })
       .then(
-        function (result) { return { ok: true, result: result === undefined ? null : result }; },
+        // href: which document answered, so the worker can drop a reply
+        // from a page that moved to a blocked site. Never passed to Claude.
+        function (result) { return { ok: true, result: result === undefined ? null : result, href: location.href }; },
         function (e) {
-          return { ok: false, error: { code: (e && e.code) || ERR.INTERNAL, message: String((e && e.message) || "failed") } };
+          return { ok: false, error: { code: (e && e.code) || ERR.INTERNAL, message: String((e && e.message) || "failed") }, href: location.href };
         }
       );
   }
 
   globalThis.__clearcartPage = { call: call, handle: handle, refFor: refFor };
   if (Protect) badges();
+  // Remember every password field from the start, so a later type change
+  // (a show-password toggle) still counts as a password.
+  if (Protect && typeof Protect.watchPasswords === "function") {
+    try { Protect.watchPasswords(document); } catch (_) { /* isPasswordField still checks each field */ }
+  }
 
   if (globalThis.chrome && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {

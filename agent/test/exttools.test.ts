@@ -17,7 +17,7 @@ function fakeBridge(answer: (method: string, params: any) => any) {
   };
 }
 
-test("exposes exactly the 12 TOOLS, none of the INTERNAL methods", () => {
+test("exposes exactly the TOOLS, none of the INTERNAL methods", () => {
   const defs = extToolDefinitions(fakeBridge(() => null) as any);
   assert.deepEqual(defs.map((d) => d.name).sort(), [...TOOLS].sort());
   for (const m of INTERNAL) assert.ok(!defs.some((d) => d.name === m));

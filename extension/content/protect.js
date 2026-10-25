@@ -86,6 +86,15 @@
   // Kinds the internal pay flow may press once unlocked. Wallets,
   // subscriptions, saved cards, accounts and frames never unlock.
   var PRESSABLE = { order: 1, marked: 1, "payment-form": 1 };
+  // User-directed unlock (agent request_unlock): the classes of locked
+  // control the user may ask Clearcart to press once. "checkout" is only a
+  // control that goes to the checkout page ("Proceed to checkout"), never
+  // one that pays. Placing an order, wallets, card or password form submits,
+  // frames and hidden components never unlock this way: paying goes only
+  // through request_checkout and pay_now.
+  var CHECKOUT_NAV = ["checkout", "check out", "secure checkout", "proceed to checkout", "continue to checkout",
+    "go to checkout"];
+
   // Kinds that make a checkbox or radio uncheck-only.
   var OPTIN_KINDS = { subscription: 1, "payment-method": 1, account: 1, express: 1 };
 
@@ -125,6 +134,49 @@
       }
     }
     return null;
+  }
+
+  // True when an "order" label only goes to checkout: it has a checkout
+  // phrase and no other order or money word ("Checkout", "Proceed to
+  // checkout", not "Pay and checkout" or "Checkout and place order").
+  function isCheckoutNav(label) {
+    var norm = normalize(label);
+    var nav = false;
+    for (var i = 0; i < CHECKOUT_NAV.length; i++) if (has(norm, CHECKOUT_NAV[i])) nav = true;
+    if (!nav) return false;
+    var rest = norm;
+    var sorted = CHECKOUT_NAV.slice().sort(function (a, b) { return b.length - a.length; });
+    for (var j = 0; j < sorted.length; j++) rest = rest.split(" " + sorted[j] + " ").join(" ");
+    var order = PHRASES.order;
+    for (var k = 0; k < order.length; k++) if (has(rest, order[k])) return false;
+    return true;
+  }
+
+  // Unlock class of a lock for request_unlock: "checkout", "account",
+  // "subscription" or "payment-method", or null when it never unlocks on
+  // request. el (optional): the control; the submit of a card form never
+  // unlocks, whatever it says.
+  function unlockClass(lock, el) {
+    if (!lock) return null;
+    if (el && el.nodeType === 1 && isSubmit(el) && formKind(el.form) === "payment-form") return null;
+    // A marked control (data-clearcart-protected) never unlocks on request,
+    // whatever its label says: the page marked it for the pay flow only.
+    if (el && el.nodeType === 1 && el.closest && el.closest("[data-clearcart-protected]")) return null;
+    switch (lock.kind) {
+      case "order": return !lock.optin && isCheckoutNav(lock.label) ? "checkout" : null;
+      case "account": return "account";
+      case "subscription": return "subscription";
+      case "payment-method": return "payment-method";
+      default: return null; // marked, express, payment-form, frame, shadow
+    }
+  }
+
+  // Same control name, loosely: equal after normalize, or one a long prefix
+  // of the other (labels are clipped to 60 characters).
+  function sameLabel(a, b) {
+    var x = normalize(a).trim().replace(/…$/, "").trim();
+    var y = normalize(b).trim().replace(/…$/, "").trim();
+    return !!x && !!y && (x === y || (x.length >= 12 && y.indexOf(x) === 0) || (y.length >= 12 && x.indexOf(y) === 0));
   }
 
   // ------------------------------------------------------------- the DOM
@@ -271,6 +323,90 @@
       if (inputType(f) === "password") pw = true;
     }
     return pw ? "account" : null;
+  }
+
+  // Password fields. A field stays a password once it was ever seen as
+  // type=password, so a show-password toggle or a runtime type change does
+  // not expose it. Also: autocomplete current-password, new-password or
+  // one-time-code, or a name, id or label that says password, passcode or
+  // otp. Button-like and checkable inputs are never value fields.
+  var everPassword = typeof WeakSet === "function" ? new WeakSet() : null;
+  var PW_AUTOCOMPLETE = /(^|\s)(current-password|new-password|one-time-code)(\s|$)/i;
+  var PW_WORDS = /password|passwd|passcode|pass code|(^|[^a-z])otp([^a-z]|$)/i;
+  var NOT_VALUE = { submit: 1, button: 1, reset: 1, image: 1, checkbox: 1, radio: 1, file: 1, hidden: 1 };
+
+  function passwordHay(el) {
+    var parts = [el.getAttribute("name"), el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder")];
+    if (el.labels) for (var i = 0; i < el.labels.length; i++) parts.push(el.labels[i].textContent);
+    var by = el.getAttribute("aria-labelledby");
+    if (by && el.ownerDocument) {
+      by.split(/\s+/).forEach(function (id) {
+        var n = id && el.ownerDocument.getElementById(id);
+        if (n) parts.push(n.textContent);
+      });
+    }
+    // camelCase and snake_case to words: "userOtp", "otp_code".
+    return parts.filter(Boolean).join(" ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ");
+  }
+
+  function isPasswordField(el) {
+    if (!el || el.nodeType !== 1 || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) return false;
+    if (everPassword && everPassword.has(el)) return true;
+    var t = inputType(el);
+    if (t === "password") {
+      if (everPassword) everPassword.add(el);
+      return true;
+    }
+    if (NOT_VALUE[t]) return false;
+    var hit = PW_AUTOCOMPLETE.test(String(el.getAttribute("autocomplete") || "")) || PW_WORDS.test(passwordHay(el));
+    if (hit && everPassword) everPassword.add(el);
+    return hit;
+  }
+
+  // Marks every current type=password field (and the root itself), so a
+  // later type change still counts as a password.
+  function markPasswords(node) {
+    if (!node || !everPassword) return;
+    if (node.nodeType === 1 && node.tagName === "INPUT" && inputType(node) === "password") everPassword.add(node);
+    if (typeof node.querySelectorAll !== "function") return;
+    var all = node.querySelectorAll("input[type=password i]");
+    for (var i = 0; i < all.length; i++) everPassword.add(all[i]);
+  }
+
+  // Watches doc for password fields: new ones, and fields whose type was
+  // password before a change. Returns the observer (or null).
+  function watchPasswords(doc) {
+    markPasswords(doc);
+    var MO = doc && doc.defaultView && doc.defaultView.MutationObserver;
+    if (typeof MO !== "function" || !everPassword) return null;
+    var ob = new MO(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var m = muts[i];
+        if (m.type === "attributes") {
+          if (String(m.oldValue || "").toLowerCase() === "password") everPassword.add(m.target);
+          markPasswords(m.target);
+        } else {
+          for (var j = 0; j < m.addedNodes.length; j++) markPasswords(m.addedNodes[j]);
+        }
+      }
+    });
+    ob.observe(doc.documentElement || doc, { subtree: true, childList: true, attributes: true, attributeFilter: ["type"], attributeOldValue: true });
+    return ob;
+  }
+
+  // Password fields of the form el submits: { password, filled }. Never the
+  // value itself.
+  function passwordState(el) {
+    var form = el && (el.form || (el.closest && el.closest("form")));
+    var out = { password: false, filled: false };
+    if (!form || !form.elements) return out;
+    for (var i = 0; i < form.elements.length; i++) {
+      var f = form.elements[i];
+      if (!isPasswordField(f)) continue;
+      out.password = true;
+      if (String(f.value || "").length) out.filled = true;
+    }
+    return out;
   }
 
   function checkedOf(el) {
@@ -566,7 +702,7 @@
       var f = fields[i];
       var form = f.form;
       if (form && !kinds.has(form)) kinds.set(form, formKind(form));
-      if (isPaymentInput(f) || inputType(f) === "password" || (form && kinds.get(form))) out.push(f);
+      if (isPaymentInput(f) || isPasswordField(f) || (form && kinds.get(form))) out.push(f);
     }
     return out;
   }
@@ -731,6 +867,12 @@
     lockForSubmit: lockForSubmit,
     isActivationKey: isActivationKey,
     pressable: function (lock) { return !!lock && !lock.optin && !!PRESSABLE[lock.kind]; },
+    isCheckoutNav: isCheckoutNav,
+    unlockClass: unlockClass,
+    sameLabel: sameLabel,
+    passwordState: passwordState,
+    isPasswordField: isPasswordField,
+    watchPasswords: watchPasswords,
     message: message,
     listLocks: listLocks,
     showBadges: showBadges,

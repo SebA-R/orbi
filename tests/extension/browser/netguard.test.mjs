@@ -98,7 +98,8 @@ test("a public name that resolves to 127.0.0.1 is refused and its tab closed", a
   assert.ok(["not_allowed", "no_tab"].includes(err.code), `${err.code}: ${err.message}`);
   let open = true;
   for (let i = 0; i < 40 && open; i++) {
-    open = (await call("tabs_context")).tabs.some((t) => t.url.includes(REBIND));
+    // agent_tabs, not tabs_context: tabs_context hides blocked tabs anyway.
+    open = (await call("agent_tabs")).tabs.some((t) => t.url.includes(REBIND));
     if (open) await sleep(150);
   }
   assert.equal(open, false, "the tab was closed");

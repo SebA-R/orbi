@@ -23,7 +23,7 @@ Needs `ANTHROPIC_API_KEY` and `CARTESIA_API_KEY` in the repo-root `.env`, the st
 | `CLEARCART_BLOCKED_ORIGINS` | none | comma-separated origins never opened, in both modes (exact origins) |
 | `CLEARCART_PAY_ORIGINS` | store only | the only origins where the unlock gate issues grants. Independent of the browse mode, so open browsing never makes a site payable |
 | `CLEARCART_STORE_ORIGIN` | `http://localhost:4000` | where the demo store runs (`pay_now`, the prompt and the tab sweep use it); set on the command line, e.g. for a test store on a spare port |
-| `CLEARCART_BROWSER=ext` | off | drive the browser through the Clearcart extension instead of Open Claude in Chrome: adds the `/ext` WebSocket (`extbridge.ts`), gives Claude the 12 extension tools as the in-process `browser` MCP server (`exttools.ts`), and `pay_now` fills the card with one `fill_payment` bridge call then clicks `#place-order`. Unset, nothing changes |
+| `CLEARCART_BROWSER=ext` | off | drive the browser through the Clearcart extension instead of Open Claude in Chrome: adds the `/ext` WebSocket (`extbridge.ts`), gives Claude the extension tools as the in-process `browser` MCP server (`exttools.ts`), and `pay_now` fills the card with one `fill_payment` bridge call then clicks `#place-order`. Unset, nothing changes |
 
 Tests: `npm test` (fake extension over a real socket; the server test uses ports 5170 to 5173).
 

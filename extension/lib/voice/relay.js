@@ -160,13 +160,16 @@ export function createVoiceRelay({
   }
 
   // Each saved line keeps the time it arrived; a new turn (idle -> listening)
-  // drops the last turn's lines.
+  // drops the last turn's lines; a barge-in (speaking -> listening) drops the
+  // agent line that was cut off.
   function remember(msg) {
     const { from, target, ...clean } = msg;
     const now = Date.now();
     if (msg.type === RT.VOICE_STATE) {
       const was = replay.state ? replay.state.state : "idle";
       if (clean.state === "listening" && was === "idle") replay.lines = [];
+      // Barge-in: the agent line the user cut off is not carried to other tabs.
+      else if (clean.state === "listening" && was === "speaking") replay.lines = replay.lines.filter((l) => l.msg.speaker !== "agent");
       replay.state = clean;
     } else if (msg.type === RT.SUBTITLE) {
       replay.lines = [...replay.lines.filter((l) => l.msg.speaker !== clean.speaker), { msg: clean, at: now }];
