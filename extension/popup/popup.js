@@ -20,7 +20,7 @@ let missing = [];
 const VOICE = {
   idle: (key) => missing.length
     ? ["Not ready", `Finish setup to talk. Needed: ${missing.map((m) => MISSING[m]).join(", ")}.`]
-    : ["Ready", key === "Space" ? "Hold Space to talk, or Option + Space in a text field." : `Hold ${key} on any page to talk.`],
+    : ["Ready", key === "Space" ? "Hold Space to talk, or Option\u00a0+\u00a0Space in a text field." : `Hold ${key} on any page to talk.`],
   listening: (key) => ["Listening", `Let go of ${key} when you're done.`],
   thinking: () => ["Thinking", "Working on your request."],
   speaking: () => ["Speaking", "Clearcart is answering."],
