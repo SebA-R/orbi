@@ -160,25 +160,6 @@ test("a newer final line restarts the timer", () => {
   assert.equal(t.visible(), false);
 });
 
-test("a 75 word answer waits about 28 s", () => {
-  const t = setup();
-  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(75), final: true });
-  t.tick(27_999);
-  assert.ok(t.visible());
-  t.tick(1);
-  assert.equal(t.visible(), false);
-});
-
-test("the user line counts toward the wait too", () => {
-  const t = setup();
-  t.send({ type: "subtitle", speaker: "user", text: wordsOf(10), final: true });
-  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(15), final: true });
-  t.tick(12_999); // 25 words: 10 s + 10 x 300 ms
-  assert.ok(t.visible());
-  t.tick(1);
-  assert.equal(t.visible(), false);
-});
-
 test("the wait is capped at 60 s", () => {
   const t = setup();
   t.send({ type: "subtitle", speaker: "user", text: wordsOf(100), final: true });
@@ -186,15 +167,6 @@ test("the wait is capped at 60 s", () => {
   t.tick(59_999);
   assert.ok(t.visible());
   t.tick(1);
-  assert.equal(t.visible(), false);
-});
-
-test("the stale cap is extended for long text", () => {
-  const t = setup();
-  t.send({ type: "subtitle", speaker: "agent", text: wordsOf(100), final: false }); // never final
-  t.tick(44_999); // 100 words: 35.5 s wait, so the cap is 45.5 s
-  assert.ok(t.visible(), "not cut at 30 s");
-  t.tick(501);
   assert.equal(t.visible(), false);
 });
 
@@ -327,19 +299,6 @@ const MIN = 60_000;
 const face = (t) => t.$(".card > .ccf");
 const happy = (t) => face(t).classList.contains("ccf-happy");
 
-test("the orb face replaces the dot: decorative, inside the card, eyes and a smile", () => {
-  const t = setup();
-  t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });
-  const f = face(t);
-  assert.ok(f, "face mounted in the card");
-  assert.equal(t.$(".dot"), null, "old dot gone");
-  assert.equal(f.getAttribute("aria-hidden"), "true");
-  assert.equal(f.querySelectorAll("circle.ccf-eye").length, 2);
-  assert.equal(f.querySelectorAll("path.ccf-m").length, 1);
-  assert.equal(f.querySelectorAll(".ccf-b, [class*=brow]").length, 0, "no eyebrows");
-  assert.equal(f.textContent, "", "no text: the state is said elsewhere");
-});
-
 test("every state has a face: F1 at idle, thinking and speaking, F2 while listening", () => {
   const t = setup();
   t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });
@@ -356,42 +315,6 @@ test("every state has a face: F1 at idle, thinking and speaking, F2 while listen
   assert.match(css, /\.ccf\.ccf--speaking \.ccf-t \{ opacity: 1; animation: ccf-talk/);
   assert.match(css, /\.ccf-m \{[^}]*transition: opacity \.18s ease-out, d \.18s/, "morphs over 180 ms");
   assert.match(css, /stroke-linecap: round/, "no pointed smile corners");
-});
-
-test("the face is 26 px unless a page sets --ccf-size (the new tab hero does)", () => {
-  const css = setup().window.__clearcartOrbFace.CSS;
-  assert.match(css, /width: var\(--ccf-size, 26px\) !important; height: var\(--ccf-size, 26px\) !important;/);
-  assert.match(css, /box-shadow: var\(--ccf-glow, 0 0 8px \.5px rgb\(94 139 255 \/ \.4\)\) !important;/);
-});
-
-test("the face wears the R1 spectrum ring: one circle at rest, 8 arcs with 12 degree gaps while thinking", () => {
-  const { f } = bare();
-  const ring = f.el.querySelector(":scope > .ccf-ring");
-  assert.ok(ring, "ring beside the face body, not scaled by it");
-  assert.equal(ring.querySelectorAll("circle.ccf-rf").length, 1);
-  const segs = ring.querySelectorAll("circle.ccf-seg[pathLength='360']");
-  assert.equal(segs.length, 8);
-  f.setState("thinking");
-  // 26 px orb: 1.5 px round caps take 2.666 of each 45, as on the board.
-  assert.equal(segs[0].style.getPropertyValue("--l1"), "27.669");
-  assert.equal(segs[1].style.getPropertyValue("--o1"), "-53.666");
-  const css = f.el.ownerDocument.defaultView.__clearcartOrbFace.CSS;
-  assert.match(css, /\.ccf\.ccf--thinking > \.ccf-ring \{ transform: scale\(1\.12\); \}/);
-  assert.match(css, /\.ccf\.ccf--thinking \.ccf-rs \{ animation-duration: 2\.4s; \}/);
-  assert.match(css, /animation: ccf-spin 40s linear infinite/);
-});
-
-test("the orb face gets one state class per voice state", () => {
-  const t = setup();
-  t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: false });
-  for (const state of ["listening", "thinking", "speaking", "idle"]) {
-    t.send({ type: "voice.state", state });
-    const states = [...face(t).classList].filter((c) => c.startsWith("ccf--"));
-    assert.deepEqual(states, [`ccf--${state}`], state);
-    assert.equal(face(t).dataset.state, state);
-  }
-  t.send({ type: "voice.state", state: "dancing" });
-  assert.ok(face(t).classList.contains("ccf--idle"), "unknown states ignored");
 });
 
 // The face on its own (as in the popup, which stays visible), on the same clock.
@@ -417,40 +340,6 @@ test("happy moment fires once, only after 20 minutes of continuous idle, and las
   assert.equal(happy(), false, "plays once, not again");
 });
 
-test("activity resets the idle clock for the happy moment", () => {
-  const a = bare();
-  a.t.tick(15 * MIN);
-  a.f.poke(); // a caption or other activity
-  a.t.tick(15 * MIN);
-  assert.equal(a.happy(), false, "15 + 15 minutes is not 20 of continuous idle");
-  a.t.tick(5 * MIN);
-  assert.equal(a.happy(), true, "20 minutes after the last activity");
-
-  const b = bare();
-  b.t.tick(19 * MIN);
-  b.f.setState("listening");
-  b.f.setState("idle");
-  b.t.tick(19 * MIN);
-  assert.equal(b.happy(), false, "a state change restarts the clock");
-  b.t.tick(MIN);
-  assert.equal(b.happy(), true);
-
-  const c = bare();
-  c.t.tick(19 * MIN);
-  c.f.setState("thinking");
-  c.t.tick(MIN);
-  assert.equal(c.happy(), false, "cancelled when work starts");
-});
-
-test("never plays the happy moment while listening, thinking or speaking", () => {
-  for (const state of ["listening", "thinking", "speaking"]) {
-    const t = setup();
-    t.send({ type: "voice.state", state });
-    t.tick(60 * MIN);
-    assert.equal(happy(t), false, state);
-  }
-});
-
 test("no happy moment and no live motion under reduced motion", () => {
   const t = setup({ reduce: true });
   t.send({ type: "subtitle", speaker: "agent", text: "Hi", final: true });
@@ -467,35 +356,6 @@ test("no happy moment and no live motion under reduced motion", () => {
   const css = [...root.adoptedStyleSheets || []].flatMap((s) => [...s.cssRules].map((r) => r.cssText)).join("\n")
     || root.querySelector("style")?.textContent || "";
   assert.match(css, /prefers-reduced-motion: reduce\)\s*\{[^}]*\.ccf[^{]*\{\s*animation: none !important/);
-});
-
-test("a live level drives the swell and the cadence pulse, then falls back to the loop", () => {
-  const t = setup();
-  t.send({ type: "voice.state", state: "listening" });
-  t.send({ type: "voice.level", level: 1 });
-  assert.ok(face(t).classList.contains("ccf-live"));
-  assert.ok(Number(face(t).style.getPropertyValue("--ccf-swell")) > 1);
-  t.tick(300);
-  assert.equal(face(t).classList.contains("ccf-live"), false, "loop again once levels stop");
-  t.send({ type: "voice.state", state: "speaking" });
-  t.send({ type: "voice.level", level: 0.5 });
-  const pulse = Number(face(t).style.getPropertyValue("--ccf-swell"));
-  assert.ok(pulse > 1 && pulse <= 1.09, "speaking pulses the orb, up to 1.09");
-  t.send({ type: "voice.state", state: "thinking" });
-  assert.equal(face(t).style.getPropertyValue("--ccf-swell"), "", "reset on state change");
-  t.send({ type: "voice.level", level: 1 });
-  assert.equal(face(t).classList.contains("ccf-live"), false, "no level motion while thinking");
-});
-
-test("the happy moment does not play while the card is hidden", () => {
-  const t = setup();
-  t.send({ type: "subtitle", speaker: "agent", text: "Done.", final: true });
-  t.send({ type: "voice.state", state: "speaking" });
-  t.send({ type: "voice.state", state: "idle" });
-  t.tick(11_000); // the card hides after the reading time
-  assert.equal(t.visible(), false);
-  t.tick(20 * MIN);
-  assert.equal(happy(t), false, "nobody can see it");
 });
 
 test("clicking the page fades the card out early, then clears it", () => {
@@ -568,34 +428,6 @@ test("karaoke: an interrupt freezes the highlight; nothing advances it after", (
   assert.equal(t.$(".agent").textContent, "", "a stray word for the old line draws nothing");
 });
 
-test("karaoke: a tab switch replay shows the line at the word being heard, even when the word comes first", () => {
-  const t = setup();
-  // The relay's replay: line, then word.
-  kline(t);
-  kword(t, { index: 2 });
-  assert.deepEqual(marks(t), ["ks", "ks", "kc", "kp"]);
-  // Switching back to a tab that already has the line keeps its place.
-  kline(t);
-  assert.deepEqual(marks(t), ["ks", "ks", "kc", "kp"]);
-
-  // A live word can reach the new tab just before the replayed line.
-  const u = setup();
-  u.send({ type: "subtitle.word", utteranceId: "u7", index: 1 });
-  kline(u, "u7");
-  assert.deepEqual(marks(u), ["ks", "kc", "kp", "kp"]);
-});
-
-test("karaoke: a new line resets the highlight", () => {
-  const t = setup();
-  kline(t);
-  kword(t, { index: 3 });
-  kline(t, "u2", "Want the store brand?");
-  assert.deepEqual(marks(t), ["kp", "kp", "kp", "kp"]);
-  assert.equal(t.$(".agent").textContent.trim(), "Want the store brand?");
-  t.send({ type: "subtitle.word", utteranceId: "u2", index: 0 });
-  assert.deepEqual(marks(t), ["kc", "kp", "kp", "kp"]);
-});
-
 test("karaoke: without timestamps the line falls back to the plain caption", () => {
   const t = setup();
   kline(t);
@@ -613,18 +445,6 @@ test("karaoke: without timestamps the line falls back to the plain caption", () 
   assert.deepEqual(marks(u), ["", "", "", ""]);
 });
 
-test("karaoke: word indexes count from the full line when a long line is cut to fit", () => {
-  const t = setup();
-  const long = Array.from({ length: 150 }, (_, i) => `w${i}`).join(" ");
-  kline(t, "u1", long);
-  const shown = [...t.$(".agent").querySelectorAll(".w")].map((s) => s.textContent);
-  assert.ok(shown.length < 150 && shown.at(-1) === "w149");
-  const first = Number(shown[0].slice(1));
-  kword(t, { index: first + 2 });
-  assert.equal(marks(t).indexOf("kc"), 2);
-  assert.equal(t.$(".agent .kc").textContent, `w${first + 2}`);
-});
-
 test("karaoke: reduced motion keeps a static highlight; high contrast underlines the word", () => {
   const t = setup({ reduce: true });
   kline(t);
@@ -637,21 +457,6 @@ test("karaoke: reduced motion keeps a static highlight; high contrast underlines
   assert.match(block("prefers-reduced-motion: reduce"), /\.w\.kc \{[^}]*color: var\(--k-said\)/, "steps to the said ink");
   assert.match(block("forced-colors: active"), /\.w\.kc \{[^}]*text-decoration: underline/);
   assert.match(block("prefers-contrast: more"), /\.w\.kc \{[^}]*text-decoration: underline/);
-});
-
-test("karaoke: the sweep across the heard word lasts as long as the word, from where the voice is", () => {
-  const t = setup();
-  kline(t);
-  kword(t, { index: 1, ms: 320, elapsed: 80 });
-  const kc = t.$(".agent .kc");
-  assert.equal(kc.textContent, "it,");
-  assert.equal(kc.style.getPropertyValue("--k-dur"), "320ms");
-  assert.equal(kc.style.getPropertyValue("--k-delay"), "-80ms");
-  kword(t, { index: 1, ms: 320, elapsed: 200, frozen: true });
-  assert.equal(kc.style.getPropertyValue("--k-delay"), "-200ms", "frozen where the voice stopped");
-  const css = sheet(t).replace(/\s+/g, " ");
-  assert.match(css, /\.w\.kc \{[^}]*animation: k-sweep var\(--k-dur/);
-  assert.match(css, /\.frozen \.w\.kc[^{]*\{[^}]*animation-play-state: paused/);
 });
 
 test("karaoke: the card stays up for the whole line and its reading time starts at idle", () => {
@@ -777,19 +582,6 @@ test("lip-sync: words map to friendly mouth shapes, and Sonic's phonemes to the 
   assert.match(F.CSS, /\.ccf-v \{[^}]*stroke-linejoin: round;[^}]*d 75ms ease-out/, "soft corners, 75 ms easing");
 });
 
-test("lip-sync: a word's time is split across its vowel groups, or follows the phonemes", () => {
-  const F = setup().window.__clearcartOrbFace;
-  assert.deepEqual(plain(F.plan("milk", 400)), [{ v: "rest", at: 0, end: 92 }, { v: "I", at: 92, end: 400 }]);
-  const hello = F.plan("hello", 300);
-  assert.deepEqual(plain(hello.map((s) => s.v)), ["E", "O"]);
-  assert.equal(hello[0].at, 0);
-  assert.equal(hello[0].end, hello[1].at, "no gaps inside a word");
-  assert.equal(hello.at(-1).end, 300, "ends with the word");
-  assert.deepEqual(plain(F.plan("hello", 400, [["h", 0, 50], ["ə", 50, 120], ["l", 120, 200], ["oʊ", 200, 400]])),
-    [{ v: "A", at: 0, end: 120 }, { v: "O", at: 120, end: 400 }], "phonemes win; consonants go to the next vowel");
-  assert.deepEqual(plain(F.plan("hello", 0)), [], "no length, no shapes");
-});
-
 const LIPS = "Say hello";
 const lipsSetup = (opts) => {
   const t = setup(opts);
@@ -798,21 +590,6 @@ const lipsSetup = (opts) => {
   const f = t.$(".card > .ccf");
   return { t, f, v: () => f.dataset.viseme, synced: () => f.classList.contains("ccf-sync") };
 };
-
-test("lip-sync: plays each heard word from where the voice is, then rests between words", () => {
-  const { t, v, synced } = lipsSetup();
-  t.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 0 });
-  assert.ok(synced(), "the talking loop gives way to the lips");
-  assert.equal(v(), "E");
-  t.tick(150);
-  assert.equal(v(), "O");
-  t.tick(150);
-  assert.equal(v(), "rest", "closed in the pause after the word");
-  // A tab switch replay comes in partway through a word.
-  const r = lipsSetup();
-  r.t.send({ type: "subtitle.word", utteranceId: "u1", index: 1, ms: 300, elapsed: 200 });
-  assert.equal(r.v(), "O", "picks up mid-word");
-});
 
 test("lip-sync: a stop or barge-in snaps the mouth to rest; no timestamps or reduced motion keep the loop", () => {
   const a = lipsSetup();

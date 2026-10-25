@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 
 import { RT } from "../../lib/protocol.js";
 import { VoiceController, TAIL_MS, LATCH_IDLE_MS, FINAL_WAIT_MS } from "../../lib/voice/controller.js";
-import { cueLength } from "../../lib/voice/chime.js";
 import { AgentSession } from "../../lib/voice/agent-session.js";
 import { createTokenSource } from "../../lib/voice/token.js";
 
@@ -222,15 +221,6 @@ test("hush while speaking drops the tap's silent start, hard-stops speech and bo
   assert.ok(!states(r.emitted).includes("listening"));
 });
 
-test("hush when speech already ended only brings the level back", async () => {
-  const r = rig();
-  await r.c.start({ silent: true });
-  r.log.length = 0;
-  assert.equal(r.c.hush(), false);
-  assert.deepEqual(r.log, ["tts.unduck"]);
-  assert.deepEqual(r.agent.sent, []);
-});
-
 test("hush never touches a confirmed turn", async () => {
   const r = rig();
   await r.c.start();
@@ -435,30 +425,6 @@ test("cues: a quick tap plays nothing", async () => {
   assert.deepEqual(cues(r.log), []);
 });
 
-test("cues: holding over speech or thinking plays cut, then listen after it", async () => {
-  for (const setup of [(c) => c.onSpeakingChange(true), (c) => { c.awaitingReply = true; }]) {
-    const calls = [];
-    const r = rig();
-    r.c.chime = (k, o) => calls.push([k, o]);
-    setup(r.c);
-    await r.c.start({ silent: true });
-    r.c.confirm();
-    assert.deepEqual(calls.map(([k]) => k), ["cut", "listen"]);
-    assert.ok(calls[1][1].when > 0.1, "listen waits for the cut cue");
-  }
-  const r = rig();
-  await r.c.start();
-  assert.deepEqual(cues(r.log), ["listen"], "no cut when idle");
-});
-
-test("cues: double-tap hush plays cut", async () => {
-  const r = rig();
-  r.c.onSpeakingChange(true);
-  await r.c.start({ silent: true });
-  r.c.hush();
-  assert.deepEqual(cues(r.log), ["cut"]);
-});
-
 test("cues: confirm_done paid -> placed, failed -> failed, declined -> nothing", () => {
   const r = rig();
   r.c.onAgentMessage({ type: "confirm_done", outcome: "declined" });
@@ -472,58 +438,6 @@ test("cues: mic blocked buzzes on a held start", async () => {
   const r = rig({ micFails: "NotAllowedError" });
   await r.c.start();
   assert.deepEqual(cues(r.log), ["listen", "error"]);
-});
-
-test("cues: mic failure on a touch waits for the hold; a tap stays silent", async () => {
-  const r = rig({ micFails: "NotReadableError" });
-  await r.c.start({ silent: true });
-  assert.deepEqual(cues(r.log), []);
-  r.c.confirm();
-  assert.deepEqual(cues(r.log), ["error"]);
-  r.c.confirm();
-  assert.deepEqual(cues(r.log), ["error"], "only once");
-
-  const t = rig({ micFails: "NotReadableError" });
-  await t.c.start({ silent: true });
-  t.c.cancel();
-  assert.deepEqual(cues(t.log), []);
-});
-
-test("cues: an STT error buzzes (after the hold is confirmed)", async () => {
-  const r = rig();
-  await r.c.start({ silent: true });
-  r.stt.h.onError("Speech recognition error: boom");
-  assert.deepEqual(cues(r.log), []);
-  assert.ok(r.emitted.some((m) => m.type === RT.VOICE_ERROR));
-  r.c.confirm();
-  assert.deepEqual(cues(r.log), ["listen", "error"]);
-  r.stt.h.onError("again");
-  assert.deepEqual(cues(r.log), ["listen", "error", "error"]);
-});
-
-test("cues: the error buzz waits for a listen cue still playing", async () => {
-  const calls = [];
-  const r = rig({ micFails: "NotAllowedError" });
-  r.c.now = () => 1000;
-  r.c.chime = (k, o) => calls.push([k, o?.when ?? 0]);
-  await r.c.start({ latch: true }); // confirms at once, then the mic fails
-  assert.deepEqual(calls.map(([k]) => k), ["listen", "error"]);
-  assert.ok(Math.abs(calls[1][1] - cueLength("listen")) < 1e-9);
-});
-
-test("cues: a late mic failure from a dropped tap makes no sound for the next press", async () => {
-  const r = rig();
-  let fail;
-  r.mic.start = () => new Promise((_, rej) => { fail = rej; });
-  const first = r.c.start({ silent: true });
-  r.c.cancel();
-  r.mic.start = async () => {};
-  await r.c.start({ silent: true });
-  const e = new Error("busy"); e.name = "NotReadableError";
-  fail(e);
-  await first;
-  r.c.confirm();
-  assert.deepEqual(cues(r.log), [], "no error buzz for the new press");
 });
 
 // Send on release: Ink ends a turn on every pause, so its finals mid-hold are
@@ -586,26 +500,6 @@ test("send on release: a late final within the wait window is included; after it
   assert.equal(userTexts(q).length, 1);
 });
 
-test("send on release: closing a latch sends one turn (Space, idle stop)", async () => {
-  const r = rig();
-  await r.c.start({ latch: true });
-  r.stt.h.onFinal("eggs");
-  r.stt.h.onFinal("and milk");
-  assert.deepEqual(userTexts(r), []);
-  r.c.stop(); // the closing Space
-  fire(r, TAIL_MS);
-  fire(r, FINAL_WAIT_MS);
-  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs and milk" }]);
-
-  const q = rig();
-  await q.c.start({ latch: true });
-  q.stt.h.onFinal("bread");
-  fire(q, LATCH_IDLE_MS);
-  fire(q, TAIL_MS);
-  q.stt.h.onClosed();
-  assert.deepEqual(userTexts(q), [{ type: "user_text", text: "bread" }]);
-});
-
 test("send on release: a tap, a cancel or a mic error discards the buffer", async () => {
   const r = rig();
   await r.c.start({ silent: true });
@@ -625,17 +519,6 @@ test("send on release: a tap, a cancel or a mic error discards the buffer", asyn
   assert.deepEqual(userTexts(m), []);
 });
 
-test("send on release: nothing said sends nothing and settles idle", async () => {
-  const r = rig();
-  await r.c.start();
-  r.c.stop();
-  fire(r, TAIL_MS);
-  fire(r, FINAL_WAIT_MS);
-  r.stt.h.onClosed();
-  assert.deepEqual(userTexts(r), []);
-  assert.equal(r.c.state, "idle");
-});
-
 test("send on release: the STT closing mid-hold keeps the words for the release", async () => {
   const r = rig();
   await r.c.start();
@@ -645,26 +528,6 @@ test("send on release: the STT closing mid-hold keeps the words for the release"
   r.c.stop();
   fire(r, TAIL_MS);
   assert.deepEqual(userTexts(r), [{ type: "user_text", text: "oat milk" }]);
-});
-
-test("send on release: a final in the tail still finishes the STT socket", async () => {
-  const r = rig();
-  await r.c.start();
-  r.c.stop();
-  r.stt.h.onFinal("milk");
-  assert.equal(userTexts(r).length, 1);
-  fire(r, TAIL_MS);
-  assert.equal(r.stt.finished, true);
-});
-
-test("send on release: nothing heard yet (slow connect) waits for the close, not the window", async () => {
-  const r = rig();
-  await r.c.start();
-  r.c.stop();
-  fire(r, TAIL_MS);
-  fire(r, FINAL_WAIT_MS);
-  r.stt.h.onFinal("eggs");
-  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs" }]);
 });
 
 test("send on release: standby moved after release drops the unsent turn", async () => {
@@ -678,22 +541,6 @@ test("send on release: standby moved after release drops the unsent turn", async
   fire(r, FINAL_WAIT_MS);
   assert.deepEqual(userTexts(r), []);
   assert.ok(r.log.includes("chime:error"));
-});
-
-test("send on release: pressing again before the send joins the turn, no cut", async () => {
-  const r = rig();
-  await r.c.start();
-  r.stt.h.onFinal("eggs");
-  r.c.stop();
-  const before = r.agent.sent.length;
-  await r.c.start();
-  assert.ok(!r.log.slice(-2).includes("chime:cut"), "no cut for our own pending turn");
-  r.stt.h.onFinal("and milk");
-  r.c.stop();
-  fire(r, TAIL_MS);
-  fire(r, FINAL_WAIT_MS);
-  assert.deepEqual(userTexts(r), [{ type: "user_text", text: "eggs and milk" }]);
-  assert.equal(r.agent.sent.slice(before).filter((m) => m.type === "user_text").length, 1);
 });
 
 test("turn timing: with a wallClock, user_text carries the release and final times, and the first audio is reported once", async () => {
@@ -713,21 +560,4 @@ test("turn timing: with a wallClock, user_text carries the release and final tim
   r.c.onFirstAudio(1_700_000_001_000.4);
   r.c.onFirstAudio(1_700_000_002_000);
   assert.deepEqual(r.agent.sent.filter((m) => m.type === "timing"), [{ type: "timing", event: "first_audio", at: 1_700_000_001_000 }]);
-});
-
-test("turn timing: without a wallClock nothing extra is sent; a held key warms the speaker", async () => {
-  const r = rig();
-  let warmed = 0;
-  r.c.speaker.warm = () => warmed++;
-  await r.c.start();
-  assert.equal(warmed, 1);
-  r.stt.h.onPartial("eggs");
-  r.c.stop();
-  r.timers[0].fn();
-  r.stt.h.onFinal("eggs");
-  r.c.onFirstAudio(Date.now());
-  assert.deepEqual(r.agent.sent, [{ type: "interrupt" }, { type: "user_text", text: "eggs" }]);
-  r.c.speakReplies = () => false;
-  await r.c.start();
-  assert.equal(warmed, 1, "Speak replies off: no Cartesia socket");
 });

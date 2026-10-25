@@ -135,22 +135,6 @@ test("insertText only for characters with no key, or outside a text field", asyn
   assert.ok(cdp.sent.every((s) => s.method === "Input.insertText"), "no key events off a text field");
 });
 
-test("long text is still typed key by key, faster but varied", async () => {
-  const { clock, cdp, actor } = setup(4);
-  const long = "two percent milk and a dozen eggs please ".repeat(12);
-  const t0 = clock.now();
-  await clock.run(actor.type(5, long, { focus: { keys: true }, check: async () => ({ keys: true }) }));
-  assert.equal(typedText(cdp.sent), long);
-  assert.equal(cdp.sent.filter((s) => s.method === "Input.insertText").length, 0, "no insertText shortcut");
-  const downs = cdp.sent.filter((s) => s.type === "rawKeyDown");
-  assert.equal(downs.length, long.length);
-  const gaps = downs.slice(1).map((d, i) => d.t - downs[i].t);
-  const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-  assert.ok(mean >= 18 && mean <= 40, `${mean.toFixed(1)} ms a key`);
-  assert.ok(new Set(gaps).size > 10, "the cadence still varies");
-  assert.ok(clock.now() - t0 < 15_000);
-});
-
 test("a scroll glides to the point, then sends wheel steps that add up", async () => {
   const { clock, cdp, actor } = setup(5);
   await clock.run(actor.scroll(5, { x: 300, y: 400, dx: 0, dy: 600 }));

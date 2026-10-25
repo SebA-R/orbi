@@ -4,15 +4,15 @@
 // with it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 
 import { DANGER_MODE_COPY, DEFAULTS, normalize, saveSettings, loadSettings } from "../../../extension/lib/settings.js";
 import { createRouter } from "../../../extension/background/router.js";
 import { bindDangerToggle } from "../../../extension/lib/danger-toggle.js";
 import { MSG } from "../../../extension/lib/protocol.js";
 
-const require = createRequire(import.meta.url);
-const P = require("../../../extension/content/protect.js");
+// protect.js is a classic content script; it puts its API on globalThis.
+await import("../../../extension/content/protect.js");
+const P = globalThis.ClearcartProtect;
 
 test("setting: off by default, and only a stored true turns it on", async () => {
   assert.equal(DEFAULTS.dangerMode, false);

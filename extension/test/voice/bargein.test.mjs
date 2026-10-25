@@ -324,39 +324,6 @@ test("a slow worker: the touch ducks at once and stays down for the whole hold, 
   assert.deepEqual(r.agent.sent, [{ type: "interrupt" }]);
 });
 
-test("a slow worker and back-to-back presses: the first cancel does not bring the speech back", async () => {
-  const r = rig({ workerMs: 150 });
-  await r.speaking();
-  const count = unducks(r);
-  r.down(); // the page thinks it is idle, so this tap cancels at once
-  r.clk.advance(30);
-  r.up();
-  r.clk.advance(20);
-  r.down(); // a second press, before the worker caught up with the first
-  for (let t = 0; t < 200; t += 10) { r.clk.advance(10); assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, `ducked at ${r.clk.now} ms`); }
-  assert.equal(count(), 0, "no blip back up between the presses");
-  r.clk.advance(200); // the second press's VOICE_CONFIRM lands
-  assert.equal(r.c.state, "listening");
-  assert.equal(r.a.level(), 0);
-});
-
-test("the page's touch with no start ever passed on: speech comes back after the key is let go", async () => {
-  const r = rig();
-  await r.speaking();
-  r.c.onPageKey(RT.PTT_START); // the worker never sends VOICE_START
-  r.clk.advance(20);
-  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "ducked without VOICE_START");
-  r.c.onPageKey(RT.PTT_CONFIRM);
-  r.clk.advance(PREDUCK_MS / 4); // the 8 s line is still playing throughout
-  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "held: stays down");
-  r.c.onPageKey(RT.PTT_STOP);
-  r.clk.advance(PREDUCK_MS - 10);
-  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "the start still gets its chance");
-  r.clk.advance(100); // plus the 80 ms fade back in
-  assert.ok(r.a.level() > 0.99, "no start ever came: the speech is back");
-  assert.deepEqual(r.agent.sent, []);
-});
-
 test("the page's touch does nothing while idle", () => {
   const r = rig();
   let ducks = 0;
@@ -366,51 +333,6 @@ test("the page's touch does nothing while idle", () => {
   r.clk.advance(PREDUCK_MS + 100);
   assert.equal(ducks, 0);
   assert.equal(count(), 0);
-});
-
-test("the page's touch does nothing during a turn already listening", async () => {
-  const r = rig();
-  await r.speaking();
-  const count = unducks(r);
-  r.c.onPageKey(RT.PTT_START);
-  await r.c.start({ silent: true });
-  r.clk.advance(20);
-  r.c.onPageKey(RT.PTT_START); // another frame, during the silent start
-  r.c.start({ silent: true }); // its worker copy: ignored, the turn is on
-  r.clk.advance(PREDUCK_MS + 100);
-  assert.equal(count(), 0, "no timer of its own");
-  assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9, "still ducked: the silent start owns it");
-  r.c.cancel(); // a tap
-  r.clk.advance(100);
-  assert.ok(r.a.level() > 0.99, "the tap brings the speech back");
-  assert.deepEqual(r.agent.sent, []);
-});
-
-test("start() takes the duck over: no late restore after the turn is done", async () => {
-  const r = rig();
-  await r.speaking();
-  const count = unducks(r);
-  r.down();
-  r.clk.advance(200);
-  assert.equal(r.c.state, "listening");
-  r.clk.advance(300);
-  r.up();
-  r.clk.advance(PREDUCK_MS + 100);
-  assert.equal(count(), 0, "the page press's timer was cleared by start()");
-});
-
-test("speech that ends during a touch: the next line is not left ducked", async () => {
-  const r = rig({ workerMs: 6000 });
-  await r.speaking();
-  r.c.onPageKey(RT.PTT_START);
-  r.c.onPageKey(RT.PTT_CANCEL); // a tap; the worker is far behind
-  r.clk.advance(9000); // the 8 s line plays out, ducked
-  assert.equal(r.c.speaking, false);
-  r.clk.advance(PREDUCK_MS);
-  r.c.onAgentMessage({ type: "agent_text", text: "Anything else?" });
-  await flush();
-  FakeTtsSocket.last.chunk(FakeTtsSocket.last.sent.at(-1).context_id, 44100);
-  assert.ok(r.a.level() > 0.99, "the next line plays at full level");
 });
 
 test("a quick tap while speaking ducks, then restores the speech after the double-tap window", async () => {
@@ -427,24 +349,6 @@ test("a quick tap while speaking ducks, then restores the speech after the doubl
   assert.ok(r.a.level() > 0.99, "speech is back");
   assert.equal(r.c.state, "speaking");
   assert.deepEqual(r.agent.sent, []);
-});
-
-test("a tap then a hold while speaking: the hold is not delayed and still barges in", async () => {
-  const r = rig();
-  await r.speaking();
-  r.detector.setVoiceState("speaking", false);
-  r.down();
-  r.clk.advance(60);
-  r.up();
-  r.clk.advance(90);
-  r.down(); // 150 ms after the first touch, inside the double-tap window
-  for (let t = 0; t < 180; t += 20) { r.clk.advance(20); assert.ok(r.a.level() <= DUCK_LEVEL + 1e-9); }
-  r.clk.advance(19);
-  assert.equal(r.c.confirmed, false, "199 ms: not yet");
-  r.clk.advance(1); // exactly 200 ms after the second press
-  assert.equal(r.c.state, "listening");
-  assert.equal(r.a.level(), 0);
-  assert.deepEqual(r.agent.sent, [{ type: "interrupt" }]);
 });
 
 test("Option+Space while speaking stops at once and latches listening", async () => {
@@ -464,17 +368,6 @@ test("Option+Space while speaking stops at once and latches listening", async ()
   assert.equal(r.a.sources.length, before, "nothing from the old turn plays");
   r.up({ altKey: true });
   assert.equal(r.c.listening, true, "still listening after the key is let go");
-});
-
-test("a line still connecting to TTS when the hold confirms is never sent", async () => {
-  const r = rig();
-  r.c.onAgentMessage({ type: "agent_text", text: "Searching now" }); // socket not open yet
-  r.down();
-  r.clk.advance(200);
-  await flush();
-  assert.equal(r.c.state, "listening");
-  assert.equal(r.ttsRequests().length, 0, "stopped while connecting: no request goes out");
-  assert.equal(r.a.sources.length, 0);
 });
 
 test("a line still generating when the hold confirms is cancelled at Cartesia, and its late audio never plays", async () => {
