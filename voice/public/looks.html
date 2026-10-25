@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clearcart Looks</title>
+  <style>
+    :root {
+      --bg: #f5f5f7; --surface: #fff; --ink: #1d1d1f; --muted: #6e6e73; --hairline: rgb(0 0 0 / .08);
+      --accent: #0066cc;
+      color-scheme: light dark;
+      font: 400 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased; letter-spacing: -.01em;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #000; --surface: #161618; --ink: #f5f5f7; --muted: #a1a1a6; --hairline: rgb(255 255 255 / .1); --accent: #2997ff; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    header { max-width: 88rem; margin: 0 auto; padding: 2rem 24px 1rem; display: flex; flex-wrap: wrap; gap: 1rem 2rem; align-items: end; justify-content: space-between; }
+    h1 { margin: 0; font-size: 1.75rem; letter-spacing: -.025em; }
+    header p { margin: .25rem 0 0; color: var(--muted); }
+    .controls { display: flex; flex-wrap: wrap; gap: .75rem; }
+    fieldset { border: 0; margin: 0; padding: 3px; display: inline-flex; border-radius: 10px; background: var(--hairline); }
+    legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    fieldset label { position: relative; }
+    fieldset input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+    fieldset span { display: block; padding: .35rem .8rem; border-radius: 8px; font-size: .875rem; color: var(--muted); }
+    fieldset input:checked + span { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgb(0 0 0 / .12); }
+    fieldset input:focus-visible + span { outline: 3px solid var(--accent); outline-offset: 1px; }
+    main { max-width: 88rem; margin: 0 auto; padding: 1rem 24px 4rem; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 34rem), 1fr)); gap: 2rem; }
+    article h2 { margin: .9rem 0 .1rem; font-size: 1.0625rem; letter-spacing: -.015em; display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    article p { margin: 0; color: var(--muted); }
+    article a { color: var(--accent); font-size: .875rem; font-weight: 500; text-decoration: none; white-space: nowrap; }
+    article a:hover { text-decoration: underline; }
+    a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+    .frame { position: relative; aspect-ratio: 16 / 10; border-radius: 16px; overflow: hidden; box-shadow: 0 0 0 1px var(--hairline), 0 20px 50px -30px rgb(0 0 0 / .35); background: var(--surface); }
+    .frame iframe { position: absolute; top: 0; left: 0; width: 1280px; height: 800px; border: 0; transform-origin: 0 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Clearcart looks</h1>
+      <p>Five directions for the voice console. Each one is the real console; open it live and hold Space.</p>
+    </div>
+    <div class="controls">
+      <fieldset id="state">
+        <legend>State</legend>
+        <label><input type="radio" name="state" value="idle"><span>Idle</span></label>
+        <label><input type="radio" name="state" value="listening" checked><span>Listening</span></label>
+        <label><input type="radio" name="state" value="thinking"><span>Thinking</span></label>
+        <label><input type="radio" name="state" value="speaking"><span>Speaking</span></label>
+        <label><input type="radio" name="state" value="receipt"><span>Receipt</span></label>
+      </fieldset>
+      <fieldset id="theme">
+        <legend>Theme</legend>
+        <label><input type="radio" name="theme" value="light" checked><span>Light</span></label>
+        <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+      </fieldset>
+    </div>
+  </header>
+
+  <main id="grid"></main>
+
+  <script>
+    const LOOKS = [
+      ['aurora', 'Aurora', 'Spectrum orb with a glass core and a glowing screen edge. Closest to Siri and Apple Intelligence. (Current default.)'],
+      ['halo', 'Halo', 'Monochrome ring and dot. Color appears only while listening, with ripples. Linear and Vercel restraint.'],
+      ['liquid', 'Liquid', 'A soft blue cloud sphere that drifts and swells with the voice. Closest to ChatGPT voice mode.'],
+      ['bars', 'Bars', 'Five bars on a quiet disc act as a level meter. The most literal: you see your own voice.'],
+      ['ambient', 'Ambient', 'The whole screen glows instead of the orb. A small glass bead and much bigger captions.'],
+    ];
+    const grid = document.getElementById('grid');
+    const frames = [];
+    for (const [id, name, desc] of LOOKS) {
+      const art = document.createElement('article');
+      art.innerHTML = `
+        <div class="frame"><iframe title="${name} preview" inert loading="eager"></iframe></div>
+        <h2>${name} <a href="./?look=${id}" target="_blank" rel="noopener">Open live &#8599;</a></h2>
+        <p>${desc}</p>`;
+      grid.append(art);
+      frames.push([id, art.querySelector('iframe')]);
+    }
+    const value = (name) => document.querySelector(`input[name="${name}"]:checked`).value;
+    function load() {
+      const state = value('state'), theme = value('theme');
+      for (const [id, f] of frames) {
+        // A dead agent socket keeps previews from opening real agent sessions.
+        f.src = `./?look=${id}&demo=${state}&theme=${theme}&agent=ws://127.0.0.1:9/preview`;
+      }
+    }
+    function fit() {
+      for (const [, f] of frames) f.style.transform = `scale(${f.parentElement.clientWidth / 1280})`;
+    }
+    document.querySelectorAll('input').forEach((i) => i.addEventListener('change', load));
+    new ResizeObserver(fit).observe(grid);
+    load();
+    fit();
+  </script>
+</body>
+</html>
