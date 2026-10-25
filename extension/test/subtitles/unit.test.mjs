@@ -666,3 +666,34 @@ test("karaoke: said and coming inks are 4.5:1 on the card in light and dark, ove
     assert.ok(L(said) > L(next), `${name}: said ${said} lighter than coming ${next}`);
   }
 });
+
+test("Speak replies off: the whole reply shows at once, plainly, and hides after its reading time", () => {
+  const t = setup();
+  const reply = Array.from({ length: 75 }, (_, i) => `w${i}`).join(" ");
+  t.send({ type: "voice.state", state: "thinking" });
+  // No utteranceId and no karaoke: the controller sends it whole, untimed.
+  t.send({ type: "subtitle", speaker: "agent", text: reply, final: true });
+  t.send({ type: "voice.state", state: "idle" });
+  assert.equal(t.$(".agent").textContent.trim(), reply, "every word at once");
+  assert.equal(t.$(".agent").classList.contains("karaoke"), false);
+  assert.equal(t.$(".agent").querySelectorAll(".w").length, 75);
+  t.tick(27_000);
+  assert.ok(t.visible(), "a 75 word reply gets about 28 s");
+  t.tick(2_000);
+  assert.equal(t.visible(), false);
+});
+
+test("Speak replies turned off mid-line: the karaoke line drops to plain and its reading time starts at idle", () => {
+  const t = setup();
+  t.send({ type: "voice.state", state: "speaking" });
+  t.send({ type: "subtitle", speaker: "agent", text: "Found it, nine dollars.", final: true, utteranceId: "u1", karaoke: true });
+  t.send({ type: "subtitle.word", utteranceId: "u1", index: 1 });
+  t.send({ type: "subtitle.word", utteranceId: "u1", fallback: true });
+  t.send({ type: "voice.state", state: "idle" });
+  assert.equal(t.$(".agent").classList.contains("karaoke"), false);
+  assert.equal(t.$(".agent").textContent.trim(), "Found it, nine dollars.");
+  t.tick(9_999);
+  assert.ok(t.visible());
+  t.tick(2);
+  assert.equal(t.visible(), false);
+});
