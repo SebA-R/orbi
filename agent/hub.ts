@@ -72,10 +72,6 @@ export class SessionHub {
     };
   }
 
-  get clients(): number {
-    return this.peers.size;
-  }
-
   private ensure(): HubSession {
     if (this.session) return this.session;
     let s: HubSession | null = null;
