@@ -49,9 +49,10 @@ function settledOf(r: unknown): Settled {
   return out;
 }
 
-export async function clickRef(bridge: Bridge, ref: string, tab?: number): Promise<{ via: "cdp" | "dom" } & Settled> {
+export async function clickRef(bridge: Bridge, ref: string, tab?: number): Promise<{ via?: "cdp" | "dom" } & Settled> {
   const done = await bridge.call<{ via?: string }>("click", clean({ tabId: tab, ref }));
-  return { via: done?.via === "dom" ? "dom" : "cdp", ...settledOf(done) };
+  const via = done?.via === "dom" || done?.via === "cdp" ? done.via : undefined;
+  return { ...(via ? { via } : {}), ...settledOf(done) };
 }
 
 export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefinition<any>[] {
