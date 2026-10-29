@@ -106,6 +106,13 @@ export function envLocalContext(env: NodeJS.ProcessEnv = process.env): number {
   return n;
 }
 
+// CLEARCART_LOCAL_THINK=1: a reasoning model (qwen3, deepseek-r1) thinks
+// before each step on Ollama. Off by default: thinking takes seconds per
+// step and spends the answer's token budget before any tool call.
+export function envLocalThink(env: NodeJS.ProcessEnv = process.env): boolean {
+  return /^(1|true|on|yes)$/i.test(env.CLEARCART_LOCAL_THINK?.trim() ?? "");
+}
+
 // What a session runs on, as one string. When it changes, the hub starts
 // a new session (hub.ts switchBackend).
 export function backendKey(p: ProviderSettings): string {
