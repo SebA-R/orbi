@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as proto from "../../extension/lib/protocol.js";
-import { DISMISS_TIMEOUT_MS, ERR, EXT_NAME, ExtError, INTERNAL, MAX_REQUEST_TIMEOUT_MS, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS, TOOLS, TYPE_MS_PER_CHAR, requestTimeoutFor } from "../extbridge.ts";
+import { CLIENT_ID_RE, CLOSE, DISMISS_TIMEOUT_MS, ERR, EXT_NAME, ExtError, INTERNAL, MAX_REQUEST_TIMEOUT_MS, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS, STALE_AFTER_MS, TOOLS, TYPE_MS_PER_CHAR, parseClientId, requestTimeoutFor } from "../extbridge.ts";
 // @ts-ignore: plain JS module from the extension
 import { BridgeClient } from "../../extension/lib/bridge.js";
 import { WebSocket } from "ws";
@@ -14,6 +14,12 @@ test("constants mirror extension/lib/protocol.js", () => {
   assert.deepEqual({ ...ERR }, { ...proto.ERR });
   assert.equal(PROTOCOL_VERSION, proto.PROTOCOL_VERSION);
   assert.equal(EXT_NAME, proto.EXT_NAME);
+  assert.deepEqual({ ...CLOSE }, { ...proto.CLOSE });
+  assert.equal(CLIENT_ID_RE.source, proto.CLIENT_ID_RE.source);
+  assert.equal(STALE_AFTER_MS, proto.TIMING.DEAD_AFTER_MS);
+  for (const v of [crypto.randomUUID(), "install-aaaa", "short", "a".repeat(65), "bad id!", 7, undefined]) {
+    assert.equal(parseClientId(v), proto.CLIENT_ID_RE.test(String(v)) && typeof v === "string" ? v : null, String(v));
+  }
 });
 
 test("handshake: hello gets welcome, connect event fires", async () => {
@@ -148,24 +154,21 @@ test("disconnect mid-request rejects pending calls", async () => {
   }
 });
 
-test("newest wins: a second extension replaces the first; reconnect works", async () => {
+test("same install: a newer hello replaces the older socket at once; reconnect works", async () => {
   const b = await startBridge();
   try {
-    const first = new FakeExt(b.url, () => ({ who: "first" }));
+    const first = new FakeExt(b.url, () => NO_REPLY, "0.0.1", "install-aaaa");
     await first.open();
     // Pending call on the first socket gets rejected when it is replaced.
-    const firstOnly = new FakeExt(b.url, () => NO_REPLY);
-    await firstOnly.open();
     const pending = b.bridge.call("tabs_context", {}, 5_000).then(
       () => assert.fail("should have been rejected"),
       (e) => e
     );
     await new Promise((r) => setTimeout(r, 20));
 
-    const second = new FakeExt(b.url, () => ({ who: "second" }));
+    const second = new FakeExt(b.url, () => ({ who: "second" }), "0.0.1", "install-aaaa");
     await second.open();
     assert.equal((await pending).code, ERR.NOT_CONNECTED);
-    assert.equal((await firstOnly.waitClosed()).code, 4002);
     assert.equal((await first.waitClosed()).code, 4002);
     assert.deepEqual(await b.bridge.call("tabs_context"), { who: "second" });
     assert.equal(b.bridge.connected(), true);
@@ -175,12 +178,99 @@ test("newest wins: a second extension replaces the first; reconnect works", asyn
     await onceEvent(b.bridge, "disconnect");
     assert.equal(b.bridge.connected(), false);
 
-    // Reconnect after a drop.
-    const again = new FakeExt(b.url, () => ({ who: "again" }));
+    // Reconnect after a drop, from any install.
+    const again = new FakeExt(b.url, () => ({ who: "again" }), "0.0.1", "install-bbbb");
     await again.open();
     assert.deepEqual(await b.bridge.call("tabs_context"), { who: "again" });
     again.close();
   } finally {
+    await b.stop();
+  }
+});
+
+test("another install is refused while the first is connected: its settings never apply, no flapping", async () => {
+  const lines: string[] = [];
+  const b = await startBridge();
+  (b.bridge as any).log = (l: string) => lines.push(l);
+  try {
+    const mine = new FakeExt(b.url, () => ({ who: "mine" }), "0.0.1", "install-mine");
+    await mine.open();
+    mine.ws.send(JSON.stringify({ type: proto.MSG.SETTINGS, guidedMode: false, provider: "local", localModel: "qwen3:8b" }));
+    mine.ws.send(JSON.stringify({ type: proto.MSG.DANGER_MODE, on: true }));
+    await mine.ping();
+    let connects = 0;
+    let providers = 0;
+    b.bridge.on("connect", () => connects++);
+    b.bridge.on("provider", () => providers++);
+
+    // A test Chromium (or a second profile) keeps trying, with and without an id.
+    for (const id of ["install-test", "install-test", undefined]) {
+      const other = new FakeExt(b.url, () => ({ who: "other" }), "0.0.1", id);
+      await other.open(false);
+      other.ws.send(JSON.stringify({ type: "hello", protocol: 1, ext: "clearcart", version: "0.0.1", ...(id ? { client: id } : {}) }));
+      other.ws.send(JSON.stringify({ type: proto.MSG.SETTINGS, guidedMode: true, provider: "claude" }));
+      other.ws.send(JSON.stringify({ type: proto.MSG.DANGER_MODE, on: false }));
+      assert.equal((await other.waitClosed()).code, 4004);
+      assert.equal(other.welcome, null);
+    }
+    assert.equal(connects, 0);
+    assert.equal(providers, 0);
+    assert.equal(b.bridge.providerSettings().provider, "local");
+    assert.equal(b.bridge.dangerMode(), true);
+    assert.equal(b.bridge.guidedMode(), false);
+    assert.equal(mine.closed, null, "the owner keeps its socket");
+    assert.deepEqual(await b.bridge.call("tabs_context"), { who: "mine" });
+    assert.equal(lines.filter((l) => l.includes("refused a second extension")).length, 2, "logged once per client, not per retry");
+
+    // Once the owner goes, the other install gets it.
+    mine.close();
+    await onceEvent(b.bridge, "disconnect");
+    const other = new FakeExt(b.url, () => ({ who: "other" }), "0.0.1", "install-test");
+    await other.open();
+    assert.deepEqual(await b.bridge.call("tabs_context"), { who: "other" });
+    other.close();
+  } finally {
+    await b.stop();
+  }
+});
+
+test("an owner silent past STALE_AFTER_MS can be replaced by another install", async () => {
+  const b = await startBridge();
+  try {
+    const mine = new FakeExt(b.url, () => null, "0.0.1", "install-mine");
+    await mine.open();
+    (b.bridge as any).lastSeen = Date.now() - STALE_AFTER_MS - 1;
+    const other = new FakeExt(b.url, () => ({ who: "other" }), "0.0.1", "install-test");
+    await other.open();
+    assert.equal((await mine.waitClosed()).code, 4002);
+    assert.deepEqual(await b.bridge.call("tabs_context"), { who: "other" });
+    other.close();
+  } finally {
+    await b.stop();
+  }
+});
+
+test("two BridgeClients from different installs don't ping-pong: the first keeps the bridge", async () => {
+  const b = await startBridge();
+  let connects = 0;
+  b.bridge.on("connect", () => connects++);
+  const quiet = { info() {}, warn() {}, debug() {} };
+  const timing = { BACKOFF_MIN_MS: 10, BACKOFF_MAX_MS: 40 };
+  const a = new BridgeClient({ url: b.url, WebSocketImpl: WebSocket, log: quiet, timing, clientId: "install-aaaa", onRequest: async () => "a" });
+  const c = new BridgeClient({ url: b.url, WebSocketImpl: WebSocket, log: quiet, timing, clientId: "install-cccc", onRequest: async () => "c" });
+  try {
+    a.start();
+    await onceEvent(b.bridge, "connect");
+    c.start();
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(connects, 1, "no takeovers back and forth");
+    assert.equal(await b.bridge.call("tabs_context"), "a");
+    a.stop();
+    await onceEvent(b.bridge, "connect");
+    assert.equal(await b.bridge.call("tabs_context"), "c", "the waiting install takes over once the first lets go");
+  } finally {
+    a.stop();
+    c.stop();
     await b.stop();
   }
 });

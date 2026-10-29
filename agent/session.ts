@@ -881,6 +881,17 @@ export class Session {
     return this.paying;
   }
 
+  // The agent is working on a user turn (hub.ts waits for it before
+  // switching backends). A turn only waiting for the user's answer to a
+  // question is not: retiring it declines the question, never confirms it.
+  // Nor is a local model's: Danger mode and the extension's click lock
+  // follow the provider setting at once, so a local turn left running
+  // after a switch to Claude would act with the locks lifted. It stops now,
+  // as before.
+  midTurn(): boolean {
+    return !this.closed && !this.localMode && this.turnsOpen > 0 && !this.awaitingAnswer;
+  }
+
   // What the next session must start with (SessionCarry).
   carry(): SessionCarry {
     return { cardFieldsLive: this.state.cardFieldsLive, cardTabId: this.state.cardTabId ?? null, sweepBroken: this.sweepBroken };
