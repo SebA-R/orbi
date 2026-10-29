@@ -85,7 +85,7 @@ export const longNumber = (t: string, min: number) => (t.match(DIGIT_RUN) || [])
 const SENSITIVE: Array<[RegExp, string]> = [
   [/\b(cvc|cvv2?|cvn|cid|csc|security code|card code|card verification|digits on the back|back of (the|your|my) card)\b/, "a card security code"],
   [/\b(card number|credit card|debit card|card ending|card no|(visa|mastercard|master card|amex|american express|discover)\b.{0,20}\d{3})/, "card details"],
-  [/\b(exp(iry|iration)?( date)?)\b.{0,12}\d{1,2}\s*\/\s*\d{2,4}/, "card details"],
+  [/\b(?:exp(?:iry|iration)?(?: date)?)\b.{0,12}(\d{1,2}\s*\/\s*\d{2,4})/, "card details"],
   [/\b(pass ?(word|code|phrase)s?|pwd|log ?ins?|sign ?in details|credentials|user ?names?)\b/, "a password"],
   [/\bpin\b(\s*(code|number|is|:|=)|\s*\d)/, "a PIN"],
   [/\b((one|1)[- ]time (code|password)|otp|2fa|two[- ]factor|verification code|security question|maiden name)\b/, "a sign in secret"],
@@ -147,18 +147,22 @@ export function secretReason(text: string, minDigits = 6): string | null {
 const MONTH = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
 const NOT_ID: RegExp[] = [
   /[$€£¥]\s?\d[\d,]*(?:\.\d+)?/g,
-  /\b\d[\d,]*(?:\.\d+)?\s?(?:usd|cad|eur|dollars?|cents?|euros?|bucks|%|percent)\b/g,
+  /\b\d[\d,]*(?:\.\d+)?\s?(?:(?:usd|cad|eur|dollars?|cents?|euros?|bucks|percent)\b|%)/g,
   /\b\d[\d,]*\.\d{2}\b/g,
   new RegExp(`\\b${MONTH}\\.? \\d{1,2}(?:st|nd|rd|th)?,? \\d{4}\\b`, "g"),
   new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)? (?:of )?${MONTH},? \\d{4}\\b`, "g"),
-  /\b\d{4}-\d{2}-\d{2}\b/g,
+  /\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b/g,
+  /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g,
   /\b\d{1,2}:\d{2}(?::\d{2})?\b/g,
 ];
 const blankNotId = (f: string) => NOT_ID.reduce((t, re) => t.replace(re, " x "), f);
 
 // A run of 13 to 19 digits that passes the Luhn check: a card number.
+// Only digits joined by spaces or dashes (a currency sign is ignored), so
+// a list of prices is not read as one number.
+const CARD_RUN = /\d(?:[\s-]{0,3}\d)+/g;
 export function luhnCard(f: string): boolean {
-  return (f.match(DIGIT_RUN) || []).some((run) => {
+  return (f.replace(/[$€£¥]/g, "").match(CARD_RUN) || []).some((run) => {
     const d = run.replace(/\D/g, "");
     if (d.length < 13 || d.length > 19) return false;
     let sum = 0;
@@ -174,25 +178,36 @@ export function luhnCard(f: string): boolean {
 // Words after "password is" that describe it rather than give it.
 const NOT_A_VALUE = new Set(
   ("a an the your my his her their our this that it its not no too so very also still now already just only being been set saved stored required needed " +
-    "wrong incorrect invalid correct right empty blank missing hidden masked weak strong short long ready filled entered typed changed updated reset " +
-    "expired locked accepted rejected taken available unavailable different same fine ok okay good bad done in on off at for to of and or what which " +
-    "where how there here shown visible case optional pending sent working asked new old usually probably something anything nothing").split(" ")
+    "wrong incorrect invalid correct right empty blank missing hidden masked weak strong weaker stronger short shorter long longer ready filled entered " +
+    "typed changed updated reset expired locked accepted rejected taken available unavailable different same fine ok okay good bad done to of what which " +
+    "where how there here shown visible case optional pending sent working asked new old usually probably something anything nothing least most as before yours mine safe secure encrypted protected sensitive used").split(" ")
 );
-const UNIT = /^(characters?|chars?|digits?|letters?|numbers?|symbols?|long|or)$/;
-// "<name> is <value>": the value is a word that is not a description, or a
-// number that is not a length ("at least 8 characters").
-function givenValue(f: string, names: string): boolean {
-  const re = new RegExp(`\\b(?:${names})\\b(?:'s|\\s*(?:is|was|are|=|:|should be|will be))\\s*([^\\s.,!?;]+)(?:\\s+(\\S+))?`, "g");
+// Where the words about it end: "is saved in the page", "should be at least".
+const VALUE_END = new Set("in on at from with by into inside under when if because but and or then".split(" "));
+const UNIT = /^(characters?|chars?|digits?|letters?|numbers?|symbols?)$/;
+// "<name> is <value>": up to four words after it (to the end of the
+// clause) and any one that is not a description or a length ("at least 8
+// characters") is a value. Fails closed: "is also hunter2" goes.
+function givenValue(f: string, re: RegExp): boolean {
   for (const m of f.matchAll(re)) {
-    const [v, next = ""] = [m[1], m[2]?.replace(/[^a-z]/g, "")];
-    if (NOT_A_VALUE.has(v)) continue;
-    if (/^\d{1,2}$/.test(v) && UNIT.test(next)) continue;
-    return true;
+    const words = m[1].trim().split(/\s+/).slice(0, 4);
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (!w || VALUE_END.has(w)) break;
+      if (NOT_A_VALUE.has(w)) continue;
+      if (/^\d{1,2}$/.test(w) && UNIT.test(words[i + 1] ?? "")) break;
+      return true;
+    }
   }
   return false;
 }
-// "<name> ... 1234": digits (three or more) close after the name.
-const nearDigits = (names: string, gap = 20) => new RegExp(`\\b(?:${names})\\b[^\\d.!?]{0,${gap}}\\d{3,}`);
+// "<name> <verb> <rest of the clause>"; verb optional where any words
+// after the name are an answer (a maiden name or security answer).
+const valueRe = (names: string, verbOptional = false) =>
+  new RegExp(`\\b(?:${names})\\b(?:'s\\b|\\s*(?:(?:is|was|are|should be|will be)\\b|[=:]))${verbOptional ? "?" : ""}([^.,!?;]*)`, "g");
+// "<name> ... 1234": three or more digits close after the name, counted
+// across spaces ("cvv 1 2 3").
+const nearDigits = (names: string, gap = 20) => new RegExp(`\\b(?:${names})\\b[^\\d.!?]{0,${gap}}(\\d(?:[^a-z\\d.!?]{0,3}\\d)*)`);
 
 const TRANSCRIPT_DIGITS: Array<[RegExp, string]> = [
   [nearDigits("cvc|cvv2?|cvn|cid|csc|security code|card code|card verification|digits on the back|back of (?:the|your|my) card"), "a card security code"],
@@ -203,16 +218,19 @@ const TRANSCRIPT_DIGITS: Array<[RegExp, string]> = [
   [nearDigits("ssn|social security|social insurance|sin number|passport|driv(?:er'?s|ing) licen[cs]e|health card|national id|tax id|itin|government id|id number", 25), "a government ID"],
   [nearDigits("bank|account number|acct|routing|transit number|institution number|iban|swift|bic code|sort code"), "bank details"],
 ];
-const TRANSCRIPT_VALUES: Array<[string, string]> = [
-  ["pass ?(?:word|code|phrase)s?|pwd|user ?names?|log ?ins?|credentials", "a password"],
-  ["pin(?: code| number)?", "a PIN"],
-  ["maiden name|security (?:question|answer)|answer to (?:the|my|your) security question", "a sign in secret"],
-  ["api key|secret key|private key|access token|seed phrase|recovery phrase|recovery codes?", "a secret key"],
+const TRANSCRIPT_VALUES: Array<[RegExp, string]> = [
+  [valueRe("pass ?(?:word|code|phrase)s?|pwd|user ?names?|log ?ins?|credentials"), "a password"],
+  [valueRe("pin(?: code| number)?"), "a PIN"],
+  [valueRe("maiden name|security (?:question|answer)|answer to (?:the|my|your) security question", true), "a sign in secret"],
+  [valueRe("api key|secret key|private key|access token|seed phrase|recovery phrase|recovery codes?"), "a secret key"],
 ];
 // A key or token on its own: Stripe style secret keys, or a long mix of
 // letters and digits.
-const KEY_TOKEN = /\b(?:sk|rk)_(?:live|test)_\w{6,}|\b(?=[\w-]*\d)(?=[\w-]*[a-z])[\w-]{24,}\b/;
-const EMAIL = /[^\s@]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
+const KEY_TOKEN = /\b(?:sk|rk)_(?:live|test)_\w{6,}|\b(?=\w*\d\w*\d)(?=\w*[a-z])\w{24,}\b/;
+// An address is blanked in the turn (EMAIL on the text as said); one the
+// blanking misses (look-alike letters, a full-width @) drops the turn.
+const EMAIL = /[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
+const FOLDED_EMAIL = /@[a-z0-9-]+\.[a-z]/;
 
 // For the transcript: a turn with a secret goes whole, and Orbi's own
 // replies (which may repeat page text) are kept short and dropped when
@@ -224,19 +242,19 @@ const DROP_RULE = "instruction or link";
 export function redactRule(text: string, role: "user" | "assistant" = "user"): string | null {
   const f = fold(clean(text));
   if (luhnCard(f)) return "card number";
+  if (FOLDED_EMAIL.test(fold(clean(text).replace(EMAIL, " x ")))) return "email";
   const g = blankNotId(f.replace(EMAIL, " x "));
   if (longNumber(g, 6)) return "long number";
-  const digits = TRANSCRIPT_DIGITS.find(([re]) => re.test(g));
+  const digits = TRANSCRIPT_DIGITS.find(([re]) => digitCount(g.match(re)?.[1] ?? "") >= 3);
   if (digits) return digits[1];
-  const given = TRANSCRIPT_VALUES.find(([names]) => givenValue(g, names));
+  const given = TRANSCRIPT_VALUES.find(([re]) => givenValue(g, re));
   if (given) return given[1];
   if (KEY_TOKEN.test(g)) return "a secret key";
   if (role === "assistant" && /\b(ignore|disregard|override|instructions?|system prompt|you must|always)\b|https?:|www\./.test(f)) return DROP_RULE;
   return null;
 }
-export function redactTurn(text: string, role: "user" | "assistant" = "user"): string {
+export function redactTurn(text: string, role: "user" | "assistant" = "user", rule = redactRule(text, role)): string {
   let t = clean(text);
-  const rule = redactRule(t, role);
   if (rule) return rule === DROP_RULE ? "" : REDACTED;
   t = t.replace(EMAIL, "(an email address)");
   if (role === "assistant" && t.length > ASSISTANT_MAX_CHARS) t = t.slice(0, ASSISTANT_MAX_CHARS - 1) + "…";
@@ -401,7 +419,7 @@ export class Transcript {
   add(role: Turn["role"], text: string, now = Date.now(), by?: AnsweredBy) {
     const rule = redactRule(text, role);
     if (rule) this.log(`transcript: ${role} turn scrubbed (${rule})`);
-    const t = redactTurn(text, role);
+    const t = redactTurn(text, role, rule);
     if (!t) return;
     try {
       writeJson(this.file, { version: 1, turns: [...this.recent(now), { role, text: t, at: now, ...(role === "assistant" && by ? { provider: label(by.provider), model: label(by.model) } : {}) }].slice(-TRANSCRIPT_MAX_TURNS) });

@@ -614,3 +614,33 @@ test("transcript: assistant turns say which model answered; old entries still lo
   assert.equal(raw[3].provider, "local");
   assert.ok(!("provider" in raw[1]), "user turns carry no model");
 });
+
+test("transcript: review cases, both ways", () => {
+  for (const t of [
+    "my password is also hunter2",
+    "my password is now Summer2026",
+    "the password is set to hunter2",
+    "my new password is still swordfish",
+    "my password is my dog rex",
+    "cvv one two three",
+    "cvv 1 2 3",
+    "the security code is 1 2 3",
+    "card ending in four two four two",
+    "my pin four eight two one",
+    "account number 1 2 3 4 5",
+    "my email is seb@ехample.com",
+    "email seb＠example.com",
+    "my mother's maiden name smith",
+    "my answer to the security question fluffy",
+  ]) assert.equal(redactTurn(t), REDACTED, t);
+  for (const t of [
+    "Prices: $12.99, $15.49, $22.00, $8.99",
+    "It arrives 10/29/2026.",
+    "That's 15% off, or 12.5% with the code.",
+    "Pick the usb-c-to-usb-c-cable-2m-black one",
+    "Your password isn't saved in the page.",
+    "Your password is safe, I never see it.",
+    "Your username is taken, pick another.",
+  ]) assert.equal(redactRule(t, "assistant"), null, t);
+  assert.equal(redactTurn("Write to (seb@example.com) please"), "Write to ((an email address)) please");
+});

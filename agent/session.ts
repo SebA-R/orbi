@@ -40,7 +40,7 @@ import { cardVault } from "./cards.ts";
 import type { CardVault } from "../vault/index.ts";
 import { ACK_PROMPT, buildLocalPrompt, buildSystemPrompt, dangerNote, searchNote, type SearchEngine, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
-import { answeredBy, factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
+import { answeredBy, factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type AnsweredBy, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
   decideUnlock,
   isDirectAsk,
@@ -530,6 +530,8 @@ export class Session {
   // What the agent runs on, set when run() picks it (local/config.ts
   // backendKey). The hub starts a new session when the setting moves.
   backend?: string;
+  // Which model answers (memory.ts answeredBy), saved with its own lines.
+  private by?: AnsweredBy;
   // The user's most recent words, for request_unlock's direct-ask match.
   private lastUser: UserWords = noWords();
   // The utterance before it, so a fact said just before a short answer
@@ -866,7 +868,8 @@ export class Session {
   private say(text: string, kind = "line") {
     if (this.muted) return this.unspoken(text);
     timing.mark("first_speech", { once: true, detail: kind });
-    if (memoryOn()) this.log?.add("assistant", text, undefined, answeredBy(currentProvider()));
+    // Only the model's own words ("say", "reply") are tagged with it.
+    if (memoryOn()) this.log?.add("assistant", text, undefined, kind === "say" || kind === "reply" ? this.by : undefined);
     this.send({ type: "agent_text", text });
   }
 
@@ -1952,6 +1955,7 @@ export class Session {
     const ext = extMode();
     const p = currentProvider();
     this.backend = backendKey(p);
+    this.by = answeredBy(p);
     const allowedTools = ext ? [...EXT_ALLOWED, ...DESKTOP_ALLOWED] : ALLOWED;
     this.localMode = p.provider === "local";
     this.localDesktop = desktopBridge.connected();
