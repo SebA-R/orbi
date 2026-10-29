@@ -589,7 +589,9 @@
   // A click on the page outside the card fades it out early, like dismissing
   // a toast. The card takes no clicks, so a press on it reaches the page too;
   // those are told apart by position and leave the card up.
-  // The agent's own clicks (content/cursor.js saw its pointer just now) don't.
+  // The agent's own clicks (content/cursor.js saw its pointer just now) don't,
+  // and neither does any click while Orbi is listening, thinking or speaking:
+  // the card is how the user sees a turn is still on.
   const onCard = (e) => {
     const card = ui.wrap && ui.wrap.querySelector(".card");
     if (!card || typeof e.clientX !== "number" || typeof e.clientY !== "number") return false;
@@ -600,6 +602,7 @@
   document.addEventListener("pointerdown", (e) => {
     const agent = globalThis.__clearcartAgentPointer;
     if (agent && typeof agent.busy === "function" && agent.busy()) return;
+    if (ui.state !== "idle") return;
     if (!ui.wrap || !ui.wrap.classList.contains("on")) return;
     if (onCard(e)) return;
     hide();

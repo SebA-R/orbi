@@ -15,6 +15,9 @@
 //   - Opening a socket never claims, so opening the console, or a reconnect
 //     after a server restart, takes nothing from the window in use.
 //   - Replies, read-backs, statuses and receipts go to the owner only.
+//     A {type:"busy"} message carries seq: the number of user_text messages
+//     that socket has sent, counted here (stale ones too), so its client
+//     can match it against its own count whichever session answers.
 //   - When the owner changes or goes away the Session hands off
 //     (Session.handOff): a read-back or unlock question still waiting is
 //     declined, never confirmed, so only the window that heard it can answer
@@ -64,7 +67,7 @@ export const ELSEWHERE_TEXT = "Orbi is in use in another window. Talk here to us
 export const MOVED_TEXT = "Orbi moved to another window. Talk here to bring it back.";
 export const STALE_TEXT = "Not sent: Orbi is in use in another window. Talk here again to use it here.";
 
-type Peer = { send: (m: HubMessage) => void; lost: boolean };
+type Peer = { send: (m: HubMessage) => void; lost: boolean; seq: number };
 
 export type HubPeer = {
   interrupt(): void;
@@ -84,7 +87,7 @@ export class SessionHub {
   // A socket opened. Starts the session if there is none yet (so the agent
   // warms up), but takes nothing from the window that owns it.
   join(send: (m: HubMessage) => void): HubPeer {
-    const peer: Peer = { send, lost: false };
+    const peer: Peer = { send, lost: false, seq: 0 };
     this.peers.add(peer);
     if (this.owner) send({ type: "status", text: ELSEWHERE_TEXT });
     this.ensure();
@@ -101,7 +104,8 @@ export class SessionHub {
     const live = () => s !== null && this.session === s;
     s = this.create(
       (m) => {
-        if (live()) this.owner?.send(m);
+        if (!live() || !this.owner) return;
+        this.owner.send(m.type === "busy" ? { ...m, seq: this.owner.seq } : m);
       },
       () => {
         if (!live()) return;
@@ -176,6 +180,7 @@ export class SessionHub {
 
   private userText(peer: Peer, text: string) {
     if (!this.peers.has(peer)) return;
+    peer.seq++;
     if (peer.lost) {
       peer.send({ type: "standby", reason: "stale", text: STALE_TEXT });
       return;

@@ -482,6 +482,8 @@ function handleAgentMessage(m) {
     case 'standby':
       standby(m);
       break;
+    case 'busy':
+      break; // the extension's thinking state; this page has its own
     default:
       logEvent(`Unknown agent message type: ${m.type}`);
   }

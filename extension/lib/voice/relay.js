@@ -12,7 +12,13 @@
 //   content/popup TTS_STOP     -> TTS_STOP to offscreen
 //   popup/new tab TYPED_TEXT {text} -> VOICE_TYPED {text} (typed instead of
 //                                 said; only from those two extension pages)
-//   content VOICE_STATE_QUERY  -> the current VOICE_STATE back to that tab
+//   content VOICE_STATE_QUERY  -> the current VOICE_STATE back to that tab (the
+//                                 popup, which has no tab: as the reply). Not
+//                                 known yet (a restarted worker): asks the
+//                                 offscreen document first (VOICE_SYNC)
+//   tab load complete          -> a new document in the talking tab (a link
+//                                 followed mid-turn) starts idle: the state and
+//                                 recent lines again, as on a tab switch
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
 //   offscreen SUBTITLE / SUBTITLE_WORD / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
 //   offscreen VOICE_ERROR code "mic_blocked" -> open the options page once
@@ -53,6 +59,13 @@ export function createVoiceRelay({
   // word is the latest SUBTITLE_WORD for the saved agent line (karaoke), so
   // a tab switched to mid-line shows the word being heard, not the first.
   const replay = { state: null, lines: [], word: null, at: 0 };
+  // A tab whose switch-to replay found no content script yet (still
+  // loading): it gets the replay again when its load completes.
+  let retryTab = null;
+  // Waiting for the offscreen document's VOICE_STATE (stateKnown).
+  let stateWaiters = [];
+  const STATE_WAIT_MS = 1000;
+  const RELOAD_RETRY_MS = 400;
 
   async function hasOffscreen() {
     const url = chromeApi.runtime.getURL(OFFSCREEN_PATH);
@@ -130,12 +143,31 @@ export function createVoiceRelay({
     }
   }
 
+  // A restarted worker has no state on record: ask the offscreen document
+  // (if there is one) to say it, and wait a moment for it. Idle otherwise.
+  function stateKnown() {
+    if (replay.state) return Promise.resolve();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      stateWaiters.push(finish);
+      setTimeout(finish, STATE_WAIT_MS);
+      toOffscreen({ type: RT.VOICE_SYNC }, { create: false }).then(() => hasOffscreen()).then((open) => { if (!open) finish(); }, finish);
+    });
+  }
+
   // Returns true when the message was ours (so callers know not to answer it).
-  function onMessage(msg, sender = {}) {
+  // sendResponse: the reply to a message with no tab (the popup's query).
+  function onMessage(msg, sender = {}, sendResponse = null) {
     if (!msg || typeof msg.type !== "string") return false;
     if (msg.from === "offscreen") {
       if (!TO_TAB.has(msg.type)) return false;
       remember(msg);
+      if (msg.type === RT.VOICE_STATE && stateWaiters.length) {
+        const waiters = stateWaiters;
+        stateWaiters = [];
+        for (const w of waiters) w();
+      }
       toTab(msg);
       if (msg.type === RT.VOICE_STATE) {
         ducker.onState(msg.state);
@@ -194,14 +226,20 @@ export function createVoiceRelay({
         toOffscreen(async () => { await typedTab; return { type: RT.VOICE_TYPED, text, settings: await getSettings() }; });
         return true;
       }
-      case RT.VOICE_STATE_QUERY:
+      case RT.VOICE_STATE_QUERY: {
         // A tab became visible again: tell it the current state (the hotkey
-        // needs it for the latch and the double-tap).
-        if (sender.tab && sender.tab.id != null) {
+        // needs it for the latch and the double-tap). It is the reply too,
+        // for the popup, which has no tab to send it to.
+        const tabId = sender.tab && sender.tab.id != null ? sender.tab.id : null;
+        const answer = () => {
           const { from, target, ...state } = replay.state || { type: RT.VOICE_STATE, state: "idle" };
-          try { chromeApi.tabs.sendMessage(sender.tab.id, state)?.catch?.(() => {}); } catch {}
-        }
+          if (typeof sendResponse === "function") { try { sendResponse(state); } catch {} }
+          if (tabId != null) { try { chromeApi.tabs.sendMessage(tabId, state)?.catch?.(() => {}); } catch {} }
+        };
+        if (replay.state) answer();
+        else stateKnown().then(answer, answer);
         return true;
+      }
       default:
         return false;
     }
@@ -265,11 +303,19 @@ export function createVoiceRelay({
   async function onTabActivated({ tabId }) {
     if (tabId == null || tabId === lastTabId) return;
     lastTabId = tabId;
+    if (retryTab !== tabId) retryTab = null;
+    if ((await replayTo(tabId)) === "failed" && lastTabId === tabId) retryTab = tabId;
+  }
+
+  // The caption card's state and recent lines, to a tab that has none of
+  // them yet. "failed" when the tab has no content script to take them (a
+  // chrome:// page, or one still loading).
+  async function replayTo(tabId) {
     const now = Date.now();
     const state = replay.state;
     const active = state && state.state !== "idle";
     const lines = replay.lines.filter((l) => now - l.at <= REPLAY_MS);
-    if (!active && !lines.length) return;
+    if (!active && !lines.length) return "nothing";
     const word = replay.word && lines.some((l) => l.msg.utteranceId === replay.word.utteranceId) ? replay.word : null;
     const queue = [
       ...(state ? [{ kind: "state", msg: state }] : []),
@@ -277,7 +323,7 @@ export function createVoiceRelay({
       ...(word ? [{ kind: "word", msg: word }] : []),
     ];
     for (const item of queue) {
-      if (lastTabId !== tabId) return; // the user moved on again
+      if (lastTabId !== tabId) return "moved"; // the user moved on again
       if (item.kind === "state" ? replay.state !== item.msg
         : item.kind === "word" ? replay.word !== item.msg
         : !replay.lines.includes(item.entry)) continue;
@@ -289,9 +335,25 @@ export function createVoiceRelay({
       try {
         await chromeApi.tabs.sendMessage(tabId, out);
       } catch {
-        return; // no content script there (chrome:// page); nothing to show
+        return "failed"; // no content script there (chrome:// page); nothing to show
       }
     }
+    return "sent";
+  }
+
+  // A new document in the talking tab (a link followed or a page opened
+  // mid-turn) starts with an idle card: once it has loaded, the state and
+  // recent lines again, while Orbi is busy or a switch-to replay failed.
+  // Its content scripts may load just after "complete", so a failure is
+  // tried once more a moment later.
+  async function onTabUpdated(tabId, change) {
+    if (!change || change.status !== "complete" || tabId == null || tabId !== lastTabId) return;
+    const busy = replay.state && replay.state.state !== "idle";
+    if (!busy && retryTab !== tabId) return;
+    retryTab = null;
+    if ((await replayTo(tabId)) !== "failed") return;
+    await new Promise((r) => setTimeout(r, RELOAD_RETRY_MS));
+    if (tabId === lastTabId) await replayTo(tabId);
   }
 
   // Switching windows changes the visible tab too.
@@ -308,19 +370,26 @@ export function createVoiceRelay({
     return toOffscreen({ type: RT.VOICE_SYNC }, { create: false });
   }
 
-  return { onMessage, onCommand, onStorageChanged, onTabActivated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, resync, ducker, idle: () => chain, statesIdle: () => stateChain };
+  return { onMessage, onCommand, onStorageChanged, onTabActivated, onTabUpdated, onWindowFocused, ensureOffscreen, closeOffscreen, toggle, resync, ducker, idle: () => chain, statesIdle: () => stateChain };
 }
 
 // Registers the listeners synchronously so Chrome can wake the worker for them.
 export function installVoiceRelay(opts = {}) {
   const chromeApi = opts.chromeApi || globalThis.chrome;
   const relay = createVoiceRelay({ ...opts, chromeApi });
-  chromeApi.runtime.onMessage.addListener((msg, sender) => { relay.onMessage(msg, sender); });
+  chromeApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    relay.onMessage(msg, sender, sendResponse);
+    // A state query may be answered after a VOICE_SYNC round trip.
+    if (msg && msg.type === RT.VOICE_STATE_QUERY) return true;
+  });
   chromeApi.commands?.onCommand.addListener((command, tab) => relay.onCommand(command, tab));
   chromeApi.storage.onChanged.addListener((changes, area) => relay.onStorageChanged(changes, area));
   chromeApi.tabs.onActivated?.addListener((info) => relay.onTabActivated(info));
   chromeApi.windows?.onFocusChanged?.addListener((id) => relay.onWindowFocused(id));
-  chromeApi.tabs.onUpdated?.addListener((id, change) => relay.ducker.onTabUpdated?.(id, change));
+  chromeApi.tabs.onUpdated?.addListener((id, change) => {
+    relay.ducker.onTabUpdated?.(id, change);
+    relay.onTabUpdated(id, change).catch(() => {});
+  });
   relay.ducker.recover?.().catch(() => {});
   relay.resync().catch(() => {});
   return relay;

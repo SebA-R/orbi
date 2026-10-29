@@ -51,6 +51,21 @@
 //   typed(text) words typed in the popup or on the new tab page
 //            (VOICE_TYPED): barge-in, then one user_text, like a turn.
 //   confirm_done -> the placed cue (paid) or the failed cue (failed)
+//   busy {on, seq} from the agent server: whether it is still working on
+//            the user's words. Once one has come on this socket, it alone
+//            ends "thinking": a spoken ack (say), the reply being read with
+//            Speak replies off, a receipt or a TTS failure no longer do, so
+//            speech that ends mid-turn settles back to thinking. An "off"
+//            whose seq is below the user_text count sent on this socket is
+//            about older words and is ignored. A server that never sends
+//            busy (echo mode, an older server) keeps the old rules: the
+//            first agent_text heard ends thinking.
+//   onAgentState("open" | "closed") the agent socket: a turn in progress
+//            when it closes gets no reply (the server hands it off), so
+//            thinking ends; counts restart on the new socket. Words sent
+//            while it is down are queued and counted for the next one.
+//   BUSY_WATCHDOG_MS without any message from the agent (statuses count)
+//            while thinking on busy: stop waiting, so it never thinks forever.
 //   standby  the agent server gave the conversation to another Orbi
 //            window (agent/hub.ts): stop speaking and stop waiting for a
 //            reply; "moved" also drops a turn still listening, unsent
@@ -74,6 +89,7 @@ export const TAIL_MS = 300;
 export const LATCH_IDLE_MS = 60_000;
 export const PREDUCK_MS = 4000;
 export const FINAL_WAIT_MS = 600; // after finish(): how long the trailing final gets
+export const BUSY_WATCHDOG_MS = 180_000; // thinking with no word from the agent this long: stop
 const PAGE_KEYS = new Set([RT.PTT_START, RT.PTT_CONFIRM, RT.PTT_CANCEL, RT.PTT_STOP, RT.PTT_HUSH]);
 
 // The type of a page's own hotkey broadcast, or null. The worker's copies
@@ -96,6 +112,11 @@ export class VoiceController {
     this.listening = false;
     this.session = null;
     this.awaitingReply = false;
+    this.busyAware = false; // the agent server sends busy on this socket (see onAgentMessage)
+    this.agentOpen = false; // the agent socket is open (onAgentState)
+    this.sentSeq = 0; // user_text sent on the open socket
+    this.queuedSeq = 0; // user_text sent while it was down, for the next socket
+    this.watchdog = null;
     this.speaking = false;
     this.state = STATES.IDLE;
     this.confirmed = false;
@@ -184,6 +205,9 @@ export class VoiceController {
 
   #sendUserText(text, turn = null) {
     this.awaitingReply = true;
+    if (this.agentOpen) this.sentSeq++;
+    else this.queuedSeq++;
+    this.#armWatchdog();
     this.muted = false; // a fresh turn: its replies are spoken
     this.readParts = []; // a fresh turn: nothing read yet
     if (this.wallClock) {
@@ -442,8 +466,10 @@ export class VoiceController {
     }
     if (turn) {
       turn.open = false;
-      turn.expected = turn.parts.length > 0 || !!turn.partial.trim();
-      if (turn.expected) this.awaitingReply = true; // sent after the tail
+      // Thinking from the release on, even before a word was heard (a slow
+      // connect): the flush goes idle if nothing comes, with no blip first.
+      turn.expected = true;
+      this.awaitingReply = true; // sent after the tail
     }
     this.#endLatch();
     this.listening = false;
@@ -574,12 +600,71 @@ export class VoiceController {
 
   onSpeakingChange(on) {
     this.speaking = on;
-    if (on) this.awaitingReply = false;
+    // On busy, only the server ends the turn; when this speech ends the
+    // state settles back to thinking if it is still working.
+    if (on && !this.busyAware) this.awaitingReply = false;
     this.#settle();
   }
 
+  // The agent socket opened or closed (agent-session.js onState).
+  onAgentState(state) {
+    if (state === "open") {
+      if (this.agentOpen) return;
+      this.agentOpen = true;
+      // A new socket: the server counts from zero, and the words queued
+      // while it was down go out first. Busy is learned again.
+      this.sentSeq = this.queuedSeq;
+      this.queuedSeq = 0;
+      this.busyAware = false;
+    } else if (state === "closed") {
+      if (!this.agentOpen) return;
+      this.agentOpen = false;
+      this.sentSeq = 0;
+      // The server hands off a turn whose socket closed: no reply is coming.
+      if (this.awaitingReply) {
+        this.awaitingReply = false;
+        this.#clearWatchdog();
+        this.#settle();
+      }
+    }
+  }
+
+  #clearWatchdog() {
+    if (this.watchdog != null) this.clearTimer(this.watchdog);
+    this.watchdog = null;
+  }
+
+  // While thinking on busy, a long silence from the agent ends it.
+  #armWatchdog() {
+    this.#clearWatchdog();
+    if (!this.busyAware || !this.awaitingReply) return;
+    const timer = this.setTimer(() => {
+      if (this.watchdog !== timer) return;
+      this.watchdog = null;
+      if (!this.awaitingReply) return;
+      this.awaitingReply = false;
+      this.emit({ type: RT.STATUS, kind: "status", text: "No word from the agent for a while, so Orbi stopped waiting." });
+      this.#settle();
+    }, BUSY_WATCHDOG_MS);
+    this.watchdog = timer;
+  }
+
   onAgentMessage(m) {
+    if (this.watchdog != null || (this.busyAware && this.awaitingReply)) this.#armWatchdog(); // any message is a heartbeat
     switch (m.type) {
+      case "busy": {
+        this.busyAware = true;
+        // An "off" (or "on") about words older than our last is stale.
+        if (typeof m.seq === "number" && m.seq < this.sentSeq) break;
+        if (m.on) {
+          // Working again (a question it asked was dropped) — unless the
+          // user cut this turn off.
+          if (!this.muted) this.awaitingReply = true;
+        } else this.awaitingReply = false;
+        this.#armWatchdog();
+        this.#settle();
+        break;
+      }
       case "agent_text":
         if (!m.text) return;
         if (this.muted) {
@@ -593,7 +678,7 @@ export class VoiceController {
           // say, then the answer) add up, so the next never wipes one unread.
           this.readParts = [...(this.readParts || []), m.text];
           this.emit({ type: RT.SUBTITLE, speaker: "agent", text: join(this.readParts), final: true });
-          this.awaitingReply = false;
+          if (!this.busyAware) this.awaitingReply = false;
           this.#settle();
           break;
         }
@@ -607,7 +692,7 @@ export class VoiceController {
         this.emit({ type: RT.STATUS, kind: "status", text: m.text || "" });
         break;
       case "receipt":
-        this.awaitingReply = false;
+        if (!this.busyAware) this.awaitingReply = false;
         this.emit({ type: RT.STATUS, kind: "receipt", receipt: { item: m.item, total: m.total, last4: m.last4 } });
         this.#settle();
         break;

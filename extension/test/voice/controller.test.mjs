@@ -2,11 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { RT } from "../../lib/protocol.js";
-import { VoiceController, TAIL_MS, LATCH_IDLE_MS, FINAL_WAIT_MS } from "../../lib/voice/controller.js";
+import { VoiceController, TAIL_MS, LATCH_IDLE_MS, FINAL_WAIT_MS, BUSY_WATCHDOG_MS } from "../../lib/voice/controller.js";
 import { AgentSession } from "../../lib/voice/agent-session.js";
 import { createTokenSource } from "../../lib/voice/token.js";
 
-function rig({ micFails } = {}) {
+function rig({ micFails, speakReplies = true } = {}) {
   const log = [];
   const emitted = [];
   const timers = [];
@@ -35,6 +35,7 @@ function rig({ micFails } = {}) {
     emit: (m) => emitted.push(m),
     setTimer: (fn, ms) => timers.push({ fn, ms, cleared: false }),
     clearTimer: (n) => { if (timers[n - 1]) timers[n - 1].cleared = true; },
+    speakReplies: () => speakReplies,
   });
   return { c, log, emitted, timers, agent, mic, get stt() { return stt; } };
 }
@@ -86,7 +87,7 @@ test("agent_text speaks, subtitles, and the state follows the speaker", async ()
   r.c.onSpeakingChange(false);
   assert.ok(r.log.includes("speak:Found it."));
   assert.ok(r.emitted.some((m) => m.type === RT.SUBTITLE && m.speaker === "agent" && m.text === "Found it." && m.final));
-  assert.deepEqual(states(r.emitted), ["listening", "idle", "thinking", "speaking", "idle"]);
+  assert.deepEqual(states(r.emitted), ["listening", "thinking", "speaking", "idle"], "thinking from the release, before any word was heard");
 });
 
 test("pressing again while it speaks barges in", async () => {
@@ -560,4 +561,134 @@ test("turn timing: with a wallClock, user_text carries the release and final tim
   r.c.onFirstAudio(1_700_000_001_000.4);
   r.c.onFirstAudio(1_700_000_002_000);
   assert.deepEqual(r.agent.sent.filter((m) => m.type === "timing"), [{ type: "timing", event: "first_audio", at: 1_700_000_001_000 }]);
+});
+
+// --- busy from the agent server ---------------------------------------------
+const busy = (r, on, seq) => r.c.onAgentMessage({ type: "busy", on, seq });
+const opened = () => { const r = rig(); r.c.onAgentState("open"); return r; };
+
+test("busy: a spoken ack ending mid-turn goes back to thinking; only busy off ends the turn", () => {
+  const r = opened();
+  r.c.typed("find socks");
+  busy(r, true, 1);
+  r.c.onAgentMessage({ type: "agent_text", text: "On it." });
+  r.c.onSpeakingChange(true);
+  r.c.onSpeakingChange(false); // the ack is over, tools still running
+  assert.equal(r.c.state, "thinking");
+  r.c.onAgentMessage({ type: "status", text: "navigate https://shop.example" });
+  r.c.onAgentMessage({ type: "agent_text", text: "Found three." });
+  r.c.onSpeakingChange(true);
+  busy(r, false, 1); // the turn's result, while the reply is heard
+  assert.equal(r.c.state, "speaking");
+  r.c.onSpeakingChange(false);
+  assert.deepEqual(states(r.emitted), ["thinking", "speaking", "thinking", "speaking", "idle"]);
+});
+
+test("busy: an off for older words is stale and ignored; the one for the latest ends it", () => {
+  const r = opened();
+  r.c.typed("find socks");
+  busy(r, true, 1);
+  r.c.typed("actually, wool ones"); // barges in on the first turn
+  busy(r, false, 1); // the first turn's end, sent before the server had the second
+  assert.equal(r.c.state, "thinking");
+  assert.equal(r.c.awaitingReply, true);
+  busy(r, true, 2);
+  busy(r, false, 2);
+  assert.equal(r.c.state, "idle");
+});
+
+test("busy: with Speak replies off, a read line, a receipt or a TTS failure no longer end thinking", () => {
+  const r = rig({ speakReplies: false });
+  r.c.onAgentState("open");
+  r.c.typed("buy it");
+  busy(r, true, 1);
+  r.c.onAgentMessage({ type: "agent_text", text: "On it." });
+  assert.equal(r.c.state, "thinking");
+  r.c.onAgentMessage({ type: "receipt", item: "Mug", total: "$9", last4: "1111" });
+  assert.equal(r.c.state, "thinking");
+  busy(r, false, 1);
+  assert.equal(r.c.state, "idle");
+  const s = opened();
+  s.c.typed("hi");
+  busy(s, true, 1);
+  s.c.onAgentMessage({ type: "agent_text", text: "Hello." });
+  s.c.onSpeakingChange(true);
+  s.c.onSpeakingChange(false); // Sonic failed: no audio
+  assert.equal(s.c.state, "thinking");
+});
+
+test("busy: a question the agent asks ends thinking; a question dropped by the agent brings it back", () => {
+  const r = opened();
+  r.c.typed("buy the mug");
+  busy(r, true, 1);
+  r.c.onAgentMessage({ type: "agent_text", text: "Mug for $9. Say yes to place it." });
+  r.c.onSpeakingChange(true);
+  busy(r, false, 1); // waiting for the answer
+  r.c.onSpeakingChange(false);
+  assert.equal(r.c.state, "idle");
+  busy(r, true, 1); // the question timed out; the agent goes on
+  assert.equal(r.c.state, "thinking");
+});
+
+test("busy: after a barge-in, the cut-off turn's busy on does not bring thinking back", async () => {
+  const r = opened();
+  r.c.typed("find socks");
+  busy(r, true, 1);
+  await r.c.start(); // a hold: barges in
+  r.c.stop();
+  r.timers.find((t) => t.ms === TAIL_MS).fn();
+  r.stt.h.onClosed(); // said nothing
+  assert.equal(r.c.state, "idle");
+  busy(r, true, 1); // the cut-off turn is still winding down
+  assert.equal(r.c.state, "idle");
+});
+
+test("busy: the agent socket closing mid-turn ends thinking; words sent while down count on the next socket", () => {
+  const r = opened();
+  r.c.typed("find socks");
+  busy(r, true, 1);
+  r.c.onAgentState("closed");
+  assert.equal(r.c.state, "idle");
+  r.c.typed("are you there"); // queued until the socket is back
+  assert.equal(r.c.state, "thinking");
+  r.c.onAgentState("open");
+  busy(r, true, 1);
+  busy(r, false, 1);
+  assert.equal(r.c.state, "idle", "the queued words were the new socket's first");
+});
+
+test("busy: no word from the agent for BUSY_WATCHDOG_MS stops thinking; any message pushes it back", () => {
+  const r = opened();
+  r.c.typed("find socks");
+  busy(r, true, 1);
+  const pending = () => r.timers.filter((t) => !t.cleared && t.ms === BUSY_WATCHDOG_MS);
+  assert.equal(pending().length, 1);
+  r.c.onAgentMessage({ type: "status", text: "computer screenshot" });
+  const [t] = pending();
+  assert.equal(pending().length, 1, "the status re-armed it");
+  t.fn();
+  assert.equal(r.c.state, "idle");
+  assert.ok(r.emitted.some((m) => m.type === RT.STATUS && /stopped waiting/.test(m.text)));
+});
+
+test("without busy from the server (echo mode), the first agent_text heard still ends thinking", () => {
+  const r = rig();
+  r.c.onAgentState("open");
+  r.c.typed("hi");
+  r.c.onAgentMessage({ type: "agent_text", text: "You said: hi" });
+  r.c.onSpeakingChange(true);
+  r.c.onSpeakingChange(false);
+  assert.equal(r.c.state, "idle");
+  assert.equal(r.timers.filter((t) => t.ms === BUSY_WATCHDOG_MS).length, 0);
+});
+
+test("a release with nothing heard yet shows thinking at once; an empty turn then goes idle", async () => {
+  const r = rig();
+  await r.c.start();
+  r.c.stop();
+  assert.deepEqual(states(r.emitted), ["listening", "thinking"]);
+  r.timers[0].fn();
+  r.stt.h.onClosed(); // nothing was said
+  assert.deepEqual(states(r.emitted), ["listening", "thinking", "idle"]);
+  assert.ok(!r.agent.sent.some((m) => m.type === "user_text"));
 });

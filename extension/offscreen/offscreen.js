@@ -132,6 +132,7 @@ const agent = new AgentSession({
   onMessage: (m) => controller.onAgentMessage(m),
   onState: (s) => {
     linkCue(s);
+    controller?.onAgentState(s); // a closed socket ends thinking; busy counts restart
     if (s === "open") void checkVoice(); // a restarted server may have a new key, or none
     emit({ type: RT.STATUS, kind: "agent", state: s });
   },
