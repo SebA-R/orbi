@@ -825,6 +825,13 @@ export class Session {
     return this.paying;
   }
 
+  // The agent is working on a user turn (hub.ts waits for it before
+  // switching backends). A turn only waiting for the user's answer to a
+  // question is not: retiring it declines the question, never confirms it.
+  midTurn(): boolean {
+    return !this.closed && this.turnsOpen > 0 && !this.awaitingAnswer;
+  }
+
   // What the next session must start with (SessionCarry).
   carry(): SessionCarry {
     return { cardFieldsLive: this.state.cardFieldsLive, cardTabId: this.state.cardTabId ?? null, sweepBroken: this.sweepBroken };

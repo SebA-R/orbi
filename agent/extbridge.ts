@@ -2,8 +2,20 @@
 //
 // The extension is the client: it connects, sends hello, and we reply
 // welcome. After that we send requests and it answers. One extension at a
-// time: a newer hello replaces the older socket (newest wins), so a reloaded
-// service worker takes over without waiting for the old socket to time out.
+// time, and the first one keeps the bridge until it goes away:
+//   - Each install sends a stable random client id in its hello. A hello
+//     with the id of the connected client (a reloaded service worker, a
+//     reconnect after sleep) replaces the old socket at once.
+//   - A hello from any other client (a second Chrome profile, a test
+//     Chromium that loaded the extension) is refused with 4004 while the
+//     owner is live, and that client keeps retrying on its backoff. Before,
+//     the newest hello always won; both clients reconnect on their own, so
+//     two of them took the bridge from each other forever, each bringing
+//     its own settings (provider, Danger mode) and restarting the session.
+//   - An owner silent for STALE_AFTER_MS (no ping or reply) counts as gone,
+//     so a half-open socket can't hold the bridge.
+// A hello without an id (an older extension) is a client of its own: it
+// replaces nobody and is refused like any other while an owner is live.
 //
 // Request params can hold card values (fill_card), so nothing here ever
 // logs params or results; only method names and error codes.
@@ -55,6 +67,17 @@ export const ERR = {
 } as const;
 export const REQUEST_TIMEOUT_MS = 30_000;
 const HELLO_TIMEOUT_MS = 5_000;
+// A client's ping comes every 20 s (protocol.js TIMING.HEARTBEAT_MS); this
+// long without a message means the owner's socket is dead even if it looks
+// open (protocol.js TIMING.DEAD_AFTER_MS).
+export const STALE_AFTER_MS = 45_000;
+// Close code for a hello refused because another client owns the bridge.
+export const BUSY_CLOSE = 4004;
+
+// A client id from a hello: a short token, or null when absent or malformed.
+export function parseClientId(v: unknown): string | null {
+  return typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v) ? v : null;
+}
 
 export class ExtError extends Error {
   constructor(public code: string, message: string) {
@@ -66,6 +89,8 @@ export class ExtError extends Error {
 type Pending = { ws: WebSocket; method: string; resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
 
 export type ExtInfo = { version: string; connectedAt: number };
+
+type Owner = { ws: WebSocket; clientId: string | null; lastSeen: number };
 
 // The user's agent provider settings as the extension sent them: Claude
 // (and which Claude model) or a local model, and the local endpoint
@@ -92,6 +117,9 @@ export function extOriginAllowed(origin: string | string[] | undefined, origins:
 export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
   private current: WebSocket | null = null;
+  private owner: Owner | null = null;
+  // The last client refused as busy, so a retrying one is logged once.
+  private lastRefused: string | null | undefined = undefined;
   private info: ExtInfo | null = null;
   private pending = new Map<string, Pending>();
   private counter = 0;
@@ -245,6 +273,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
         return;
       }
       if (!m || typeof m !== "object" || typeof m.type !== "string") return;
+      if (this.owner?.ws === ws) this.owner.lastSeen = Date.now();
 
       if (m.type === "ping") {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "pong", t: m.t }));
@@ -258,7 +287,14 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
         }
         greeted = true;
         clearTimeout(helloTimer);
-        this.promote(ws, String(m.version ?? "0"));
+        const clientId = parseClientId(m.client);
+        if (!this.mayTakeOver(clientId)) {
+          if (this.lastRefused !== clientId) this.log("ext: refused a second extension (another one is connected)");
+          this.lastRefused = clientId;
+          ws.close(BUSY_CLOSE, "another extension is connected");
+          return;
+        }
+        this.promote(ws, String(m.version ?? "0"), clientId);
         return;
       }
       if (m.type === "response" && (typeof m.id === "string" || typeof m.id === "number")) {
@@ -300,6 +336,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       this.dropPending(ws, "the extension disconnected");
       if (this.current === ws) {
         this.current = null;
+        this.owner = null;
         this.info = null;
         this.danger = false;
         this.log("ext: extension disconnected");
@@ -335,14 +372,25 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     this.emit("provider", { ...next });
   }
 
-  private promote(ws: WebSocket, version: string) {
+  // Whether a greeted client may take the bridge: nobody holds it, the
+  // holder is this same client again, or the holder has gone silent.
+  private mayTakeOver(clientId: string | null): boolean {
+    const o = this.owner;
+    if (!o || o.ws.readyState !== o.ws.OPEN) return true;
+    if (clientId !== null && clientId === o.clientId) return true;
+    return Date.now() - o.lastSeen > STALE_AFTER_MS;
+  }
+
+  private promote(ws: WebSocket, version: string, clientId: string | null = null) {
     const old = this.current;
     this.current = ws;
+    this.owner = { ws, clientId, lastSeen: Date.now() };
+    this.lastRefused = undefined;
     this.info = { version, connectedAt: Date.now() };
     // A new connection states Danger mode itself (the worker sends it on connect).
     this.danger = false;
     if (old && old !== ws) {
-      this.dropPending(old, "replaced by a newer extension connection");
+      this.dropPending(old, "replaced by a newer connection from the same extension");
       old.close(4002, "replaced");
     }
     ws.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION, server: SERVER_NAME }));

@@ -28,8 +28,11 @@
 //     (switchBackend), the Session is retired the same way as a hand-off
 //     (nothing waiting is confirmed, an unused yes is withdrawn) and a
 //     fresh one starts on the new backend. The window in use keeps it. A
-//     payment under way finishes first, and the browser's fail-closed state
-//     (card values in a form, a failed tab sweep) carries over.
+//     payment under way finishes first, and so does a turn the agent is
+//     working on (its tool calls and reply are not cut off); a turn only
+//     waiting for the user's answer is retired, which declines it. The
+//     browser's fail-closed state (card values in a form, a failed tab
+//     sweep) carries over. A switch back before it happened cancels it.
 
 import type { ServerMessage } from "./session.ts";
 
@@ -47,6 +50,8 @@ export interface HubSession {
   retire?(why: string): void;
   // Not to be replaced right now (a payment is under way).
   busy?(): boolean;
+  // The agent is working on a turn: a switch waits for it to end.
+  midTurn?(): boolean;
   // What the session that replaces it must start with (session.ts
   // SessionCarry).
   carry?(): unknown;
@@ -57,7 +62,7 @@ export interface HubSession {
 // handed over, if it replaces one.
 export type CreateSession = (send: (m: ServerMessage) => void, ended: () => void, carry?: unknown) => HubSession;
 
-// How often a switch waiting for a payment to finish checks again.
+// How often a switch waiting for a payment or a turn to finish checks again.
 export const SWITCH_RETRY_MS = 250;
 
 export const ELSEWHERE_TEXT = "Orbi is in use in another window. Talk here to use it here.";
@@ -76,7 +81,7 @@ export class SessionHub {
   private peers = new Set<Peer>();
   private owner: Peer | null = null;
   private session: HubSession | null = null;
-  // A backend switch waiting for the session's payment to finish.
+  // A backend switch waiting for the session's payment or turn to finish.
   private pendingSwitch: NodeJS.Timeout | null = null;
 
   constructor(private create: CreateSession, private log: (line: string) => void = () => {}) {}
@@ -139,7 +144,8 @@ export class SessionHub {
   // starts if a window is open, with the old one's fail-closed browser
   // state (carry). While a payment is under way the switch waits for it:
   // its card may be in the form, and its receipt must reach the window.
-  // Returns whether it switched now.
+  // While the agent is working on a turn it waits too, so the turn's tool
+  // calls and reply are not cut off. Returns whether it switched now.
   switchBackend(backend: string, label = backend): boolean {
     return this.trySwitch(backend, label, true);
   }
@@ -149,8 +155,12 @@ export class SessionHub {
     this.pendingSwitch = null;
     const s = this.session;
     if (!s || s.backend === undefined || s.backend === backend) return false;
-    if (s.busy?.()) {
-      if (first) this.log(`voice session switch to ${label} waits for the payment under way`);
+    const paying = s.busy?.() === true;
+    if (paying || s.midTurn?.() === true) {
+      if (first) {
+        this.log(`voice session switch to ${label} waits for the ${paying ? "payment under way" : "turn in progress"}`);
+        if (!paying) this.owner?.send({ type: "status", text: `Switching to ${label} when this turn ends.` });
+      }
       this.pendingSwitch = setTimeout(() => this.trySwitch(backend, label, false), SWITCH_RETRY_MS);
       this.pendingSwitch.unref?.();
       return false;

@@ -496,6 +496,7 @@ test("switching the provider retires the session like a hand-off: a waiting read
   peer.userText("yes");
   assert.match((await paid).content[0].text, /^confirmed/);
   assert.equal((s as any).state.confirmation.state, "confirmed");
+  s.onSdkMessage({ type: "result", subtype: "success" } as any); // that turn ends without paying
   hub.switchBackend("claude", "Claude");
   assert.equal(claimConfirmation((s as any).state).ok, false, "pay_with_saved_card has nothing to use");
   assert.equal(made.length, 3);

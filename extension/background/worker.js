@@ -206,11 +206,25 @@ const sendSettings = () => {
   sendAgentSettings(settings);
 };
 
+// This install's id for the bridge hello: random once, then kept in
+// storage, so a restarted worker is known as the same client and another
+// profile's install is not (agent/extbridge.ts).
+const CLIENT_ID_KEY = "bridgeClientId";
+async function bridgeClientId() {
+  const stored = (await chrome.storage.local.get(CLIENT_ID_KEY))[CLIENT_ID_KEY];
+  if (typeof stored === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(stored)) return stored;
+  const id = crypto.randomUUID();
+  await chrome.storage.local.set({ [CLIENT_ID_KEY]: id });
+  return id;
+}
+
 async function startBridge() {
   const settings = await loadSettings();
   const url = endpoints(settings.agentUrl).ext;
   if (!bridge) {
-    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onOpen: sendSettings, onState: (s) => log.info(`bridge ${s}`) });
+    const clientId = await bridgeClientId().catch(() => null);
+    if (bridge) return bridge.setUrl(url);
+    bridge = new BridgeClient({ url, version: VERSION, clientId, log, onRequest, onOpen: sendSettings, onState: (s) => log.info(`bridge ${s}`) });
     bridge.start();
   } else {
     bridge.setUrl(url);
