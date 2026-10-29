@@ -39,6 +39,7 @@
   const FADE_MS = 700;        // matches the .wrap fade-out transition
   const MAX_CHARS = 600;
   const STATES = new Set(["idle", "listening", "thinking", "speaking"]);
+  const BUSY_CLICK_MS = 180000; // a busy state this old (its idle never came) no longer keeps the card up
 
   const CSS = `
 :host {
@@ -546,6 +547,7 @@
   function onState(state, latched) {
     if (!STATES.has(state)) return;
     ui.state = state;
+    ui.stateAt = Date.now();
     ui.latched = state === "listening" && latched === true;
     if (ui.hint) ui.hint.textContent = ui.latched ? LATCH_HINT : "";
     if (ui.wrap) ui.wrap.dataset.state = state;
@@ -589,7 +591,9 @@
   // A click on the page outside the card fades it out early, like dismissing
   // a toast. The card takes no clicks, so a press on it reaches the page too;
   // those are told apart by position and leave the card up.
-  // The agent's own clicks (content/cursor.js saw its pointer just now) don't.
+  // The agent's own clicks (content/cursor.js saw its pointer just now) don't,
+  // and neither does any click while Orbi is listening, thinking or speaking:
+  // the card is how the user sees a turn is still on.
   const onCard = (e) => {
     const card = ui.wrap && ui.wrap.querySelector(".card");
     if (!card || typeof e.clientX !== "number" || typeof e.clientY !== "number") return false;
@@ -600,6 +604,7 @@
   document.addEventListener("pointerdown", (e) => {
     const agent = globalThis.__clearcartAgentPointer;
     if (agent && typeof agent.busy === "function" && agent.busy()) return;
+    if (ui.state !== "idle" && Date.now() - (ui.stateAt || 0) < BUSY_CLICK_MS) return;
     if (!ui.wrap || !ui.wrap.classList.contains("on")) return;
     if (onCard(e)) return;
     hide();

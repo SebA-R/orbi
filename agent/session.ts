@@ -374,7 +374,14 @@ export type ServerMessage =
   | { type: "confirm"; item: string; quantity: number; total: string; changes: string }
   // How that read-back ended: paid, declined by the user, or failed (payment
   // not completed or the agent hit an error).
-  | { type: "confirm_done"; outcome: "paid" | "declined" | "failed" };
+  | { type: "confirm_done"; outcome: "paid" | "declined" | "failed" }
+  // Whether the agent is working on the user's words: on from a user turn
+  // until its result, off while a question waits for the user's answer.
+  // seq is how many user_text messages had come in when it was sent (the
+  // hub restamps it per window), so a client that has sent newer words can
+  // tell a stale "off" from the one that ends its own turn. Sent on every
+  // user_text and whenever the value changes.
+  | { type: "busy"; on: boolean; seq: number };
 
 // The whole answer must be a yes: affirmative phrases plus polite filler and
 // nothing else, so "yes, but two of them", "do it later" or "pay attention"
@@ -532,7 +539,14 @@ const NO_ANSWER = "No answer came: the user moved to another Orbi window, or it 
 export class Session {
   private input = new InputQueue();
   private abort = new AbortController();
-  private awaitingAnswer: ((text: string | null) => void) | null = null;
+  // The answer slot of the question waiting for the user (see answerSlot).
+  // Every change re-checks busy.
+  private answerWait: ((text: string | null) => void) | null = null;
+  private get awaitingAnswer() { return this.answerWait; }
+  private set awaitingAnswer(v: ((text: string | null) => void) | null) {
+    this.answerWait = v;
+    this.syncBusy();
+  }
   private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false, autoOk: () => dangerModeOn() };
   // Saved cards (vault/index.ts); pay.ts uses agent/cards.ts's when unset.
   private vault: CardVault | undefined;
@@ -568,8 +582,18 @@ export class Session {
     : null;
   // Keeps user turns in order while their context is fetched.
   private turns: Promise<void> = Promise.resolve();
-  // User turns sent to the SDK whose result has not come back yet.
-  private turnsOpen = 0;
+  // User turns sent to the SDK whose result has not come back yet. Every
+  // change re-checks busy.
+  private openTurns = 0;
+  private get turnsOpen() { return this.openTurns; }
+  private set turnsOpen(n: number) {
+    this.openTurns = n;
+    this.syncBusy();
+  }
+  // user_text messages received, and the busy value last sent (null: send
+  // the next check whatever it finds). A client starts out not busy.
+  private userSeq = 0;
+  private busySent: boolean | null = false;
   // The turn in progress was interrupted: nothing more from it is spoken.
   private muted = false;
   // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
@@ -649,6 +673,10 @@ export class Session {
 
   userText(text: string) {
     if (this.closed || !text.trim()) return;
+    // Every user_text is answered with the busy state, so its sender knows
+    // the words got here (see the busy ServerMessage).
+    this.userSeq++;
+    this.busySent = null;
     // Only the user's own words are kept, never the context block.
     if (memoryOn()) this.log?.add("user", text);
     const tabId = this.state.lastTabId;
@@ -677,6 +705,9 @@ export class Session {
       resolve(text);
       return;
     }
+    // Counted now, while its context is fetched, so an interrupt sees it,
+    // and before the Danger mode line so the client is told busy first.
+    this.turnsOpen++;
     if (!this.dangerSaid && dangerModeOn()) {
       this.dangerSaid = true;
       this.status("Danger mode is on: no button lock, and orders are placed without waiting for a yes");
@@ -686,8 +717,6 @@ export class Session {
       this.status("Danger mode is off while using a local model: the button lock and the spoken yes stay on");
       this.say(DANGER_LOCAL_LINE);
     }
-    // Counted now, while its context is fetched, so an interrupt sees it.
-    this.turnsOpen++;
     const fetch = this.pageContext;
     if (!fetch) {
       timing.mark("to_model");
@@ -878,8 +907,19 @@ export class Session {
     this.payStop?.abort();
     this.awaitingAnswer?.(null);
     this.awaitingAnswer = null;
+    this.syncBusy(); // off: nothing more comes from this session
     this.input.close();
     this.abort.abort();
+  }
+
+  // Tells the client whether the agent is working on the user's words: a
+  // turn is open and no question waits for their answer. Only on a change,
+  // unless busySent was reset (a new user_text).
+  private syncBusy() {
+    const on = this.openTurns > 0 && !this.answerWait && !this.closed;
+    if (on === this.busySent) return;
+    this.busySent = on;
+    this.send({ type: "busy", on, seq: this.userSeq });
   }
 
   // Stops any paced click, typing or scroll the extension is still playing.
@@ -2106,7 +2146,12 @@ export class Session {
             },
           }));
     if (p.provider === "local") this.status(`agent: ${describeBackend(p)}`);
+    await this.consume(q);
+  }
 
+  // Feeds the agent's messages to onSdkMessage until its loop ends. An error
+  // ends the turn out loud; either way no turn is left open (busy goes off).
+  async consume(q: AsyncIterable<SDKMessage>) {
     try {
       for await (const m of q) this.onSdkMessage(m);
     } catch (e) {
@@ -2116,6 +2161,10 @@ export class Session {
         this.send({ type: "confirm_done", outcome: "failed" });
         this.say("Sorry, something went wrong on my side. Please try again.");
       }
+    } finally {
+      // The loop is over: no turn still open will get its result.
+      this.held = [];
+      this.turnsOpen = 0;
     }
   }
 }

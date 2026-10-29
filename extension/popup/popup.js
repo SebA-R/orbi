@@ -16,8 +16,8 @@ const openTab = (path) => {
 
 let settings = await loadSettings();
 
-// Voice state, from the offscreen document's VOICE_STATE broadcasts. The
-// popup can't ask for the current state, so it starts at idle.
+// Voice state, from the offscreen document's VOICE_STATE broadcasts. It
+// opens on the worker's answer to VOICE_STATE_QUERY (idle until then).
 const MISSING = { site: "site access", mic: "microphone", agent: "agent server" };
 let missing = [];
 const VOICE = {
@@ -50,12 +50,17 @@ function showVoice(state = voiceState) {
   if ($("voice-title").textContent !== title) $("voice-title").textContent = title;
   if ($("voice-sub").textContent !== sub) $("voice-sub").textContent = sub;
 }
+let heardState = false; // a broadcast is newer than the query's answer
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.from !== "offscreen") return;
-  if (msg.type === RT.VOICE_STATE) showVoice(msg.state);
+  if (msg.type === RT.VOICE_STATE) { heardState = true; showVoice(msg.state); }
   else if (msg.type === RT.SUBTITLE || msg.type === RT.SUBTITLE_WORD) face?.caption(msg); // lip-sync
   else if (msg.type === RT.VOICE_LEVEL) face?.setLevel(msg.level); // optional, not sent yet
 });
+// The popup opens mid-turn too: ask for the state now.
+chrome.runtime.sendMessage({ type: RT.VOICE_STATE_QUERY }).then((r) => {
+  if (!heardState && r && r.type === RT.VOICE_STATE) showVoice(r.state);
+}, () => {});
 
 // Setup pill: the same checks as the setup page; it opens the setup page.
 // Checks can overlap (each health check takes up to 3 s); only the latest counts.
