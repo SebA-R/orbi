@@ -1763,30 +1763,35 @@ export class Session {
       hint: async (tool, args, text, isError) => {
         const short = tool.replace(B, "").replace(C, "");
         const tabId = typeof args.tabId === "number" ? args.tabId : this.state.lastTabId;
-        // Where a click, key or unlock press landed, and when it opened
-        // another page, what is on it, so the model has the refs to go on
-        // with. The extension answers click and key once the page settled
-        // ({ navigated, url, title }); navigate and tabs_create already say
-        // where they went.
-        if (!isError && /^(click|key|request_unlock)$/.test(short) && tabId != null && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
-          let t: { url?: string; title?: string; navigated?: boolean } | null = null;
+        // Where an action landed, and when it opened another page, what is
+        // on it, so the model has the refs to go on with. The extension
+        // answers click and key once the page settled ({ navigated, url,
+        // title }); navigate and tabs_create once it loaded ({ url, title }).
+        if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && (tabId != null || short === "tabs_create") && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
+          let t: { tabId?: number; url?: string; title?: string; navigated?: boolean } | null = null;
           try {
             // The result's own JSON line (page tools come wrapped in page-data markers).
             const line = text.split("\n").find((l) => l.startsWith("{"));
             if (line) t = JSON.parse(line);
           } catch {}
-          // request_unlock answers a sentence; the press already waited for
-          // the page, so the tab is where it went.
-          if (typeof t?.url !== "string") t = short === "request_unlock" ? await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId }, 5_000).catch(() => null) : null;
+          const opened = short === "navigate" || short === "tabs_create";
+          // tabs_create without a url opened a blank tab: nothing to say.
+          if (opened && typeof t?.url !== "string") return null;
+          const on = opened && typeof t?.tabId === "number" ? t.tabId : tabId;
+          if (on == null) return null;
+          if (opened) t = { ...t, navigated: true };
+          // request_unlock answers a sentence, and a DOM-fallback click has
+          // no settled fields: the press already waited, so ask the tab.
+          if (typeof t?.url !== "string") t = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId: on }, 5_000).catch(() => null);
           if (!t?.url) return null;
           const title = String(t.title ?? "").slice(0, 80);
           let where = originOf(t.url) ?? "";
           try {
             where += new URL(t.url).pathname;
           } catch {}
-          const changed = typeof t.navigated === "boolean" ? t.navigated : seenUrl.get(tabId) !== where;
-          seenUrl.set(tabId, where);
-          const controls = changed ? await this.controlsOn(tabId) : [];
+          const changed = typeof t.navigated === "boolean" ? t.navigated : seenUrl.get(on) !== where;
+          seenUrl.set(on, where);
+          const controls = changed ? await this.controlsOn(on) : [];
           return `Now on: ${title && !isInjectionLine(title) ? `${JSON.stringify(title)}, ` : ""}${where}${controls.length ? `\nOn this page:\n${pageData(controls.join("\n"), 1_500)}` : ""}`;
         }
         if (short === "find" && /"matches":\[\]/.test(text)) {

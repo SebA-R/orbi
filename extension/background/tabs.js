@@ -314,20 +314,24 @@ export function navigateAndWait(tabId, start, timeoutMs = NAV_TIMEOUT_MS) {
 }
 
 // How long after a click or key a page load may start and still count as
-// its doing, and how long that load then gets to finish.
-export const SETTLE_WINDOW_MS = 350;
+// its doing, how long that load then gets to finish, and how long a page
+// whose address changed without a load (pushState) gets to render.
+export const SETTLE_WINDOW_MS = 500;
 export const SETTLE_TIMEOUT_MS = 8_000;
+export const SETTLE_RENDER_MS = 300;
 
 // Runs act() (a click or key press in tab tabId), then waits for the page
-// it may have started to load: if the tab starts loading (or its address
-// changes) within windowMs after act() returns, this waits for "complete",
-// at most timeoutMs (a slow page is reported as it is then, not failed).
-// Otherwise it answers at once. The listener is installed before act()
-// runs, so a load that starts during the press is seen too.
+// it may have started to load: if the tab starts loading within windowMs
+// after act() returns, this waits for "complete", at most timeoutMs (a slow
+// page is reported as it is then, not failed). An address change with no
+// load (a single page app) gets renderMs to draw. Otherwise it answers
+// after windowMs. stop() answering true (an interrupt) ends any wait at
+// once. The listener is installed before act() runs, so a load that starts
+// during the press is seen too.
 // Answers act()'s result plus { navigated, url, title } of where the tab
 // is now. url is origin and path only, like navigate's; a page Orbi may not
 // use gives no url or title.
-export async function actAndSettle(tabId, act, { windowMs = SETTLE_WINDOW_MS, timeoutMs = SETTLE_TIMEOUT_MS } = {}) {
+export async function actAndSettle(tabId, act, { windowMs = SETTLE_WINDOW_MS, timeoutMs = SETTLE_TIMEOUT_MS, renderMs = SETTLE_RENDER_MS, stop = () => false } = {}) {
   const c = api();
   const before = await c.tabs.get(tabId).catch(() => null);
   let loading = false;
@@ -342,44 +346,49 @@ export async function actAndSettle(tabId, act, { windowMs = SETTLE_WINDOW_MS, ti
     if (wake) wake();
   };
   c.tabs.onUpdated.addListener(onUpdated);
-  // Waits until done() or ms pass, waking on every tab update (and polling
-  // the tab's own status, as navigateAndWait does, for a missed "complete").
+  // Waits until done() or ms pass, waking on every tab update. It polls
+  // stop(), and with poll the tab's own status too, as navigateAndWait
+  // does, for a missed "complete".
   const until = (done, ms, poll = false) =>
     new Promise((resolve) => {
-      if (done()) return resolve();
-      let iv = null;
+      const over = () => stop() || done();
+      if (over()) return resolve();
       const end = () => {
         clearTimeout(timer);
-        if (iv) clearInterval(iv);
+        clearInterval(iv);
         wake = null;
         resolve();
       };
       const timer = setTimeout(end, ms);
-      wake = () => done() && end();
-      if (poll) {
-        iv = setInterval(async () => {
+      wake = () => over() && end();
+      const iv = setInterval(async () => {
+        if (poll) {
           const t = await c.tabs.get(tabId).catch(() => null);
           if (!t || t.status === "complete") complete = true;
-          if (done()) end();
-        }, 250);
-      }
+        }
+        if (over()) end();
+      }, poll ? 250 : 100);
     });
   let result;
   try {
     result = await act();
     await until(() => loading || moved, windowMs);
+    // A pushState first may still be followed by a real load.
+    if (moved && !loading) await until(() => loading, renderMs);
     if (loading) await until(() => complete, timeoutMs, true);
   } finally {
     c.tabs.onUpdated.removeListener(onUpdated);
   }
   const tab = await c.tabs.get(tabId).catch(() => null);
-  const urlOf = (t) => (t ? t.url || t.pendingUrl || "" : "");
+  // Still loading (the cap hit before the page committed): where it is going.
+  const urlOf = (t) => (t ? (t.status === "loading" && t.pendingUrl) || t.url || t.pendingUrl || "" : "");
   const navigated = loading || moved || (!!before && !!tab && urlOf(before) !== urlOf(tab));
   const out = { ...(result && typeof result === "object" ? result : {}), navigated };
   if (!tab) return out;
   if (onErrorPage(tab)) return { ...out, url: ERROR_URL, title: ERROR_TITLE };
   if (flagOf(tabId) || !(await isAllowed(urlOf(tab)).catch(() => false))) return out;
-  return { ...out, url: originPath(urlOf(tab)), title: String(tab.title || "").slice(0, TITLE_MAX) };
+  const pending = tab.status === "loading" && tab.pendingUrl && tab.pendingUrl !== tab.url;
+  return { ...out, url: originPath(urlOf(tab)), title: pending ? "" : String(tab.title || "").slice(0, TITLE_MAX) };
 }
 
 // Opens a tab right after the user's current tab. It is created in the
@@ -397,6 +406,11 @@ export async function tabsCreate({ url, onCreated } = {}) {
   if (url != null) {
     await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
     assertNetSafe(tab.id);
+    // Where it went, origin and path only, like navigate.
+    const now = await api().tabs.get(tab.id).catch(() => null);
+    if (now && !onEmptyPage(now) && (await isAllowed(now.url || "").catch(() => false))) {
+      return { tabId: tab.id, url: originPath(now.url || ""), title: String(now.title || "").slice(0, TITLE_MAX) };
+    }
   }
   return { tabId: tab.id };
 }
