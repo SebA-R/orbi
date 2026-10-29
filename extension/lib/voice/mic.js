@@ -33,23 +33,9 @@ export class Mic {
     });
     const source = this.ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(this.ctx, "pcm-capture");
-    const chunkLen = Math.round(this.ctx.sampleRate / 10);
-    let buf = new Float32Array(chunkLen);
-    let fill = 0;
+    // The worklet sends whole 100 ms chunks (ArrayBuffers).
     node.port.onmessage = (e) => {
-      const frame = e.data;
-      let i = 0;
-      while (i < frame.length) {
-        const n = Math.min(chunkLen - fill, frame.length - i);
-        buf.set(frame.subarray(i, i + n), fill);
-        fill += n;
-        i += n;
-        if (fill === chunkLen) {
-          if (this.sink) this.sink(buf.buffer);
-          buf = new Float32Array(chunkLen);
-          fill = 0;
-        }
-      }
+      if (this.sink) this.sink(e.data);
     };
     // Keep the worklet pulled by the graph without making any sound.
     const mute = this.ctx.createGain();

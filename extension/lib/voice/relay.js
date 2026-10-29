@@ -121,8 +121,10 @@ export function createVoiceRelay({
     const tabId = lastTabId != null ? lastTabId : await activeTabId();
     if (tabId == null) return;
     const { from, target, ...clean } = msg;
+    // Only the voice state is read in subframes (hotkey.js); the rest goes to the top frame.
+    const opts = msg.type === RT.VOICE_STATE ? undefined : { frameId: 0 };
     try {
-      await chromeApi.tabs.sendMessage(tabId, clean);
+      await chromeApi.tabs.sendMessage(tabId, clean, opts);
     } catch {
       // Tab has no content script (chrome:// page, still loading). Nothing to show.
     }

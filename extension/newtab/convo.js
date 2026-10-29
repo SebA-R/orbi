@@ -14,6 +14,8 @@
 // The page has no subtitle card (newtab.html loads no content/subtitles.js);
 // these bubbles are its only captions.
 
+import { captionWords as words } from "../lib/voice/karaoke.js";
+
 export const GLIDE = "cubic-bezier(.32, .72, 0, 1)";
 export const GLIDE_MS = 560;
 export const YOU_IN_MS = 460; // the user's bubble, after talking starts
@@ -22,7 +24,6 @@ export const LEAVE_MS = 260; // bubbles fade out, then the orb glides back
 
 const REDUCE = "(prefers-reduced-motion: reduce)";
 const STATES = ["idle", "listening", "thinking", "speaking"];
-const words = (text) => String(text || "").split(/\s+/).filter(Boolean);
 
 // els: { main, orb, dock, rep, you }. Returns the message handlers.
 export function startConvo(els, { win = globalThis } = {}) {

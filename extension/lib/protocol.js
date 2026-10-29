@@ -128,6 +128,8 @@ export const RT = Object.freeze({
   VOICE_FINAL: "voice.final",
   VOICE_STATE: "voice.state",
   VOICE_STATE_QUERY: "voice.state.query",
+  // the mic level for the popup's orb face ({level}); optional, not sent yet.
+  VOICE_LEVEL: "voice.level",
   VOICE_ERROR: "voice.error",
   TTS_SPEAK: "tts.speak",
   TTS_STOP: "tts.stop",

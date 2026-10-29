@@ -13,9 +13,9 @@
 
 import { loadSettings } from "../lib/settings.js";
 
-// Router methods that act on a page. Everything else only reads.
+// Router methods that act on a page. Everything else only reads. navigate
+// follows on its own, before the router resolves the tab.
 export const ACT_METHODS = new Set([
-  "navigate",
   "click",
   "type",
   "key",

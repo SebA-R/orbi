@@ -58,7 +58,7 @@ export function createActor({
   // One typed character went in.
   function key_(tabId) {
     const at = pointers.get(tabId);
-    tell({ tabId, x: at ? at.x : null, y: at ? at.y : null, t: now(), action: "type", phase: "key" });
+    emit(tabId, at ? at.x : null, at ? at.y : null, "type", "key");
   }
 
   function tell(ev) {
@@ -155,17 +155,13 @@ export function createActor({
       await sleep(run, plan.dwellMs);
       let at = to;
       let box = rect;
+      // From here on nothing falls back to a DOM click: the checks run
+      // first (press_check takes the lock marker off), and the press may
+      // have reached the page even if the call failed.
       try {
         const moved = await recheck();
         if (moved && Number.isFinite(moved.x) && Number.isFinite(moved.y)) at = { x: moved.x, y: moved.y };
         if (moved && moved.rect) box = moved.rect;
-      } catch (e) {
-        throw Object.assign(e, { noFallback: true });
-      }
-      // From here on nothing falls back to a DOM click: the checks already
-      // ran (press_check took the lock marker off), and the press may have
-      // reached the page even if the call failed.
-      try {
         live(run);
         if (at.x !== to.x || at.y !== to.y) {
           await mouse(tabId, { type: "mouseMoved", x: at.x, y: at.y, button: "none", buttons: 0 });
@@ -183,14 +179,6 @@ export function createActor({
         throw Object.assign(e, { noFallback: true });
       }
       return at;
-    }, epoch);
-  }
-
-  function hover(tabId, to, { size, epoch } = {}) {
-    return within(tabId, async (run) => {
-      const plan = planHover(startFor(tabId, to), to, rng, { size });
-      await travel(run, plan.path, "hover");
-      await sleep(run, plan.dwellMs);
     }, epoch);
   }
 
@@ -271,11 +259,9 @@ export function createActor({
 
   return {
     click,
-    hover,
     scroll,
     type,
     abortAll,
-    abortTab,
     // Read when a call begins; pass it as { epoch } to stop on any abortAll
     // after that.
     epoch: () => stopEpoch,

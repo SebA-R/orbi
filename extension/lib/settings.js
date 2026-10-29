@@ -104,7 +104,6 @@ export const claudeModelLabel = (id) => `${CLAUDE_MODELS[id].name}, ${CLAUDE_MOD
 
 export const DANGER_MODE_COPY = "Danger mode. Orbi acts on its own with no locks, including placing orders with your saved card without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
 
-export const SPEAK_REPLIES_COPY = "Speak replies. Turn off to read Orbi's answers in the subtitles without hearing them.";
 export const VOICE_OFF_ON_SERVER = "Voice is off on the server";
 
 // With Speak replies and subtitles both off, the user would never learn
@@ -274,9 +273,24 @@ export function localStatusText(model, result) {
 
 const KEYS = Object.keys(DEFAULTS);
 
-export async function loadSettings(storage = globalThis.chrome?.storage?.local) {
+// The extension's own storage is read once and kept until it changes, so the
+// several checks one action makes share one read. Other storages (tests)
+// are read every time. Callers get their own copy to change.
+let cached = null;
+const ownStorage = (storage) => storage && storage === globalThis.chrome?.storage?.local;
+globalThis.chrome?.storage?.onChanged?.addListener?.((_changes, area) => {
+  if (area === "local") cached = null;
+});
+
+async function readSettings(storage) {
   const raw = storage ? await storage.get(KEYS) : {};
   return normalize(raw);
+}
+
+export async function loadSettings(storage = globalThis.chrome?.storage?.local) {
+  if (!ownStorage(storage) || !globalThis.chrome?.storage?.onChanged) return readSettings(storage);
+  cached ??= readSettings(storage).catch((e) => { cached = null; throw e; });
+  return structuredClone(await cached);
 }
 
 // First install: store the suggested blocked sites, so the list the user
@@ -286,6 +300,7 @@ export async function seedBlocklist(storage = globalThis.chrome?.storage?.local)
   const { blocklist } = await storage.get("blocklist");
   if (blocklist !== undefined) return false;
   await storage.set({ blocklist: [...SUGGESTED_BLOCKLIST] });
+  cached = null;
   return true;
 }
 
@@ -307,11 +322,13 @@ export async function migrateSettings(storage = globalThis.chrome?.storage?.loca
     if (kept.length !== got.allowlist.length) patch.allowlist = kept;
   }
   await storage.set(patch);
+  cached = null;
   return "allowlist" in patch;
 }
 
 export async function saveSettings(patch, storage = globalThis.chrome?.storage?.local) {
   const next = normalize({ ...(await loadSettings(storage)), ...patch });
   await storage.set(next);
+  cached = null;
   return next;
 }

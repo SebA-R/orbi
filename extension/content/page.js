@@ -47,7 +47,7 @@
   // element carrying data-clearcart-protected), not on every text node
   // inside a marked block.
   function lockMark(el, role) {
-    if (!isInteractive(el, role) && !el.hasAttribute("data-clearcart-protected")) return null;
+    if (!isInteractive(role) && !el.hasAttribute("data-clearcart-protected")) return null;
     return Protect.lockOf(el);
   }
 
@@ -57,14 +57,13 @@
   var nextRef = 1;
   var refOf = new WeakMap();
   var byRef = new Map();
-  var HasWeakRef = typeof WeakRef === "function";
 
   function refFor(el) {
     var r = refOf.get(el);
     if (r) return r;
     r = "ref_" + nextRef++;
     refOf.set(el, r);
-    byRef.set(r, HasWeakRef ? new WeakRef(el) : { deref: function () { return el; } });
+    byRef.set(r, new WeakRef(el));
     return r;
   }
 
@@ -112,7 +111,7 @@
   // Roles whose name comes from their text content.
   var NAME_FROM_CONTENT = {
     link: 1, button: 1, heading: 1, tab: 1, menuitem: 1, option: 1, cell: 1,
-    columnheader: 1, listitem: 0, switch: 1, checkbox: 0, radio: 0,
+    columnheader: 1, switch: 1,
   };
 
   function roleOf(el) {
@@ -126,23 +125,28 @@
     return r || null;
   }
 
-  function isInteractive(el, role) {
-    if (role && INTERACTIVE[role]) return true;
-    return false;
+  function isInteractive(role) {
+    return !!(role && INTERACTIVE[role]);
   }
 
   function hiddenByStyle(el) {
     if (el.hidden) return true;
     if (el.getAttribute("aria-hidden") === "true") return true;
     if (typeof el.checkVisibility === "function") {
-      try { if (!el.checkVisibility({ checkVisibilityCSS: true })) return true; } catch (_) { /* old Chrome */ }
+      // Covers display:none and visibility:hidden, so a pass needs no style read.
+      try { return !el.checkVisibility({ checkVisibilityCSS: true }); } catch (_) { /* old Chrome */ }
     }
     var cs;
     try { cs = getComputedStyle(el); } catch (_) { return false; }
     return cs.display === "none" || cs.visibility === "hidden";
   }
 
-  var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, SVG: 0, HEAD: 1, META: 1, LINK: 1 };
+  // Hidden itself or inside a [hidden] / aria-hidden subtree.
+  function hiddenHere(el) {
+    return hiddenByStyle(el) || !!(el.closest && el.closest("[hidden],[aria-hidden=true]"));
+  }
+
+  var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, TEMPLATE: 1, HEAD: 1, META: 1, LINK: 1 };
 
   function clean(s, max) {
     s = String(s || "").replace(/\s+/g, " ").trim();
@@ -263,7 +267,7 @@
     function walk(el, depth) {
       if (SKIP_TAGS[el.tagName] || hiddenByStyle(el)) return;
       var role = roleOf(el);
-      var interactive = isInteractive(el, role);
+      var interactive = isInteractive(role);
       var name = role ? nameOf(el, role) : "";
       var show = filter === "all" ? !!role : interactive;
       if (role === "form" && !name && filter === "all") show = false;
@@ -317,16 +321,15 @@
       var el = all[i];
       var role = roleOf(el);
       if (!role) continue;
-      if (hiddenByStyle(el) || (el.closest && el.closest("[hidden],[aria-hidden=true]"))) continue;
       var name = Mask.maskCardRuns(nameOf(el, role));
       var hay = (role + " " + name + " " + (el.id || "") + " " + (el.getAttribute("name") || "") + " " +
         (el.getAttribute("placeholder") || "")).toLowerCase();
       var ok = words.every(function (w) { return hay.indexOf(w) !== -1; });
-      if (!ok) continue;
+      if (!ok || hiddenHere(el)) continue;
       var score = 0;
       if (name.toLowerCase() === query) score += 4;
       else if (name.toLowerCase().indexOf(query) !== -1) score += 2;
-      if (isInteractive(el, role)) score += 1;
+      if (isInteractive(role)) score += 1;
       hits.push({ el: el, role: role, name: name, score: score, order: i });
     }
     hits.sort(function (a, b) { return b.score - a.score || a.order - b.order; });
@@ -395,7 +398,7 @@
     var locks = Protect.listLocks(document, 300);
     for (var i = 0; i < locks.length && out.length < LOCKED_LIST_MAX; i++) {
       var x = locks[i];
-      if (!Protect.blocks(x.lock) || hiddenByStyle(x.el) || (x.el.closest && x.el.closest("[hidden],[aria-hidden=true]"))) continue;
+      if (!Protect.blocks(x.lock) || hiddenHere(x.el)) continue;
       var m = { ref: refFor(x.el), name: x.lock.label };
       if (x.lock.optin) m.uncheckOnly = true;
       // Never unlocks on request (Place order, wallets, card forms, marked).
@@ -506,11 +509,19 @@
   }
 
   // ------------------------------------------------------ rect / click_ref
-  function rect(params) {
-    var el = elementFor(params.ref);
-    if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  function boxOf(el) {
     var r = el.getBoundingClientRect();
     return { x: r.x !== undefined ? r.x : r.left, y: r.y !== undefined ? r.y : r.top, width: r.width, height: r.height };
+  }
+
+  // Scrolls el to the centre of the viewport and returns its box.
+  function centredBox(el) {
+    if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    return boxOf(el);
+  }
+
+  function rect(params) {
+    return centredBox(elementFor(params.ref));
   }
 
   function clickRef(params) {
@@ -569,10 +580,7 @@
     var t = pressTarget(params);
     var r = rect(params);
     if (!(r.width > 0 && r.height > 0)) throw PageError(ERR.NO_ELEMENT, params.ref + " is not visible");
-    if (typeof document.elementFromPoint === "function") {
-      var hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-      if (!hit || !(hit === t.el || t.el.contains(hit))) throw PageError(ERR.NO_ELEMENT, params.ref + " is covered by another element");
-    }
+    hitTest(t, r.x + r.width / 2, r.y + r.height / 2, params.ref);
     Protect.release(t.el);
     return { x: r.x, y: r.y, width: r.width, height: r.height, kind: t.lock.kind };
   }
@@ -638,12 +646,10 @@
   // early signal to swap the control.
   function pressCheckUser(params) {
     var t = userTarget(params);
-    if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-    var r = t.el.getBoundingClientRect();
-    var x = r.x !== undefined ? r.x : r.left, y = r.y !== undefined ? r.y : r.top;
+    var r = centredBox(t.el);
     if (!(r.width > 0 && r.height > 0)) throw PageError(ERR.NO_ELEMENT, params.ref + " is not visible");
-    hitTest(t, x + r.width / 2, y + r.height / 2, params.ref);
-    return { x: x, y: y, width: r.width, height: r.height, cls: params.cls };
+    hitTest(t, r.x + r.width / 2, r.y + r.height / 2, params.ref);
+    return { x: r.x, y: r.y, width: r.width, height: r.height, cls: params.cls };
   }
 
   // Right before the CDP click: the ref still resolves to a control of that
@@ -668,11 +674,8 @@
   function pressRefUser(params) {
     var t = userTarget(params);
     if (typeof t.el.scrollIntoView === "function") t.el.scrollIntoView({ block: "center", behavior: "instant" });
-    var r = t.el.getBoundingClientRect();
-    if (r && r.width > 0 && r.height > 0) {
-      var x = r.x !== undefined ? r.x : r.left, y = r.y !== undefined ? r.y : r.top;
-      hitTest(t, x + r.width / 2, y + r.height / 2, params.ref);
-    }
+    var r = boxOf(t.el);
+    if (r.width > 0 && r.height > 0) hitTest(t, r.x + r.width / 2, r.y + r.height / 2, params.ref);
     t.el.click();
     Protect.release(t.el);
     return { ok: true };
@@ -728,7 +731,7 @@
       var el = els[i];
       var lk = Protect.classify(el);
       if (!Protect.pressable(lk) || Protect.isCheckoutNav(lk.label)) continue;
-      if (hiddenByStyle(el) || (el.closest && el.closest("[hidden],[aria-hidden=true]"))) continue;
+      if (hiddenHere(el)) continue;
       var off = !!el.disabled || el.getAttribute("aria-disabled") === "true";
       out.push({ ref: refFor(el), label: Mask.maskCardRuns(lk.label), kind: lk.kind, disabled: off });
     }
@@ -834,7 +837,7 @@
   // The nearest meaningful element: a control or link, else a named element.
   function meaningful(el) {
     for (var e = el, i = 0; e && e.nodeType === 1 && i < 6; e = e.parentElement, i++) {
-      if (isInteractive(e, roleOf(e))) return e;
+      if (isInteractive(roleOf(e))) return e;
     }
     return el;
   }

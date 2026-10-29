@@ -6,7 +6,7 @@
 import { loadSettings } from "../lib/settings.js";
 import { micStateMessage } from "../lib/mic-grant.js";
 import {
-  EXTENSIONS_PAGE, agentHealth, allReady, hasSiteAccess, keyName, micState, requestSiteAccess, talkKeyHelp, updateBadge,
+  EXTENSIONS_PAGE, allReady, keyName, missingFrom, requestSiteAccess, setupStatus, talkKeyHelp, updateBadge,
 } from "../lib/setup.js";
 
 const SITE_HELP = "Chrome did not turn it on. Open chrome://extensions, find Orbi and choose Details. Under Site access, choose On all sites.";
@@ -98,8 +98,8 @@ export function createChecklist({ root, live, level = 2, onMic, chromeApi = glob
 
   async function refresh({ announceAll = false } = {}) {
     const settings = await loadSettings(chromeApi.storage.local);
-    const [site, mic, agent] = await Promise.all([hasSiteAccess(chromeApi), micState(), agentHealth(settings.agentUrl)]);
-    state = { site, mic, agent };
+    state = await setupStatus(settings.agentUrl, chromeApi);
+    const { site, mic, agent } = state;
     const notes = [];
     notes.push(set("site", site, site ? "Orbi works on every site." : "Orbi is limited to some sites, so the talk key may not work.",
       { detail: !site && siteRefused ? SITE_HELP : "", button: !site }));
@@ -115,7 +115,7 @@ export function createChecklist({ root, live, level = 2, onMic, chromeApi = glob
     const left = [!site, mic !== "granted", !agent.connected].filter(Boolean).length;
     summary.textContent = ready ? "You're set. Hold the talk key on any page to talk to Orbi." : `${left} ${left === 1 ? "step" : "steps"} left.`;
     summary.className = ready ? "summary ready" : "summary";
-    updateBadge(chromeApi, [!site && "site", mic !== "granted" && mic !== "unknown" && "mic"].filter(Boolean));
+    updateBadge(chromeApi, missingFrom(state));
 
     const changes = notes.filter(Boolean);
     if (announceAll || changes.length) announce([...changes, summary.textContent].join(" "));

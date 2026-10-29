@@ -66,7 +66,7 @@ export async function setDefaultCard(agentUrl, id, fetchImpl = globalThis.fetch)
 // sent. Answers the reason, or "" when the card looks right.
 export function checkCard({ name, number, exp, csc }, now = new Date()) {
   const digits = String(number || "").replace(/[\s-]/g, "");
-  if (!/^\d{12,19}$/.test(digits) || !luhn(digits)) return "That card number is not valid.";
+  if (!luhnValid(digits)) return "That card number is not valid.";
   if (!String(name || "").trim()) return "Enter the name on the card.";
   const m = /^\s*(\d{1,2})\s*[/-]\s*(\d{2}|\d{4})\s*$/.exec(String(exp || "")) || /^\s*(\d{2})(\d{2})\s*$/.exec(String(exp || ""));
   if (!m || Number(m[1]) < 1 || Number(m[1]) > 12) return "Enter the expiry as MM/YY.";
@@ -79,13 +79,18 @@ export function checkCard({ name, number, exp, csc }, now = new Date()) {
   return "";
 }
 
-function luhn(d) {
+// A card number by the Luhn check: 12 to 19 digits and nothing else.
+export function luhnValid(digits) {
+  if (!/^\d{12,19}$/.test(digits)) return false;
   let sum = 0;
   let dbl = false;
-  for (let i = d.length - 1; i >= 0; i--) {
-    let n = d.charCodeAt(i) - 48;
-    if (dbl && (n *= 2) > 9) n -= 9;
-    sum += n;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48;
+    if (dbl) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
     dbl = !dbl;
   }
   return sum % 10 === 0;

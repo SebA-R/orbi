@@ -94,8 +94,10 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   return true;
 });
 
-const loadAllowlist = () => loadSettings().then((s) => netguard.setAllowlist(s.allowlist)).catch(() => {});
-loadAllowlist();
+// One read at startup feeds every cached setting below.
+const initial = loadSettings();
+const loadAllowlist = (settings = loadSettings()) => settings.then((s) => netguard.setAllowlist(s.allowlist)).catch(() => {});
+loadAllowlist(initial);
 
 // Voice: hold-to-talk relay between content scripts and the offscreen
 // document; SUBTITLE and VOICE_STATE go to the talking (or active) tab, where
@@ -105,7 +107,7 @@ loadAllowlist();
 const frame = installFrame();
 // Orbi's cursor (content/cursor.js), cached like the settings below.
 let showCursor = true;
-loadSettings().then((s) => { showCursor = s.showCursor; }).catch(() => {});
+initial.then((s) => { showCursor = s.showCursor; }).catch(() => {});
 const cursor = createCursorRelay({ enabled: () => showCursor });
 // Basic voice (no Cartesia key): chrome.tts for the offscreen document.
 installBasicTtsHost({ log: (m) => log.info(m) });
@@ -126,7 +128,7 @@ const voice = installVoiceRelay({
 // for the spoken yes and the checkout page block).
 let dangerMode = false;
 let providerLocal = false;
-const dangerReady = loadSettings().then((s) => { dangerMode = s.dangerMode; providerLocal = s.provider === "local"; }).catch(() => { dangerMode = false; });
+const dangerReady = initial.then((s) => { dangerMode = s.dangerMode; providerLocal = s.provider === "local"; }).catch(() => { dangerMode = false; });
 // Follow: the tab Orbi acts on comes to the front (follow.js). A tab or
 // window the user picks themselves pauses that until their next turn.
 const follow = createFollower();
@@ -136,7 +138,7 @@ chrome.tabs.onRemoved.addListener((tabId) => follow.forget(tabId));
 // Watchable pace (background/actor.js), cached like Danger mode. Starts
 // on, the default, so the first action after a restart is paced too.
 let watchablePace = true;
-const paceReady = loadSettings().then((s) => { watchablePace = s.watchablePace; }).catch(() => {});
+const paceReady = initial.then((s) => { watchablePace = s.watchablePace; }).catch(() => {});
 const router = createRouter({
   follow,
   onAgentTab: frame.onAgentTab,
@@ -185,19 +187,24 @@ let bridge = null;
 
 // The agent server's navigation guard and tab sweep use the user's blocked
 // sites too, so send them on every connect and every change.
-const sendBlocklist = () =>
-  loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
+const sendBlocklist = (settings = loadSettings()) =>
+  settings.then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
 // Guided mode, Memory and the model provider shape the agent; sent on
 // connect and on change.
-const sendAgentSettings = () =>
-  loadSettings().then((s) => bridge?.send(agentSettingsMessage(s))).catch(() => {});
+const sendAgentSettings = (settings = loadSettings()) =>
+  settings.then((s) => bridge?.send(agentSettingsMessage(s))).catch(() => {});
 
 // Danger mode too, the same way, so the agent says "Danger mode is on." and
 // tells Claude. The extension enforces the click lock itself; the server
 // also reads it to skip the spoken yes, so only the user sets it.
-const sendDangerMode = () =>
-  loadSettings().then(({ dangerMode: on }) => bridge?.send({ type: MSG.DANGER_MODE, on })).catch(() => {});
-const sendSettings = () => { sendBlocklist(); sendDangerMode(); sendAgentSettings(); };
+const sendDangerMode = (settings = loadSettings()) =>
+  settings.then(({ dangerMode: on }) => bridge?.send({ type: MSG.DANGER_MODE, on })).catch(() => {});
+const sendSettings = () => {
+  const settings = loadSettings();
+  sendBlocklist(settings);
+  sendDangerMode(settings);
+  sendAgentSettings(settings);
+};
 
 async function startBridge() {
   const settings = await loadSettings();

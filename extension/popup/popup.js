@@ -1,10 +1,11 @@
 // Toolbar popup ("orb hero"): the live voice state, a setup pill that counts
 // the setup page's four checks, and the everyday settings. Each control saves
 // on its own; the worker and offscreen document follow chrome.storage.
-import { CLAUDE_MODELS, HOTKEYS, SPEED_MIN, SPEED_MAX, claudeModelLabel, loadSettings, localModels, localStatusText, saveSettings, speakRepliesNote } from "../lib/settings.js";
+import { CLAUDE_MODELS, loadSettings, localModels, localStatusText, saveSettings, speakRepliesNote } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
-import { SETUP_PATH, SETUP_STEPS, agentHealth, basicVoice, hasSiteAccess, keyName, micState, setupDone, updateBadge } from "../lib/setup.js";
+import { SETUP_PATH, SETUP_STEPS, basicVoice, keyName, missingFrom, setupDone, setupStatus, updateBadge } from "../lib/setup.js";
 import { mountTypeBox } from "../lib/typebox.js";
+import { fillSettingControls, speedLabel } from "../lib/setting-controls.js";
 import { bindDangerToggle } from "../lib/danger-toggle.js";
 
 const $ = (id) => document.getElementById(id);
@@ -53,7 +54,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.from !== "offscreen") return;
   if (msg.type === RT.VOICE_STATE) showVoice(msg.state);
   else if (msg.type === RT.SUBTITLE || msg.type === RT.SUBTITLE_WORD) face?.caption(msg); // lip-sync
-  else if (msg.type === "voice.level") face?.setLevel(msg.level); // optional, not sent yet
+  else if (msg.type === RT.VOICE_LEVEL) face?.setLevel(msg.level); // optional, not sent yet
 });
 
 // Setup pill: the same checks as the setup page; it opens the setup page.
@@ -72,7 +73,7 @@ const typeBox = mountTypeBox($("type-form"));
 async function refreshSetup() {
   const run = ++setupRun;
   const s = await loadSettings();
-  const [site, mic, agent] = await Promise.all([hasSiteAccess(), micState(), agentHealth(s.agentUrl)]);
+  const { site, mic, agent } = await setupStatus(s.agentUrl);
   if (run !== setupRun) return;
   const done = setupDone({ site, mic, agent });
   serverVoice = agent.voice;
@@ -87,16 +88,13 @@ async function refreshSetup() {
   pill.setAttribute("aria-label", done === SETUP_STEPS
     ? `Setup complete, ${done} of ${SETUP_STEPS}. Open setup`
     : `Setup: ${done} of ${SETUP_STEPS} done. Needed: ${missing.map((m) => MISSING[m]).join(", ")}. Open setup to finish`);
-  updateBadge(chrome, [!site && "site", mic !== "granted" && mic !== "unknown" && "mic"].filter(Boolean));
+  updateBadge(chrome, missingFrom({ site, mic }));
 }
 $("setup-pill").addEventListener("click", () => openTab(SETUP_PATH));
 
 // Settings
-for (const value of Object.keys(HOTKEYS)) $("hotkey").append(new Option(keyName(value), value));
-for (const id of Object.keys(CLAUDE_MODELS)) $("claude-model").append(new Option(claudeModelLabel(id), id));
-$("speed").min = String(SPEED_MIN);
-$("speed").max = String(SPEED_MAX);
-const showSpeed = () => { $("speed-out").textContent = `${Number($("speed").value).toFixed(1)}x`; };
+fillSettingControls({ hotkey: $("hotkey"), model: $("claude-model"), speed: $("speed") });
+const showSpeed = () => { $("speed-out").textContent = speedLabel($("speed").value); };
 
 const danger = bindDangerToggle({ box: $("danger-mode"), confirm: $("danger-confirm"), yes: $("danger-yes"), no: $("danger-no"), chip: $("danger-chip"), localNote: $("danger-local") }, saveSettings);
 

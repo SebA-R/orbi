@@ -53,11 +53,11 @@ import { APPS, editNote, exportText, googleFileOf } from "./gdocs.js";
 export const PAGE_FILES = ["content/mask.js", "content/protect.js", "content/page.js"];
 // page_context also loads the pointer tracker, for tabs that were open
 // before the extension (it is a declared content script for new pages).
-export const CONTEXT_FILES = ["content/context.js", ...PAGE_FILES];
+const CONTEXT_FILES = ["content/context.js", ...PAGE_FILES];
 
 // A context snapshot taken when the user starts talking is used for the
 // user_text that follows, if it comes within this long.
-export const CONTEXT_TTL_MS = 60_000;
+const CONTEXT_TTL_MS = 60_000;
 const CONTEXT_PAGE_TIMEOUT_MS = 1_500;
 
 // How long a lock_arm nonce stays good. The pay flow arms right before it
@@ -78,7 +78,7 @@ export function isActivationKey(spec) {
 // on the spelling: "Shift+ " sends a space. A spec parseKey refuses ("\r"
 // and other control characters) is not sent, so it activates nothing; the
 // key route parses first and throws.
-export function activationOf(spec) {
+function activationOf(spec) {
   let k;
   try {
     k = parseKey(spec);
@@ -93,12 +93,11 @@ export function activationOf(spec) {
   return null;
 }
 
-// Page-script methods the bridge may call. focused_field is used by the type
-// guard below and is not a bridge method.
-export const PAGE_METHODS = new Set([
-  "read_page",
+// Page-script methods the bridge may call as is (read_page and
+// get_page_text have their own cases in route). focused_field is used by the
+// type guard below and is not a bridge method.
+const PAGE_METHODS = new Set([
   "find",
-  "get_page_text",
   "form_input",
   "rect",
   "click_ref",
@@ -127,7 +126,7 @@ function point(v, name) {
 }
 
 // How long a pop-up gets to animate away before dismiss_overlay looks again.
-export const OVERLAY_SETTLE_MS = 450;
+const OVERLAY_SETTLE_MS = 450;
 
 const msgOf = (e) => String((e && e.message) || e || "failed");
 
@@ -416,6 +415,16 @@ export function createRouter({
   const centre = (r) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
   const boxOf = (r) => ({ x: r.x, y: r.y, width: r.width, height: r.height });
 
+  // Presses point p: paced through the actor with opts, or instantly with CDP.
+  async function press(tabId, p, watch, opts) {
+    if (watch) {
+      await actor.click(tabId, p, opts);
+    } else {
+      await cdp.click({ tabId, x: p.x, y: p.y });
+      actor.notePointer(tabId, p.x, p.y);
+    }
+  }
+
   function visibleRect(r, ref) {
     if (!r || !(r.width > 0) || !(r.height > 0)) throw new BridgeError(ERR.NO_ELEMENT, `${ref} is not visible`);
     return r;
@@ -433,21 +442,16 @@ export function createRouter({
     const watch = await paced();
     const start = docs.get(tabId);
     try {
-      if (watch) {
-        await actor.click(tabId, p, {
-          epoch,
-          size: Math.min(r.width, r.height),
-          rect: boxOf(r),
-          recheck: recheck && (async () => {
-            const fresh = await recheck();
-            sameDoc(tabId, start);
-            return { ...centre(fresh), rect: boxOf(fresh) };
-          }),
-        });
-      } else {
-        await cdp.click({ tabId, x: p.x, y: p.y });
-        actor.notePointer(tabId, p.x, p.y);
-      }
+      await press(tabId, p, watch, {
+        epoch,
+        size: Math.min(r.width, r.height),
+        rect: boxOf(r),
+        recheck: recheck && (async () => {
+          const fresh = await recheck();
+          sameDoc(tabId, start);
+          return { ...centre(fresh), rect: boxOf(fresh) };
+        }),
+      });
       return { ok: true, via: "cdp" };
     } catch (e) {
       if (e && e.noFallback) throw e;
@@ -479,19 +483,14 @@ export function createRouter({
     await inViewport(tabId, at);
     const guard = () => pageCall(tabId, "guard_point", at);
     await guard();
-    if (await paced()) {
-      const start = docs.get(tabId);
-      await actor.click(tabId, at, {
-        epoch,
-        recheck: async () => {
-          await guard();
-          sameDoc(tabId, start);
-        },
-      });
-    } else {
-      await cdp.click({ tabId, x: at.x, y: at.y });
-      actor.notePointer(tabId, at.x, at.y);
-    }
+    const start = docs.get(tabId);
+    await press(tabId, at, await paced(), {
+      epoch,
+      recheck: async () => {
+        await guard();
+        sameDoc(tabId, start);
+      },
+    });
     return { ok: true, via: "cdp" };
   }
 
@@ -614,17 +613,23 @@ export function createRouter({
   // (origin), be on the origin the user said yes on. Another frame counts
   // only when it may get card values (tabs.frameAllowed: the page's own
   // origin, a payment provider's hosted fields or an allowed site).
-  async function cardFrames(tabId, origin = null) {
-    let found;
+  // Injects the card fill into every frame and runs func there, answering
+  // each frame's result; any failure is an internal error saying fail.
+  async function inCardFrames(tabId, func, fail) {
     try {
       await chromeApi.scripting.executeScript({ target: { tabId, allFrames: true }, files: CARD_FILES });
-      found = await chromeApi.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        func: () => (globalThis.__clearcartCardFill ? globalThis.__clearcartCardFill.scan() : null),
-      });
+      return await chromeApi.scripting.executeScript({ target: { tabId, allFrames: true }, func });
     } catch {
-      throw new BridgeError(ERR.INTERNAL, "could not reach the page's card fields");
+      throw new BridgeError(ERR.INTERNAL, fail);
     }
+  }
+
+  async function cardFrames(tabId, origin = null) {
+    const found = await inCardFrames(
+      tabId,
+      () => (globalThis.__clearcartCardFill ? globalThis.__clearcartCardFill.scan() : null),
+      "could not reach the page's card fields",
+    );
     const results = (found || []).filter((r) => r && r.result && Array.isArray(r.result.fields));
     const top = results.find((r) => r.frameId === 0);
     const topHref = top && typeof top.result.href === "string" ? top.result.href : undefined;
@@ -687,16 +692,11 @@ export function createRouter({
 
   // clear_card: empties every card field in every frame.
   async function clearCard(tabId) {
-    let results;
-    try {
-      await chromeApi.scripting.executeScript({ target: { tabId, allFrames: true }, files: CARD_FILES });
-      results = await chromeApi.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        func: () => (globalThis.__clearcartCardFill ? globalThis.__clearcartCardFill.clear() : { ok: true, cleared: 0 }),
-      });
-    } catch {
-      throw new BridgeError(ERR.INTERNAL, "could not clear the card fields");
-    }
+    const results = await inCardFrames(
+      tabId,
+      () => (globalThis.__clearcartCardFill ? globalThis.__clearcartCardFill.clear() : { ok: true, cleared: 0 }),
+      "could not clear the card fields",
+    );
     const cleared = (results || []).reduce((n, r) => n + (Number(r && r.result && r.result.cleared) || 0), 0);
     return { ok: true, cleared };
   }
@@ -749,24 +749,19 @@ export function createRouter({
     if (!watch) await pageCall(tabId, "press_hit_user", { ...target, x, y });
     const start = docs.get(tabId);
     try {
-      if (watch) {
-        // Checked again on arrival: the control and the point it is at now.
-        await actor.click(tabId, { x, y }, {
-          epoch,
-          size: Math.min(r.width, r.height),
-          rect: boxOf(r),
-          recheck: async () => {
-            const fresh = await pageCall(tabId, "press_check_user", target);
-            const p = centre(fresh);
-            await pageCall(tabId, "press_hit_user", { ...target, ...p });
-            sameDoc(tabId, start);
-            return { ...p, rect: boxOf(fresh) };
-          },
-        });
-      } else {
-        await cdp.click({ tabId, x, y });
-        actor.notePointer(tabId, x, y);
-      }
+      // Checked again on arrival: the control and the point it is at now.
+      await press(tabId, { x, y }, watch, {
+        epoch,
+        size: Math.min(r.width, r.height),
+        rect: boxOf(r),
+        recheck: async () => {
+          const fresh = await pageCall(tabId, "press_check_user", target);
+          const p = centre(fresh);
+          await pageCall(tabId, "press_hit_user", { ...target, ...p });
+          sameDoc(tabId, start);
+          return { ...p, rect: boxOf(fresh) };
+        },
+      });
     } catch (e) {
       if (e && e.noFallback) throw e;
       // press_ref_user checks, clicks and releases in one page task.
@@ -891,12 +886,13 @@ export function createRouter({
         await recheck(tabId);
         return shot;
       }
-    }
-    if (method === "get_page_text") return pageText(tabId, params);
-    if (method === "read_page") {
-      const r = await pageCall(tabId, method, params);
-      const file = r && googleFileOf(r.url);
-      return file ? { ...r, note: editNote(file.app) } : r;
+      case "get_page_text":
+        return pageText(tabId, params);
+      case "read_page": {
+        const r = await pageCall(tabId, method, params);
+        const file = r && googleFileOf(r.url);
+        return file ? { ...r, note: editNote(file.app) } : r;
+      }
     }
     if (PAGE_METHODS.has(method)) return pageCall(tabId, method, params);
     throw new BridgeError(ERR.UNKNOWN_METHOD, `unknown method: ${method}`);

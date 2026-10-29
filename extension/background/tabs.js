@@ -103,6 +103,12 @@ async function errorPageHidden(tab, settings, mine) {
   return !!rec && !!blockReason(rec.url, settings);
 }
 
+// The tab is kept from Orbi: on a page the settings hide, or on the error
+// page for one. blankOk lets a blank tab through.
+async function tabHidden(tab, settings, { mine, blankOk }) {
+  return !!hiddenReason(tab, settings, { blankOk }) || (await errorPageHidden(tab, settings, mine));
+}
+
 // The address Orbi's error page in this tab failed on, origin and path
 // only, or null. Null too when that address is not allowed: a blocked
 // site's address never reaches the agent.
@@ -125,13 +131,14 @@ async function saveState(s) {
   await api().storage.session.set({ [STATE_KEY]: s });
 }
 
-// Serializes read-modify-write of the state.
+// Serializes read-modify-write of the state. Nothing changed, nothing written.
 let chain = Promise.resolve();
 function update(fn) {
   const run = async () => {
     const s = await loadState();
+    const before = JSON.stringify(s);
     fn(s);
-    await saveState(s);
+    if (JSON.stringify(s) !== before) await saveState(s);
   };
   chain = chain.then(run, run);
   return chain;
@@ -191,7 +198,7 @@ export async function tabsContext() {
   const tabs = [];
   for (const t of all) {
     const mine = state.created.includes(t.id);
-    if (hiddenReason(t, settings, { blankOk: mine }) || (await errorPageHidden(t, settings, mine))) continue;
+    if (await tabHidden(t, settings, { mine, blankOk: mine })) continue;
     const newTab = onNewTab(t);
     const errorPage = !newTab && onErrorPage(t);
     tabs.push({
@@ -219,12 +226,12 @@ export async function resolveTab(tabId, { nav = false } = {}) {
     // The last used tab, unless it has since moved somewhere blocked.
     if (state.last != null) tab = await api().tabs.get(state.last).catch(() => null);
     const mine0 = tab && state.created.includes(tab.id);
-    if (tab && (hiddenReason(tab, settings, { blankOk: mine0 }) || (await errorPageHidden(tab, settings, mine0)))) tab = null;
+    if (tab && (await tabHidden(tab, settings, { mine: mine0, blankOk: mine0 }))) tab = null;
     if (!tab) tab = await activeTab();
     if (!tab) throw new BridgeError(ERR.NO_TAB, "no open tab; call tabs_create");
   }
   const mine = state.created.includes(tab.id);
-  if (!(nav && mine) && (hiddenReason(tab, settings, { blankOk: mine && nav }) || (await errorPageHidden(tab, settings, mine)))) {
+  if (!(nav && mine) && (await tabHidden(tab, settings, { mine, blankOk: mine && nav }))) {
     // No origin in the message: a blocked tab of the user's stays private.
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Orbi does not use it`);
   }
@@ -421,12 +428,8 @@ export async function tabInfo({ tabId } = {}) {
 // even ones Orbi navigated, clicked or typed in.
 export async function agentTabs() {
   const state = await loadState();
-  const tabs = [];
-  for (const id of state.created) {
-    const t = await api().tabs.get(id).catch(() => null);
-    if (t) tabs.push({ ...info(t), openedByClearcart: true });
-  }
-  return { tabs };
+  const found = await Promise.all(state.created.map((id) => api().tabs.get(id).catch(() => null)));
+  return { tabs: found.filter(Boolean).map((t) => ({ ...info(t), openedByClearcart: true })) };
 }
 
 // Earlier versions kept agent tabs in a "Orbi" tab group. On install or
