@@ -207,7 +207,7 @@ export function textCall(text: string, names: readonly string[]): Call | null {
 }
 
 // A reply that says a page action happened ("I added it to your bag").
-const CLAIM = /\b(i('ve| have)? (added|opened|clicked|selected|chose|filled( in)?|pressed|put|went|picked|entered|typed|signed you|created)|(is|are) (now )?(open|in your (bag|cart))|you('re| are) (now )?on the)\b/i;
+const CLAIM = /\b(i('ve| have)? (added|opened|clicked|selected|chose|filled( in)?|pressed|put|went|picked|entered|typed|signed you|created)|(is|are) (now )?(open|in your (bag|cart))|your (bag|cart) (now )?(has|contains)|you('re| are) (now )?on the)\b/i;
 export function claimsAction(text: string): boolean {
   return CLAIM.test(text);
 }

@@ -12,7 +12,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { ERR, ExtError, extBridge } from "../extbridge.ts";
-import { coerceArgs, isInjectionLine, looksLikeReasoning, pageData, PAGE_OPEN, REMOVED_LINE, repairJson } from "../local/harden.ts";
+import { claimsAction, coerceArgs, isInjectionLine, looksLikeReasoning, pageData, PAGE_OPEN, REMOVED_LINE, repairJson } from "../local/harden.ts";
 import { asksChoice, LOOP_STOP } from "../local/query.ts";
 import { MemoryStore, redactTurn, REDACTED } from "../memory.ts";
 import { DANGER_LOCAL_LINE, dangerModeOn, localAck, Session, webAddress, type ServerMessage } from "../session.ts";
@@ -462,6 +462,7 @@ test("which questions hand the task back, and which web addresses are fixed", ()
   assert.equal(webAddress("https://www.aritzia.com/"), "https://www.aritzia.com/");
   assert.equal(webAddress("Back"), "back");
   assert.equal(webAddress("aritzia"), null);
+  assert.ok(claimsAction("Your bag has black Swift shoes in it."));
 });
 
 test("a false claim after \"thanks, now ...\" still gets the claim retry", async () => {
