@@ -1755,9 +1755,9 @@ export class Session {
           if (typeof a.ref !== "string") throw new Error('Not run: click needs a ref. Call find with a few words of the button or link\'s name, then click with the ref it returns.');
         } else if ((tool === b("navigate") || tool === b("tabs_create")) && typeof a.url === "string") {
           const u = a.url.trim();
-          // "aritzia.com/new": a web address without its https://.
-          if (/^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(u)) a.url = `https://${u}`;
-          else if (u && !/^(back|forward)$/i.test(u) && !/^[a-z][a-z0-9+.-]*:/i.test(u)) throw new Error(`Not run: "${u.slice(0, 40)}" is not a web address. Use the site's full address, for example https://www.${u.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 30) || "example"}.com, or search for it.`);
+          const fixed = webAddress(u);
+          if (fixed) a.url = fixed;
+          else if (u) throw new Error(`Not run: "${u.slice(0, 40)}" is not a web address. Use the site's full address, for example https://www.${u.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 30) || "example"}.com, or search for it.`);
         }
         if (tool === b("read_page")) {
           a.filter = "interactive";
@@ -2071,15 +2071,28 @@ export class Session {
 
 const shortName = (name: string) => name.replace(B, "").replace(C, "");
 
+// A url a local model wrote, as navigate and tabs_create take it: with a
+// scheme as given, "back" or "forward", or a bare host ("aritzia.com/new",
+// "127.0.0.1:4000", "localhost:4000") with https:// put in front. Null when
+// it is no web address at all ("aritzia"). The guard still checks the result.
+export function webAddress(u: string): string | null {
+  if (/^(back|forward)$/i.test(u)) return u.toLowerCase();
+  const host = /^((www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|localhost|\[[0-9a-f:]+\])(:\d{1,5})?([/?#]\S*)?$/i;
+  if (host.test(u)) return `https://${u}`;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^[a-z0-9.-]+:\d/i.test(u)) return u;
+  return null;
+}
+
 // The few words the server says when a local model starts tool work:
 // "Opening aritzia.com." for a site, else "On it.". Built only from a
 // checked URL's host, never from page text or the model's words.
 export function localAck(name: string, input: unknown): string {
   const short = shortName(name);
   const url = (input as { url?: unknown } | null)?.url;
-  if ((short === "tabs_create" || short === "navigate") && typeof url === "string") {
+  const fixed = typeof url === "string" ? webAddress(url.trim()) : null;
+  if ((short === "tabs_create" || short === "navigate") && fixed && fixed !== "back" && fixed !== "forward") {
     try {
-      const u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(url.trim()) ? url.trim() : `https://${url.trim()}`);
+      const u = new URL(fixed);
       const host = u.hostname.replace(/^www\./, "");
       if (/^https?:$/.test(u.protocol) && /^[a-z0-9.-]{1,60}$/i.test(host) && host.includes(".")) return `Opening ${host}.`;
     } catch {}

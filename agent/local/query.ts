@@ -177,6 +177,7 @@ const CLAIM_RETRY =
 export const LOOP_STOP = "I kept repeating the same step, so I stopped. Tell me what you'd like me to try instead.";
 const CHOOSE =
   "[Orbi note, not from the user] Not spoken: you stopped to ask a question in the middle of the request. Choose using what the user said (colour, size, price, the closest match) and finish the task with the tools. Ask only for a detail only the user knows.";
+const REMINDER = "[Orbi note, not from the user] Keep going until this is done, choosing by what the user said; ask only for a detail only they know. They asked:";
 const TEXT_CALL = "[Orbi note, not from the user] You wrote a tool call as text. Make it as a real tool call instead, or answer the user in plain words.";
 export const REPLY_FALLBACK = "Sorry, I didn't get that done. Could you tell me again what you'd like?";
 const REPLY_RETRY =
@@ -323,6 +324,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   private warming: Promise<void> | null = null;
   // The model said it cannot think: think is not asked for again.
   private thinkOff = false;
+  // Finished turns already made smaller (compactDone), and the tools'
+  // size in characters.
+  private compacted = new WeakSet<ChatMessage[]>();
+  private specChars: number | null = null;
   // The turn in progress's token counts, for its result.
   private usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
 
@@ -394,8 +399,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           const active = /Active tab: tab (\d+), (?!an error page)/.exec(text);
           if (active) this.lastTab = Number(active[1]);
         }
-        const prev = this.turns.at(-1);
-        if (prev) compact(prev);
+        this.compactDone();
         this.turns.push([{ role: "user", content: this.o.scaffold?.userTurn ? this.o.scaffold.userTurn(text) : text }]);
         yield* this.runTurn();
         if (closed?.aborted) return;
@@ -469,10 +473,16 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     // answers): never kept in the conversation, so what came before stays
     // the same from step to step and the server can reuse it.
     let extra: ChatMessage[] = [];
+    // After a nudge, a short reminder stays at the end of every request for
+    // the rest of the turn (at the end, so it never changes what comes
+    // before), or the model forgets the note one step later and stops the
+    // same way again.
+    let reminder: ChatMessage | null = null;
     const nudge = (reply: string, note: string) => {
       turn.pop();
       extra = [{ role: "assistant", content: reply }, { role: "user", content: note }];
       if (free < FREE_STEPS) free++;
+      reminder = { role: "user", content: `${REMINDER} ${JSON.stringify(lastWords(turn).slice(0, 200))}` };
     };
     // What the server said the turn's steps cost (the turn_end timing line).
     const usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
@@ -489,7 +499,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         let reply;
         const system = this.systemText();
         this.fit(system);
-        const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat(), ...extra];
+        const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat(), ...(extra.length ? extra : reminder ? [reminder] : [])];
         extra = [];
         let t0 = Date.now();
         try {
@@ -577,7 +587,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
             nudge(reply.content, `${CHOOSE} The user asked: ${JSON.stringify(asked.slice(0, 200))}`);
             continue;
           }
-          if (said && request && claimsAction(said) && !claimBacked(said, didNames) && !retried && counted(step) < max) {
+          if (said && !isQuestion(asked) && claimsAction(said) && !claimBacked(said, didNames) && !retried && counted(step) < max) {
             this.o.onStatus?.(`(not spoken) local reply claimed an action that did not happen: ${said.slice(0, 120)}`);
             retried = true;
             nudge(reply.content, CLAIM_RETRY);
@@ -634,8 +644,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
             if (out.isError) loops?.undo(this.callOf(call));
             if (out.ran) {
               ranAny = true;
-              looked++;
-              if (!isSay) ran++;
+              if (!isSay) {
+                ran++;
+                looked++;
+              }
               else if (!out.isError) sayings.push(String(this.callOf(call).args.text ?? ""));
             }
             const full = this.resolve(call.function.name)?.full ?? "";
@@ -945,6 +957,29 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     if (last?.role !== "assistant" || last.tool_calls) turn.push({ role: "assistant", content: "(Stopped: the user interrupted.)" });
   }
 
+  // At a turn boundary: once the conversation fills half its budget, the
+  // finished turns not made smaller yet are (compact), once each. Below
+  // that they stay whole, so a later question can use what they showed.
+  private compactDone() {
+    if (!this.turns.length) return;
+    const size = this.turns.reduce((n, t) => n + t.reduce((k, m) => k + chars(m), 0), 0);
+    if (size <= this.budget(this.systemText()) * 0.5) return;
+    for (const t of this.turns) {
+      if (this.compacted.has(t)) continue;
+      compact(t);
+      this.compacted.add(t);
+    }
+  }
+
+  // The characters the conversation may take: the context window less the
+  // rules, the tools and the longest answer.
+  private budget(system: string): number {
+    const window = this.o.contextTokens ?? DEFAULT_CONTEXT_TOKENS;
+    this.specChars ??= JSON.stringify(this.specs).length;
+    const fixed = (system.length + this.specChars) / CHARS_PER_TOKEN;
+    return Math.max(1_000, window - REPLY_TOKENS - fixed - 300) * CHARS_PER_TOKEN;
+  }
+
   // Keeps the conversation within the context window: what is left of it
   // once the rules, the tools and the longest answer are counted. Earlier
   // messages are never rewritten while they fit, so the server can reuse
@@ -952,9 +987,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // turns go together (down to 70%, so it happens seldom), then, only if
   // the turn in progress alone is too long, its older tool results are cut.
   private fit(system: string) {
-    const window = this.o.contextTokens ?? DEFAULT_CONTEXT_TOKENS;
-    const fixed = (system.length + JSON.stringify(this.specs).length) / CHARS_PER_TOKEN;
-    const budget = Math.max(1_000, window - REPLY_TOKENS - fixed - 300) * CHARS_PER_TOKEN;
+    const budget = this.budget(system);
     const size = () => this.turns.reduce((n, t) => n + t.reduce((k, m) => k + chars(m), 0), 0);
     if (size() <= budget) return;
     while (this.turns.length > 1 && size() > budget * 0.7) this.turns.shift();
@@ -1006,16 +1039,29 @@ function givesUp(text: string, looked = 0): boolean {
   return HANDS_BACK.test(text) || (COULD_NOT.test(text) && looked < 3);
 }
 
-// A question that hands a choice back halfway through a request ("Which
-// one?", "The black or the white?"), not one for a detail only the user
-// knows (their email, whether to check out, a size they never gave).
-const CHOICE = /\b(which|prefer|would you like|do you want|should i|shall i)\b|\bor\b[^?]*\?\s*$/i;
-const ONLY_THEY_KNOW = /\b(e-?mail|address|phone|name|password|passcode|card|account|sign(ed)? in|log(ged)? in|check ?out|pay|order|quantity|how many)\b/i;
-const SIZE_GIVEN = /\bsize\b|\b(xx?s|xx?l|small|medium|large|petite|tall|\d{1,2}(\.5)?)\b/i;
-function asksChoice(said: string, userWords: string): boolean {
-  if (!/\?\s*$/.test(said) || !CHOICE.test(said) || ONLY_THEY_KNOW.test(said)) return false;
-  if (/\bsize\b/i.test(said) && !SIZE_GIVEN.test(userWords)) return false;
-  return true;
+// A question that hands the task back halfway through a request: a choice
+// between options ("Which one?", "The black or the white?"), or asking
+// leave for what the user already asked ("Would you like me to add it?"
+// after "add it to my bag"). Not one for a detail only the user knows
+// (their email, a size they never gave), nor one about paying, removing,
+// signing up or anything else they did not ask for.
+const CHOICE = /\bwhich\b|\bor\b[^?]*\?\s*$/i;
+const LEAVE = /\b(?:would you like|do you want|should i|shall i|want me)\b(?: me)?(?: to)?\s+([a-z]+)/i;
+const ONLY_THEY_KNOW = /\b(e-?mail|address|phone|name|password|passcode|card|account|sign(ed)? (in|up)|log(ged)? in|subscribe|newsletter|check ?out|pay|order|buy|purchase|remove|delete|cancel|quantity|how many)\b/i;
+const SIZE_WORD = /\b(sizes?|xx?s|xx?l|small|medium|large|petite)\b/i;
+const SIZE_GIVEN = /\bsize\s*[a-z0-9.]+|\b(xx?s|xx?l|small|medium|large|petite)\b/i;
+export function asksChoice(said: string, userWords: string): boolean {
+  if (!/\?\s*$/.test(said) || ONLY_THEY_KNOW.test(said)) return false;
+  if (SIZE_WORD.test(said) && !SIZE_GIVEN.test(userWords)) return false;
+  if (CHOICE.test(said)) return true;
+  const verb = LEAVE.exec(said)?.[1]?.toLowerCase();
+  return !!verb && verb.length >= 3 && new RegExp(`\\b${verb}`, "i").test(userWords);
+}
+
+// Words that ask something rather than ask for something done.
+function isQuestion(words: string): boolean {
+  const w = words.trim().toLowerCase();
+  return /\?\s*$/.test(w) || /^(what|why|how|who|where|when|which|is|are|do|does|did|tell me)\b/.test(w);
 }
 
 // The same words, case, punctuation and spacing aside.
@@ -1027,7 +1073,10 @@ function sameWords(a: string, b: string): boolean {
 // Text cut to max characters, still reading as page data when it was.
 function shorten(c: string, max: number): string {
   if (c.length <= max) return c;
-  return `${c.slice(0, max)}\n[Shortened to save space.]${c.startsWith(PAGE_OPEN) ? `\n${PAGE_CLOSE}` : ""}`;
+  const cut = c.slice(0, max);
+  // Page data opened in the part kept (a hint's "On this page:" too) is closed.
+  const open = cut.split(PAGE_OPEN).length - cut.split(PAGE_CLOSE).length;
+  return `${cut}\n[Shortened to save space.]${open > 0 ? `\n${PAGE_CLOSE}` : ""}`;
 }
 
 // A finished turn, made smaller once when the next one starts and never
@@ -1055,7 +1104,14 @@ function isRequest(words: string): boolean {
 }
 
 const STOP = new Set("the a an and or to of for in on at it is this that these those me my you your i we our want wanna would like need please can could buy get look looking find open show see click press tap go take put add some any one two all now then just with from".split(" "));
-const words = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w));
+// "to my bag" in "add them to my bag" is where the item goes, not what to
+// look for: a "Bag" link is not the best match for it.
+const words = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/\b(to|in|into|on) (my|the|your) (bag|cart|basket|trolley)\b/g, " ")
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3 && !STOP.has(w));
 
 // The one link or button among found whose name shares the most words with
 // the user's words (at least one), or null when none does or two tie.

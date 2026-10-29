@@ -134,10 +134,12 @@ export function argsHelp(tool: string, schema: Record<string, unknown> | undefin
 export type Call = { name: string; args: Record<string, unknown> };
 const key = (c: Call) => `${c.name} ${JSON.stringify(Object.keys(c.args).sort().map((k) => [k, c.args[k]]))}`;
 
-// The same call made LOOP_REPEATS times in a row, or the same page action
+// The same call made LOOP_REPEATS times in a row, the same page action
 // (click, type, key, form_input, navigate...) LOOP_REPEATS times in one
-// turn, is a loop: check() says so before the call runs.
+// turn, or the same read (find "add to bag" between read_pages) READ_REPEATS
+// times in one turn, is a loop: check() says so before the call runs.
 export const LOOP_REPEATS = 3;
+export const READ_REPEATS = 4;
 export class LoopGuard {
   private seq: string[] = [];
   private acts = new Map<string, number>();
@@ -147,12 +149,9 @@ export class LoopGuard {
     this.seq.push(k);
     const tail = this.seq.slice(-LOOP_REPEATS);
     if (tail.length === LOOP_REPEATS && tail.every((x) => x === k)) return true;
-    if (this.isAction(c.name)) {
-      const n = (this.acts.get(k) ?? 0) + 1;
-      this.acts.set(k, n);
-      if (n >= LOOP_REPEATS) return true;
-    }
-    return false;
+    const n = (this.acts.get(k) ?? 0) + 1;
+    this.acts.set(k, n);
+    return n >= (this.isAction(c.name) ? LOOP_REPEATS : READ_REPEATS);
   }
   // A page action that was refused (a made-up ref, a field it may not
   // fill) did nothing on the page, so it does not count toward the turn's

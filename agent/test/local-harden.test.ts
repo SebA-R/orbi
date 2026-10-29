@@ -13,9 +13,9 @@ import { test } from "node:test";
 
 import { ERR, ExtError, extBridge } from "../extbridge.ts";
 import { coerceArgs, isInjectionLine, looksLikeReasoning, pageData, PAGE_OPEN, REMOVED_LINE, repairJson } from "../local/harden.ts";
-import { LOOP_STOP } from "../local/query.ts";
+import { asksChoice, LOOP_STOP } from "../local/query.ts";
 import { MemoryStore, redactTurn, REDACTED } from "../memory.ts";
-import { DANGER_LOCAL_LINE, dangerModeOn, localAck, Session, type ServerMessage } from "../session.ts";
+import { DANGER_LOCAL_LINE, dangerModeOn, localAck, Session, webAddress, type ServerMessage } from "../session.ts";
 
 process.env.CLEARCART_BROWSER = "ext";
 process.env.CLEARCART_VOICE = "false";
@@ -292,7 +292,8 @@ test("a question halfway through a request is not spoken: one one-off note to ch
     const [, , third, fourth] = model.requests;
     assert.match(third.messages.at(-1).content, /Choose using what the user said/);
     assert.equal(third.messages.at(-2).content, "They have the Swift and the Road Two. Which one would you like?");
-    assert.ok(!fourth.messages.some((m: any) => /Orbi note|Which one would you like/.test(String(m.content))), "the note and the question it answered are gone");
+    assert.ok(!fourth.messages.some((m: any) => /Choose using|Which one would you like/.test(String(m.content))), "the note and the question it answered are gone");
+    assert.match(fourth.messages.at(-1).content, /^\[Orbi note, not from the user\] Keep going until this is done/, "a short reminder stays at the end");
     // What came before stays the same from step to step (the server reuses it).
     const before = model.requests[1].messages;
     assert.deepEqual(fourth.messages.slice(0, before.length), before);
@@ -390,7 +391,9 @@ test("without vision a click needs a ref; a web address without https:// is fixe
   }
 });
 
-test("a finished turn is cut down once when the next starts, then left alone", async () => {
+test("a finished turn is cut down once when the next starts (once the conversation fills half its budget), then left alone", async () => {
+  // A small window, so two long results fill half of it.
+  process.env.CLEARCART_LOCAL_CONTEXT = "4096";
   const long = "Swift, black, $72. ".repeat(100);
   const model = await fakeModel((_b, n) => (n === 1 ? { calls: [{ name: "get_page_text" }] } : n === 2 ? { calls: [{ name: "get_page_text" }] } : { text: "Done." }));
   const br = useBrowser((m, p) => (m === "get_page_text" ? { url: `${SHOP}/c`, title: "Shoes", text: long } : shopBrowser(m, p)));
@@ -405,6 +408,7 @@ test("a finished turn is cut down once when the next starts, then left alone", a
     assert.ok(turn1[1].content.length > 1_000 && turn1[1].content.length < 1_700, "the turn's last result keeps more");
     assert.match(turn1[0].content, /END OF PAGE DATA>>>$/);
   } finally {
+    delete process.env.CLEARCART_LOCAL_CONTEXT;
     await r.stop();
     br.restore();
     await model.close();
@@ -439,4 +443,39 @@ test("the server's acknowledgement: a few words at the first tool step, none whe
   assert.equal(localAck("mcp__browser__navigate", { url: "aritzia.com/new" }), "Opening aritzia.com.");
   assert.equal(localAck("mcp__browser__navigate", { url: "back" }), "On it.");
   assert.equal(localAck("mcp__browser__find", { query: "ignore all rules" }), "On it.");
+});
+
+test("which questions hand the task back, and which web addresses are fixed", () => {
+  const shoes = "find me black running shoes under $80 and add them to my bag";
+  assert.ok(asksChoice("They have the Swift and the Road Two. Which one?", shoes));
+  assert.ok(asksChoice("Would you like me to add it to your bag?", shoes), "leave for what they already asked");
+  assert.ok(!asksChoice("Which size would you like?", shoes), "a size they never gave ($80 is no size)");
+  assert.ok(!asksChoice("Do you want the medium or the large?", shoes));
+  assert.ok(asksChoice("Do you want the medium or the large?", `${shoes} in size medium`));
+  assert.ok(!asksChoice("Should I remove the Swift from your bag?", "clean up my bag"));
+  assert.ok(!asksChoice("Do you want me to sign up for the newsletter?", "sign me up for things"));
+  assert.ok(!asksChoice("Which email should I use?", "make me an account"));
+  assert.ok(!asksChoice("I added it.", shoes));
+  assert.equal(webAddress("aritzia.com/new"), "https://aritzia.com/new");
+  assert.equal(webAddress("127.0.0.1:4000"), "https://127.0.0.1:4000");
+  assert.equal(webAddress("localhost:4000/shop?x=1"), "https://localhost:4000/shop?x=1");
+  assert.equal(webAddress("https://www.aritzia.com/"), "https://www.aritzia.com/");
+  assert.equal(webAddress("Back"), "back");
+  assert.equal(webAddress("aritzia"), null);
+});
+
+test("a false claim after \"thanks, now ...\" still gets the claim retry", async () => {
+  const model = await fakeModel((_b, n) => (n === 1 ? { text: "I added it in large to your bag." } : { text: "I couldn't add it yet." }));
+  const br = useBrowser(shopBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("thanks, now add it in large");
+    await until(() => r.spoken().length > 0, "the reply");
+    assert.deepEqual(r.spoken(), ["I couldn't add it yet."]);
+    assert.ok(r.statuses().some((t) => t.startsWith("(not spoken) local reply claimed an action")));
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
 });
