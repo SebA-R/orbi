@@ -29,7 +29,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 
-import { chat, detectFlavor, LocalModelError, type ChatMessage, type ContentPart, type Flavor, type ToolCall, type ToolSpec } from "./openai.ts";
+import * as timing from "../timing.ts";
+import { chat, detectFlavor, LocalModelError, type ChatMessage, type ChatStats, type ContentPart, type Flavor, type ToolCall, type ToolSpec } from "./openai.ts";
 import { argsHelp, claimsAction, coerceArgs, looksLikeReasoning, LoopGuard, PAGE_CLOSE, PAGE_OPEN, pageData, repairJson, speakable, textCall, type Call } from "./harden.ts";
 
 export const MAX_STEPS = 25;
@@ -196,6 +197,13 @@ export type LocalOptions = {
   onStatus?: (text: string) => void;
   fetch?: typeof fetch;
   scaffold?: Scaffold;
+  // Ollama only: at the start, one request with the rules and tools and a
+  // one-token answer, so the model is loaded and the prompt's start is
+  // already processed when the user first speaks.
+  warmUp?: boolean;
+  // Ollama only: let a reasoning model think before each step (slower;
+  // off unless CLEARCART_LOCAL_THINK is on).
+  think?: boolean;
 };
 
 type Offered = { full: string; server: ToolServer; tool: string };
@@ -301,6 +309,12 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // spoke, then the tab a tool opened or used). A call that leaves tabId out
   // gets it, so every gate sees which tab it is for.
   private lastTab: number | null = null;
+  // The warm-up request, while it runs (LocalOptions.warmUp).
+  private warming: Promise<void> | null = null;
+  // The model said it cannot think: think is not asked for again.
+  private thinkOff = false;
+  // The turn in progress's token counts, for its result.
+  private usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
 
   constructor(private prompt: AsyncIterable<SDKUserMessage>, private o: LocalOptions) {}
 
@@ -357,6 +371,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       await Promise.all(servers.map((s) => s.start()));
       this.offer();
       yield { type: "system", subtype: "init", session_id: this.sessionId, model: this.o.model, tools: this.specs.map((t) => t.function.name), mcp_servers: await this.mcpServerStatus() } as unknown as SDKMessage;
+      if (this.o.warmUp) this.warming = this.warm();
       for await (const m of this.prompt) {
         if (closed?.aborted) return;
         const text = userText(m);
@@ -378,6 +393,42 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     }
   }
 
+  // Ollama only (see LocalOptions.warmUp). Never throws: a failure is
+  // ignored, and the first real request says what is wrong. The first turn
+  // waits for it, so the two never run side by side.
+  private async warm() {
+    const t0 = Date.now();
+    try {
+      const signal = this.o.abortController?.signal ?? new AbortController().signal;
+      this.flavor ??= await detectFlavor(this.o.baseUrl, this.o.fetch);
+      if (this.flavor !== "ollama" || signal.aborted) return;
+      const r = await chat({ ...this.request(signal), messages: [{ role: "system", content: this.systemText() }, { role: "user", content: "Hi" }], timeoutMs: 120_000, maxTokens: 1 });
+      if (r.thinkRefused) this.thinkOff = true;
+      timing.note(`local warm-up ${Date.now() - t0}ms ${statLine(r.stats)}`);
+    } catch (e) {
+      timing.note(`local warm-up failed: ${(e as Error).message}`);
+    }
+  }
+
+  private systemText(): string {
+    return typeof this.o.systemPrompt === "function" ? this.o.systemPrompt() : this.o.systemPrompt;
+  }
+
+  // The parts of a model request that are the same for every step.
+  private request(signal: AbortSignal) {
+    return {
+      baseUrl: this.o.baseUrl,
+      model: this.o.model,
+      tools: this.specs,
+      signal,
+      timeoutMs: this.o.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+      flavor: this.flavor ?? ("openai" as const),
+      contextTokens: this.o.contextTokens,
+      think: this.o.think && !this.thinkOff,
+      fetch: this.o.fetch,
+    };
+  }
+
   private async *runTurn(): AsyncGenerator<SDKMessage> {
     const ctl = (this.turn = new AbortController());
     const signal = this.o.abortController ? AbortSignal.any([ctl.signal, this.o.abortController.signal]) : ctl.signal;
@@ -393,6 +444,9 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     const didNames: string[] = (this.didNames = []);
     // Scaffold: how often the model was told not to stop yet this turn.
     let nudged = 0;
+    // What the server said the turn's steps cost (the turn_end timing line).
+    const usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+    this.usage = usage;
     try {
       for (let step = 1; ; step++) {
         if (step > max) {
@@ -404,21 +458,16 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         }
         this.fit();
         let reply;
-        const system = typeof this.o.systemPrompt === "function" ? this.o.systemPrompt() : this.o.systemPrompt;
+        const system = this.systemText();
         const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat()];
+        let t0 = Date.now();
         try {
+          if (this.warming) await unlessAborted(this.warming, signal);
+          this.warming = null;
           this.flavor ??= await unlessAborted(detectFlavor(this.o.baseUrl, this.o.fetch), signal).then((f) => (f === ABORTED ? null : f));
-          reply = await chat({
-            baseUrl: this.o.baseUrl,
-            model: this.o.model,
-            messages,
-            tools: this.specs,
-            signal,
-            timeoutMs: this.o.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
-            flavor: this.flavor ?? "openai",
-            contextTokens: this.o.contextTokens,
-            fetch: this.o.fetch,
-          });
+          t0 = Date.now();
+          timing.mark("model_step", { detail: `#${step}` });
+          reply = await chat({ ...this.request(signal), messages });
         } catch (e) {
           if (signal.aborted) {
             this.stopped(turn);
@@ -432,7 +481,16 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           yield this.result("error_during_execution", step);
           return;
         }
-        this.checkPromptSize(reply.promptTokens, messages);
+        timing.mark("model_done", { detail: `#${step} ${Date.now() - t0}ms ${statLine(reply.stats)}${reply.toolCalls.length ? ` -> ${reply.toolCalls.map((c) => c.function.name).join(",")}` : " -> reply"}` });
+        if (reply.thinkRefused && !this.thinkOff) {
+          this.thinkOff = true;
+          this.o.onStatus?.(`local model: ${this.o.model} cannot think, so CLEARCART_LOCAL_THINK is ignored`);
+        }
+        // As on the SDK path: input_tokens leaves out what was read from cache.
+        usage.input_tokens += Math.max(0, (reply.stats.promptTokens ?? 0) - (reply.stats.cachedTokens ?? 0));
+        usage.cache_read_input_tokens += reply.stats.cachedTokens ?? 0;
+        usage.output_tokens += reply.stats.outputTokens ?? 0;
+        this.checkPromptSize(reply.stats.promptTokens, messages);
         trace(`model step ${step}: ${JSON.stringify(reply.content).slice(0, 300)} calls=${reply.toolCalls.map((c) => c.function.name).join(",")}`);
         let calls = reply.toolCalls;
         // Scaffold: a tool call written out as text (JSON, or prose like
@@ -585,14 +643,16 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     }
   }
 
-  // An OpenAI-style server that reports far fewer prompt tokens than were
-  // sent has cut the prompt (its context window is too small): say so once.
+  // A server that reports far fewer prompt tokens than were sent has cut
+  // the prompt (its context window is too small): say so once. Ollama's
+  // prompt_eval_count counts the whole prompt, cached part included.
   private checkPromptSize(promptTokens: number | undefined, messages: ChatMessage[]) {
     if (this.warnedShort || typeof promptTokens !== "number") return;
     const approx = Math.round((messages.reduce((n, m) => n + chars(m), 0) + JSON.stringify(this.specs).length) / 4);
     if (promptTokens >= approx * 0.6) return;
     this.warnedShort = true;
-    this.o.onStatus?.(`local model: the prompt looks cut short (${promptTokens} of about ${approx} tokens). Give the model a context window of 16k tokens or more in your model server.`);
+    const fix = this.flavor === "ollama" ? "Set CLEARCART_LOCAL_CONTEXT to a larger window (for example 32768)." : "Give the model a context window of 16k tokens or more in your model server.";
+    this.o.onStatus?.(`local model: the prompt looks cut short (${promptTokens} of about ${approx} tokens). ${fix}`);
   }
 
   private toolResult(id: string, out: Outcome): SDKMessage {
@@ -848,8 +908,17 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   }
 
   private result(subtype: "success" | "error_during_execution" | "error_max_turns", steps: number): SDKMessage {
-    return { type: "result", subtype, is_error: subtype !== "success", num_turns: steps, session_id: this.sessionId, uuid: randomUUID() } as unknown as SDKMessage;
+    return { type: "result", subtype, is_error: subtype !== "success", num_turns: steps, usage: { ...this.usage }, session_id: this.sessionId, uuid: randomUUID() } as unknown as SDKMessage;
   }
+}
+
+// A step's cost as one timing detail: "prompt 5210 tok (4900 cached) 310ms, out 22 tok 410ms, load 0ms".
+function statLine(s: ChatStats): string {
+  const parts: string[] = [];
+  if (s.promptTokens !== undefined) parts.push(`prompt ${s.promptTokens} tok${s.cachedTokens !== undefined ? ` (${s.cachedTokens} cached)` : ""}${s.promptMs !== undefined ? ` ${s.promptMs}ms` : ""}`);
+  if (s.outputTokens !== undefined) parts.push(`out ${s.outputTokens} tok${s.outputMs !== undefined ? ` ${s.outputMs}ms` : ""}`);
+  if (s.loadMs !== undefined) parts.push(`load ${s.loadMs}ms`);
+  return parts.join(", ");
 }
 
 // Whether two names share a word of three letters or more ("Checkout" and

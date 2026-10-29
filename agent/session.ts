@@ -27,7 +27,7 @@ import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
 import { desktopBridge } from "./desktop/bridge.ts";
 import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
 import { DESKTOP_TOOL_NAMES, desktopToolDefinitions, type DesktopHost } from "./desktop/tools.ts";
-import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
+import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envLocalThink, envProviderSettings, type ProviderSettings } from "./local/config.ts";
 import { isRequest, localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
 import { isInjectionLine, looksLikeReasoning, pageData, REMOVED_LINE } from "./local/harden.ts";
 import { withContext, type PageContext } from "./context.ts";
@@ -2148,6 +2148,10 @@ export class Session {
               model: p.localModel,
               vision: p.localVision,
               contextTokens: localContext(),
+              // Ollama: load the model and process the rules and tools now,
+              // not when the user first speaks.
+              warmUp: true,
+              think: envLocalThink(),
               // Rebuilt for every request: the local loop drops old turns
               // when the conversation gets long, and with them the one-time
               // notes about Guided mode or Memory changing, so the system

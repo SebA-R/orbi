@@ -39,7 +39,8 @@ async function until(ok: () => boolean, what: string, ms = 5_000) {
 // A fake OpenAI-compatible server. script(body, n) says what the nth chat
 // request gets: text and tool calls, an HTTP error, or no answer at all.
 // ollama: answers like Ollama (/api/version, /api/chat) instead.
-type Step = { text?: string; calls?: Array<{ name: string; args?: unknown }> } | { status: number; body: unknown } | { hang: true };
+// extra: more fields in the answer (Ollama's prompt_eval_count...).
+type Step = { text?: string; calls?: Array<{ name: string; args?: unknown }>; extra?: Record<string, unknown> } | { status: number; body: unknown } | { hang: true };
 async function fakeModel(script: (body: any, n: number) => Step | Promise<Step>, { ollama = false } = {}) {
   const requests: any[] = [];
   let aborted = 0;
@@ -58,7 +59,7 @@ async function fakeModel(script: (body: any, n: number) => Step | Promise<Step>,
     if ("status" in step) return void res.writeHead(step.status, { "Content-Type": "application/json" }).end(JSON.stringify(step.body));
     const tool_calls = step.calls?.map((c, i) => ({ id: `call_${n}_${i}`, type: "function", function: { name: c.name, arguments: ollama ? c.args ?? {} : typeof c.args === "string" ? c.args : JSON.stringify(c.args ?? {}) } }));
     const message = { role: "assistant", content: step.text ?? "", ...(tool_calls ? { tool_calls } : {}) };
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(ollama ? { message, done: true } : { choices: [{ message }] }));
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ...(ollama ? { message, done: true } : { choices: [{ message }] }), ...step.extra }));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as AddressInfo).port;
@@ -161,8 +162,14 @@ test("a tool call loop: the call runs over the bridge, its result goes back, the
 });
 
 test("Ollama: its own /api/chat with a context window that fits the rules and tools; a tool call written as text is not spoken", async () => {
+  // The warm-up request (a one-token answer) is answered apart.
+  let k = 0;
   const model = await fakeModel(
-    (_b, n) => (n === 1 ? { calls: [{ name: "get_page_text", args: { tabId: 9 } }] } : n === 2 ? { text: "The first line is Trip plan." } : { text: '{"type":"function","name":"say","parameters{"text":"hello"}}' }),
+    (b) => {
+      if (b.options?.num_predict === 1) return { text: "Hi" };
+      const n = ++k;
+      return n === 1 ? { calls: [{ name: "get_page_text", args: { tabId: 9 } }] } : n === 2 ? { text: "The first line is Trip plan." } : { text: '{"type":"function","name":"say","parameters{"text":"hello"}}' };
+    },
     { ollama: true }
   );
   const br = useBrowser((method, p) => (method === "get_page_text" ? { url: "https://docs.google.com/document/d/1AbC/edit", title: "Trip plan - Google Docs", text: "Trip plan\nDay 1: Lisbon" } : quietBrowser(method, p)));
@@ -171,9 +178,17 @@ test("Ollama: its own /api/chat with a context window that fits the rules and to
     r.s.userText("what does the first line of this doc say?");
     await until(() => r.spoken().length > 0, "the reply");
     assert.deepEqual(r.spoken(), ["The first line is Trip plan."]);
-    const [first, second] = model.requests;
+    const warm = model.requests.find((q) => q.options.num_predict === 1);
+    assert.ok(warm, "a warm-up request at the start");
+    assert.equal(warm.messages[0].role, "system");
+    assert.equal(warm.tools.length, model.requests.find((q) => q !== warm).tools.length, "the warm-up has the same rules and tools, so their processing is reused");
+    const [first, second] = model.requests.filter((q) => q !== warm);
     assert.equal(first.options.num_ctx, 16384);
+    assert.equal(warm.options.num_ctx, 16384, "the same window, so the model is not loaded again");
     assert.equal(first.stream, false);
+    assert.equal(first.keep_alive, "30m");
+    assert.equal(first.think, false, "a reasoning model does not spend the step thinking");
+    assert.equal(first.options.num_predict, 1024);
     assert.ok(first.tools.some((t: any) => t.function.name === "get_page_text"));
     const call = second.messages.find((m: any) => m.role === "assistant" && m.tool_calls);
     assert.deepEqual(call.tool_calls[0].function, { name: "get_page_text", arguments: { tabId: 9 } }, "arguments as an object");
@@ -187,6 +202,44 @@ test("Ollama: its own /api/chat with a context window that fits the rules and to
   } finally {
     await r.stop();
     br.restore();
+    await model.close();
+    resetEnv();
+  }
+});
+
+test("Ollama: prompt_eval_count much smaller than the prompt says the window is too small; the turn's counts go in its result", async () => {
+  const model = await fakeModel((b) => (b.options?.num_predict === 1 ? { text: "Hi" } : { text: "Hello there.", extra: { prompt_eval_count: 300, prompt_eval_cached_count: 250, eval_count: 4, prompt_eval_duration: 5e7, eval_duration: 1e8 } }), { ollama: true });
+  const r = localSession(model.url);
+  const results: any[] = [];
+  const orig = r.s.onSdkMessage.bind(r.s);
+  (r.s as any).onSdkMessage = (m: any) => (m.type === "result" && results.push(m), orig(m));
+  try {
+    r.s.userText("hello");
+    await until(() => r.spoken().length > 0, "the reply");
+    await until(() => results.length > 0, "the result");
+    assert.ok(r.statuses().some((t) => /prompt looks cut short \(300 of about \d+ tokens\)\. Set CLEARCART_LOCAL_CONTEXT/.test(t)), r.statuses().join("\n"));
+    assert.deepEqual(results[0].usage, { input_tokens: 50, cache_read_input_tokens: 250, output_tokens: 4 });
+  } finally {
+    await r.stop();
+    await model.close();
+    resetEnv();
+  }
+});
+
+test("Ollama: CLEARCART_LOCAL_THINK on a model that cannot think: the step runs without it, and think is not asked for again", async () => {
+  process.env.CLEARCART_LOCAL_THINK = "1";
+  const model = await fakeModel((b) => (b.think === true ? { status: 400, body: { error: '"tiny:1b" does not support thinking' } } : b.options?.num_predict === 1 ? { text: "Hi" } : { text: "Hello there." }), { ollama: true });
+  const r = localSession(model.url);
+  try {
+    r.s.userText("hello");
+    await until(() => r.spoken().length > 0, "the reply");
+    r.s.userText("hello again");
+    await until(() => r.spoken().length > 1, "the second reply");
+    assert.equal(model.requests.filter((q) => q.think === true).length, 1, "asked once, then remembered");
+    assert.deepEqual(r.spoken(), ["Hello there.", "Hello there."]);
+  } finally {
+    delete process.env.CLEARCART_LOCAL_THINK;
+    await r.stop();
     await model.close();
     resetEnv();
   }
