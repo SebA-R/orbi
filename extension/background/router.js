@@ -772,6 +772,13 @@ export function createRouter({
     return { ok: true, via: "cdp" };
   }
 
+  // A click or key press, then where the tab is once the page it may have
+  // opened has loaded: { ...result, navigated, url, title } (tabs.js
+  // actAndSettle). Without that helper, the press's own result.
+  function settled(tabId, act) {
+    return typeof tabs.actAndSettle === "function" ? tabs.actAndSettle(tabId, act) : act();
+  }
+
   async function route(method, params = {}) {
     params = params || {};
     // An interrupt or turn end from here on stops this call's paced action,
@@ -822,7 +829,7 @@ export function createRouter({
     if (ACT_METHODS.has(method)) await follow.to(tabId);
     switch (method) {
       case "click":
-        return clickAt(tabId, params, epoch);
+        return settled(tabId, () => clickAt(tabId, params, epoch));
       case "type": {
         const focus = await guardType(tabId, params.text);
         if (focus && focus.nothing && params.text) {
@@ -843,13 +850,12 @@ export function createRouter({
         if (parsed.text && !/[\r\n]/.test(parsed.text)) await guardType(tabId, parsed.text);
         const act = activationOf(params.key);
         if (act) await pageCall(tabId, "guard_key", { key: act === "Enter" ? "Enter" : "Space" });
-        await cdp.key({ tabId, key: params.key });
-        return { ok: true };
+        return settled(tabId, async () => (await cdp.key({ tabId, key: params.key }), { ok: true }));
       }
       case "lock_arm":
         return lockArm(tabId, params.scope ?? "order");
       case "press_unlocked":
-        return pressUnlocked(tabId, params, epoch);
+        return settled(tabId, () => pressUnlocked(tabId, params, epoch));
       case "lock_info":
         return pageCall(tabId, "lock_info", { ref: params.ref });
       case "press_protected":

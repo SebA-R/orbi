@@ -1729,6 +1729,9 @@ export class Session {
     };
     const browser = extToolDefinitions().map((d) => b(d.name));
     const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"]));
+    // The last page the hint reported per tab (origin and path), so a
+    // request_unlock press lists the page's controls only when it moved.
+    const seenUrl = new Map<number, string>();
     return {
       drop,
       describe,
@@ -1760,18 +1763,30 @@ export class Session {
       hint: async (tool, args, text, isError) => {
         const short = tool.replace(B, "").replace(C, "");
         const tabId = typeof args.tabId === "number" ? args.tabId : this.state.lastTabId;
-        // Where an action landed and what is on that page, so the model
-        // knows which page it is on and has the refs to go on with.
-        if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && tabId != null && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
-          await new Promise((r) => setTimeout(r, 700));
-          const t = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId }, 5_000).catch(() => null);
+        // Where a click, key or unlock press landed, and when it opened
+        // another page, what is on it, so the model has the refs to go on
+        // with. The extension answers click and key once the page settled
+        // ({ navigated, url, title }); navigate and tabs_create already say
+        // where they went.
+        if (!isError && /^(click|key|request_unlock)$/.test(short) && tabId != null && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
+          let t: { url?: string; title?: string; navigated?: boolean } | null = null;
+          try {
+            // The result's own JSON line (page tools come wrapped in page-data markers).
+            const line = text.split("\n").find((l) => l.startsWith("{"));
+            if (line) t = JSON.parse(line);
+          } catch {}
+          // request_unlock answers a sentence; the press already waited for
+          // the page, so the tab is where it went.
+          if (typeof t?.url !== "string") t = short === "request_unlock" ? await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId }, 5_000).catch(() => null) : null;
           if (!t?.url) return null;
           const title = String(t.title ?? "").slice(0, 80);
           let where = originOf(t.url) ?? "";
           try {
             where += new URL(t.url).pathname;
           } catch {}
-          const controls = await this.controlsOn(tabId);
+          const changed = typeof t.navigated === "boolean" ? t.navigated : seenUrl.get(tabId) !== where;
+          seenUrl.set(tabId, where);
+          const controls = changed ? await this.controlsOn(tabId) : [];
           return `Now on: ${title && !isInjectionLine(title) ? `${JSON.stringify(title)}, ` : ""}${where}${controls.length ? `\nOn this page:\n${pageData(controls.join("\n"), 1_500)}` : ""}`;
         }
         if (short === "find" && /"matches":\[\]/.test(text)) {

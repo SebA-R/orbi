@@ -207,6 +207,49 @@ test("a Locked click the user asked for is followed by request_unlock at once an
   }
 });
 
+test("after a click the hint uses the extension's settled result: no wait or tab_info, controls only when it navigated", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "find", args: { query: "jackets" } }] };
+    if (n === 2) return { calls: [{ name: "click", args: { ref: "ref_4" } }] };
+    if (n === 3) return { calls: [{ name: "click", args: { ref: "ref_8" } }] };
+    if (n === 4) return { calls: [{ name: "navigate", args: { url: `${SHOP}/c/coats` } }] };
+    return { text: "Done." };
+  });
+  let clicks = 0;
+  const br = useBrowser((method) => {
+    const t = tabs(method);
+    if (t) return t;
+    if (method === "find") return { matches: [{ ref: "ref_4", role: "link", name: "Jackets" }, { ref: "ref_8", role: "button", name: "Size M" }] };
+    if (method === "rect") return { x: 1, y: 1, width: 10, height: 10 };
+    if (method === "click") return ++clicks === 1 ? { ok: true, via: "cdp", navigated: true, url: `${SHOP}/c/jackets`, title: "Jackets" } : { ok: true, via: "cdp", navigated: false, url: `${SHOP}/c/jackets`, title: "Jackets" };
+    if (method === "read_page") return { tree: '- button "Size M" [ref_8]\n- link "Coats" [ref_9]' };
+    if (method === "navigate") return { tabId: 7, url: `${SHOP}/c/coats`, title: "Coats" };
+    return {};
+  });
+  const r = localSession(model.url);
+  try {
+    (r.s as any).state.lastTabId = 7;
+    r.s.userText("open jackets and pick size m");
+    await until(() => r.spoken().length > 0, "the reply");
+    const first = toolMessages(model.requests[2]).at(-1).content;
+    assert.match(first, /"navigated":true/);
+    assert.match(first, /Now on: "Jackets", https:\/\/www\.etsy\.com\/c\/jackets\nOn this page:/);
+    assert.match(first, /button "Size M" \[ref_8\]/);
+    const second = toolMessages(model.requests[3]).at(-1).content;
+    assert.match(second, /Now on: "Jackets", https:\/\/www\.etsy\.com\/c\/jackets/);
+    assert.doesNotMatch(second, /On this page/, "same page: no controls list");
+    const third = toolMessages(model.requests[4]).at(-1).content;
+    assert.doesNotMatch(third, /Now on:|On this page/, "navigate already says where it went");
+    const names = br.calls.map((c) => c[0]);
+    assert.ok(!names.slice(names.indexOf("click")).includes("tab_info"), `no tab_info after an action: ${JSON.stringify(names)}`);
+    assert.equal(br.calls.filter((c) => c[0] === "read_page").length, 1, "one read_page, after the click that navigated");
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
 test("Danger mode lifts nothing on a local model, and the user hears so once", async () => {
   const model = await fakeModel(() => ({ text: "Hi." }));
   const br = useBrowser((m) => tabs(m) ?? {});
