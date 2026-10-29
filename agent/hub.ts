@@ -64,6 +64,8 @@ export type CreateSession = (send: (m: ServerMessage) => void, ended: () => void
 
 // How often a switch waiting for a payment or a turn to finish checks again.
 export const SWITCH_RETRY_MS = 250;
+// The longest a switch waits for a turn in progress (not a payment).
+export const SWITCH_TURN_MAX_MS = 120_000;
 
 export const ELSEWHERE_TEXT = "Orbi is in use in another window. Talk here to use it here.";
 export const MOVED_TEXT = "Orbi moved to another window. Talk here to bring it back.";
@@ -83,6 +85,9 @@ export class SessionHub {
   private session: HubSession | null = null;
   // A backend switch waiting for the session's payment or turn to finish.
   private pendingSwitch: NodeJS.Timeout | null = null;
+  // That switch: when it was asked for, whether the window was told it
+  // waits, and whether the log has said so.
+  private waiting: { since: number; told: boolean; logged: boolean } | null = null;
 
   constructor(private create: CreateSession, private log: (line: string) => void = () => {}) {}
 
@@ -153,18 +158,38 @@ export class SessionHub {
   private trySwitch(backend: string, label: string, first: boolean): boolean {
     if (this.pendingSwitch) clearTimeout(this.pendingSwitch);
     this.pendingSwitch = null;
+    const waited = first ? null : this.waiting;
+    if (first) {
+      // A newer setting: a switch still waiting is replaced (or cancelled
+      // below, when this one is the backend the session already runs on).
+      const prev = this.waiting;
+      this.waiting = null;
+      const s = this.session;
+      if (prev?.told && s && s.backend === backend) this.owner?.send({ type: "status", text: `Staying on ${label}.` });
+    }
     const s = this.session;
     if (!s || s.backend === undefined || s.backend === backend) return false;
+    const w = waited ?? { since: Date.now(), told: false, logged: false };
+    this.waiting = w;
     const paying = s.busy?.() === true;
-    if (paying || s.midTurn?.() === true) {
-      if (first) {
+    // A payment always finishes first. A turn is waited for up to
+    // SWITCH_TURN_MAX_MS, so a turn that never reports its end can't keep
+    // the old backend forever.
+    const turn = !paying && s.midTurn?.() === true && Date.now() - w.since < SWITCH_TURN_MAX_MS;
+    if (paying || turn) {
+      if (!w.logged) {
+        w.logged = true;
         this.log(`voice session switch to ${label} waits for the ${paying ? "payment under way" : "turn in progress"}`);
-        if (!paying) this.owner?.send({ type: "status", text: `Switching to ${label} when this turn ends.` });
+      }
+      if (turn && !w.told) {
+        w.told = true;
+        this.owner?.send({ type: "status", text: `Switching to ${label} when this turn ends.` });
       }
       this.pendingSwitch = setTimeout(() => this.trySwitch(backend, label, false), SWITCH_RETRY_MS);
       this.pendingSwitch.unref?.();
       return false;
     }
+    this.waiting = null;
     const why = `switched to ${label}`;
     const carry = s.carry?.();
     if (s.retire) s.retire(why);

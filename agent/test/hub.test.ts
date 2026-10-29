@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { MOVED_TEXT, SessionHub, STALE_TEXT, type HubMessage, type HubSession } from "../hub.ts";
+import { MOVED_TEXT, SessionHub, STALE_TEXT, SWITCH_TURN_MAX_MS, type HubMessage, type HubSession } from "../hub.ts";
 import { claimConfirmation } from "../pay.ts";
 import { Session, type ServerMessage } from "../session.ts";
 
@@ -296,6 +296,35 @@ test("Session.midTurn: true from the user's words until the turn's result", () =
   s.userText("find me a mug");
   assert.equal(s.midTurn(), true);
   s.onSdkMessage({ type: "result", subtype: "success" } as any);
+  assert.equal(s.midTurn(), false);
+  s.close();
+});
+
+test("a pending switch: switching back says so; a turn that never ends can't hold it past SWITCH_TURN_MAX_MS", async () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  hub.switchBackend("claude", "Claude");
+  assert.ok(w.got.some((m) => m.type === "status" && (m as any).text === "Staying on Claude."));
+
+  const realNow = Date.now;
+  try {
+    hub.switchBackend("local x", "your local model x");
+    const t = realNow();
+    Date.now = () => t + SWITCH_TURN_MAX_MS + 1;
+    await until(() => made.length === 2, "switched though the turn never ended");
+  } finally {
+    Date.now = realNow;
+  }
+  w.peer.leave();
+});
+
+test("a local model's turn is not waited for (its locks follow the setting at once)", () => {
+  const s = new Session(() => {});
+  s.localMode = true;
+  s.userText("find me a mug");
   assert.equal(s.midTurn(), false);
   s.close();
 });

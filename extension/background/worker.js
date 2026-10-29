@@ -13,7 +13,7 @@ import { createErrorPages, FILTER as ERROR_FILTER } from "./errpage.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
 import { AGENT_SETTING_KEYS, agentSettingsMessage, endpoints, loadSettings, migrateSettings, seedBlocklist } from "../lib/settings.js";
-import { MSG, RT } from "../lib/protocol.js";
+import { CLIENT_ID_RE, MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 import { installBasicTtsHost } from "./basic-tts-host.js";
 import { installFrame } from "./frame.js";
@@ -209,14 +209,17 @@ const sendSettings = () => {
 // This install's id for the bridge hello: random once, then kept in
 // storage, so a restarted worker is known as the same client and another
 // profile's install is not (agent/extbridge.ts).
+// Made once per worker, so two startBridge calls on a fresh install can't
+// store two different ids.
 const CLIENT_ID_KEY = "bridgeClientId";
-async function bridgeClientId() {
+let clientIdReady = null;
+const bridgeClientId = () => (clientIdReady ??= (async () => {
   const stored = (await chrome.storage.local.get(CLIENT_ID_KEY))[CLIENT_ID_KEY];
-  if (typeof stored === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(stored)) return stored;
+  if (typeof stored === "string" && CLIENT_ID_RE.test(stored)) return stored;
   const id = crypto.randomUUID();
   await chrome.storage.local.set({ [CLIENT_ID_KEY]: id });
   return id;
-}
+})());
 
 async function startBridge() {
   const settings = await loadSettings();

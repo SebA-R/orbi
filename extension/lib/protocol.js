@@ -173,6 +173,9 @@ export function hello(version, client) {
   return m;
 }
 
+// An install's client id (worker.js makes one; the server checks the same).
+export const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
 // Bridge close codes from the agent server.
 export const CLOSE = Object.freeze({
   // A newer connection from this same install took over.

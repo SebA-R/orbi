@@ -71,12 +71,16 @@ const HELLO_TIMEOUT_MS = 5_000;
 // long without a message means the owner's socket is dead even if it looks
 // open (protocol.js TIMING.DEAD_AFTER_MS).
 export const STALE_AFTER_MS = 45_000;
+// Bridge close codes; mirror extension/lib/protocol.js CLOSE.
+export const CLOSE = { REPLACED: 4002, BUSY: 4004 } as const;
 // Close code for a hello refused because another client owns the bridge.
-export const BUSY_CLOSE = 4004;
+export const BUSY_CLOSE = CLOSE.BUSY;
+// A client id; mirrors extension/lib/protocol.js CLIENT_ID_RE.
+export const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 // A client id from a hello: a short token, or null when absent or malformed.
 export function parseClientId(v: unknown): string | null {
-  return typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v) ? v : null;
+  return typeof v === "string" && CLIENT_ID_RE.test(v) ? v : null;
 }
 
 export class ExtError extends Error {
@@ -89,8 +93,6 @@ export class ExtError extends Error {
 type Pending = { ws: WebSocket; method: string; resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
 
 export type ExtInfo = { version: string; connectedAt: number };
-
-type Owner = { ws: WebSocket; clientId: string | null; lastSeen: number };
 
 // The user's agent provider settings as the extension sent them: Claude
 // (and which Claude model) or a local model, and the local endpoint
@@ -117,7 +119,10 @@ export function extOriginAllowed(origin: string | string[] | undefined, origins:
 export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   readonly wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
   private current: WebSocket | null = null;
-  private owner: Owner | null = null;
+  // The current socket's client id (null: none sent) and when it last sent
+  // anything.
+  private currentId: string | null = null;
+  private lastSeen = 0;
   // The last client refused as busy, so a retrying one is logged once.
   private lastRefused: string | null | undefined = undefined;
   private info: ExtInfo | null = null;
@@ -273,7 +278,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
         return;
       }
       if (!m || typeof m !== "object" || typeof m.type !== "string") return;
-      if (this.owner?.ws === ws) this.owner.lastSeen = Date.now();
+      if (ws === this.current) this.lastSeen = Date.now();
 
       if (m.type === "ping") {
         if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "pong", t: m.t }));
@@ -291,7 +296,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
         if (!this.mayTakeOver(clientId)) {
           if (this.lastRefused !== clientId) this.log("ext: refused a second extension (another one is connected)");
           this.lastRefused = clientId;
-          ws.close(BUSY_CLOSE, "another extension is connected");
+          ws.close(CLOSE.BUSY, "another extension is connected");
           return;
         }
         this.promote(ws, String(m.version ?? "0"), clientId);
@@ -336,7 +341,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
       this.dropPending(ws, "the extension disconnected");
       if (this.current === ws) {
         this.current = null;
-        this.owner = null;
+        this.currentId = null;
         this.info = null;
         this.danger = false;
         this.log("ext: extension disconnected");
@@ -375,23 +380,24 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   // Whether a greeted client may take the bridge: nobody holds it, the
   // holder is this same client again, or the holder has gone silent.
   private mayTakeOver(clientId: string | null): boolean {
-    const o = this.owner;
-    if (!o || o.ws.readyState !== o.ws.OPEN) return true;
-    if (clientId !== null && clientId === o.clientId) return true;
-    return Date.now() - o.lastSeen > STALE_AFTER_MS;
+    if (!this.connected()) return true;
+    if (clientId !== null && clientId === this.currentId) return true;
+    return Date.now() - this.lastSeen > STALE_AFTER_MS;
   }
 
   private promote(ws: WebSocket, version: string, clientId: string | null = null) {
     const old = this.current;
+    const same = clientId !== null && clientId === this.currentId;
     this.current = ws;
-    this.owner = { ws, clientId, lastSeen: Date.now() };
+    this.currentId = clientId;
+    this.lastSeen = Date.now();
     this.lastRefused = undefined;
     this.info = { version, connectedAt: Date.now() };
     // A new connection states Danger mode itself (the worker sends it on connect).
     this.danger = false;
     if (old && old !== ws) {
-      this.dropPending(old, "replaced by a newer connection from the same extension");
-      old.close(4002, "replaced");
+      this.dropPending(old, same ? "replaced by a newer connection from the same extension" : "replaced after it went silent");
+      old.close(CLOSE.REPLACED, "replaced");
     }
     ws.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION, server: SERVER_NAME }));
     this.log(`ext: extension connected (version ${version})`);

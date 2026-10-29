@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as proto from "../../extension/lib/protocol.js";
-import { ERR, EXT_NAME, ExtError, INTERNAL, PROTOCOL_VERSION, STALE_AFTER_MS, TOOLS } from "../extbridge.ts";
+import { CLIENT_ID_RE, CLOSE, ERR, EXT_NAME, ExtError, INTERNAL, PROTOCOL_VERSION, STALE_AFTER_MS, TOOLS, parseClientId } from "../extbridge.ts";
 // @ts-ignore: plain JS module from the extension
 import { BridgeClient } from "../../extension/lib/bridge.js";
 import { WebSocket } from "ws";
@@ -14,6 +14,12 @@ test("constants mirror extension/lib/protocol.js", () => {
   assert.deepEqual({ ...ERR }, { ...proto.ERR });
   assert.equal(PROTOCOL_VERSION, proto.PROTOCOL_VERSION);
   assert.equal(EXT_NAME, proto.EXT_NAME);
+  assert.deepEqual({ ...CLOSE }, { ...proto.CLOSE });
+  assert.equal(CLIENT_ID_RE.source, proto.CLIENT_ID_RE.source);
+  assert.equal(STALE_AFTER_MS, proto.TIMING.DEAD_AFTER_MS);
+  for (const v of [crypto.randomUUID(), "install-aaaa", "short", "a".repeat(65), "bad id!", 7, undefined]) {
+    assert.equal(parseClientId(v), proto.CLIENT_ID_RE.test(String(v)) && typeof v === "string" ? v : null, String(v));
+  }
 });
 
 test("handshake: hello gets welcome, connect event fires", async () => {
@@ -197,7 +203,7 @@ test("an owner silent past STALE_AFTER_MS can be replaced by another install", a
   try {
     const mine = new FakeExt(b.url, () => null, "0.0.1", "install-mine");
     await mine.open();
-    (b.bridge as any).owner.lastSeen = Date.now() - STALE_AFTER_MS - 1;
+    (b.bridge as any).lastSeen = Date.now() - STALE_AFTER_MS - 1;
     const other = new FakeExt(b.url, () => ({ who: "other" }), "0.0.1", "install-test");
     await other.open();
     assert.equal((await mine.waitClosed()).code, 4002);
