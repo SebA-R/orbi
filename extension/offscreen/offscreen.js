@@ -170,6 +170,8 @@ function applySettings(next) {
   if (prev.speakReplies && !settings.speakReplies) controller.releaseSpeech();
   if (settings.agentUrl !== prev.agentUrl) {
     getToken.clear();
+    // The old socket's onclose is dropped: its turn and counts end here.
+    controller.onAgentState("closed");
     agent.reconnect();
     void checkVoice();
   }

@@ -692,3 +692,29 @@ test("a release with nothing heard yet shows thinking at once; an empty turn the
   assert.deepEqual(states(r.emitted), ["listening", "thinking", "idle"]);
   assert.ok(!r.agent.sent.some((m) => m.type === "user_text"));
 });
+
+test("a mic that fails after the release does not leave it thinking", async () => {
+  const r = rig({ micFails: "NotReadableError" });
+  const p = r.c.start();
+  r.c.stop(); // released before getUserMedia rejected
+  await p;
+  assert.equal(r.c.awaitingReply, false);
+  assert.equal(r.c.state, "idle");
+});
+
+test("busy: the barged-in turn's off during the release tail is not this turn's end", async () => {
+  const r = opened();
+  r.c.typed("find socks");
+  busy(r, true, 1);
+  await r.c.start(); // barge in
+  r.stt.h.onPartial("wool");
+  r.c.stop();
+  busy(r, false, 1); // the interrupted turn ends before our words go out
+  assert.equal(r.c.state, "thinking");
+  r.timers.find((t) => t.ms === TAIL_MS).fn();
+  r.stt.h.onFinal("wool ones");
+  busy(r, true, 2);
+  busy(r, false, 2);
+  assert.equal(r.c.state, "idle");
+  assert.deepEqual(states(r.emitted).slice(-3), ["listening", "thinking", "idle"], "no idle blip on release");
+});

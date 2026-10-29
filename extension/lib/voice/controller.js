@@ -341,6 +341,7 @@ export class VoiceController {
       this.confirmed = false;
       this.held = [];
       turn.dropped = true;
+      if (turn.expected) this.awaitingReply = false; // released already: nothing will be sent
       this.#endLatch();
       this.#setState(this.speaking ? STATES.SPEAKING : this.awaitingReply ? STATES.THINKING : STATES.IDLE, true); // the page may think it latched
       const blocked = err && err.name === "NotAllowedError";
@@ -656,6 +657,10 @@ export class VoiceController {
         this.busyAware = true;
         // An "off" (or "on") about words older than our last is stale.
         if (typeof m.seq === "number" && m.seq < this.sentSeq) break;
+        // A released turn not sent yet (the tail, the final): an "off" is
+        // the turn it barged in on ending, not this one.
+        const t = this.turn;
+        if (!m.on && t && !t.open && t.expected && !t.sent && !t.dropped) break;
         if (m.on) {
           // Working again (a question it asked was dropped) — unless the
           // user cut this turn off.

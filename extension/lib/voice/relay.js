@@ -145,15 +145,25 @@ export function createVoiceRelay({
 
   // A restarted worker has no state on record: ask the offscreen document
   // (if there is one) to say it, and wait a moment for it. Idle otherwise.
+  // One pending ask at a time, shared by every query that comes meanwhile.
+  let asking = null;
   function stateKnown() {
     if (replay.state) return Promise.resolve();
-    return new Promise((resolve) => {
+    if (asking) return asking;
+    asking = new Promise((resolve) => {
       let done = false;
-      const finish = () => { if (!done) { done = true; resolve(); } };
+      const finish = () => {
+        if (done) return;
+        done = true;
+        stateWaiters = stateWaiters.filter((w) => w !== finish);
+        asking = null;
+        resolve();
+      };
       stateWaiters.push(finish);
       setTimeout(finish, STATE_WAIT_MS);
       toOffscreen({ type: RT.VOICE_SYNC }, { create: false }).then(() => hasOffscreen()).then((open) => { if (!open) finish(); }, finish);
     });
+    return asking;
   }
 
   // Returns true when the message was ours (so callers know not to answer it).

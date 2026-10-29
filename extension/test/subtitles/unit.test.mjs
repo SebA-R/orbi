@@ -398,6 +398,21 @@ test("clicking the page never hides the card while Orbi is thinking, listening o
   assert.equal(t.visible(), false, "at idle a click still dismisses it");
 });
 
+test("a busy state whose idle never came stops keeping the card up after a few minutes", () => {
+  const t = setup();
+  const real = t.window.Date.now;
+  let now = real();
+  t.window.Date.now = () => now;
+  t.send({ type: "subtitle", speaker: "user", text: "find me socks", final: true });
+  t.send({ type: "voice.state", state: "thinking" });
+  const click = () => t.window.document.body.dispatchEvent(new t.window.MouseEvent("pointerdown", { bubbles: true, clientX: 20, clientY: 20 }));
+  click();
+  assert.ok(t.visible());
+  now += 181000;
+  click();
+  assert.equal(t.visible(), false);
+});
+
 // Karaoke: SUBTITLE {utteranceId, karaoke} then SUBTITLE_WORD as words are heard.
 const LINE = "Found it, nine dollars.";
 const kline = (t, id = "u1", text = LINE) => t.send({ type: "subtitle", speaker: "agent", text, final: true, utteranceId: id, karaoke: true });
