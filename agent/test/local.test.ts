@@ -218,8 +218,27 @@ test("Ollama: prompt_eval_count much smaller than the prompt says the window is 
     await until(() => r.spoken().length > 0, "the reply");
     await until(() => results.length > 0, "the result");
     assert.ok(r.statuses().some((t) => /prompt looks cut short \(300 of about \d+ tokens\)\. Set CLEARCART_LOCAL_CONTEXT/.test(t)), r.statuses().join("\n"));
-    assert.deepEqual(results[0].usage, { input_tokens: 300, cache_read_input_tokens: 250, output_tokens: 4 });
+    assert.deepEqual(results[0].usage, { input_tokens: 50, cache_read_input_tokens: 250, output_tokens: 4 });
   } finally {
+    await r.stop();
+    await model.close();
+    resetEnv();
+  }
+});
+
+test("Ollama: CLEARCART_LOCAL_THINK on a model that cannot think: the step runs without it, and think is not asked for again", async () => {
+  process.env.CLEARCART_LOCAL_THINK = "1";
+  const model = await fakeModel((b) => (b.think === true ? { status: 400, body: { error: '"tiny:1b" does not support thinking' } } : b.options?.num_predict === 1 ? { text: "Hi" } : { text: "Hello there." }), { ollama: true });
+  const r = localSession(model.url);
+  try {
+    r.s.userText("hello");
+    await until(() => r.spoken().length > 0, "the reply");
+    r.s.userText("hello again");
+    await until(() => r.spoken().length > 1, "the second reply");
+    assert.equal(model.requests.filter((q) => q.think === true).length, 1, "asked once, then remembered");
+    assert.deepEqual(r.spoken(), ["Hello there.", "Hello there."]);
+  } finally {
+    delete process.env.CLEARCART_LOCAL_THINK;
     await r.stop();
     await model.close();
     resetEnv();

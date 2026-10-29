@@ -133,16 +133,23 @@ export type ChatRequest = {
 // out, and where the time went (ms).
 export type ChatStats = { promptTokens?: number; cachedTokens?: number; outputTokens?: number; promptMs?: number; outputMs?: number; loadMs?: number; totalMs?: number };
 
-// promptTokens: what the server says the prompt came to, to notice one
-// that cut it short.
-export type ChatReply = { content: string; toolCalls: ToolCall[]; promptTokens?: number; stats: ChatStats };
+// thinkRefused: think was asked for but the model cannot think, so the
+// step ran without it (the caller stops asking).
+export type ChatReply = { content: string; toolCalls: ToolCall[]; stats: ChatStats; thinkRefused?: boolean };
 
 export const DEFAULT_CONTEXT_TOKENS = 16_384;
 // The longest answer a step may give.
 export const REPLY_TOKENS = 1_024;
 // How long Ollama keeps the model loaded after a request (its default is
 // 5 minutes, so a pause in shopping would pay the load again).
+// CLEARCART_LOCAL_KEEP_ALIVE changes it ("-1": always, "0": unload at once);
+// when only OLLAMA_KEEP_ALIVE is set, the server's own setting is left alone.
 export const KEEP_ALIVE = "30m";
+function keepAlive(env: NodeJS.ProcessEnv = process.env): { keep_alive?: string | number } {
+  const v = env.CLEARCART_LOCAL_KEEP_ALIVE?.trim();
+  if (v) return { keep_alive: /^-?\d+$/.test(v) ? Number(v) : v };
+  return env.OLLAMA_KEEP_ALIVE?.trim() ? {} : { keep_alive: KEEP_ALIVE };
+}
 const rootOf = (baseUrl: string) => baseUrl.replace(/\/v1$/, "");
 
 // "ollama" when the server answers Ollama's /api/version, "openai" when it
@@ -202,7 +209,7 @@ export async function chat(r: ChatRequest): Promise<ChatReply> {
         ...(r.tools.length ? { tools: r.tools } : {}),
         stream: false,
         think: r.think ?? false,
-        keep_alive: KEEP_ALIVE,
+        ...keepAlive(),
         options: { num_ctx: r.contextTokens ?? DEFAULT_CONTEXT_TOKENS, temperature: 0.3, num_predict: r.maxTokens ?? REPLY_TOKENS },
       }
     : {
@@ -237,7 +244,7 @@ export async function chat(r: ChatRequest): Promise<ChatReply> {
   }
   if (!res.ok) {
     // An Ollama model that cannot think refuses think: true; ask again without it.
-    if (ollama && r.think && /does not support thinking/i.test(text)) return chat({ ...r, think: false });
+    if (ollama && r.think && /does not support thinking/i.test(text)) return { ...(await chat({ ...r, think: false })), thinkRefused: true };
     throw httpError(res.status, text, r.model);
   }
   let json: any;
@@ -250,7 +257,6 @@ export async function chat(r: ChatRequest): Promise<ChatReply> {
   return {
     content: typeof msg.content === "string" ? stripThinking(msg.content) : "",
     toolCalls: toolCallsOf(msg.tool_calls),
-    ...(stats.promptTokens !== undefined ? { promptTokens: stats.promptTokens } : {}),
     stats,
   };
 }

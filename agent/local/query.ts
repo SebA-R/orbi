@@ -309,6 +309,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // spoke, then the tab a tool opened or used). A call that leaves tabId out
   // gets it, so every gate sees which tab it is for.
   private lastTab: number | null = null;
+  // The warm-up request, while it runs (LocalOptions.warmUp).
+  private warming: Promise<void> | null = null;
+  // The model said it cannot think: think is not asked for again.
+  private thinkOff = false;
   // The turn in progress's token counts, for its result.
   private usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
 
@@ -367,7 +371,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       await Promise.all(servers.map((s) => s.start()));
       this.offer();
       yield { type: "system", subtype: "init", session_id: this.sessionId, model: this.o.model, tools: this.specs.map((t) => t.function.name), mcp_servers: await this.mcpServerStatus() } as unknown as SDKMessage;
-      if (this.o.warmUp) void this.warm();
+      if (this.o.warmUp) this.warming = this.warm();
       for await (const m of this.prompt) {
         if (closed?.aborted) return;
         const text = userText(m);
@@ -389,20 +393,25 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     }
   }
 
-  // Ollama only (see LocalOptions.warmUp). Failures are ignored: the first
-  // real request says what is wrong.
+  // Ollama only (see LocalOptions.warmUp). Never throws: a failure is
+  // ignored, and the first real request says what is wrong. The first turn
+  // waits for it, so the two never run side by side.
   private async warm() {
-    const signal = this.o.abortController?.signal ?? new AbortController().signal;
-    this.flavor ??= await detectFlavor(this.o.baseUrl, this.o.fetch);
-    if (this.flavor !== "ollama" || signal.aborted) return;
-    const system = typeof this.o.systemPrompt === "function" ? this.o.systemPrompt() : this.o.systemPrompt;
     const t0 = Date.now();
     try {
-      const r = await chat({ ...this.request(signal), messages: [{ role: "system", content: system }, { role: "user", content: "Hi" }], timeoutMs: 120_000, maxTokens: 1 });
+      const signal = this.o.abortController?.signal ?? new AbortController().signal;
+      this.flavor ??= await detectFlavor(this.o.baseUrl, this.o.fetch);
+      if (this.flavor !== "ollama" || signal.aborted) return;
+      const r = await chat({ ...this.request(signal), messages: [{ role: "system", content: this.systemText() }, { role: "user", content: "Hi" }], timeoutMs: 120_000, maxTokens: 1 });
+      if (r.thinkRefused) this.thinkOff = true;
       timing.note(`local warm-up ${Date.now() - t0}ms ${statLine(r.stats)}`);
     } catch (e) {
       timing.note(`local warm-up failed: ${(e as Error).message}`);
     }
+  }
+
+  private systemText(): string {
+    return typeof this.o.systemPrompt === "function" ? this.o.systemPrompt() : this.o.systemPrompt;
   }
 
   // The parts of a model request that are the same for every step.
@@ -415,7 +424,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       timeoutMs: this.o.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
       flavor: this.flavor ?? ("openai" as const),
       contextTokens: this.o.contextTokens,
-      think: this.o.think,
+      think: this.o.think && !this.thinkOff,
       fetch: this.o.fetch,
     };
   }
@@ -449,11 +458,14 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         }
         this.fit();
         let reply;
-        const system = typeof this.o.systemPrompt === "function" ? this.o.systemPrompt() : this.o.systemPrompt;
+        const system = this.systemText();
         const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat()];
-        const t0 = Date.now();
+        let t0 = Date.now();
         try {
+          if (this.warming) await unlessAborted(this.warming, signal);
+          this.warming = null;
           this.flavor ??= await unlessAborted(detectFlavor(this.o.baseUrl, this.o.fetch), signal).then((f) => (f === ABORTED ? null : f));
+          t0 = Date.now();
           timing.mark("model_step", { detail: `#${step}` });
           reply = await chat({ ...this.request(signal), messages });
         } catch (e) {
@@ -470,10 +482,15 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           return;
         }
         timing.mark("model_done", { detail: `#${step} ${Date.now() - t0}ms ${statLine(reply.stats)}${reply.toolCalls.length ? ` -> ${reply.toolCalls.map((c) => c.function.name).join(",")}` : " -> reply"}` });
-        usage.input_tokens += reply.stats.promptTokens ?? 0;
+        if (reply.thinkRefused && !this.thinkOff) {
+          this.thinkOff = true;
+          this.o.onStatus?.(`local model: ${this.o.model} cannot think, so CLEARCART_LOCAL_THINK is ignored`);
+        }
+        // As on the SDK path: input_tokens leaves out what was read from cache.
+        usage.input_tokens += Math.max(0, (reply.stats.promptTokens ?? 0) - (reply.stats.cachedTokens ?? 0));
         usage.cache_read_input_tokens += reply.stats.cachedTokens ?? 0;
         usage.output_tokens += reply.stats.outputTokens ?? 0;
-        this.checkPromptSize(reply.promptTokens, messages);
+        this.checkPromptSize(reply.stats.promptTokens, messages);
         trace(`model step ${step}: ${JSON.stringify(reply.content).slice(0, 300)} calls=${reply.toolCalls.map((c) => c.function.name).join(",")}`);
         let calls = reply.toolCalls;
         // Scaffold: a tool call written out as text (JSON, or prose like
