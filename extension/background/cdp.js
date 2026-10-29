@@ -155,7 +155,13 @@ export async function click({ tabId, x, y } = {}) {
   const base = { x: px, y: py, button: "left", clickCount: 1 };
   await send(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: px, y: py, button: "none", buttons: 0 });
   await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mousePressed", buttons: 1 });
-  await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mouseReleased", buttons: 0 });
+  // The press went down: a failure from here on may follow a click the page
+  // already took (an order placed), so callers must not click again by DOM.
+  try {
+    await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mouseReleased", buttons: 0 });
+  } catch (e) {
+    throw Object.assign(e, { noFallback: true });
+  }
 }
 
 export async function type({ tabId, text } = {}) {

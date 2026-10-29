@@ -33,10 +33,11 @@ function clean<T extends Record<string, unknown>>(o: T): Partial<T> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
-// click by ref: ask the page for the element's rect (it scrolls it into view
-// first), then click its centre through CDP. If rect/CDP is unavailable, fall
-// back to a DOM click on the ref. The extension's click answers where the
-// tab is once the page settled (Settled); that comes back too.
+// click by ref: the extension's own ref path (router.js clickAt) reads the
+// element's rect after the debugger attaches, checks what covers it
+// (guard_ref), re-reads it right before the press when paced, and falls back
+// to a DOM click itself only when no press reached the page. The extension
+// answers via plus where the tab is once the page settled (Settled).
 export type Settled = { navigated?: boolean; url?: string; title?: string };
 
 function settledOf(r: unknown): Settled {
@@ -48,30 +49,9 @@ function settledOf(r: unknown): Settled {
   return out;
 }
 
-export async function clickRef(bridge: Bridge, ref: string, tab?: number): Promise<{ x?: number; y?: number; via: "cdp" | "dom" } & Settled> {
-  let r: { x: number; y: number; width: number; height: number };
-  try {
-    r = await bridge.call("rect", clean({ tabId: tab, ref }));
-  } catch (e) {
-    if (e instanceof ExtError && e.code === ERR.UNKNOWN_METHOD) {
-      await bridge.call("click_ref", clean({ tabId: tab, ref }));
-      return { via: "dom" };
-    }
-    throw e;
-  }
-  if (!r || !(r.width > 0) || !(r.height > 0)) throw new ExtError(ERR.NO_ELEMENT, `${ref} is not visible`);
-  const x = Math.round(r.x + r.width / 2);
-  const y = Math.round(r.y + r.height / 2);
-  try {
-    const done = await bridge.call("click", clean({ tabId: tab, x, y }));
-    return { x, y, via: "cdp", ...settledOf(done) };
-  } catch (e) {
-    if (e instanceof ExtError && (e.code === ERR.UNKNOWN_METHOD || e.code === ERR.INTERNAL)) {
-      await bridge.call("click_ref", clean({ tabId: tab, ref }));
-      return { via: "dom" };
-    }
-    throw e;
-  }
+export async function clickRef(bridge: Bridge, ref: string, tab?: number): Promise<{ via: "cdp" | "dom" } & Settled> {
+  const done = await bridge.call<{ via?: string }>("click", clean({ tabId: tab, ref }));
+  return { via: done?.via === "dom" ? "dom" : "cdp", ...settledOf(done) };
 }
 
 export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefinition<any>[] {

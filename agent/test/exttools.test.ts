@@ -47,38 +47,32 @@ test("pass-through tools forward params and drop undefined keys", async () => {
   assert.deepEqual(JSON.parse(r.content[0].text).matches[0].ref, "ref_1");
 });
 
-test("click by ref calls rect then clicks the centre", async () => {
-  const b = fakeBridge((m) => (m === "rect" ? { x: 100, y: 200, width: 50, height: 20 } : null));
+test("click by ref sends the ref to the extension's own ref path, never a rect or a DOM fallback", async () => {
+  const b = fakeBridge(() => ({ ok: true, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets", junk: "x" }));
   const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
   const r: any = await defs.click.handler({ ref: "ref_7", tabId: 9 }, {});
-  assert.deepEqual(b.calls, [
-    { method: "rect", params: { tabId: 9, ref: "ref_7" } },
-    { method: "click", params: { tabId: 9, x: 125, y: 210 } },
-  ]);
-  assert.equal(JSON.parse(r.content[0].text).via, "cdp");
+  assert.deepEqual(b.calls, [{ method: "click", params: { tabId: 9, ref: "ref_7" } }]);
+  assert.deepEqual(JSON.parse(r.content[0].text), { ok: true, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" });
 });
 
-test("click answers where the tab settled: navigated, url and title from the extension", async () => {
-  const settled = { ok: true, navigated: true, url: "https://shop.example/c/jackets", title: "Jackets", junk: "x" };
-  const b = fakeBridge((m) => (m === "rect" ? { x: 0, y: 0, width: 10, height: 10 } : settled));
+test("click by ref: a failure comes back as an error, with no second click", async () => {
+  const b = fakeBridge(() => {
+    throw new ExtError("internal", "Input.dispatchMouseEvent failed");
+  });
   const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
-  const byRef = JSON.parse(((await defs.click.handler({ ref: "ref_7" }, {})) as any).content[0].text);
-  assert.deepEqual(byRef, { ok: true, x: 5, y: 5, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" });
+  const r: any = await defs.click.handler({ ref: "ref_7" }, {});
+  assert.equal(r.isError, true);
+  assert.deepEqual(b.calls.map((c) => c.method), ["click"]);
+});
+
+test("click by point and key answer where the tab settled", async () => {
+  const settled = { ok: true, navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" };
+  const b = fakeBridge(() => settled);
+  const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
   const byPoint = JSON.parse(((await defs.click.handler({ x: 1, y: 2 }, {})) as any).content[0].text);
   assert.deepEqual(byPoint, { ok: true, x: 1, y: 2, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" });
   const key = JSON.parse(((await defs.key.handler({ key: "Enter" }, {})) as any).content[0].text);
   assert.equal(key.navigated, true);
-});
-
-test("click by ref falls back to click_ref when rect is unknown", async () => {
-  const b = fakeBridge((m) => {
-    if (m === "rect") throw new ExtError("unknown_method", "rect");
-    return { ok: true };
-  });
-  const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
-  const r: any = await defs.click.handler({ ref: "ref_7" }, {});
-  assert.deepEqual(b.calls.map((c) => c.method), ["rect", "click_ref"]);
-  assert.equal(JSON.parse(r.content[0].text).via, "dom");
 });
 
 test("click by coordinates and bad click args", async () => {

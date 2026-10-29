@@ -190,7 +190,7 @@ test("a Locked click the user asked for is followed by request_unlock at once an
     assert.ok(!offered.some((n: string) => n.startsWith("desktop_")), "no desktop tools while Orbi Desktop is not connected");
     assert.ok(!offered.includes("tabs_close") && !offered.includes("record_purchase"), "fewer tools for a small model");
     assert.match(model.requests[0].messages[0].content, /^You are Orbi, a voice assistant that works the web/, "the local prompt");
-    assert.ok(!br.calls.some((c) => c[0] === "rect" && c[1].ref === "ref_99"), "the made-up ref never reached the page");
+    assert.ok(!br.calls.some((c) => (c[0] === "rect" || c[0] === "click") && c[1].ref === "ref_99"), "the made-up ref never reached the page");
     const found = toolMessages(model.requests[2]).at(-1).content;
     assert.ok(found.startsWith(PAGE_OPEN));
     assert.doesNotMatch(found, /ignore previous/);
