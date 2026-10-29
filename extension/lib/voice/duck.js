@@ -96,8 +96,8 @@ export function createDucker({
   }
 
   async function duckNow() {
-    const [settings, tabs] = await Promise.all([getSettings(), chromeApi.tabs.query({ audible: true })]);
-    if (!settings.quietTabs) return;
+    if (!(await getSettings()).quietTabs) return;
+    const tabs = await chromeApi.tabs.query({ audible: true });
     const targets = tabs.filter((t) => t.id != null && !(t.mutedInfo && t.mutedInfo.muted));
     if (!targets.length) return;
     const ids = targets.map((t) => t.id);
