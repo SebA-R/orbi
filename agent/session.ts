@@ -1279,7 +1279,8 @@ export class Session {
     const ref = args.ref || "label";
     const label = String(info.label || args.label);
     const origin = originOf(href);
-    const words = await this.wordsFor(tabId, href, info.cls);
+    // The wider reach is for plain checkout navigation only, never a step.
+    const words = await this.wordsFor(tabId, href, info.cls === "checkout" && Protect.isCheckoutNav(label) ? "checkout" : null);
     const userText = words?.text ?? "";
     const pw = words?.passwordYes;
     const passwordYes = !!pw && pw.tabId === tabId && pw.origin === origin && Protect.sameLabel(pw.label, label);
@@ -1316,7 +1317,7 @@ export class Session {
       }
       how = "user confirmed";
     } else {
-      spendDirect(words!.spent, d.cls);
+      spendDirect(words!.spent, d.cls, label);
     }
     if (d.cls === "account") this.passwordAsk = null;
     let failed: string | null;

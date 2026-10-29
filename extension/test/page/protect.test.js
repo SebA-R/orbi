@@ -31,14 +31,18 @@ test("the submit of a form with card fields is locked whatever it says", () => {
   assert.equal(P.lockOf($("#plain")), null, "a type=button is not the submit");
 });
 
-test("Continue to payment unlocks as a checkout step only on a page that takes no card", () => {
+// takesCard keeps one scan for a synchronous burst; a new tick scans again.
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+test("Checkout and Continue to payment unlock only on a page that takes no card", async () => {
   // The shipping step: address fields, a captcha frame, a tracking pixel.
   let { P, $, document } = load(`<form id="ship"><input name="address1"><button id="next">Continue to payment</button></form>
-    <button id="proceed" type="button">Proceed to payment</button>`);
+    <button id="proceed" type="button">Proceed to payment</button><button id="co" type="button">Checkout</button>`);
   const next = P.lockOf($("#next"));
   assert.equal(next.kind, "order");
   assert.equal(P.unlockClass(next, $("#next")), "checkout");
   assert.equal(P.unlockClass(P.lockOf($("#proceed")), $("#proceed")), "checkout");
+  assert.equal(P.unlockClass(P.lockOf($("#co")), $("#co")), "checkout");
   assert.match(P.message(next, "ref_2", $("#next")), /next checkout step.*request_unlock/);
   const frame = (src, w, h) => {
     const f = document.createElement("iframe");
@@ -51,20 +55,59 @@ test("Continue to payment unlocks as a checkout step only on a page that takes n
   };
   frame("https://www.google.com/recaptcha/api2/anchor", 256, 60);
   frame("https://px.ads.example/t", 1, 1);
+  await tick();
   assert.equal(P.unlockClass(next, $("#next")), "checkout", "captcha and pixel frames are fine");
-  // Hosted card fields in a frame: the same button may pay.
+  // Hosted card fields in a frame: the same button may pay, Checkout too.
   const card = frame("https://js.stripe.com/v3/elements-inner-card", 400, 40);
+  await tick();
   assert.equal(P.unlockClass(next, $("#next")), null, "hosted card fields");
+  assert.equal(P.unlockClass(P.lockOf($("#co")), $("#co")), null, "Checkout next to hosted card fields");
   card.remove();
+  await tick();
   assert.equal(P.unlockClass(next, $("#next")), "checkout");
   // A card field anywhere on the page, or the card form's own submit.
   ({ P, $ } = load(`<form id="ship"><input name="address1"><button id="next">Continue to payment</button></form>
     <form><label>Card number <input name="cardnumber"></label><button id="card">Continue to payment</button></form>`));
   assert.equal(P.unlockClass(P.lockOf($("#next")), $("#next")), null, "card field elsewhere on the page");
   assert.equal(P.unlockClass(P.lockOf($("#card")), $("#card")), null, "a card form's submit never unlocks");
-  // Checkout navigation itself is unchanged by card fields.
   ({ P, $ } = load(`<label>Card number <input name="cardnumber"></label><button id="co">Proceed to checkout</button>`));
-  assert.equal(P.unlockClass(P.lockOf($("#co")), $("#co")), "checkout");
+  assert.equal(P.unlockClass(P.lockOf($("#co")), $("#co")), null, "Checkout on a page with a card field");
+  // By label alone (no element): Checkout as before, a step never.
+  assert.equal(P.unlockClass({ kind: "order", label: "Proceed to checkout", optin: false }), "checkout");
+  assert.equal(P.unlockClass({ kind: "order", label: "Continue to payment", optin: false }), null);
+});
+
+test("card fields in shadow roots, in the parent of a frame, or behind an unreadable host keep the steps locked", async () => {
+  // An open shadow root holding hosted card fields.
+  let { P, $, document, window } = load(`<div id="host"></div><button id="next" type="button">Continue to payment</button>`);
+  const lock = () => P.lockOf($("#next"));
+  assert.equal(P.unlockClass(lock(), $("#next")), "checkout");
+  const sr = $("#host").attachShadow({ mode: "open" });
+  sr.innerHTML = `<label>Card number <input name="cardnumber"></label>`;
+  await tick();
+  assert.equal(P.unlockClass(lock(), $("#next")), null, "open shadow root");
+  // A closed root, read through chrome.dom.
+  ({ P, $, document, window } = load(`<pay-box id="host"><span>Pay box</span></pay-box><button id="next" type="button">Continue to payment</button>`));
+  const closed = $("#host").attachShadow({ mode: "closed" });
+  closed.innerHTML = `<input autocomplete="cc-number">`;
+  window.chrome = { dom: { openOrClosedShadowRoot: (el) => (el.id === "host" ? closed : null) } };
+  assert.equal(P.unlockClass(P.lockOf($("#next")), $("#next")), null, "closed shadow root through chrome.dom");
+  // No chrome.dom (the page main world): a custom element's root cannot
+  // be read, so it fails closed; a plain page still unlocks.
+  ({ P, $ } = load(`<pay-box id="host"></pay-box><button id="next" type="button">Continue to payment</button>`));
+  assert.equal(P.unlockClass(P.lockOf($("#next")), $("#next")), null, "unreadable custom element");
+  ({ P, $ } = load(`<div id="spinner"></div><button id="next" type="button">Continue to payment</button>`));
+  assert.equal(P.unlockClass(P.lockOf($("#next")), $("#next")), "checkout", "an empty plain box is not a card host");
+  // The button in a same-origin frame, the card field in the parent.
+  ({ P, $, document } = load(`<label>Card number <input name="cardnumber"></label><iframe id="f"></iframe>`));
+  const inner = $("#f").contentDocument;
+  inner.body.innerHTML = `<button id="next" type="button">Continue to payment</button>`;
+  const btn = inner.getElementById("next");
+  assert.equal(P.unlockClass({ kind: "order", label: "Continue to payment", optin: false }, btn), null, "card field in the parent document");
+  ({ P, $ } = load(`<p>Shipping</p><iframe id="f"></iframe>`));
+  const inner2 = $("#f").contentDocument;
+  inner2.body.innerHTML = `<button id="next" type="button">Continue to payment</button>`;
+  assert.equal(P.unlockClass({ kind: "order", label: "Continue to payment", optin: false }, inner2.getElementById("next")), "checkout", "same-origin frame, no card anywhere");
 });
 
 test("the submit of a password form is an account control", () => {

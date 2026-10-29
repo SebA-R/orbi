@@ -196,11 +196,19 @@ test("checkout steps: Continue to payment needs the user's own words for it; 'ch
   const spent = new Set<string>();
   for (let i = 0; i < CHECKOUT_PRESSES_PER_ASK; i++) {
     assert.equal(decideUnlock(locked({}), { userText: "check out", spent }).kind, "grant", `press ${i + 1}`);
-    spendDirect(spent, "checkout");
+    spendDirect(spent, "checkout", "Checkout");
   }
   assert.equal(decideUnlock(locked({}), { userText: "check out", spent }).kind, "ask");
   const acct = new Set<string>();
-  spendDirect(acct, "account");
+  spendDirect(acct, "account", "Sign in");
+  // A step gets one press per ask, apart from the navigation presses, so
+  // "continue to payment" never also presses a later "Proceed to payment".
+  const steps = new Set<string>();
+  const cont = locked({ label: "Continue to payment" });
+  assert.equal(decideUnlock(cont, { userText: "continue to payment", spent: steps }).kind, "grant");
+  spendDirect(steps, "checkout", "Continue to payment");
+  assert.equal(decideUnlock(locked({ label: "Proceed to payment" }), { userText: "continue to payment", spent: steps }).kind, "ask");
+  assert.equal(decideUnlock(locked({ label: "Checkout" }), { userText: "go to checkout", spent: steps }).kind, "grant", "navigation keeps its own presses");
   assert.equal(decideUnlock(locked({ kind: "account", label: "Sign in", cls: "account" }), { userText: "sign me in", spent: acct }).kind, "ask");
   // Paying never unlocks on these words.
   for (const label of ["Place order", "Pay now", "Buy now"]) {
@@ -385,6 +393,16 @@ test("request_unlock: 'check out' counts for checkout navigation for the whole t
     pending = f.s.requestUnlock({ ...ask(), tabId: 9 });
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to go to checkout?");
+    f.s.userText("no");
+    await pending;
+    assert.equal(f.pressed(), 0);
+
+    // A step's own words do not reach another tab: it asks.
+    f = session(locked({ label: "Continue to payment" }));
+    f.s.userText("continue to payment");
+    pending = f.s.requestUnlock({ ...ask("Continue to payment"), tabId: 9 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to press Continue to payment?");
     f.s.userText("no");
     await pending;
     assert.equal(f.pressed(), 0);

@@ -455,11 +455,17 @@ export type Decision =
 
 // One direct ask presses one control of its class, except checkout
 // navigation: "check out" may take the mini cart's Checkout, then the cart
-// page's, up to CHECKOUT_PRESSES_PER_ASK presses. None of them pays; Place
-// order never has an unlock class.
+// page's, up to CHECKOUT_PRESSES_PER_ASK presses. A checkout step
+// ("Continue to payment") gets one press per ask, kept apart, so it never
+// carries on to a later step that may create the order. None of them pays;
+// Place order never has an unlock class.
 export const CHECKOUT_PRESSES_PER_ASK = 3;
-export function spendDirect(spent: Set<string>, cls: UnlockClass): void {
-  if (cls === "checkout") {
+function spentKey(cls: UnlockClass, label: string): string {
+  return cls === "checkout" && !Protect.isCheckoutNav(label) ? "checkout-step" : cls;
+}
+export function spendDirect(spent: Set<string>, cls: UnlockClass, label: string): void {
+  const key = spentKey(cls, label);
+  if (key === "checkout") {
     for (let i = 1; i < CHECKOUT_PRESSES_PER_ASK; i++) {
       if (!spent.has(`checkout#${i}`)) {
         spent.add(`checkout#${i}`);
@@ -467,7 +473,7 @@ export function spendDirect(spent: Set<string>, cls: UnlockClass): void {
       }
     }
   }
-  spent.add(cls);
+  spent.add(key);
 }
 
 export const NOT_LOCKED = "That control is not locked. Press it with click as usual.";
@@ -505,7 +511,7 @@ export function decideUnlock(
       message: "The password field is empty. Orbi never types or reads passwords. Ask the user to type their password into the page themselves and to say yes when they are done, then call request_unlock again for this control.",
     };
   }
-  const spent = opts.spent?.has(cls);
+  const spent = opts.spent?.has(spentKey(cls, label));
   const direct = !spent && (isDirectAsk(opts.userText, cls, label) || (!!opts.passwordYes && cls === "account"));
   if (direct) return { kind: "grant", cls, label, direct: true };
   const question = cls === "checkout" && / check ?out /.test(norm(label)) ? "Do you want me to go to checkout?" : `Do you want me to press ${label}?`;

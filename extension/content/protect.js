@@ -149,10 +149,19 @@
     return onlyNav(label, CHECKOUT_NAV);
   }
 
-  // True when a label only goes to checkout or to its next step ("Continue
-  // to payment"), with no other order or money word.
+  // True for a checkout step label that is not plain checkout navigation.
+  function isStepOnly(label) {
+    return !isCheckoutNav(label) && isCheckoutStep(label);
+  }
+
+  // True when a label only goes to checkout, or is exactly a checkout step
+  // ("Continue to payment", "Continue to payment now", "Continue to payment
+  // step"): no amount, digit or other word ("Continue to payment and
+  // confirm", "Continue to payment $49.99").
   function isCheckoutStep(label) {
-    return onlyNav(label, CHECKOUT_NAV.concat(CHECKOUT_STEP));
+    if (isCheckoutNav(label)) return true;
+    var t = normalize(label).trim().replace(/( (now|step))+$/, "");
+    return CHECKOUT_STEP.indexOf(t) !== -1;
   }
 
   function onlyNav(label, phrases) {
@@ -180,13 +189,16 @@
     if (el && el.nodeType === 1 && el.closest && el.closest("[data-clearcart-protected]")) return null;
     switch (lock.kind) {
       case "order":
-        if (lock.optin) return null;
-        if (isCheckoutNav(lock.label)) return "checkout";
-        // A checkout step unlocks only on a page that takes no card here: no
-        // card field, and no frame it cannot read (hosted card fields). On
-        // such a page "Continue to payment" may be what pays. Without the
-        // element there is no page to check.
-        return isCheckoutStep(lock.label) && el && el.nodeType === 1 && !takesCard(el.ownerDocument, 0) ? "checkout" : null;
+        if (lock.optin || !isCheckoutStep(lock.label)) return null;
+        // Checkout navigation and its steps unlock only on a page that takes
+        // no card: no card field and no frame it cannot read (hosted card
+        // fields), in any shadow root or same-origin frame of the top
+        // document. On such a page "Checkout" or "Continue to payment" may
+        // be what pays. Without the element there is no page to check: a
+        // step never unlocks then, and plain checkout navigation is judged
+        // by its label (the press itself re-checks with the element).
+        if (!el || el.nodeType !== 1) return isCheckoutNav(lock.label) ? "checkout" : null;
+        return takesCard(el) ? null : "checkout";
       case "account": return "account";
       case "subscription": return "subscription";
       case "payment-method": return "payment-method";
@@ -552,25 +564,68 @@
   // Cross-origin frames that hold no payment: captchas.
   var CAPTCHA_FRAME = /recaptcha|hcaptcha|challenges\.cloudflare\.com|turnstile/i;
 
-  // True when the document (or a same-origin frame in it) holds a card
-  // field or a visible cross-origin frame other than a captcha, which may
-  // be hosted card fields (Stripe, Adyen, Braintree, Shopify).
-  function takesCard(doc, depth) {
-    if (!doc || typeof doc.querySelectorAll !== "function") return true;
-    var fields = doc.querySelectorAll("input, select, textarea");
-    for (var i = 0; i < fields.length; i++) if (isPaymentInput(fields[i])) return true;
-    var frames = doc.querySelectorAll("iframe, frame, object, embed, fencedframe");
-    for (var j = 0; j < frames.length; j++) {
-      var f = frames[j];
-      var sub = frameDoc(f);
-      if (sub) {
-        if (depth >= 3 || takesCard(sub, depth + 1)) return true;
+  var FIELD_TAGS = { INPUT: 1, SELECT: 1, TEXTAREA: 1 };
+
+  // The top document el's page belongs to, climbing same-origin frames, or
+  // null when a parent frame is cross-origin (its fields cannot be seen).
+  function topDocOf(el) {
+    var doc = el.ownerDocument;
+    for (var i = 0; doc && i < 10; i++) {
+      var w = doc.defaultView;
+      if (!w) return doc;
+      var fe = null;
+      try { fe = w.frameElement; } catch (_) { return null; }
+      if (!fe) {
+        try { return w.parent === w ? doc : null; } catch (_) { return null; }
+      }
+      doc = fe.ownerDocument;
+    }
+    return null;
+  }
+
+  // True when el's page could take a card: a card field or a visible
+  // cross-origin frame other than a captcha (hosted card fields: Stripe,
+  // Adyen, Braintree, Shopify) anywhere in the top document, its open and
+  // closed shadow roots and its same-origin frames. Fails closed on what it
+  // cannot read: a cross-origin parent frame, or a custom element whose
+  // closed root it cannot open (Open Claude in Chrome's main world).
+  // One scan serves a synchronous burst of calls (get_page_text checks
+  // every locked control); it is dropped at the next microtask, so a later
+  // message (lock_info, then the press) always scans the page afresh.
+  var cardScan = null;
+  function takesCard(el) {
+    var top = topDocOf(el);
+    if (!top) return true;
+    if (cardScan && cardScan.doc === top) return cardScan.result;
+    var result = scanForCard(top, 0);
+    cardScan = { doc: top, result: result };
+    Promise.resolve().then(function () { cardScan = null; });
+    return result;
+  }
+
+  function scanForCard(root, depth) {
+    if (!root || typeof root.querySelectorAll !== "function" || depth > 6) return true;
+    var all = root.querySelectorAll("*");
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (FIELD_TAGS[e.tagName] && isPaymentInput(e)) return true;
+      if (FRAME_TAGS[e.tagName]) {
+        var sub = frameDoc(e);
+        if (sub) {
+          if (scanForCard(sub, depth + 1)) return true;
+          continue;
+        }
+        if (CAPTCHA_FRAME.test(String(e.getAttribute("src") || e.getAttribute("data") || ""))) continue;
+        var r = e.getBoundingClientRect ? e.getBoundingClientRect() : null;
+        if (r && r.width * r.height <= 4) continue; // a tracking pixel
+        return true;
+      }
+      var sr = shadowOf(e);
+      if (sr === SHADOW_UNKNOWN) {
+        if (e.tagName.indexOf("-") !== -1) return true;
         continue;
       }
-      if (CAPTCHA_FRAME.test(String(f.getAttribute("src") || f.getAttribute("data") || ""))) continue;
-      var r = f.getBoundingClientRect ? f.getBoundingClientRect() : null;
-      if (r && r.width * r.height <= 4) continue; // a tracking pixel
-      return true;
+      if (sr && scanForCard(sr, depth + 1)) return true;
     }
     return false;
   }
@@ -1002,6 +1057,7 @@
     pressable: function (lock) { return !!lock && !lock.optin && !!PRESSABLE[lock.kind]; },
     isCheckoutNav: isCheckoutNav,
     isCheckoutStep: isCheckoutStep,
+    isStepOnly: isStepOnly,
     unlockClass: unlockClass,
     sameLabel: sameLabel,
     dangerLifts: dangerLifts,
