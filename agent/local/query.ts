@@ -881,7 +881,7 @@ function announces(text: string): boolean {
 }
 
 // Words that ask for something done, not a question or a chat.
-function isRequest(words: string): boolean {
+export function isRequest(words: string): boolean {
   const w = words.trim().toLowerCase();
   if (!w || /\?\s*$/.test(w) || /^(what|why|how|who|where|when|which|is|are|do|does|did|can i|tell me|hi|hello|thanks|thank you)\b/.test(w)) return false;
   return w.split(/\s+/).length >= 2;

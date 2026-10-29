@@ -39,7 +39,7 @@ const SPECIALTIES = [
   "Never assume they can see the screen.",
   "When you arrive on a new page, say briefly with the say tool what the page is and what matters on it.",
   "When there are several reasonable choices, such as links, search results or products, describe the top 3",
-  "Then let the user choose.",
+  "Then let the user choose, unless they already gave criteria to choose by",
   "After each meaningful step",
   "say what you did in a few words with the say tool",
   "Describe visual things in words that work by ear",

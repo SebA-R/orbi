@@ -28,7 +28,7 @@ import { desktopBridge } from "./desktop/bridge.ts";
 import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
 import { DESKTOP_TOOL_NAMES, desktopToolDefinitions, type DesktopHost } from "./desktop/tools.ts";
 import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
-import { localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
+import { isRequest, localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
 import { isInjectionLine, looksLikeReasoning, pageData, REMOVED_LINE } from "./local/harden.ts";
 import { withContext, type PageContext } from "./context.ts";
 import * as timing from "./timing.ts";
@@ -97,7 +97,20 @@ export const DISALLOWED_BROWSER = [
 // Long-term memory (memory.ts): remember asks the user unless their own
 // words just asked for it; forget the same way; recall lists.
 // record_purchase adds to the purchase history (history.ts) the same way.
+// The Stop hook's reason: the model's question was not spoken; it goes on.
+export const FINISH_TASK = "Not spoken: the task is not done. Decide using the user's criteria and saved facts and keep going; ask only for a detail only they know. If they gave nothing to choose by, or the rules need their yes first (sending a message, a confirmation), reply with the same question again.";
+
+// The user's words ask for something done, polite questions included
+// ("can you find me black pants?").
+function isTask(words: string): boolean {
+  return isRequest(words.trim().replace(/^(?:please\s+)?(?:can|could|would|will) you\s+(?:please\s+)?(.+?)[?.!\s]*$/i, "$1"));
+}
+
 const MEMORY_TOOLS = [C + "remember", C + "forget", C + "recall", C + "record_purchase"];
+// Tools whose question, or the reply after them, belongs to the user: a
+// question ending such a turn is never sent back (see Session.finishTask).
+// Desktop tools too, for the "tell them before sending a message" rule.
+const ASKING_TOOLS = new Set([C + "request_checkout", C + "request_unlock", C + "pay_with_saved_card"]);
 
 // Claude's built-in web search (Agent SDK), for shopping advice: perks,
 // promo codes, prices, return policies, reviews. Its queries are checked in
@@ -561,6 +574,18 @@ export class Session {
   private muted = false;
   // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
   private held: string[] = [];
+  // This turn so far (reset when a turn's result comes back): a browser
+  // tool came back, a tool asked the user something or may lead to a
+  // question that belongs to them (checkout, unlock, pay, desktop, a
+  // remember or forget question), and the Stop hook already sent the model
+  // back to work once.
+  private browseIds = new Set<string>();
+  private turnBrowsed = false;
+  private turnAsked = false;
+  private turnNudged = false;
+  // The reply the Stop hook sent back before its message arrived: that
+  // message is not spoken when it does.
+  private dropText = "";
   // ORBI_TIMING: the current model step has shown its first output.
   private stepOutput = false;
   // Guided mode as the model last heard it: the system prompt's at the
@@ -1437,6 +1462,7 @@ export class Session {
   private async askYes(question: string, signal?: AbortSignal): Promise<{ yes: boolean; why: string }> {
     if (this.muted) return { yes: false, why: "The user interrupted before the question was asked." };
     if (this.awaitingAnswer || this.state.confirmation?.state === "pending") return { yes: false, why: "Another question is waiting for the user's answer. Ask again later." };
+    this.turnAsked = true;
     this.say(question);
     const answer = await new Promise<string | null>((resolve) => {
       const done = this.answerSlot(signal, (t) => {
@@ -1493,6 +1519,11 @@ export class Session {
       // never its own idea or a page's, not even after a question.
       this.status("memory: not saved (local model, not the user's own words)");
       return said("Not saved: on this model Orbi saves only facts the user just said in their own words. Do not ask about it.");
+    } else if (this.taskUnderway() && !isRememberAsk(this.lastUser.text)) {
+      // Halfway through a task a memory question would stop it: nothing
+      // is saved and nothing asked (stricter, so consent still holds).
+      this.status("memory: not saved (asked mid-task)");
+      return said("Not saved; don't ask now. Carry on with the task and do not mention it.");
     } else {
       // A fact it would replace is named in the question.
       const old = this.mem.replacing(text);
@@ -1881,6 +1912,47 @@ export class Session {
     return { PreToolUse: [{ hooks: [this.guard] }], PostToolUse: [{ hooks: [this.sweep, this.lockNotes, this.searchNote] }] };
   }
 
+  // Start of a user turn: nothing done or asked yet.
+  private newTurn() {
+    this.browseIds.clear();
+    this.turnBrowsed = false;
+    this.turnAsked = false;
+    this.turnNudged = false;
+    this.dropText = "";
+  }
+
+  // A task the user asked for is under way: their words ask for something
+  // done and a browser tool already ran this turn.
+  private taskUnderway(): boolean {
+    return this.turnsOpen > 0 && this.turnBrowsed && isTask(this.lastUser.text);
+  }
+
+  // The Stop hook (Claude only). A turn that ends on a question halfway
+  // through a task the user asked for is sent back to work once, so it
+  // decides with the user's criteria instead of checking in. Never when a
+  // tool asked or may need to ask (checkout read-back, unlock, memory),
+  // when another question waits, or when the turn was interrupted.
+  private finishTask: HookCallback = async (input) => {
+    if (input.hook_event_name !== "Stop" || input.stop_hook_active || this.muted || this.turnNudged || this.turnAsked) return {};
+    // Guided mode lets the user choose, and Danger mode's own check-ins stay.
+    if (this.guided || dangerModeOn()) return {};
+    const reply = (input.last_assistant_message ?? this.held.join(" ")).trim();
+    if (!/\?["'\u201d\u2019)\]]?\s*$/.test(reply) || !this.taskUnderway()) return {};
+    if (this.awaitingAnswer || this.memoryAsk || this.state.confirmation?.state === "pending") return {};
+    this.turnNudged = true;
+    // Its message may not have come through yet: drop it when it does.
+    if (!this.held.length) this.dropText = reply;
+    this.held.forEach((t) => this.unspoken(t));
+    this.held = [];
+    this.status("turn: sent back to finish the task");
+    return { decision: "block" as const, reason: FINISH_TASK };
+  };
+
+  // The hooks for the Claude backend: the shared ones and the Stop hook.
+  claudeHooks(): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+    return { ...this.hooks(), Stop: [{ hooks: [this.finishTask] }] };
+  }
+
   // Text-only messages are held until the turn ends: the SDK can send the
   // text and the tool call of one step as separate messages, so a tool call
   // that follows turns the held text into thinking aloud.
@@ -1893,23 +1965,34 @@ export class Session {
       // Only a message with no tool calls is a reply to the user. Text next
       // to tool calls is the model thinking aloud: log it, never speak it.
       const working = blocks.some((b) => b.type === "tool_use");
+      let dropped = false;
       if (working) {
         this.held.forEach((t) => this.unspoken(t));
         this.held = [];
       }
       for (const block of blocks) {
         if (block.type === "text" && block.text?.trim()) {
-          if (working || this.muted) this.unspoken(block.text.trim());
-          else this.held.push(block.text.trim());
+          const t = block.text.trim();
+          if (this.dropText && this.dropText.includes(t)) {
+            dropped = true;
+            this.unspoken(t);
+          } else if (working || this.muted) this.unspoken(t);
+          else this.held.push(t);
         } else if (block.type === "tool_use") {
+          if (String(block.name).startsWith(B)) this.browseIds.add(block.id);
+          if (ASKING_TOOLS.has(block.name) || String(block.name).startsWith(D)) this.turnAsked = true;
           this.toolNames.set(block.id, shortName(block.name));
           this.status(toolLabel(block.name, block.input));
           timing.toolStart(block.id, toolLabel(block.name, block.input));
         }
       }
+      if (dropped) this.dropText = "";
     } else if (m.type === "user" && Array.isArray((m as any).message?.content)) {
       for (const b of (m as any).message.content) {
         if (b?.type !== "tool_result") continue;
+        // Browsing counts once its result is back, so a remember in the
+        // same step as the first navigate is still the start of the turn.
+        if (this.browseIds.has(b.tool_use_id)) this.turnBrowsed = true;
         const name = this.toolNames.get(b.tool_use_id);
         this.toolNames.delete(b.tool_use_id);
         if (name) this.toolLog(`tool ${name} ${b.is_error ? `error ${errorCode(b.content)}` : "ok"}`);
@@ -1931,6 +2014,7 @@ export class Session {
       }
       if (this.held.length) this.say(this.held.join(" "), "reply");
       this.held = [];
+      this.newTurn();
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
       // Nothing paced (a click on its way, typing) outlives its turn.
       this.stopActions();
@@ -2015,7 +2099,7 @@ export class Session {
               // Anything not in allowedTools is denied without prompting; the
               // PreToolUse guard gates the allowed ones per call.
               permissionMode: "dontAsk",
-              hooks: this.hooks(),
+              hooks: this.claudeHooks(),
               stderr: (d) => {
                 if (process.env.CLEARCART_DEBUG) process.stderr.write(`[claude] ${d}`);
               },
