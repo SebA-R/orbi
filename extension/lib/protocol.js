@@ -96,6 +96,8 @@ export const ERR = Object.freeze({
   // A watchable-pace action stopped early: the user barged in, switched
   // tabs, or the page went away (background/actor.js).
   INTERRUPTED: "interrupted",
+  // The page did not load: no connection, unknown address, refused (tabs.js).
+  NET_ERROR: "net_error",
   INTERNAL: "internal",
 });
 

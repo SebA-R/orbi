@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as proto from "../../extension/lib/protocol.js";
-import { ERR, EXT_NAME, ExtError, INTERNAL, PROTOCOL_VERSION, TOOLS } from "../extbridge.ts";
+import { DISMISS_TIMEOUT_MS, ERR, EXT_NAME, ExtError, INTERNAL, MAX_REQUEST_TIMEOUT_MS, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS, TOOLS, TYPE_MS_PER_CHAR, requestTimeoutFor } from "../extbridge.ts";
 // @ts-ignore: plain JS module from the extension
 import { BridgeClient } from "../../extension/lib/bridge.js";
 import { WebSocket } from "ws";
@@ -92,6 +92,42 @@ test("call: not connected and timeout", async () => {
     const t0 = Date.now();
     await assert.rejects(b.bridge.call("tabs_context", {}, 150), (e: any) => e.code === ERR.TIMEOUT);
     assert.ok(Date.now() - t0 >= 140);
+    ext.close();
+  } finally {
+    await b.stop();
+  }
+});
+
+test("requestTimeoutFor: type scales with the text, dismiss_overlay gets headroom", () => {
+  assert.equal(requestTimeoutFor("tabs_context"), REQUEST_TIMEOUT_MS);
+  assert.equal(requestTimeoutFor("type", { text: "" }), REQUEST_TIMEOUT_MS);
+  assert.equal(requestTimeoutFor("type", { text: "a".repeat(100) }), REQUEST_TIMEOUT_MS + 100 * TYPE_MS_PER_CHAR);
+  // Never past the 90 s tool timeout, so the bridge's own timeout (and its
+  // actions_stop) always comes first.
+  assert.ok(MAX_REQUEST_TIMEOUT_MS < 90_000);
+  // Counted in characters, not UTF-16 units.
+  assert.equal(requestTimeoutFor("type", { text: "😀😀" }), REQUEST_TIMEOUT_MS + 2 * TYPE_MS_PER_CHAR);
+  assert.equal(requestTimeoutFor("type", { text: "a".repeat(100_000) }), MAX_REQUEST_TIMEOUT_MS);
+  assert.equal(requestTimeoutFor("type", { text: 5 }), REQUEST_TIMEOUT_MS);
+  assert.equal(requestTimeoutFor("dismiss_overlay"), DISMISS_TIMEOUT_MS);
+});
+
+test("call: a timed-out paced action sends actions_stop; other methods do not", async () => {
+  const b = await startBridge();
+  try {
+    const ext = new FakeExt(b.url, (method) => (method === "actions_stop" ? { ok: true } : NO_REPLY));
+    await ext.open();
+    await assert.rejects(b.bridge.call("tabs_context", {}, 50), (e: any) => e.code === ERR.TIMEOUT);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(ext.requests.filter((r) => r.method === "actions_stop").length, 0);
+    await assert.rejects(b.bridge.call("type", { tabId: 1, text: "hello" }, 50), (e: any) => e.code === ERR.TIMEOUT);
+    await new Promise((r) => setTimeout(r, 50));
+    await assert.rejects(b.bridge.call("press_protected", { tabId: 1, ref: "e1" }, 50), (e: any) => e.code === ERR.TIMEOUT);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(
+      ext.requests.map((r) => r.method),
+      ["tabs_context", "type", "actions_stop", "press_protected", "actions_stop"]
+    );
     ext.close();
   } finally {
     await b.stop();

@@ -63,9 +63,23 @@ let settleOnAttach = true;
 // Attaches if needed. Answers true when this call attached and the
 // viewport changed size meanwhile (the debugging bar opened): points and
 // screenshots taken before it are stale.
+// A concurrent call for the same tab waits for the attach in flight,
+// debugging-bar settle included, and answers the same.
+const attaching = new Map(); // tabId -> Promise<boolean>
+
 export async function attach(tabId) {
   assertTabId(tabId);
+  const busy = attaching.get(tabId);
+  if (busy) return busy;
   if (attached.has(tabId)) return false;
+  const p = attachOnce(tabId).finally(() => {
+    if (attaching.get(tabId) === p) attaching.delete(tabId);
+  });
+  attaching.set(tabId, p);
+  return p;
+}
+
+async function attachOnce(tabId) {
   let ours = true;
   try {
     await api().debugger.attach({ tabId }, PROTOCOL);
@@ -112,6 +126,9 @@ async function barSettled(tabId) {
 }
 
 export async function detach(tabId) {
+  // An attach in flight finishes first, so it is not left attached.
+  const busy = attaching.get(tabId);
+  if (busy) await busy.catch(() => {});
   if (!attached.delete(tabId)) return;
   try {
     await api().debugger.detach({ tabId });
@@ -305,5 +322,6 @@ export async function screenshot({ tabId } = {}) {
 
 export function _resetForTests({ settle = false } = {}) {
   attached.clear();
+  attaching.clear();
   settleOnAttach = settle;
 }

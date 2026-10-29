@@ -128,11 +128,27 @@ test("typing in a text field: rawKeyDown, check, char, keyUp per key, at a typis
 test("insertText only for characters with no key, or outside a text field", async () => {
   const { clock, cdp, actor } = setup(4);
   await clock.run(actor.type(5, "ok é😀\nz", { focus: { keys: true }, check: async () => ({ keys: true }) }));
-  assert.deepEqual(cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text), ["é", "😀", "\n"]);
-  assert.deepEqual(cdp.sent.filter((s) => s.type === "char").map((s) => s.text), ["o", "k", " ", "z"]);
+  assert.deepEqual(cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text), ["é", "😀"]);
+  assert.deepEqual(cdp.sent.filter((s) => s.type === "char").map((s) => s.text), ["o", "k", " ", "\r", "z"]);
   cdp.sent.length = 0;
   await clock.run(actor.type(5, "ok", { check: async () => ({ keys: false }) }));
   assert.ok(cdp.sent.every((s) => s.method === "Input.insertText"), "no key events off a text field");
+});
+
+test("a newline in a text field is a real Enter key, so it can submit; \\r\\n is one Enter", async () => {
+  const { clock, cdp, actor } = setup(4);
+  const checks = [];
+  await clock.run(actor.type(5, "a\nb\r\nc", { check: async (ch) => (checks.push(ch), { keys: true }) }));
+  const enters = cdp.sent.filter((s) => s.key === "Enter");
+  assert.deepEqual(enters.map((s) => s.type), ["rawKeyDown", "char", "keyUp", "rawKeyDown", "char", "keyUp"]);
+  assert.ok(enters.every((s) => s.code === "Enter" && s.windowsVirtualKeyCode === 13 && s.modifiers === 0));
+  assert.deepEqual(enters.filter((s) => s.type === "char").map((s) => s.text), ["\r", "\r"]);
+  assert.ok(!cdp.sent.some((s) => s.method === "Input.insertText"), "no insertText newline");
+  assert.equal(checks.filter((c) => c === "\n").length, 2, "the \\n of \\r\\n is not checked or typed again");
+  // Off a text field it stays insertText: no key a button could take.
+  cdp.sent.length = 0;
+  await clock.run(actor.type(5, "\r\n", { check: async () => ({ keys: false }) }));
+  assert.deepEqual(cdp.sent.map((s) => [s.method, s.text]), [["Input.insertText", "\r"], ["Input.insertText", "\n"]], "nothing dropped");
 });
 
 test("a scroll glides to the point, then sends wheel steps that add up", async () => {
@@ -405,7 +421,10 @@ test("router: card numbers and card fields are still refused before anything is 
 test("router: a typed newline is checked against the lock again when it is typed", async () => {
   const f = routerFakes();
   await f.clock.run(f.router.route("type", { tabId: 3, text: "ab\n" }));
-  assert.equal(f.pages.filter((p) => p.method === "guard_key").length, 2, "once up front, once at the newline");
+  // The newline is an Enter key: checked before it goes down and again
+  // before its char, which is what submits.
+  assert.equal(f.pages.filter((p) => p.method === "guard_key").length, 3, "once up front, twice at the newline");
+  assert.deepEqual(f.cdp.sent.filter((s) => s.key === "Enter").map((s) => s.type), ["rawKeyDown", "char", "keyUp"]);
 });
 
 test("router: setting off makes clicks and scrolls instant; typing stays key by key", async () => {

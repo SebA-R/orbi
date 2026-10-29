@@ -62,7 +62,7 @@ export function isErrorPage(url) {
 }
 
 // webRequest leaves out the fragment; tab.url keeps it.
-const noHash = (url) => String(url || "").split("#")[0];
+export const noHash = (url) => String(url || "").split("#")[0];
 
 export function keyOf(url) {
   if (!isErrorPage(url)) return null;

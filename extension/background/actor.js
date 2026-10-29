@@ -33,6 +33,12 @@ import { createRng, entryPoint, planClick, planHover, planScroll, planTyping, ke
 
 const MOD_SHIFT = 8;
 
+// A newline is the Enter key, so it submits a form the way a person's would
+// (the router's check refuses it first when that submit is locked). The
+// char event's "\r" puts a line break in a textarea or editor, as Enter does.
+const ENTER = Object.freeze({ key: "Enter", code: "Enter", vk: 13, shift: false, text: "\r" });
+const keyOf = (ch) => (ch === "\n" || ch === "\r" ? ENTER : keyFor(ch));
+
 function interrupted(reason) {
   return Object.assign(new BridgeError(ERR.INTERRUPTED, `stopped: ${reason}`), { noFallback: true });
 }
@@ -203,22 +209,28 @@ export function createActor({
   // focus that moved during the gap (a button a Space would press, a card
   // field), and again after the keydown, since a page handler may move the
   // focus then. In a text field a character is rawKeyDown, the check, a
-  // char event that types it, keyUp. Characters with no key (emoji, IME
-  // text, newlines), or a focus that is not a text field, go in with
-  // insertText.
+  // char event that types it, keyUp. A newline is the Enter key ("\r\n"
+  // is one). Characters with no key (emoji, IME text), or a focus that is
+  // not a text field, go in with insertText.
   function type(tabId, text, { check = async () => ({ keys: false }), epoch } = {}) {
     return within(tabId, async (run) => {
       run.kind = "type";
       const at = pointers.get(tabId);
       emit(tabId, at ? at.x : null, at ? at.y : null, "type", "type", { text: String(text) });
       let spent = 0;
+      // The last character went in as an Enter key: a "\n" after its "\r"
+      // is the same line break.
+      let enterR = false;
       for (const k of planTyping(text, rng)) {
+        const crlf = enterR && k.ch === "\n";
+        enterR = false;
+        if (crlf) continue;
         // Time spent checking and holding counts toward the next gap.
         await sleep(run, k.gapMs - spent);
         const t0 = now();
         const before = await check(k.ch);
         live(run);
-        const key = before && before.keys ? keyFor(k.ch) : null;
+        const key = before && before.keys ? keyOf(k.ch) : null;
         if (!key) {
           // No key for it, or not a text field: no key event at all.
           await cdp.send(tabId, "Input.insertText", { text: k.ch });
@@ -227,11 +239,13 @@ export function createActor({
           continue;
         }
         const ev = { key: key.key, code: key.code, windowsVirtualKeyCode: key.vk, modifiers: key.shift ? MOD_SHIFT : 0 };
+        enterR = k.ch === "\r";
         await cdp.send(tabId, "Input.dispatchKeyEvent", { ...ev, type: "rawKeyDown" });
         try {
           const after = await check(k.ch);
           live(run);
-          const char = { ...ev, type: "char", text: k.ch, unmodifiedText: k.ch };
+          const t = key.text ?? k.ch;
+          const char = { ...ev, type: "char", text: t, unmodifiedText: t };
           if (after && after.keys) await cdp.send(tabId, "Input.dispatchKeyEvent", char);
           else await cdp.send(tabId, "Input.insertText", { text: k.ch });
         } finally {

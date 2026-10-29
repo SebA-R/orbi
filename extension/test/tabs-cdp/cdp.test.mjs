@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { installChrome } from "./chrome-mock.mjs";
 import {
-  _barTiming, _resetForTests, assertInViewport, attach, click, isAttached, jpegSize, key, onDetach, onTabRemoved, parseKey, screenshot, scroll, type, viewport,
+  _barTiming, _resetForTests, assertInViewport, attach, click, detach, isAttached, jpegSize, key, onDetach, onTabRemoved, parseKey, screenshot, scroll, type, viewport,
 } from "../../background/cdp.js";
 import { ERR } from "../../lib/protocol.js";
 
@@ -168,6 +168,34 @@ test("a fresh attach waits for the debugging bar and says the viewport moved", a
   assert.equal(await attach(tabId), true);
   assert.equal((await viewport(tabId)).height, 844, "settled at the new height");
   assert.equal(await attach(tabId), false, "already attached");
+});
+
+test("a concurrent first attach waits for the same debugging-bar settle", async () => {
+  _resetForTests({ settle: true });
+  Object.assign(_barTiming, { wait: 60, settle: 30, poll: 5 });
+  let polls = 0;
+  const send = c.debugger.sendCommand;
+  c.debugger.sendCommand = async (t, m, p) => {
+    if (m === "Page.getLayoutMetrics") c._viewport = { height: [900, 900, 880, 860, 844][Math.min(polls++, 4)] };
+    return send(t, m, p);
+  };
+  let pollsAtB = -1;
+  const a = attach(tabId);
+  const b = attach(tabId).then((v) => ((pollsAtB = polls), v));
+  assert.deepEqual(await Promise.all([a, b]), [true, true], "both hear the viewport moved");
+  assert.equal(c._calls.filter((x) => x[0] === "attach").length, 1);
+  assert.ok(pollsAtB >= 5, "the second caller did not return before the bar settled");
+  assert.equal(await attach(tabId), false, "attached and settled: nothing to wait for");
+});
+
+test("a detach during an attach in flight waits for it, so the tab is not left attached", async () => {
+  _resetForTests({ settle: true });
+  Object.assign(_barTiming, { wait: 30, settle: 30, poll: 5 });
+  const a = attach(tabId);
+  await detach(tabId);
+  await a;
+  assert.equal(isAttached(tabId), false);
+  assert.equal(c._attached.has(tabId), false);
 });
 
 test("a fresh attach with no bar (--silent-debugger-extension-api) answers false", async () => {
