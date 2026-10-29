@@ -207,7 +207,7 @@ test("a Locked click the user asked for is followed by request_unlock at once an
   }
 });
 
-test("after a click the hint uses the extension's settled result: no wait or tab_info, controls only when it navigated", async () => {
+test("after a click or navigate the hint uses the extension's result: no wait or tab_info, controls only when the page changed", async () => {
   const model = await fakeModel((_b, n) => {
     if (n === 1) return { calls: [{ name: "find", args: { query: "jackets" } }] };
     if (n === 2) return { calls: [{ name: "click", args: { ref: "ref_4" } }] };
@@ -239,10 +239,10 @@ test("after a click the hint uses the extension's settled result: no wait or tab
     assert.match(second, /Now on: "Jackets", https:\/\/www\.etsy\.com\/c\/jackets/);
     assert.doesNotMatch(second, /On this page/, "same page: no controls list");
     const third = toolMessages(model.requests[4]).at(-1).content;
-    assert.doesNotMatch(third, /Now on:|On this page/, "navigate already says where it went");
+    assert.match(third, /Now on: "Coats", https:\/\/www\.etsy\.com\/c\/coats\nOn this page:/, "navigate: from its own result, with the new page's controls");
     const names = br.calls.map((c) => c[0]);
     assert.ok(!names.slice(names.indexOf("click")).includes("tab_info"), `no tab_info after an action: ${JSON.stringify(names)}`);
-    assert.equal(br.calls.filter((c) => c[0] === "read_page").length, 1, "one read_page, after the click that navigated");
+    assert.equal(br.calls.filter((c) => c[0] === "read_page").length, 2, "read_page only after the click that navigated and after navigate");
   } finally {
     await r.stop();
     br.restore();

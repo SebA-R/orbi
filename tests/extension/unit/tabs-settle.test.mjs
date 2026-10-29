@@ -68,3 +68,33 @@ test("a blocked page gives no url or title; an action that fails rethrows and cl
   await assert.rejects(actAndSettle(4, async () => { throw new Error("locked"); }), /locked/);
   assert.equal(listeners.size, 0);
 });
+
+test("an address change with no load (pushState) waits only the render time", async () => {
+  tab = { id: 4, url: "https://www.etsy.com/c/mugs", title: "Mugs", status: "complete" };
+  const t0 = Date.now();
+  const r = await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/c/cups" }), { ok: true }), { windowMs: 2_000, renderMs: 80 });
+  const took = Date.now() - t0;
+  assert.equal(r.navigated, true);
+  assert.equal(r.url, "https://www.etsy.com/c/cups");
+  assert.ok(took >= 70 && took < 1_000, String(took));
+});
+
+test("stop() (an interrupt) ends the wait for a slow load at once", async () => {
+  tab = { id: 4, url: "https://www.etsy.com/c/mugs", title: "Mugs", status: "complete" };
+  let stopped = false;
+  setTimeout(() => (stopped = true), 50);
+  const t0 = Date.now();
+  await actAndSettle(4, async () => (fire({ status: "loading" }), { ok: true }), { windowMs: 50, timeoutMs: 5_000, stop: () => stopped });
+  assert.ok(Date.now() - t0 < 1_000);
+});
+
+test("still loading at the cap: reports where the tab is going, without the old page's title", async () => {
+  tab = { id: 4, url: "https://www.etsy.com/cart", title: "Cart", status: "complete" };
+  const r = await actAndSettle(4, async () => {
+    tab.pendingUrl = "https://www.etsy.com/checkout";
+    fire({ status: "loading" });
+    return { ok: true };
+  }, { windowMs: 50, timeoutMs: 120 });
+  delete tab.pendingUrl;
+  assert.deepEqual(r, { ok: true, navigated: true, url: "https://www.etsy.com/checkout", title: "" });
+});

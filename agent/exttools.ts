@@ -94,7 +94,7 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "tabs_create",
-      "Open a new tab next to the user's tab, optionally at a URL. Orbi brings the user to it unless they turned that off. Prefer this over navigating away from a page the user had open. Returns { tabId }.",
+      "Open a new tab next to the user's tab, optionally at a URL. Orbi brings the user to it unless they turned that off. Prefer this over navigating away from a page the user had open. Returns { tabId }, and with a url { tabId, url, title } once it loaded.",
       { url: z.string().optional() },
       pass("tabs_create")
     ),

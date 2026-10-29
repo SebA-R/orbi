@@ -29,25 +29,7 @@ function call(method, params = {}) {
   });
 }
 
-async function fails(method, params) {
-  try {
-    await call(method, params);
-  } catch (e) {
-    return e;
-  }
-  throw new Error(`${method} unexpectedly succeeded`);
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(fn, what, ms = 15_000) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    const v = await fn().catch(() => null);
-    if (v) return v;
-    await sleep(150);
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}
 
 before(async () => {
   shop = await startShop();
@@ -104,8 +86,10 @@ after(async () => {
   for (const d of [profile, extDir]) if (d) fs.rmSync(d, { recursive: true, force: true });
 });
 
-test("a link click reports navigated and the new page; a key that opens nothing does not", async () => {
-  const { tabId } = await call("tabs_create", { url: SHOP + "/" });
+test("tabs_create and a link click report the new page; a key that opens nothing does not", async () => {
+  const created = await call("tabs_create", { url: SHOP + "/" });
+  assert.equal(created.url, SHOP + "/", "tabs_create says where it went");
+  const { tabId } = created;
   const link = (await call("find", { tabId, query: "Blue mug" })).matches.find((m) => m.role === "link");
   assert.ok(link, "the product link");
   const r = await call("click", { tabId, ref: link.ref });
