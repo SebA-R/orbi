@@ -320,12 +320,12 @@
     for (var i = 0; i < all.length; i++) {
       var el = all[i];
       var role = roleOf(el);
-      if (!role) continue;
+      if (!role || hiddenHere(el)) continue;
       var name = Mask.maskCardRuns(nameOf(el, role));
       var hay = (role + " " + name + " " + (el.id || "") + " " + (el.getAttribute("name") || "") + " " +
         (el.getAttribute("placeholder") || "")).toLowerCase();
       var ok = words.every(function (w) { return hay.indexOf(w) !== -1; });
-      if (!ok || hiddenHere(el)) continue;
+      if (!ok) continue;
       var score = 0;
       if (name.toLowerCase() === query) score += 4;
       else if (name.toLowerCase().indexOf(query) !== -1) score += 2;
