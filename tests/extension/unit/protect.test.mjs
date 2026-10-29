@@ -144,7 +144,24 @@ test("messages name the control and never offer a way around", () => {
 test("unlockClass: checkout, account, subscription and saved card unlock on request; paying never does", () => {
   const lock = (label, extra = {}) => ({ kind: P.classifyLabel(label), label, optin: false, checked: false, ...extra });
   for (const l of ["Checkout", "Proceed to checkout", "Secure checkout", "Go to checkout"]) assert.equal(P.unlockClass(lock(l)), "checkout", l);
-  for (const l of ["Place order", "Buy now", "Pay now", "Pay and checkout", "Continue to payment", "Checkout and place order", "Confirm purchase"]) {
+  // A checkout step that only moves on stays locked and is still not
+  // checkout navigation for the desktop lock or the pay flow's order
+  // buttons. It unlocks only with its element, on a page that takes no card
+  // (jsdom: extension/test/page/protect.test.js); by label alone, never.
+  for (const l of ["Continue to payment", "Proceed to payment", "Continue to billing"]) {
+    assert.equal(P.classifyLabel(l), "order", l);
+    assert.equal(P.isCheckoutStep(l), true, l);
+    assert.equal(P.isCheckoutNav(l), false, l);
+    assert.equal(P.unlockClass(lock(l)), null, l);
+    assert.match(P.message({ ...lock(l), cls: "checkout" }, "ref_3"), /next checkout step.*request_unlock/, l);
+  }
+  // Exactly the step, give or take "now", "step" or an arrow: nothing that
+  // could also commit or names an amount.
+  for (const l of ["Continue to payment now", "Continue to payment →", "Continue to payment step", "CONTINUE TO PAYMENT"]) assert.equal(P.isCheckoutStep(l), true, l);
+  for (const l of ["Continue to payment and confirm", "Continue to payment & submit", "Continue to payment $49.99", "Continue to payment (1 item)", "Pay and continue to payment"]) {
+    assert.equal(P.isCheckoutStep(l), false, l);
+  }
+  for (const l of ["Place order", "Buy now", "Pay now", "Pay and checkout", "Pay and continue to payment", "Continue to payment and place order", "Submit payment", "Confirm payment", "Complete payment", "Checkout and place order", "Confirm purchase"]) {
     assert.equal(P.unlockClass(lock(l)), null, l);
   }
   for (const l of ["Apple Pay", "Checkout with PayPal", "Shop Pay"]) assert.equal(P.unlockClass(lock(l)), null, l);

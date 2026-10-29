@@ -45,6 +45,7 @@ import {
   decideUnlock,
   isDirectAsk,
   isUnlockYes,
+  spendDirect,
   lockInfoExt,
   ocicLockInfoScript,
   ocicPressScript,
@@ -474,6 +475,10 @@ export function passCovers(pass: CheckoutPass | null, tabId: number | null, url:
 
 // How long the user's last words count for request_unlock's direct match.
 export const USER_WORDS_TTL_MS = 60_000;
+// A spoken checkout ask ("check out") counts for checkout navigation for as
+// long as the turn it started runs (adding to the bag and opening the cart
+// can take longer than USER_WORDS_TTL_MS, in a new tab), up to this cap.
+export const CHECKOUT_WORDS_TTL_MS = 5 * 60_000;
 
 // The user's most recent words, bound to the tab Orbi was on when they
 // spoke and that tab's origin then. spent: unlock classes already pressed
@@ -486,11 +491,15 @@ type UserWords = {
   tabId: number | null;
   origin: Promise<string | null>;
   passwordYes: { tabId: number; label: string; origin: string } | null;
+  // Their checkout reach (wordsFor) lasts while Session.turnsEnded is below
+  // this: the turns open when they came, plus the one they start, if any
+  // (an answer to a question starts none).
+  turnLimit: number;
   // Facts the remember tool saved from these words without a question.
   saves: number;
 };
 
-const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, saves: 0 });
+const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, turnLimit: 0, saves: 0 });
 
 // How many facts one utterance can save without a question ("I'm vegan and
 // I wear a medium" is two).
@@ -594,6 +603,9 @@ export class Session {
   }
   // user_text messages received, and the busy value last sent (null: send
   // the next check whatever it finds). A client starts out not busy.
+  // User turns whose result has come back, ever (or that the loop's end
+  // closed); bounds UserWords.turnLimit.
+  private turnsEnded = 0;
   private userSeq = 0;
   private busySent: boolean | null = false;
   // The turn in progress was interrupted: nothing more from it is spoken.
@@ -692,6 +704,7 @@ export class Session {
       tabId,
       origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
       passwordYes: pw && isExplicitYes(text) ? pw : null,
+      turnLimit: this.turnsEnded + this.turnsOpen,
       saves: 0,
     };
     // New words after a yes that has not paid yet: the conversation moved
@@ -710,6 +723,7 @@ export class Session {
     // Counted now, while its context is fetched, so an interrupt sees it,
     // and before the Danger mode line so the client is told busy first.
     this.turnsOpen++;
+    this.lastUser.turnLimit++;
     if (!this.dangerSaid && dangerModeOn()) {
       this.dangerSaid = true;
       this.status("Danger mode is on: no button lock, and orders are placed without waiting for a yes");
@@ -1123,11 +1137,20 @@ export class Session {
 
   // The user's last words if they still count for this tab and its origin
   // (bound when spoken, USER_WORDS_TTL_MS), else empty words.
-  private async wordsFor(tabId: number, href: string): Promise<UserWords | null> {
+  // cls: the control's unlock class. For checkout navigation the words
+  // still have to be the user's latest and on this site, but may be from
+  // another tab of it, as long as the turn they started (or, for an answer,
+  // the turn under way) is still running.
+  private async wordsFor(tabId: number, href: string, cls?: string | null): Promise<UserWords | null> {
     const w = this.lastUser;
-    if (!w.text || w.tabId !== tabId || Date.now() - w.at > USER_WORDS_TTL_MS) return null;
+    if (!w.text) return null;
+    const age = Date.now() - w.at;
+    const near = w.tabId === tabId && age <= USER_WORDS_TTL_MS;
+    const checkoutTurn = cls === "checkout" && w.tabId != null && this.turnsEnded < w.turnLimit && age <= CHECKOUT_WORDS_TTL_MS;
+    if (!near && !checkoutTurn) return null;
     const origin = await w.origin;
-    return origin && origin === originOf(href) ? w : null;
+    // Read again after the wait: new words replace these.
+    return origin && origin === originOf(href) && this.lastUser === w ? w : null;
   }
 
   // The tabs the sweep checks: the checkout pass tab is left out while it is
@@ -1338,7 +1361,8 @@ export class Session {
     const ref = args.ref || "label";
     const label = String(info.label || args.label);
     const origin = originOf(href);
-    const words = await this.wordsFor(tabId, href);
+    // The wider reach is for plain checkout navigation only, never a step.
+    const words = await this.wordsFor(tabId, href, info.cls === "checkout" && Protect.isCheckoutNav(label) ? "checkout" : null);
     const userText = words?.text ?? "";
     const pw = words?.passwordYes;
     const passwordYes = !!pw && pw.tabId === tabId && pw.origin === origin && Protect.sameLabel(pw.label, label);
@@ -1375,7 +1399,7 @@ export class Session {
       }
       how = "user confirmed";
     } else {
-      words!.spent.add(d.cls);
+      spendDirect(words!.spent, d.cls, label);
     }
     if (d.cls === "account") this.passwordAsk = null;
     let failed: string | null;
@@ -2070,6 +2094,7 @@ export class Session {
       this.held = [];
       this.newTurn();
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
+      this.turnsEnded++;
       // Nothing paced (a click on its way, typing) outlives its turn.
       this.stopActions();
       // The interrupted turn is over; the next one speaks again.
@@ -2179,6 +2204,9 @@ export class Session {
     } finally {
       // The loop is over: no turn still open will get its result.
       this.held = [];
+      // Turns closed here are over too, so checkout words they carried
+      // (UserWords.turnLimit) stop counting.
+      this.turnsEnded += this.turnsOpen;
       this.turnsOpen = 0;
     }
   }

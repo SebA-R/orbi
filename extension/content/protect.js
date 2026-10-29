@@ -94,6 +94,12 @@
   // through request_checkout and pay_with_saved_card.
   var CHECKOUT_NAV = ["checkout", "check out", "secure checkout", "proceed to checkout", "continue to checkout",
     "go to checkout"];
+  // Steps inside checkout that only move to the next page ("Continue to
+  // payment" from the shipping step). They stay on the order list, so they
+  // are locked and isCheckoutNav (the desktop lock, the pay flow's order
+  // buttons) is unchanged, but request_unlock may press them like checkout
+  // navigation. A card form's submit never unlocks, whatever it says.
+  var CHECKOUT_STEP = ["continue to payment", "proceed to payment", "continue to billing"];
 
   // Kinds that make a checkbox or radio uncheck-only.
   var OPTIN_KINDS = { subscription: 1, "payment-method": 1, account: 1, express: 1 };
@@ -152,6 +158,16 @@
     return true;
   }
 
+  // True when a label only goes to checkout, or is exactly a checkout step
+  // ("Continue to payment", "Continue to payment now", "Continue to payment
+  // step"): no amount, digit or other word ("Continue to payment and
+  // confirm", "Continue to payment $49.99").
+  function isCheckoutStep(label) {
+    if (isCheckoutNav(label)) return true;
+    var t = normalize(label).trim().replace(/( (now|step))+$/, "");
+    return CHECKOUT_STEP.indexOf(t) !== -1;
+  }
+
   // Unlock class of a lock for request_unlock: "checkout", "account",
   // "subscription" or "payment-method", or null when it never unlocks on
   // request. el (optional): the control; the submit of a card form never
@@ -163,7 +179,17 @@
     // whatever its label says: the page marked it for the pay flow only.
     if (el && el.nodeType === 1 && el.closest && el.closest("[data-clearcart-protected]")) return null;
     switch (lock.kind) {
-      case "order": return !lock.optin && isCheckoutNav(lock.label) ? "checkout" : null;
+      case "order":
+        if (lock.optin || !isCheckoutStep(lock.label)) return null;
+        // Checkout navigation and its steps unlock only on a page that takes
+        // no card: no card field and no frame it cannot read (hosted card
+        // fields), in any shadow root or same-origin frame of the top
+        // document. On such a page "Checkout" or "Continue to payment" may
+        // be what pays. Without the element there is no page to check: a
+        // step never unlocks then, and plain checkout navigation is judged
+        // by its label (the press itself re-checks with the element).
+        if (!el || el.nodeType !== 1) return isCheckoutNav(lock.label) ? "checkout" : null;
+        return takesCard(el, !isCheckoutNav(lock.label)) ? null : "checkout";
       case "account": return "account";
       case "subscription": return "subscription";
       case "payment-method": return "payment-method";
@@ -526,6 +552,99 @@
     try { return el.contentDocument || null; } catch (_) { return null; }
   }
 
+  // Cross-origin frames that hold no payment: captchas.
+  var CAPTCHA_FRAME = /recaptcha|hcaptcha|challenges\.cloudflare\.com|turnstile/i;
+
+  var FIELD_TAGS = { INPUT: 1, SELECT: 1, TEXTAREA: 1 };
+
+  // The top document el's page belongs to, climbing same-origin frames, or
+  // null when a parent frame is cross-origin (its fields cannot be seen).
+  function topDocOf(el) {
+    var doc = el.ownerDocument;
+    for (var i = 0; doc && i < 10; i++) {
+      var w = doc.defaultView;
+      if (!w) return doc;
+      var fe = null;
+      try { fe = w.frameElement; } catch (_) { return null; }
+      if (!fe) {
+        try { return w.parent === w ? doc : null; } catch (_) { return null; }
+      }
+      doc = fe.ownerDocument;
+    }
+    return null;
+  }
+
+  // Frames that hold hosted card fields, by their src, name or title:
+  // they count whatever their size (a collapsed card section is 0x0).
+  var CARD_FRAME = /stripe|adyen|checkoutshopper|braintree|card.?field|cardinal|pci|hosted.?field|squareup|worldpay|checkout\.com|recurly|spreedly|cybersource|paymentus|authorize\.net|globalpay|moneris|elavon|bluesnap|\bcard\b|card.?number|payment.?field/i;
+  function frameWords(e) {
+    return [e.getAttribute("src"), e.getAttribute("data"), e.getAttribute("name"), e.getAttribute("title"), e.id].filter(Boolean).join(" ");
+  }
+
+  // A card number, expiry or security code field: no gift card or a
+  // "card message" (strict mode counts every payment-looking field).
+  function cardNumberField(e) {
+    var ac = String(e.getAttribute("autocomplete") || "").toLowerCase();
+    if (/(^|\s)cc-(number|exp|exp-month|exp-year|csc)(\s|$)/.test(ac)) return true;
+    var w = [e.getAttribute("name"), e.id, e.getAttribute("aria-label"), e.getAttribute("placeholder")].filter(Boolean).join(" ").toLowerCase();
+    if (/gift/.test(w)) return false;
+    return /(card|cc|credit).?(num|number|no\b)|cardnumber|\bcvv|\bcvc|\bcsc\b|security.?code|expir/.test(w);
+  }
+
+  // True when el's page could take a card, anywhere in the top document,
+  // its open and closed shadow roots and same-origin frames, or when a
+  // parent frame is cross-origin (its fields cannot be seen).
+  // strict (a checkout step, "Continue to payment"): any payment-looking
+  // field, any visible cross-origin frame but a captcha or a pixel, and a
+  // custom element whose closed root cannot be opened (Open Claude in
+  // Chrome's main world) all count. Not strict (plain checkout navigation
+  // on a cart page that may carry PayPal buttons, chat, video or a gift card
+  // box): only card number, expiry and code fields and card-field frames.
+  // A card-field frame counts at any size in both.
+  // One scan serves a synchronous burst of calls (get_page_text checks
+  // every locked control); it is dropped at the next microtask, so a later
+  // message (lock_info, then the press) always scans the page afresh.
+  var cardScan = null;
+  function takesCard(el, strict) {
+    var top = topDocOf(el);
+    if (!top) return true;
+    strict = !!strict;
+    if (cardScan && cardScan.doc === top && cardScan.strict === strict) return cardScan.result;
+    var result = scanForCard(top, 0, strict);
+    cardScan = { doc: top, strict: strict, result: result };
+    Promise.resolve().then(function () { cardScan = null; });
+    return result;
+  }
+
+  function scanForCard(root, depth, strict) {
+    if (!root || typeof root.querySelectorAll !== "function" || depth > 6) return true;
+    var all = root.querySelectorAll("*");
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (FIELD_TAGS[e.tagName] && (strict ? isPaymentInput(e) : cardNumberField(e))) return true;
+      if (FRAME_TAGS[e.tagName]) {
+        var sub = frameDoc(e);
+        if (sub) {
+          if (scanForCard(sub, depth + 1, strict)) return true;
+          continue;
+        }
+        var words = frameWords(e);
+        if (CARD_FRAME.test(words)) return true;
+        if (!strict || CAPTCHA_FRAME.test(words)) continue;
+        var r = e.getBoundingClientRect ? e.getBoundingClientRect() : null;
+        if (r && r.width * r.height <= 4) continue; // a tracking pixel
+        return true;
+      }
+      var sr = shadowOf(e);
+      if (sr === SHADOW_UNKNOWN) {
+        if (strict && e.tagName.indexOf("-") !== -1) return true;
+        continue;
+      }
+      if (sr && scanForCard(sr, depth + 1, strict)) return true;
+    }
+    return false;
+  }
+
   var SHADOW_LOCK = { kind: "shadow", label: "hidden component", optin: false, checked: false };
   // Hosts that may hold a closed shadow root: custom elements, and empty
   // boxes whose content must come from somewhere.
@@ -713,7 +832,7 @@
       case "express":
         return "Locked: " + name + " is a one-tap wallet or pay later button, so nothing was pressed." + userOnly;
       default:
-        if (cls === "checkout") return "Locked: " + name + " starts checkout, so it needs the user's permission and nothing was pressed. If the user wants this, " + unlock;
+        if (cls === "checkout") return "Locked: " + name + (isCheckoutNav(label) ? " starts checkout" : " goes to the next checkout step") + ", so it needs the user's permission and nothing was pressed. If the user wants this, " + unlock;
         return "Locked: " + name + " places the order or pays, so nothing was pressed." + pay;
     }
   }
@@ -952,6 +1071,7 @@
     isActivationKey: isActivationKey,
     pressable: function (lock) { return !!lock && !lock.optin && !!PRESSABLE[lock.kind]; },
     isCheckoutNav: isCheckoutNav,
+    isCheckoutStep: isCheckoutStep,
     unlockClass: unlockClass,
     sameLabel: sameLabel,
     dangerLifts: dangerLifts,

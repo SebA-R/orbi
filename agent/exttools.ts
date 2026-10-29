@@ -178,13 +178,13 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
         if (!r || typeof r.data !== "string") return failure(new ExtError(ERR.INTERNAL, "no screenshot data"));
         const content: ToolResult["content"] = [{ type: "image", data: r.data, mimeType: r.mimeType || "image/jpeg" }];
         if (r.width && r.height) {
-          const scale = r.scale && r.scale !== 1 ? r.scale : 1;
+          const scale = seenScale(r.width, r.height, r.scale);
           content.push({
             type: "text",
             text:
               scale === 1
                 ? `Viewport ${r.width}x${r.height} CSS px; image pixels are click coordinates.`
-                : `Viewport ${r.width}x${r.height} CSS px; this image is ${scale}x larger, so divide image coordinates by ${scale} before clicking.`,
+                : `Viewport ${r.width}x${r.height} CSS px; this image is ${Math.round(r.width * scale)}x${Math.round(r.height * scale)}, so divide image coordinates by ${+scale.toFixed(4)} before clicking.`,
           });
         }
         return { content };
@@ -193,6 +193,21 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
       }
     }),
   ];
+}
+
+// Claude shrinks an image past 2576 px on the long edge or about 3.75
+// megapixels before it sees it (the extension's cdp.js fitScale keeps its
+// screenshots inside both). Image px per CSS px as the model sees a w x h
+// viewport sent at scale, rounded to 1 when within a pixel.
+export const MAX_IMAGE_EDGE = 2576;
+export const MAX_IMAGE_PIXELS = 3_750_000;
+export function seenScale(w: number, h: number, scale?: number): number {
+  const s = scale && scale > 0 && Number.isFinite(scale) ? scale : 1;
+  const iw = w * s;
+  const ih = h * s;
+  const shrink = Math.min(1, MAX_IMAGE_EDGE / Math.max(iw, ih), Math.sqrt(MAX_IMAGE_PIXELS / (iw * ih)));
+  const seen = s * shrink;
+  return Math.abs(seen - 1) * Math.max(w, h) < 1 ? 1 : seen;
 }
 
 export function createExtToolsServer(bridge: Bridge = extBridge) {
