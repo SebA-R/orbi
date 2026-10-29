@@ -253,6 +253,39 @@ test("after a click or navigate the hint uses the extension's result: no wait or
   }
 });
 
+test("a click that settled on a page Orbi may not use (no url) gets no hint, tab_info or controls", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "find", args: { query: "secret" } }] };
+    if (n === 2) return { calls: [{ name: "click", args: { ref: "ref_4" } }] };
+    return { text: "Done." };
+  });
+  const br = useBrowser((method) => {
+    const t = tabs(method);
+    if (t) return t;
+    if (method === "find") return { matches: [{ ref: "ref_4", role: "link", name: "Secret" }] };
+    if (method === "click") return { ok: true, via: "cdp", navigated: true };
+    if (method === "read_page") return { tree: '- link "Secret" [ref_9]' };
+    return {};
+  });
+  const r = localSession(model.url);
+  try {
+    (r.s as any).state.lastTabId = 7;
+    r.s.userText("open that link");
+    await until(() => r.spoken().length > 0, "the reply");
+    const out = toolMessages(model.requests[2]).at(-1).content;
+    assert.match(out, /"navigated":true/);
+    assert.doesNotMatch(out, /Now on:|On this page/);
+    const names = br.calls.map((c) => c[0]);
+    assert.ok(names.includes("click"), JSON.stringify(names));
+    const after = names.slice(names.indexOf("click"));
+    assert.ok(!after.includes("tab_info") && !after.includes("read_page"), JSON.stringify(names));
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
 test("Danger mode lifts nothing on a local model, and the user hears so once", async () => {
   const model = await fakeModel(() => ({ text: "Hi." }));
   const br = useBrowser((m) => tabs(m) ?? {});

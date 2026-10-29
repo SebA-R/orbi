@@ -188,6 +188,37 @@ test("same install: a newer hello replaces the older socket at once; reconnect w
   }
 });
 
+test("same install reconnecting mid-type: the dropped paced call is stopped on the new socket", async () => {
+  const b = await startBridge();
+  try {
+    const first = new FakeExt(b.url, () => NO_REPLY, "0.0.1", "install-aaaa");
+    await first.open();
+    const pending = b.bridge.call("type", { tabId: 1, text: "hello" }).then(
+      () => assert.fail("should have been rejected"),
+      (e) => e
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const second = new FakeExt(b.url, () => ({ ok: true }), "0.0.1", "install-aaaa");
+    await second.open();
+    assert.equal((await pending).code, ERR.NOT_CONNECTED);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(second.requests.map((r) => r.method), ["actions_stop"]);
+
+    // A non-paced call dropped the same way sends no stop.
+    const third = new FakeExt(b.url, () => ({ ok: true }), "0.0.1", "install-aaaa");
+    second.handler = () => NO_REPLY;
+    const read = b.bridge.call("tabs_context").catch((e) => e);
+    await new Promise((r) => setTimeout(r, 20));
+    await third.open();
+    assert.equal((await read).code, ERR.NOT_CONNECTED);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(third.requests, []);
+    third.close();
+  } finally {
+    await b.stop();
+  }
+});
+
 test("another install is refused while the first is connected: its settings never apply, no flapping", async () => {
   const lines: string[] = [];
   const b = await startBridge();

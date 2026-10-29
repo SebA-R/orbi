@@ -601,11 +601,11 @@ export class Session {
     this.openTurns = n;
     this.syncBusy();
   }
-  // user_text messages received, and the busy value last sent (null: send
-  // the next check whatever it finds). A client starts out not busy.
   // User turns whose result has come back, ever (or that the loop's end
   // closed); bounds UserWords.turnLimit.
   private turnsEnded = 0;
+  // user_text messages received, and the busy value last sent (null: send
+  // the next check whatever it finds). A client starts out not busy.
   private userSeq = 0;
   private busySent: boolean | null = false;
   // The turn in progress was interrupted: nothing more from it is spoken.
@@ -1909,6 +1909,9 @@ export class Session {
           if (opened) t = { ...t, navigated: true };
           // request_unlock answers a sentence, and a DOM-fallback click has
           // no settled fields: the press already waited, so ask the tab.
+          // A settled answer without a url is a page Orbi may not use:
+          // nothing about it goes to the model.
+          if (typeof t?.navigated === "boolean" && typeof t.url !== "string") return null;
           if (typeof t?.url !== "string") t = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId: on }, 5_000).catch(() => null);
           if (!t?.url) return null;
           const title = String(t.title ?? "").slice(0, 80);
@@ -1938,6 +1941,8 @@ export class Session {
         if (/no option matching value/i.test(text)) return "Next: call form_input on the same ref with one of the options listed above, written exactly as shown.";
         if (/not a form field/i.test(text)) return "Next: call read_page to list the form's fields (textbox, combobox) with their refs, then call form_input on each field you have a value for.";
         if (/no_element|not visible|is gone|not found|covered by/i.test(text)) return "Next: call find with a few words of its name to get a fresh ref.";
+        if (short === "tabs_create" && /which is still open/.test(text)) return "Next: do not open another tab. Navigate that tab to another address or close it with tabs_close, or tell the user in one short sentence.";
+        if (/net_error/i.test(text) && (short === "navigate" || short === "tabs_create")) return "Next: the page did not load. Check the address and try once more, or tell the user in one short sentence that the site could not be reached.";
         if (/not_allowed|blocked/i.test(text) && (short === "navigate" || short === "tabs_create")) return "Next: if the user asked for this site, open it with tabs_create and its full url; if it is blocked, tell the user in one short sentence.";
         if (/payment_field|password/i.test(text)) return "Next: leave that field for the user and tell them they can fill it in themselves.";
         if (/^Locked:/.test(text)) return null;
@@ -2035,6 +2040,7 @@ export class Session {
     this.turnAsked = false;
     this.turnNudged = false;
     this.dropText = "";
+    this.acked = false;
   }
 
   // A task the user asked for is under way: their words ask for something
@@ -2140,7 +2146,6 @@ export class Session {
       if (this.held.length) this.say(this.held.join(" "), "reply");
       this.held = [];
       this.newTurn();
-      this.acked = false;
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
       this.turnsEnded++;
       // Nothing paced (a click on its way, typing) outlives its turn.

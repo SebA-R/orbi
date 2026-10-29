@@ -136,12 +136,14 @@ export async function detach(tabId) {
 }
 
 export async function detachAll() {
-  await Promise.all([...attached].map(detach));
+  // Tabs still attaching too: detach waits for the attach to finish.
+  await Promise.all([...new Set([...attached, ...attaching.keys()])].map(detach));
 }
 
 // Listener bodies for the worker to register at top level.
 export function onTabRemoved(tabId) {
   attached.delete(tabId);
+  noClip.delete(tabId);
 }
 
 export function onDetach(source) {

@@ -447,11 +447,13 @@ export async function tabsCreate({ url, onCreated } = {}) {
   if (url != null) {
     const since = Date.now();
     await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
-    const now = await api().tabs.get(tab.id);
+    const now = await api().tabs.get(tab.id).catch(() => null);
+    if (!now) throw new BridgeError(ERR.NO_TAB, `tab ${tab.id} closed while loading`);
     try {
       // A redirect can lead to a site that is not allowed, as in navigate.
-      // Orbi's error page for an allowed address is not one of those.
-      if (!onErrorPage(now) && !BLANK.test(now.url || "") && !(await isAllowed(now.url))) {
+      // Orbi's error page for an allowed address is not one of those. A
+      // check that fails counts as not allowed.
+      if (!onErrorPage(now) && !BLANK.test(now.url || "") && !(await isAllowed(now.url || "").catch(() => false))) {
         throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${originOf(now.url)}`);
       }
       assertNetSafe(tab.id);

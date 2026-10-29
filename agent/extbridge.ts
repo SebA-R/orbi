@@ -424,22 +424,31 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     this.info = { version, connectedAt: Date.now() };
     // A new connection states Danger mode itself (the worker sends it on connect).
     this.danger = false;
+    let replay = false;
     if (old && old !== ws) {
-      this.dropPending(old, same ? "replaced by a newer connection from the same extension" : "replaced after it went silent");
+      replay = this.dropPending(old, same ? "replaced by a newer connection from the same extension" : "replaced after it went silent");
       old.close(CLOSE.REPLACED, "replaced");
     }
     ws.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION, server: SERVER_NAME }));
+    // The same extension may still be playing a paced action whose call just
+    // failed: stop it, as a timeout would, so a retry doesn't double it.
+    if (same && replay) this.call("actions_stop", {}, 5_000).catch(() => {});
     this.log(`ext: extension connected (version ${version})`);
     this.emit("connect", this.info);
   }
 
-  private dropPending(ws: WebSocket, why: string) {
+  // Fails the socket's pending calls; answers whether one was a paced
+  // action (STOP_ON_TIMEOUT).
+  private dropPending(ws: WebSocket, why: string): boolean {
+    let paced = false;
     for (const [id, p] of this.pending) {
       if (p.ws !== ws) continue;
       clearTimeout(p.timer);
       this.pending.delete(id);
+      if (STOP_ON_TIMEOUT.has(p.method)) paced = true;
       p.reject(new ExtError(ERR.NOT_CONNECTED, `${p.method} failed: ${why}`));
     }
+    return paced;
   }
 }
 
