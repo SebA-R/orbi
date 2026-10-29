@@ -20,7 +20,8 @@
 //      PostToolUse input after every call that ran, and what they add goes
 //      to the model with the result.
 // A turn ends when the model answers without tool calls, after MAX_STEPS
-// model calls, on interrupt() (the request in flight is aborted), or on an
+// model calls (a step that was only a nudge or refused calls is free, up
+// to FREE_STEPS), on interrupt() (the request in flight is aborted), or on an
 // error, which is said in a few words the user can act on.
 
 import { randomUUID } from "node:crypto";
@@ -30,16 +31,21 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 
 import * as timing from "../timing.ts";
-import { chat, detectFlavor, LocalModelError, type ChatMessage, type ChatStats, type ContentPart, type Flavor, type ToolCall, type ToolSpec } from "./openai.ts";
+import { chat, DEFAULT_CONTEXT_TOKENS, detectFlavor, LocalModelError, REPLY_TOKENS, type ChatMessage, type ChatStats, type ContentPart, type Flavor, type ToolCall, type ToolSpec } from "./openai.ts";
 import { argsHelp, claimsAction, coerceArgs, looksLikeReasoning, LoopGuard, PAGE_CLOSE, PAGE_OPEN, pageData, repairJson, speakable, textCall, type Call } from "./harden.ts";
 
-export const MAX_STEPS = 25;
+export const MAX_STEPS = 45;
+export const FREE_STEPS = 10;
 // A tool result longer than this is cut before it goes to the model;
 // small local models have small context windows.
 export const RESULT_MAX_CHARS = 8_000;
-// Older turns are dropped once the conversation is longer than this
-// (about 8k tokens, so it fits a 16k context with the rules and tools).
-export const HISTORY_MAX_CHARS = 32_000;
+// A rough count for the context budget (English and JSON run 3.5 to 4
+// characters a token; the lower figure keeps the estimate on the safe side).
+const CHARS_PER_TOKEN = 3.5;
+// A finished turn's tool results are cut to this once, when the next turn
+// starts (its last result, usually where it ended up, keeps more).
+export const DONE_RESULT_CHARS = 300;
+export const DONE_LAST_RESULT_CHARS = 1_500;
 export const REQUEST_TIMEOUT_MS = 180_000;
 
 type Block = { type: string; text?: string; data?: string; mimeType?: string };
@@ -165,10 +171,13 @@ export type Scaffold = {
 const MAX_NUDGES = 2;
 const KEEP_GOING =
   "[Orbi note, not from the user] Not spoken: the task is not done yet, so keep going with a tool call now. Click the link or button that leads to what the user asked for, or use find with other words, or read_page to see the page. Ask the user only for a detail only they know.";
-const ONE_AT_A_TIME = "Not run: one tool at a time. Look at the result of the call above first, then make the next call with what it showed.";
+const ONE_AT_A_TIME = "Not run: one page action per step, and only before anything else in the step. Look at the results above first, then make this call again if it still fits.";
 const CLAIM_RETRY =
   "[Orbi note, not from the user] That reply was not spoken: it says something was done, but no click, form_input or other action happened this turn. Do it now with the tools (find the link or button, then click it), or tell the user plainly that you could not.";
 export const LOOP_STOP = "I kept repeating the same step, so I stopped. Tell me what you'd like me to try instead.";
+const CHOOSE =
+  "[Orbi note, not from the user] Not spoken: you stopped to ask a question in the middle of the request. Choose using what the user said (colour, size, price, the closest match) and finish the task with the tools. Ask only for a detail only the user knows.";
+const TEXT_CALL = "[Orbi note, not from the user] You wrote a tool call as text. Make it as a real tool call instead, or answer the user in plain words.";
 export const REPLY_FALLBACK = "Sorry, I didn't get that done. Could you tell me again what you'd like?";
 const REPLY_RETRY =
   "[Orbi note, not from the user] That reply was not spoken: it read like notes about the user or about tools. Reply now to the user directly, in one or two short sentences, speaking to them as \"you\" and about yourself as \"I\". Say what you did or found, or ask the one thing you need. If there is still work to do, call the tool instead.";
@@ -207,7 +216,8 @@ export type LocalOptions = {
 };
 
 type Offered = { full: string; server: ToolServer; tool: string };
-type Outcome = { text: string; isError: boolean; images: ContentPart[] };
+// ran: the tool itself ran (not refused before it by a check here).
+type Outcome = { text: string; isError: boolean; images: ContentPart[]; ran?: boolean };
 
 const ABORTED = Symbol("aborted");
 
@@ -384,6 +394,8 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           const active = /Active tab: tab (\d+), (?!an error page)/.exec(text);
           if (active) this.lastTab = Number(active[1]);
         }
+        const prev = this.turns.at(-1);
+        if (prev) compact(prev);
         this.turns.push([{ role: "user", content: this.o.scaffold?.userTurn ? this.o.scaffold.userTurn(text) : text }]);
         yield* this.runTurn();
         if (closed?.aborted) return;
@@ -442,24 +454,43 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     let acted = 0;
     // What those actions were: 'click button "Add to bag"', 'form_input ...'.
     const didNames: string[] = (this.didNames = []);
-    // Scaffold: how often the model was told not to stop yet this turn.
+    // Scaffold: how often the model was told not to stop yet this turn,
+    // and whether it was told to choose instead of asking.
     let nudged = 0;
+    let choseNudge = false;
+    // Steps that do not count toward max: a reply that got a nudge, or a
+    // step whose every call was refused before it ran.
+    let free = 0;
+    const counted = (step: number) => step - free;
+    // Tool calls that ran this turn, and what say said.
+    let looked = 0;
+    const sayings: string[] = [];
+    // A one-off note for the next request only (a nudge and the reply it
+    // answers): never kept in the conversation, so what came before stays
+    // the same from step to step and the server can reuse it.
+    let extra: ChatMessage[] = [];
+    const nudge = (reply: string, note: string) => {
+      turn.pop();
+      extra = [{ role: "assistant", content: reply }, { role: "user", content: note }];
+      if (free < FREE_STEPS) free++;
+    };
     // What the server said the turn's steps cost (the turn_end timing line).
     const usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
     this.usage = usage;
     try {
       for (let step = 1; ; step++) {
-        if (step > max) {
+        if (counted(step) > max) {
           const text = "That was taking too many steps, so I stopped. Tell me what you'd like me to do next.";
           turn.push({ role: "assistant", content: text });
           yield this.assistant([{ type: "text", text }]);
           yield this.result("error_max_turns", max);
           return;
         }
-        this.fit();
         let reply;
         const system = this.systemText();
-        const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat()];
+        this.fit(system);
+        const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat(), ...extra];
+        extra = [];
         let t0 = Date.now();
         try {
           if (this.warming) await unlessAborted(this.warming, signal);
@@ -496,7 +527,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         // Scaffold: a tool call written out as text (JSON, or prose like
         // 'find with query "size"') is made as the call it plainly is,
         // through every gate; the text is not spoken.
-        const written = sc && !calls.length && step < max ? textCall(reply.content, this.specs.map((x) => x.function.name)) : null;
+        const written = sc && !calls.length && counted(step) < max ? textCall(reply.content, this.specs.map((x) => x.function.name)) : null;
         if (written) {
           this.o.onStatus?.(`local: made the ${written.name} call the model wrote as text`);
           calls = [{ id: `call_text_${randomUUID().slice(0, 8)}`, type: "function", function: { name: written.name, arguments: JSON.stringify(written.args) } }];
@@ -511,7 +542,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           said = "Sorry, I got stuck on that. Could you ask me another way?";
           if (sc && !retried) {
             retried = true;
-            turn.push({ role: "user", content: "[Orbi note, not from the user] You wrote a tool call as text. Make it as a real tool call instead, or answer the user in plain words." });
+            nudge(reply.content, TEXT_CALL);
             continue;
           }
         }
@@ -523,35 +554,50 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           // A best match found but never used: say exactly what to press.
           const bestRef = this.best ? /\[(ref_\d+)\]/.exec(this.best)?.[1] : undefined;
           const bestName = this.best ? /"([^"]*)"/.exec(this.best)?.[1] ?? "" : "";
-          if (said && nudged < MAX_NUDGES && step < max - 1 && bestRef && !didNames.some((d) => sharesWord(d, bestName)) && isRequest(lastWords(turn))) {
+          const asked = lastWords(turn);
+          const request = isRequest(asked);
+          const room = counted(step) < max - 1;
+          if (said && nudged < MAX_NUDGES && room && bestRef && !didNames.some((d) => sharesWord(d, bestName)) && request) {
             this.o.onStatus?.(`(not spoken) local reply stopped before using the best match: ${said.slice(0, 120)}`);
             nudged++;
-            turn.push({ role: "user", content: `[Orbi note, not from the user] Not spoken: you found ${this.best} but did not open it. Call click with ref ${bestRef} now, then carry on with what the user asked: ${JSON.stringify(lastWords(turn).slice(0, 200))}` });
+            nudge(reply.content, `[Orbi note, not from the user] Not spoken: you found ${this.best} but did not open it. Call click with ref ${bestRef} now, then carry on with what the user asked: ${JSON.stringify(asked.slice(0, 200))}`);
             continue;
           }
-          if (said && nudged < MAX_NUDGES && step < max - 1 && (givesUp(said) || announces(said)) && isRequest(lastWords(turn))) {
+          if (said && nudged < MAX_NUDGES && room && (givesUp(said, looked) || announces(said)) && request) {
             this.o.onStatus?.(`(not spoken) local reply stopped before the task was done: ${said.slice(0, 120)}`);
             nudged++;
             const options = this.lastFound.length ? ` The last results showed: ${this.lastFound.slice(0, 12).join(", ")}.` : "";
-            turn.push({ role: "user", content: `${KEEP_GOING}${options} The user asked: ${JSON.stringify(lastWords(turn).slice(0, 200))}` });
+            nudge(reply.content, `${KEEP_GOING}${options} The user asked: ${JSON.stringify(asked.slice(0, 200))}`);
             continue;
           }
-          if (said && claimsAction(said) && !claimBacked(said, didNames) && !retried && step < max) {
+          if (said && nudged < MAX_NUDGES && room && !choseNudge && request && asksChoice(said, asked)) {
+            this.o.onStatus?.(`(not spoken) local reply asked a question halfway through the request: ${said.slice(0, 120)}`);
+            nudged++;
+            choseNudge = true;
+            nudge(reply.content, `${CHOOSE} The user asked: ${JSON.stringify(asked.slice(0, 200))}`);
+            continue;
+          }
+          if (said && request && claimsAction(said) && !claimBacked(said, didNames) && !retried && counted(step) < max) {
             this.o.onStatus?.(`(not spoken) local reply claimed an action that did not happen: ${said.slice(0, 120)}`);
             retried = true;
-            turn.push({ role: "user", content: CLAIM_RETRY });
+            nudge(reply.content, CLAIM_RETRY);
             continue;
           }
           if (!said || looksLikeReasoning(said)) {
             this.o.onStatus?.(`(not spoken) local reply read like reasoning: ${reply.content.slice(0, 120)}`);
-            if (!retried && step < max) {
+            if (!retried && counted(step) < max) {
               retried = true;
-              turn.push({ role: "user", content: REPLY_RETRY });
+              nudge(reply.content, REPLY_RETRY);
               continue;
             }
             said = said.split(/(?<=[.!?])\s+/).filter((x) => x && !looksLikeReasoning(x)).join(" ") || REPLY_FALLBACK;
             turn[turn.length - 1] = { role: "assistant", content: said };
           }
+        }
+        // What say already said this turn is not said again as the reply.
+        if (said && !calls.length && sayings.some((x) => sameWords(x, said))) {
+          this.o.onStatus?.(`(not spoken again) local reply repeats what say said: ${said.slice(0, 120)}`);
+          said = "";
         }
         yield this.assistant([
           ...(said ? [{ type: "text", text: said }] : []),
@@ -564,26 +610,34 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         // One call at a time, in order, like the SDK runs these tools.
         const images: ContentPart[] = [];
         let looped = false;
-        // Scaffold: one browser call per step (other tools aside).
-        // A small model that sends several at once guesses the later ones'
-        // refs before it has seen what the first returned.
+        // Scaffold: a page action only as the first call of its step (say
+        // aside). A small model that sends several at once guesses the later
+        // ones' refs before it has seen what the first returned; reading
+        // (find, read_page, get_page_text) several times in one step is fine.
         let ran = 0;
+        let ranAny = false;
         // Scaffold: a locked control the user asked to press was pressed:
         // a plain "click X" ask is done then, and the turn ends.
         let pressed: string | null = null;
         const clickAsk = !!sc && /^(please\s+)?(click|press|tap|hit)\b/i.test(this.userWords) && !/\b(and|then)\b/i.test(this.userWords);
         for (const call of calls) {
           let out: Outcome;
-          const notBrowser = !(this.resolve(call.function.name)?.full ?? "").startsWith("mcp__browser__");
+          const callFull = this.resolve(call.function.name)?.full ?? "";
+          const isSay = /^mcp__clearcart__say$/.test(callFull);
           if (signal.aborted) out = { text: NOT_RUN, isError: true, images: [] };
-          else if (sc && !notBrowser && ran >= 1) out = { text: ONE_AT_A_TIME, isError: true, images: [] };
+          else if (sc && sc.actionTools.has(callFull) && ran >= 1) out = { text: ONE_AT_A_TIME, isError: true, images: [] };
           else if (looped || (loops && loops.check(this.callOf(call)))) {
             looped = true;
             out = { text: "Not run: the same step was repeated too many times, so the turn stopped.", isError: true, images: [] };
           } else {
             out = await this.runTool(call, signal);
             if (out.isError) loops?.undo(this.callOf(call));
-            if (!notBrowser) ran++;
+            if (out.ran) {
+              ranAny = true;
+              looked++;
+              if (!isSay) ran++;
+              else if (!out.isError) sayings.push(String(this.callOf(call).args.text ?? ""));
+            }
             const full = this.resolve(call.function.name)?.full ?? "";
             if (clickAsk && !out.isError && /__request_unlock$/.test(full) && /^pressed /.test(out.text)) pressed = String(this.callOf(call).args.label ?? "it");
             if (sc && !out.isError && sc.actionTools.has(full)) {
@@ -631,6 +685,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           yield this.result("error_max_turns", step);
           return;
         }
+        if (!ranAny && !looped && free < FREE_STEPS) free++;
         if (images.length) this.addImages(turn, images);
         if (signal.aborted) {
           this.stopped(turn);
@@ -738,12 +793,12 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       // Not waited for, but the PostToolUse hooks (the tab sweep) still run
       // once it lands.
       void running.then((r) => this.postToolUse(t.full, args, r, call.id, AbortSignal.timeout(60_000))).catch(() => {});
-      return refuse(CUT_OFF);
+      return { ...refuse(CUT_OFF), ran: true };
     }
     // 4. The PostToolUse hooks, after every call that ran.
     const post = this.postToolUse(t.full, args, res, call.id, signal);
     const notes = await unlessAborted(post, signal);
-    const out = this.outcome(res, notes === ABORTED ? [] : notes, sc?.pageTools.has(t.full) === true);
+    const out: Outcome = { ...this.outcome(res, notes === ABORTED ? [] : notes, sc?.pageTools.has(t.full) === true), ran: true };
     if (sc && !out.isError && /^mcp__browser__(tabs_create|navigate)$/.test(t.full)) {
       const opened = /"tabId"\s*:\s*(\d+)/.exec(out.text);
       if (opened) this.lastTab = Number(opened[1]);
@@ -890,17 +945,22 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     if (last?.role !== "assistant" || last.tool_calls) turn.push({ role: "assistant", content: "(Stopped: the user interrupted.)" });
   }
 
-  // Keeps the conversation under HISTORY_MAX_CHARS: whole older turns go
-  // first, then older tool results in this turn are shortened.
-  private fit() {
+  // Keeps the conversation within the context window: what is left of it
+  // once the rules, the tools and the longest answer are counted. Earlier
+  // messages are never rewritten while they fit, so the server can reuse
+  // its work on them from step to step. When they do not fit, the oldest
+  // turns go together (down to 70%, so it happens seldom), then, only if
+  // the turn in progress alone is too long, its older tool results are cut.
+  private fit(system: string) {
+    const window = this.o.contextTokens ?? DEFAULT_CONTEXT_TOKENS;
+    const fixed = (system.length + JSON.stringify(this.specs).length) / CHARS_PER_TOKEN;
+    const budget = Math.max(1_000, window - REPLY_TOKENS - fixed - 300) * CHARS_PER_TOKEN;
     const size = () => this.turns.reduce((n, t) => n + t.reduce((k, m) => k + chars(m), 0), 0);
-    while (this.turns.length > 1 && size() > HISTORY_MAX_CHARS) this.turns.shift();
+    if (size() <= budget) return;
+    while (this.turns.length > 1 && size() > budget * 0.7) this.turns.shift();
+    if (size() <= budget) return;
     const results = this.turns.at(-1)!.filter((m): m is Extract<ChatMessage, { role: "tool" }> => m.role === "tool");
-    for (let i = 0; i < results.length - 2 && size() > HISTORY_MAX_CHARS; i++) {
-      // Page data keeps its closing marker, so the cut text still reads as page data.
-      const c = results[i].content;
-      if (c.length > 400) results[i].content = `${c.slice(0, 400)}\n[Shortened to save space.]${c.startsWith(PAGE_OPEN) ? `\n${PAGE_CLOSE}` : ""}`;
-    }
+    for (let i = 0; i < results.length - 2 && size() > budget * 0.8; i++) results[i].content = shorten(results[i].content, 400);
   }
 
   private assistant(content: unknown[]): SDKMessage {
@@ -937,10 +997,48 @@ function lastWords(turn: ChatMessage[]): string {
   return text.split(/\n\s*\n/).at(-1)?.trim() ?? "";
 }
 
-// A reply that stops before the task is done.
-const GIVES_UP = /\b(couldn'?t|could not|can'?t|cannot|unable to|wasn'?t able|didn'?t find|not find|no .{0,20} found)\b|what should i do|what'?s missing|what would you like me to do/i;
-function givesUp(text: string): boolean {
-  return GIVES_UP.test(text);
+// A reply that stops before the task is done: it hands the task back, or
+// says it could not after hardly looking (looked: tool calls this turn).
+// "I couldn't find it" after a real search is an honest answer.
+const HANDS_BACK = /what should i do|what'?s missing|what would you like me to do/i;
+const COULD_NOT = /\b(couldn'?t|could not|can'?t|cannot|unable to|wasn'?t able|didn'?t find|not find|no .{0,20} found)\b/i;
+function givesUp(text: string, looked = 0): boolean {
+  return HANDS_BACK.test(text) || (COULD_NOT.test(text) && looked < 3);
+}
+
+// A question that hands a choice back halfway through a request ("Which
+// one?", "The black or the white?"), not one for a detail only the user
+// knows (their email, whether to check out, a size they never gave).
+const CHOICE = /\b(which|prefer|would you like|do you want|should i|shall i)\b|\bor\b[^?]*\?\s*$/i;
+const ONLY_THEY_KNOW = /\b(e-?mail|address|phone|name|password|passcode|card|account|sign(ed)? in|log(ged)? in|check ?out|pay|order|quantity|how many)\b/i;
+const SIZE_GIVEN = /\bsize\b|\b(xx?s|xx?l|small|medium|large|petite|tall|\d{1,2}(\.5)?)\b/i;
+function asksChoice(said: string, userWords: string): boolean {
+  if (!/\?\s*$/.test(said) || !CHOICE.test(said) || ONLY_THEY_KNOW.test(said)) return false;
+  if (/\bsize\b/i.test(said) && !SIZE_GIVEN.test(userWords)) return false;
+  return true;
+}
+
+// The same words, case, punctuation and spacing aside.
+function sameWords(a: string, b: string): boolean {
+  const n = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return !!n(a) && n(a) === n(b);
+}
+
+// Text cut to max characters, still reading as page data when it was.
+function shorten(c: string, max: number): string {
+  if (c.length <= max) return c;
+  return `${c.slice(0, max)}\n[Shortened to save space.]${c.startsWith(PAGE_OPEN) ? `\n${PAGE_CLOSE}` : ""}`;
+}
+
+// A finished turn, made smaller once when the next one starts and never
+// changed after: tool results cut short (the last one less), screenshots
+// left out.
+function compact(turn: ChatMessage[]) {
+  const results = turn.filter((m): m is Extract<ChatMessage, { role: "tool" }> => m.role === "tool");
+  results.forEach((m, i) => (m.content = shorten(m.content, i === results.length - 1 ? DONE_LAST_RESULT_CHARS : DONE_RESULT_CHARS)));
+  for (const m of turn) {
+    if (m.role === "user" && Array.isArray(m.content)) m.content = m.content.map((p) => (p.type === "image_url" ? { type: "text", text: "[Screenshot left out.]" } : p));
+  }
 }
 
 // A reply that only says what it is about to do ("Looking for jackets.").
@@ -991,7 +1089,8 @@ function arrived(userWords: string, title: string): boolean {
 function claimBacked(said: string, did: string[]): boolean {
   // "in size medium", "in black": an option was chosen, so a form_input ran.
   if (/\b(in (size|colou?r)|in (a |an )?(xx?s|xx?l|small|medium|large|s|m|l))\b/i.test(said) && !did.some((d) => /^form_input\b/.test(d))) return false;
-  if (/\b(added|add(ed)? (it|them)|in your (bag|cart))\b/i.test(said)) return did.some((d) => /\badd\b/i.test(d));
+  if (/\b(bag|cart|basket)\b/i.test(said) && /\b(added|add(ed)? (it|them)|in your)\b/i.test(said)) return did.some((d) => /\badd\b/i.test(d));
+  if (/\badded\b/i.test(said)) return did.some((d) => /\badd\b/i.test(d) || /^(form_input|type)\b/.test(d));
   if (/\b(filled|entered|typed)\b/i.test(said)) return did.some((d) => /^(form_input|type)\b/.test(d));
   return did.length > 0;
 }
