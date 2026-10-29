@@ -51,9 +51,32 @@ export const ERR = {
   TIMEOUT: "timeout",
   NOT_CONNECTED: "not_connected",
   INTERRUPTED: "interrupted",
+  // The page did not load: no connection, unknown address, refused (tabs.js).
+  NET_ERROR: "net_error",
   INTERNAL: "internal",
 } as const;
 export const REQUEST_TIMEOUT_MS = 30_000;
+// type goes key by key at a typist's cadence with page checks around every
+// key (router.js guardChar), so long text needs more than the flat timeout.
+// Generous per character: a request that times out while the extension is
+// still typing leaves the agent free to retry over it.
+export const TYPE_MS_PER_CHAR = 250;
+// dismiss_overlay can try two paced clicks and an Escape, each with a settle.
+export const DISMISS_TIMEOUT_MS = 60_000;
+export const MAX_REQUEST_TIMEOUT_MS = 10 * 60_000;
+// Paced actions the extension keeps playing after the server gives up on
+// them: a timeout sends actions_stop so nothing keeps going behind a retry.
+const STOP_ON_TIMEOUT: ReadonlySet<string> = new Set(["type", "click", "scroll", "dismiss_overlay"]);
+
+// The default timeout for a request: the flat one, plus time per character
+// for type and more headroom for dismiss_overlay.
+export function requestTimeoutFor(method: string, params: Record<string, unknown> = {}): number {
+  if (method === "type" && typeof params.text === "string") {
+    return Math.min(MAX_REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_MS + [...params.text].length * TYPE_MS_PER_CHAR);
+  }
+  if (method === "dismiss_overlay") return DISMISS_TIMEOUT_MS;
+  return REQUEST_TIMEOUT_MS;
+}
 const HELLO_TIMEOUT_MS = 5_000;
 
 export class ExtError extends Error {
@@ -172,7 +195,7 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     });
   }
 
-  call<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+  call<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = requestTimeoutFor(method, params)): Promise<T> {
     const ws = this.current;
     if (!ws || ws.readyState !== ws.OPEN) {
       return Promise.reject(new ExtError(ERR.NOT_CONNECTED, "The Orbi extension is not connected. Open Chrome with the extension enabled."));
@@ -181,6 +204,8 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        // The extension may still be playing it: stop it before anyone retries.
+        if (STOP_ON_TIMEOUT.has(method) && ws === this.current) this.call("actions_stop", {}, 5_000).catch(() => {});
         reject(new ExtError(ERR.TIMEOUT, `${method} timed out after ${timeoutMs} ms`));
       }, timeoutMs);
       this.pending.set(id, { ws, method, resolve, reject, timer });

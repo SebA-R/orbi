@@ -54,6 +54,14 @@ function info(tab) {
   return { tabId: tab.id, url, title: tab.title || "" };
 }
 
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "unknown";
+  }
+}
+
 // Origin and path only: no query string, fragment or login. What Claude sees.
 export function originPath(url) {
   try {
@@ -119,6 +127,40 @@ export async function failedAddress(tab) {
   return originPath(rec.url) || null;
 }
 
+// ------------------------------------------------------- load failures
+
+// The last main-frame load failure per tab, from webRequest.onErrorOccurred
+// (worker.js, the errpage.js FILTER). Chrome's error page then completes
+// with the failed address, so without this navigate would report it as
+// loaded. ERR_ABORTED is a stop, a download or a newer navigation, not a
+// failure of the page.
+const loadErrors = new Map(); // tabId -> { url, error, at }
+
+export function onMainFrameError(d) {
+  if (!d || d.type !== "main_frame" || d.frameId !== 0) return;
+  if (!Number.isInteger(d.tabId) || d.tabId < 0) return;
+  if (typeof d.error !== "string" || d.error === "net::ERR_ABORTED") return;
+  loadErrors.set(d.tabId, { url: String(d.url || ""), error: d.error, at: Date.now() });
+}
+
+const noHash = (url) => String(url || "").split("#")[0];
+
+// Throws NET_ERROR when the load navigateAndWait just waited for failed: a
+// main-frame error since `since` and the tab still on that address
+// (Chrome's error page) or on Orbi's error page. Whatever the errorPages
+// setting is.
+async function assertLoaded(tabId, since, tab) {
+  const e = loadErrors.get(tabId);
+  if (!e || e.at < since) return;
+  const t = tab || (await api().tabs.get(tabId).catch(() => null));
+  if (!t) return;
+  if (!onErrorPage(t) && noHash(t.url || t.pendingUrl) !== noHash(e.url)) return;
+  // Origin only: the failed address may carry a login code in its query.
+  // A redirect's blocked site is never named.
+  const where = (await isAllowed(e.url).catch(() => false)) ? originOf(e.url) : "the site";
+  throw new BridgeError(ERR.NET_ERROR, `could not reach ${where} (${e.error}); the page did not load`);
+}
+
 // ------------------------------------------------------------ tab state
 
 async function loadState() {
@@ -151,6 +193,7 @@ export const markUsed = (tabId) => update((s) => (s.last = tabId));
 
 // tabs.onRemoved: forget the tab.
 export function onTabRemoved(tabId) {
+  loadErrors.delete(tabId);
   return update((s) => {
     s.created = s.created.filter((id) => id !== tabId);
     if (s.last === tabId) s.last = null;
@@ -326,8 +369,16 @@ export async function tabsCreate({ url, onCreated } = {}) {
   await markUsed(tab.id);
   if (typeof onCreated === "function") await Promise.resolve(onCreated(tab.id)).catch(() => {});
   if (url != null) {
+    const since = Date.now();
     await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
+    const now = await api().tabs.get(tab.id);
+    // A redirect can lead to a site that is not allowed, as in navigate.
+    // Orbi's error page for an allowed address is not one of those.
+    if (!onErrorPage(now) && !BLANK.test(now.url || "") && !(await isAllowed(now.url))) {
+      throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${originOf(now.url)}`);
+    }
     assertNetSafe(tab.id);
+    await assertLoaded(tab.id, since, now);
   }
   return { tabId: tab.id };
 }
@@ -365,20 +416,21 @@ export async function navigate({ tabId, url } = {}) {
     start = () => api().tabs.update(id, { url });
   }
   await markUsed(id);
+  const since = Date.now();
   await navigateAndWait(id, start);
   const tab = await api().tabs.get(id);
   // The address did not load and the tab is already on Orbi's error page.
-  if (onErrorPage(tab)) return { tabId: tab.id, url: ERROR_URL, title: ERROR_TITLE };
+  if (onErrorPage(tab)) {
+    await assertLoaded(id, since, tab);
+    return { tabId: tab.id, url: ERROR_URL, title: ERROR_TITLE };
+  }
   // History or a redirect can lead to a site that is not allowed; report it
   // so callers stop driving. A blank page in a tab Orbi opened is fine.
   if (!(mine && BLANK.test(tab.url || "")) && !(await isAllowed(tab.url))) {
-    let origin = "unknown";
-    try {
-      origin = new URL(tab.url).origin;
-    } catch {}
-    throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${origin}`);
+    throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${originOf(tab.url)}`);
   }
   assertNetSafe(id);
+  await assertLoaded(id, since, tab);
   // Origin and path only: a query string or fragment can carry login codes.
   return { tabId: tab.id, url: originPath(tab.url || tab.pendingUrl || ""), title: tab.title || "" };
 }
