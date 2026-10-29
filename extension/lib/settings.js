@@ -273,24 +273,9 @@ export function localStatusText(model, result) {
 
 const KEYS = Object.keys(DEFAULTS);
 
-// The extension's own storage is read once and kept until it changes, so the
-// several checks one action makes share one read. Other storages (tests)
-// are read every time. Callers get their own copy to change.
-let cached = null;
-const ownStorage = (storage) => storage && storage === globalThis.chrome?.storage?.local;
-globalThis.chrome?.storage?.onChanged?.addListener?.((_changes, area) => {
-  if (area === "local") cached = null;
-});
-
-async function readSettings(storage) {
+export async function loadSettings(storage = globalThis.chrome?.storage?.local) {
   const raw = storage ? await storage.get(KEYS) : {};
   return normalize(raw);
-}
-
-export async function loadSettings(storage = globalThis.chrome?.storage?.local) {
-  if (!ownStorage(storage) || !globalThis.chrome?.storage?.onChanged) return readSettings(storage);
-  cached ??= readSettings(storage).catch((e) => { cached = null; throw e; });
-  return structuredClone(await cached);
 }
 
 // First install: store the suggested blocked sites, so the list the user
@@ -300,7 +285,6 @@ export async function seedBlocklist(storage = globalThis.chrome?.storage?.local)
   const { blocklist } = await storage.get("blocklist");
   if (blocklist !== undefined) return false;
   await storage.set({ blocklist: [...SUGGESTED_BLOCKLIST] });
-  cached = null;
   return true;
 }
 
@@ -322,13 +306,11 @@ export async function migrateSettings(storage = globalThis.chrome?.storage?.loca
     if (kept.length !== got.allowlist.length) patch.allowlist = kept;
   }
   await storage.set(patch);
-  cached = null;
   return "allowlist" in patch;
 }
 
 export async function saveSettings(patch, storage = globalThis.chrome?.storage?.local) {
   const next = normalize({ ...(await loadSettings(storage)), ...patch });
   await storage.set(next);
-  cached = null;
   return next;
 }
