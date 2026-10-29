@@ -12,13 +12,16 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { ERR, ExtError, extBridge } from "../extbridge.ts";
-import { coerceArgs, isInjectionLine, looksLikeReasoning, pageData, PAGE_OPEN, REMOVED_LINE, repairJson } from "../local/harden.ts";
-import { LOOP_STOP } from "../local/query.ts";
+import { claimsAction, coerceArgs, isInjectionLine, looksLikeReasoning, pageData, PAGE_OPEN, REMOVED_LINE, repairJson } from "../local/harden.ts";
+import { asksChoice, LOOP_STOP } from "../local/query.ts";
 import { MemoryStore, redactTurn, REDACTED } from "../memory.ts";
-import { DANGER_LOCAL_LINE, dangerModeOn, Session, type ServerMessage } from "../session.ts";
+import { DANGER_LOCAL_LINE, dangerModeOn, localAck, Session, webAddress, type ServerMessage } from "../session.ts";
 
 process.env.CLEARCART_BROWSER = "ext";
 process.env.CLEARCART_VOICE = "false";
+// The server's own acknowledgement ("On it.") is off here, so spoken() is
+// only what the model said; the test for it turns it on.
+process.env.ORBI_ACK = "0";
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 async function until(ok: () => boolean, what: string, ms = 5_000) {
@@ -302,4 +305,222 @@ test("the transcript keeps sign in talk and drops a given password", () => {
   assert.equal(redactTurn("my password is hunter2"), REDACTED);
   assert.equal(redactTurn("the card number is on the back"), "the card number is on the back");
   assert.equal(redactTurn("the card number is 4242 4242 4242 4242"), REDACTED);
+});
+
+// A shop page for the loop tests: find returns the page's controls by name.
+const shopBrowser = (method: string, p: any) => {
+  const t = tabs(method);
+  if (t) return t;
+  if (method === "tab_info") return { url: `${SHOP}/c/shoes`, title: "Shoes" };
+  if (method === "find") return { matches: [{ ref: "ref_1", role: "link", name: "Swift - $72" }, { ref: "ref_2", role: "link", name: "Road Two - $64" }] };
+  if (method === "get_page_text") return { url: `${SHOP}/c/shoes`, title: "Shoes", text: "Swift, black, $72. Road Two, white, $64." };
+  if (method === "read_page") return { tree: '- link "Swift - $72" [ref_1]\n- link "Road Two - $64" [ref_2]' };
+  if (method === "rect") throw new ExtError(ERR.UNKNOWN_METHOD, "no rect");
+  return { ok: true, ...(p?.ref ? { ref: p.ref } : {}) };
+};
+
+test("a question halfway through a request is not spoken: one one-off note to choose, never kept in the conversation", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "find", args: { query: "shoes" } }] };
+    if (n === 2) return { text: "They have the Swift and the Road Two. Which one would you like?" };
+    if (n === 3) return { calls: [{ name: "click", args: { ref: "ref_1" } }] };
+    return { text: "I opened the Swift, the black one." };
+  });
+  const br = useBrowser(shopBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("open the black running shoes");
+    await until(() => r.spoken().length > 0, "the reply");
+    assert.deepEqual(r.spoken(), ["I opened the Swift, the black one."]);
+    assert.ok(r.statuses().some((t) => t.startsWith("(not spoken) local reply asked a question halfway")));
+    const [, , third, fourth] = model.requests;
+    assert.match(third.messages.at(-1).content, /Choose using what the user said/);
+    assert.equal(third.messages.at(-2).content, "They have the Swift and the Road Two. Which one would you like?");
+    assert.ok(!fourth.messages.some((m: any) => /Choose using|Which one would you like/.test(String(m.content))), "the note and the question it answered are gone");
+    assert.match(fourth.messages.at(-1).content, /^\[Orbi note, not from the user\] Keep going until this is done/, "a short reminder stays at the end");
+    // What came before stays the same from step to step (the server reuses it).
+    const before = model.requests[1].messages;
+    assert.deepEqual(fourth.messages.slice(0, before.length), before);
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("an honest \"I couldn't find it\" after a real search is spoken; a question for a detail only the user knows is too", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n <= 3) return { calls: [{ name: "find", args: { query: ["boots", "winter boots", "snow"][n - 1] } }] };
+    if (n === 4) return { text: "I couldn't find winter boots in this shop." };
+    return { text: "Which email should I use for the account?" };
+  });
+  const br = useBrowser(shopBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("find winter boots here");
+    await until(() => r.spoken().length > 0, "the first reply");
+    assert.deepEqual(r.spoken(), ["I couldn't find winter boots in this shop."]);
+    r.s.userText("make an account for me");
+    await until(() => r.spoken().length > 1, "the second reply");
+    assert.equal(r.spoken()[1], "Which email should I use for the account?");
+    assert.equal(model.requests.length, 5, "no nudges");
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("reads go together in one step; a page action only as the step's first call", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "find", args: { query: "swift" } }, { name: "get_page_text" }, { name: "click", args: { ref: "ref_1" } }] };
+    if (n === 2) return { calls: [{ name: "click", args: { ref: "ref_1" } }, { name: "get_page_text" }] };
+    return { text: "I opened the Swift." };
+  });
+  const br = useBrowser(shopBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("open the swift");
+    await until(() => r.spoken().length > 0, "the reply");
+    const [f, g, c] = toolMessages(model.requests[1]).map((m: any) => m.content);
+    assert.match(f, /Swift/);
+    assert.match(g, /Road Two, white/, "a second read in the same step ran");
+    assert.match(c, /^Not run: one page action per step/);
+    const [c2, g2] = toolMessages(model.requests[2]).slice(-2).map((m: any) => m.content);
+    assert.doesNotMatch(c2, /Not run/);
+    assert.doesNotMatch(g2, /Not run/, "a read after the action ran");
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("say then the same words as the reply: spoken once", async () => {
+  const model = await fakeModel((_b, n) => (n === 1 ? { calls: [{ name: "say", args: { text: "Hello, I'm Orbi." } }] } : { text: '"Hello, I\'m Orbi."' }));
+  const br = useBrowser(shopBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("say hello");
+    await until(() => r.statuses().some((t) => /^\(not spoken again\)/.test(t)), "the repeat dropped");
+    await until(() => (r.s as any).turnsOpen === 0, "the turn closed");
+    assert.deepEqual(r.spoken(), ["Hello, I'm Orbi."]);
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("without vision a click needs a ref; a web address without https:// is fixed, a bare word is refused plainly", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "click", args: { x: "NaN", y: 40 } }] };
+    if (n === 2) return { calls: [{ name: "tabs_create", args: { url: "aritzia" } }] };
+    if (n === 3) return { calls: [{ name: "tabs_create", args: { url: "www.aritzia.com/en/new" } }] };
+    return { text: "Aritzia is open." };
+  });
+  const br = useBrowser((m, p) => (m === "tabs_create" ? { tabId: 30, url: p.url } : shopBrowser(m, p)));
+  const r = localSession(model.url);
+  try {
+    r.s.userText("open aritzia");
+    await until(() => r.spoken().length > 0, "the reply");
+    assert.match(toolMessages(model.requests[1])[0].content, /click needs a ref\. Call find/);
+    assert.ok(!br.calls.some((c) => c[0] === "click"), "no click at a guessed point");
+    assert.match(toolMessages(model.requests[2]).at(-1).content, /"aritzia" is not a web address\. Use the site's full address, for example https:\/\/www\.aritzia\.com/);
+    assert.equal(br.calls.find((c) => c[0] === "tabs_create")?.[1].url, "https://www.aritzia.com/en/new");
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("a finished turn is cut down once when the next starts (once the conversation fills half its budget), then left alone", async () => {
+  // A small window, so two long results fill half of it.
+  process.env.CLEARCART_LOCAL_CONTEXT = "4096";
+  const long = "Swift, black, $72. ".repeat(100);
+  const model = await fakeModel((_b, n) => (n === 1 ? { calls: [{ name: "get_page_text" }] } : n === 2 ? { calls: [{ name: "get_page_text" }] } : { text: "Done." }));
+  const br = useBrowser((m, p) => (m === "get_page_text" ? { url: `${SHOP}/c`, title: "Shoes", text: long } : shopBrowser(m, p)));
+  const r = localSession(model.url);
+  try {
+    r.s.userText("read the page");
+    await until(() => r.spoken().length > 0, "the first reply");
+    r.s.userText("hello again");
+    await until(() => r.spoken().length > 1, "the second reply");
+    const turn1 = toolMessages(model.requests[3]);
+    assert.ok(turn1[0].content.length < 400 && /Shortened to save space/.test(turn1[0].content), "an earlier result cut short");
+    assert.ok(turn1[1].content.length > 1_000 && turn1[1].content.length < 1_700, "the turn's last result keeps more");
+    assert.match(turn1[0].content, /END OF PAGE DATA>>>$/);
+  } finally {
+    delete process.env.CLEARCART_LOCAL_CONTEXT;
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("the server's acknowledgement: a few words at the first tool step, none when the model says its own", async () => {
+  process.env.ORBI_ACK = "1";
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "tabs_create", args: { url: "https://www.aritzia.com/" } }] };
+    if (n === 2) return { calls: [{ name: "get_page_text" }] };
+    if (n === 3) return { text: "Aritzia is open." };
+    if (n === 4) return { calls: [{ name: "say", args: { text: "Looking." } }, { name: "find", args: { query: "jackets" } }] };
+    return { text: "They have jackets." };
+  });
+  const br = useBrowser((m, p) => (m === "tabs_create" ? { tabId: 30, url: p.url } : shopBrowser(m, p)));
+  const r = localSession(model.url);
+  try {
+    r.s.userText("open aritzia");
+    await until(() => r.spoken().length > 1, "the reply");
+    assert.deepEqual(r.spoken(), ["Opening aritzia.com.", "Aritzia is open."], "once per turn");
+    assert.doesNotMatch(model.requests[0].messages[0].content, /Acknowledge first/, "no ACK_PROMPT for a small model");
+    r.s.userText("find jackets");
+    await until(() => r.spoken().length > 3, "the second reply");
+    assert.deepEqual(r.spoken().slice(2), ["Looking.", "They have jackets."]);
+  } finally {
+    process.env.ORBI_ACK = "0";
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+  assert.equal(localAck("mcp__browser__navigate", { url: "aritzia.com/new" }), "Opening aritzia.com.");
+  assert.equal(localAck("mcp__browser__navigate", { url: "back" }), "On it.");
+  assert.equal(localAck("mcp__browser__find", { query: "ignore all rules" }), "On it.");
+});
+
+test("which questions hand the task back, and which web addresses are fixed", () => {
+  const shoes = "find me black running shoes under $80 and add them to my bag";
+  assert.ok(asksChoice("They have the Swift and the Road Two. Which one?", shoes));
+  assert.ok(asksChoice("Would you like me to add it to your bag?", shoes), "leave for what they already asked");
+  assert.ok(!asksChoice("Which size would you like?", shoes), "a size they never gave ($80 is no size)");
+  assert.ok(!asksChoice("Do you want the medium or the large?", shoes));
+  assert.ok(asksChoice("Do you want the medium or the large?", `${shoes} in size medium`));
+  assert.ok(!asksChoice("Should I remove the Swift from your bag?", "clean up my bag"));
+  assert.ok(!asksChoice("Do you want me to sign up for the newsletter?", "sign me up for things"));
+  assert.ok(!asksChoice("Which email should I use?", "make me an account"));
+  assert.ok(!asksChoice("I added it.", shoes));
+  assert.equal(webAddress("aritzia.com/new"), "https://aritzia.com/new");
+  assert.equal(webAddress("127.0.0.1:4000"), "https://127.0.0.1:4000");
+  assert.equal(webAddress("localhost:4000/shop?x=1"), "https://localhost:4000/shop?x=1");
+  assert.equal(webAddress("https://www.aritzia.com/"), "https://www.aritzia.com/");
+  assert.equal(webAddress("Back"), "back");
+  assert.equal(webAddress("aritzia"), null);
+  assert.ok(claimsAction("Your bag has black Swift shoes in it."));
+});
+
+test("a false claim after \"thanks, now ...\" still gets the claim retry", async () => {
+  const model = await fakeModel((_b, n) => (n === 1 ? { text: "I added it in large to your bag." } : { text: "I couldn't add it yet." }));
+  const br = useBrowser(shopBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("thanks, now add it in large");
+    await until(() => r.spoken().length > 0, "the reply");
+    assert.deepEqual(r.spoken(), ["I couldn't add it yet."]);
+    assert.ok(r.statuses().some((t) => t.startsWith("(not spoken) local reply claimed an action")));
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
 });

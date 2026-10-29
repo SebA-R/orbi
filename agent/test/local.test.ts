@@ -14,7 +14,7 @@ import { DESKTOP_TOOL_NAMES } from "../desktop/tools.ts";
 import { extBridge } from "../extbridge.ts";
 import { SessionHub, type HubMessage, type HubSession } from "../hub.ts";
 import { envProviderSettings, parseLocalBaseUrl, parseLocalModel } from "../local/config.ts";
-import { localQuery, type ToolServer } from "../local/query.ts";
+import { FREE_STEPS, localQuery, MAX_STEPS, type ToolServer } from "../local/query.ts";
 import { claimConfirmation } from "../pay.ts";
 import { DISALLOWED_BROWSER, EXT_ALLOWED, Session, type ServerMessage } from "../session.ts";
 import { FakeExt, onceEvent, startBridge } from "./fake-ext.ts";
@@ -373,7 +373,7 @@ test("endpoint down, a missing model, a model without tools: a short spoken line
   }
 });
 
-test("max steps: a model that keeps calling tools is stopped after 25 calls", async () => {
+test("max steps: a model that keeps calling tools is stopped after MAX_STEPS calls", async () => {
   const model = await fakeModel(() => ({ calls: [{ name: "tabs_context" }] }));
   const br = useBrowser(quietBrowser);
   const r = localSession(model.url);
@@ -383,7 +383,26 @@ test("max steps: a model that keeps calling tools is stopped after 25 calls", as
     assert.match(r.spoken()[0], /too many steps/);
     assert.ok(r.statuses().includes("turn ended: error_max_turns"));
     await tick(50);
-    assert.equal(model.requests.length, 25);
+    assert.equal(MAX_STEPS, 45);
+    assert.equal(model.requests.length, MAX_STEPS);
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+    resetEnv();
+  }
+});
+
+test("max steps: a step whose calls were all refused before running is free, up to FREE_STEPS", async () => {
+  const model = await fakeModel(() => ({ calls: [{ name: "no_such_tool" }] }));
+  const br = useBrowser(quietBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("loop forever");
+    await until(() => r.spoken().length > 0, "the stop line");
+    assert.match(r.spoken()[0], /too many steps/);
+    await tick(50);
+    assert.equal(model.requests.length, MAX_STEPS + FREE_STEPS);
   } finally {
     await r.stop();
     br.restore();
