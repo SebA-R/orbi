@@ -296,6 +296,10 @@ export function fitScale(w, h) {
 }
 
 const near = (a, b) => Math.abs(a - b) <= 2;
+// Tabs where the clipped capture did not come back at CSS size (an older
+// Chrome, or browser zoom on a 2x screen): they go straight to the plain
+// capture and the resize.
+const noClip = new Set();
 
 // A JPEG of the viewport in CSS pixels, the space click and scroll take:
 // on a 2x screen Chrome captures device pixels (2880x1800 for a 1440x900
@@ -313,7 +317,7 @@ export async function screenshot({ tabId } = {}) {
   // The visible viewport's place on the page. Under pinch zoom it is not
   // the layout viewport input uses, so the plain capture below is taken.
   const vis = m.cssVisualViewport;
-  if (vis && Number.isFinite(vis.pageX) && Number.isFinite(vis.pageY) && (vis.scale == null || vis.scale === 1) &&
+  if (!noClip.has(tabId) && vis && Number.isFinite(vis.pageX) && Number.isFinite(vis.pageY) && (vis.scale == null || vis.scale === 1) &&
       near(vis.clientWidth, vp.width) && near(vis.clientHeight, vp.height)) {
     try {
       const { data } = await send(tabId, "Page.captureScreenshot", {
@@ -327,6 +331,7 @@ export async function screenshot({ tabId } = {}) {
       if (size && near(size.width, want.width) && near(size.height, want.height)) {
         return { data, mimeType: "image/jpeg", width: vp.width, height: vp.height, scale: fit };
       }
+      if (size) noClip.add(tabId);
     } catch {}
   }
   const { data } = await send(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70 });
@@ -335,10 +340,11 @@ export async function screenshot({ tabId } = {}) {
     size = jpegSize(data);
   } catch {}
   const img = size || { width: Math.round(vp.width * vp.dpr), height: Math.round(vp.height * vp.dpr) };
-  // Image px per CSS px: the device pixel ratio, or 1 when Chrome already
+  // Image px per CSS px, read off the image (browser zoom makes the
+  // layout's dpr differ from the screen's), or 1 when Chrome already
   // captured at CSS size.
-  const ratio = Math.abs(img.width / vp.width - 1) < 0.05 ? 1 : vp.dpr;
-  const css = { width: Math.round(img.width / ratio), height: Math.round(img.height / ratio) };
+  const ratio = Math.abs(img.width / vp.width - 1) < 0.05 ? 1 : img.width / vp.width;
+  const css = ratio === 1 ? { width: img.width, height: img.height } : { width: vp.width, height: vp.height };
   const f = fitScale(css.width, css.height);
   if (ratio === 1 && f === 1) return { data, mimeType: "image/jpeg", ...css, scale: 1 };
   const small = await resize(data, Math.round(css.width * f), Math.round(css.height * f)).catch(() => null);
@@ -348,5 +354,6 @@ export async function screenshot({ tabId } = {}) {
 
 export function _resetForTests({ settle = false } = {}) {
   attached.clear();
+  noClip.clear();
   settleOnAttach = settle;
 }

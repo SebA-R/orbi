@@ -471,11 +471,14 @@ type UserWords = {
   tabId: number | null;
   origin: Promise<string | null>;
   passwordYes: { tabId: number; label: string; origin: string } | null;
+  // Session.turnsEnded when these words came: a turn ending after them
+  // ends their checkout reach (wordsFor).
+  turnsEnded: number;
   // Facts the remember tool saved from these words without a question.
   saves: number;
 };
 
-const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, saves: 0 });
+const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, turnsEnded: 0, saves: 0 });
 
 // How many facts one utterance can save without a question ("I'm vegan and
 // I wear a medium" is two).
@@ -562,6 +565,8 @@ export class Session {
   private turns: Promise<void> = Promise.resolve();
   // User turns sent to the SDK whose result has not come back yet.
   private turnsOpen = 0;
+  // User turns whose result has come back, ever.
+  private turnsEnded = 0;
   // The turn in progress was interrupted: nothing more from it is spoken.
   private muted = false;
   // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
@@ -642,6 +647,7 @@ export class Session {
       tabId,
       origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
       passwordYes: pw && isExplicitYes(text) ? pw : null,
+      turnsEnded: this.turnsEnded,
       saves: 0,
     };
     // New words after a yes that has not paid yet: the conversation moved
@@ -1051,13 +1057,14 @@ export class Session {
   // (bound when spoken, USER_WORDS_TTL_MS), else empty words.
   // cls: the control's unlock class. For checkout navigation the words
   // still have to be the user's latest and on this site, but may be from
-  // another tab of it, as long as the turn they started is still running.
+  // another tab of it, as long as no turn has ended since they were said
+  // (the turn they started is still running).
   private async wordsFor(tabId: number, href: string, cls?: string | null): Promise<UserWords | null> {
     const w = this.lastUser;
     if (!w.text) return null;
     const age = Date.now() - w.at;
     const near = w.tabId === tabId && age <= USER_WORDS_TTL_MS;
-    const checkoutTurn = cls === "checkout" && w.tabId != null && this.turnsOpen > 0 && age <= CHECKOUT_WORDS_TTL_MS;
+    const checkoutTurn = cls === "checkout" && w.tabId != null && this.turnsEnded === w.turnsEnded && age <= CHECKOUT_WORDS_TTL_MS;
     if (!near && !checkoutTurn) return null;
     const origin = await w.origin;
     // Read again after the wait: new words replace these.
@@ -1945,6 +1952,7 @@ export class Session {
       if (this.held.length) this.say(this.held.join(" "), "reply");
       this.held = [];
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
+      this.turnsEnded++;
       // Nothing paced (a click on its way, typing) outlives its turn.
       this.stopActions();
       // The interrupted turn is over; the next one speaks again.

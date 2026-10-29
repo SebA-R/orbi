@@ -33,7 +33,10 @@ export const USER_GRANT_TTL_MS = 60_000;
 export type UnlockClass = "checkout" | "account" | "subscription" | "payment-method";
 
 // Finer intents, so "sign up" never unlocks "Sign in".
-type Intent = "checkout" | "signin" | "signout" | "signup" | "subscribe" | "save-card";
+// "checkout-step" is the next step inside checkout ("Continue to payment"):
+// only the user's own words for that step press it directly, never a bare
+// "check out".
+type Intent = "checkout" | "checkout-step" | "signin" | "signout" | "signup" | "subscribe" | "save-card";
 
 const norm = (s: string) => ` ${String(s ?? "").toLowerCase().replace(/&/g, " and ").replace(/['’]/g, "").replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim()} `;
 
@@ -51,7 +54,7 @@ const USER_INTENTS: Array<[Intent, RegExp]> = [
   ["checkout", /^ (start|begin|open) (the )?check ?out /],
   ["checkout", /^ (press|click|tap|hit|push) (on )?(the )?check ?out( button| link)?( (now|please|for me))* $/],
   // The next checkout step ("Continue to payment"), never paying itself.
-  ["checkout", /^ (go|proceed|continue|move) (on )?(to|into) (the )?(payment|billing)( page| step| section)?( (now|please|for me))* $/],
+  ["checkout-step", /^ (go|proceed|continue|move) (on )?(to|into) (the )?(payment|billing)( step| section)?( (now|please|for me))* $/],
   ["signin", /^ (sign|log) (me |us )?(back )?in(to)? /],
   ["signin", /^ (signin|login)( me)? /],
   ["signout", /^ (sign|log) (me |us )?out /],
@@ -69,7 +72,8 @@ const USER_INTENTS: Array<[Intent, RegExp]> = [
 
 // What a control's label is for.
 const LABEL_INTENTS: Array<[Intent, RegExp]> = [
-  ["checkout", / (check ?out|(continue|proceed) to payment|continue to billing) /],
+  ["checkout", / check ?out /],
+  ["checkout-step", / ((continue|proceed) to payment|continue to billing) /],
   ["signin", / (sign in|signin|log in|login|sign in with|log in with|continue with) /],
   ["signout", / (sign out|signout|log out|logout) /],
   ["signup", / (sign up|signup|create (an |my )?account|register) /],
@@ -81,6 +85,7 @@ const CLASSES = new Set<string>(["checkout", "account", "subscription", "payment
 
 const INTENT_CLASS: Record<Intent, UnlockClass> = {
   checkout: "checkout",
+  "checkout-step": "checkout",
   signin: "account",
   signout: "account",
   signup: "account",
@@ -180,6 +185,8 @@ function labelIntents(label: string): Set<Intent> {
   const out = new Set<Intent>();
   const n = norm(label);
   for (const [intent, re] of LABEL_INTENTS) if (re.test(n)) out.add(intent);
+  // "Continue to payment" moves on; it saves no card.
+  if (out.has("checkout-step")) out.delete("save-card");
   return out;
 }
 
@@ -447,9 +454,9 @@ export type Decision =
   | { kind: "ask"; cls: UnlockClass; label: string; question: string };
 
 // One direct ask presses one control of its class, except checkout
-// navigation: "check out" may take the cart's Checkout, then a checkout
-// step such as "Continue to payment", up to CHECKOUT_PRESSES_PER_ASK
-// presses. None of them pays; Place order never has an unlock class.
+// navigation: "check out" may take the mini cart's Checkout, then the cart
+// page's, up to CHECKOUT_PRESSES_PER_ASK presses. None of them pays; Place
+// order never has an unlock class.
 export const CHECKOUT_PRESSES_PER_ASK = 3;
 export function spendDirect(spent: Set<string>, cls: UnlockClass): void {
   if (cls === "checkout") {

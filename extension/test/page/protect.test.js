@@ -31,13 +31,40 @@ test("the submit of a form with card fields is locked whatever it says", () => {
   assert.equal(P.lockOf($("#plain")), null, "a type=button is not the submit");
 });
 
-test("Continue to payment unlocks as a checkout step, never as a card form's submit", () => {
-  const { P, $ } = load(`<form id="ship"><input name="address1"><button id="next">Continue to payment</button></form>
-    <form><label>Card number <input name="cardnumber"></label><button id="card">Continue to payment</button></form>`);
+test("Continue to payment unlocks as a checkout step only on a page that takes no card", () => {
+  // The shipping step: address fields, a captcha frame, a tracking pixel.
+  let { P, $, document } = load(`<form id="ship"><input name="address1"><button id="next">Continue to payment</button></form>
+    <button id="proceed" type="button">Proceed to payment</button>`);
   const next = P.lockOf($("#next"));
   assert.equal(next.kind, "order");
   assert.equal(P.unlockClass(next, $("#next")), "checkout");
+  assert.equal(P.unlockClass(P.lockOf($("#proceed")), $("#proceed")), "checkout");
+  assert.match(P.message(next, "ref_2", $("#next")), /next checkout step.*request_unlock/);
+  const frame = (src, w, h) => {
+    const f = document.createElement("iframe");
+    f.setAttribute("src", src);
+    // A cross-origin frame: its document cannot be read.
+    Object.defineProperty(f, "contentDocument", { get: () => { throw new Error("cross-origin"); } });
+    f.getBoundingClientRect = () => ({ width: w, height: h, left: 0, top: 0, right: w, bottom: h });
+    document.body.appendChild(f);
+    return f;
+  };
+  frame("https://www.google.com/recaptcha/api2/anchor", 256, 60);
+  frame("https://px.ads.example/t", 1, 1);
+  assert.equal(P.unlockClass(next, $("#next")), "checkout", "captcha and pixel frames are fine");
+  // Hosted card fields in a frame: the same button may pay.
+  const card = frame("https://js.stripe.com/v3/elements-inner-card", 400, 40);
+  assert.equal(P.unlockClass(next, $("#next")), null, "hosted card fields");
+  card.remove();
+  assert.equal(P.unlockClass(next, $("#next")), "checkout");
+  // A card field anywhere on the page, or the card form's own submit.
+  ({ P, $ } = load(`<form id="ship"><input name="address1"><button id="next">Continue to payment</button></form>
+    <form><label>Card number <input name="cardnumber"></label><button id="card">Continue to payment</button></form>`));
+  assert.equal(P.unlockClass(P.lockOf($("#next")), $("#next")), null, "card field elsewhere on the page");
   assert.equal(P.unlockClass(P.lockOf($("#card")), $("#card")), null, "a card form's submit never unlocks");
+  // Checkout navigation itself is unchanged by card fields.
+  ({ P, $ } = load(`<label>Card number <input name="cardnumber"></label><button id="co">Proceed to checkout</button>`));
+  assert.equal(P.unlockClass(P.lockOf($("#co")), $("#co")), "checkout");
 });
 
 test("the submit of a password form is an account control", () => {

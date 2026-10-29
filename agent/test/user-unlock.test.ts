@@ -177,18 +177,21 @@ test("decideUnlock: grants a direct ask once per utterance, else asks", () => {
   assert.equal((decideUnlock(locked({}), { userText: "hmm" }) as any).question, "Do you want me to go to checkout?");
 });
 
-test("checkout steps: 'check out' covers Continue to payment, a few presses per ask, never paying", () => {
+test("checkout steps: Continue to payment needs the user's own words for it; 'check out' takes a few presses, never paying", () => {
   const step = locked({ label: "Continue to payment" });
-  for (const userText of ["check out", "go to checkout", "I want to check out", "continue to payment", "proceed to payment please"]) {
+  for (const userText of ["continue to payment", "proceed to payment please", "go on to the payment step", "press Continue to payment"]) {
     assert.equal(decideUnlock(step, { userText }).kind, "grant", userText);
   }
-  for (const userText of ["pay", "pay for it", "place my order", "continue to payment, after you add the socks", "should I continue to payment?"]) {
+  // A bare "check out" may be on a page where that button pays: it asks.
+  for (const userText of ["check out", "go to checkout", "I want to check out", "pay", "pay for it", "place my order", "continue to payment, after you add the socks", "should I continue to payment?"]) {
     assert.equal(decideUnlock(step, { userText }).kind, "ask", userText);
   }
   const q = decideUnlock(step, { userText: "add the socks" }) as any;
   assert.equal(q.question, "Do you want me to press Continue to payment?");
+  assert.equal(isUnlockYes("yes", "checkout", "Continue to payment"), true);
   assert.equal(isUnlockYes("yes, continue to payment", "checkout", "Continue to payment"), true);
   assert.equal(isUnlockYes("yes, sign me in", "checkout", "Continue to payment"), false);
+  assert.equal(isUnlockYes("yes, save my payment", "checkout", "Continue to payment"), false, "saving a card is another action");
   // Checkout navigation may take a few presses on one ask; others take one.
   const spent = new Set<string>();
   for (let i = 0; i < CHECKOUT_PRESSES_PER_ASK; i++) {
@@ -362,19 +365,24 @@ test("request_unlock: 'check out' counts for checkout navigation for the whole t
     Date.now = () => t0 + USER_WORDS_TTL_MS + 30_000;
     assert.match((await f.s.requestUnlock({ ...ask("Checkout"), tabId: 9 })).content[0].text, /^pressed Checkout once/);
     assert.ok(!f.out.some((m) => m.type === "agent_text"), "no question");
-    // Then the checkout's own next step, on the same words.
+    // The checkout's next step ("Continue to payment") is not covered by
+    // "check out": one question naming it, and a yes presses it.
     f.calls.length = 0;
     const step = locked({ label: "Continue to payment" });
     (f.s as any).lockInfo = async () => step;
-    assert.match((await f.s.requestUnlock({ ...ask("Continue to payment"), tabId: 9 })).content[0].text, /^pressed Continue to payment once/);
+    let pending = f.s.requestUnlock({ ...ask("Continue to payment"), tabId: 9 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(f.out.filter((m) => m.type === "agent_text").at(-1)?.text, "Do you want me to press Continue to payment?");
+    f.s.userText("yes");
+    assert.match((await pending).content[0].text, /^pressed Continue to payment once/);
     assert.equal(f.pressed(), 1);
     Date.now = realNow;
 
-    // The turn is over: the words count only as before (same tab, a minute).
+    // A turn has ended since: the words count only as before (same tab, a minute).
     f = session(locked({}));
     f.s.userText("check out");
-    (f.s as any).turnsOpen = 0;
-    let pending = f.s.requestUnlock({ ...ask(), tabId: 9 });
+    (f.s as any).turnsEnded++;
+    pending = f.s.requestUnlock({ ...ask(), tabId: 9 });
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to go to checkout?");
     f.s.userText("no");

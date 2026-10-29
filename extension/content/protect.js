@@ -179,7 +179,14 @@
     // whatever its label says: the page marked it for the pay flow only.
     if (el && el.nodeType === 1 && el.closest && el.closest("[data-clearcart-protected]")) return null;
     switch (lock.kind) {
-      case "order": return !lock.optin && isCheckoutStep(lock.label) ? "checkout" : null;
+      case "order":
+        if (lock.optin) return null;
+        if (isCheckoutNav(lock.label)) return "checkout";
+        // A checkout step unlocks only on a page that takes no card here: no
+        // card field, and no frame it cannot read (hosted card fields). On
+        // such a page "Continue to payment" may be what pays. Without the
+        // element there is no page to check.
+        return isCheckoutStep(lock.label) && el && el.nodeType === 1 && !takesCard(el.ownerDocument, 0) ? "checkout" : null;
       case "account": return "account";
       case "subscription": return "subscription";
       case "payment-method": return "payment-method";
@@ -540,6 +547,32 @@
   // The frame's document, or null when it is cross-origin.
   function frameDoc(el) {
     try { return el.contentDocument || null; } catch (_) { return null; }
+  }
+
+  // Cross-origin frames that hold no payment: captchas.
+  var CAPTCHA_FRAME = /recaptcha|hcaptcha|challenges\.cloudflare\.com|turnstile/i;
+
+  // True when the document (or a same-origin frame in it) holds a card
+  // field or a visible cross-origin frame other than a captcha, which may
+  // be hosted card fields (Stripe, Adyen, Braintree, Shopify).
+  function takesCard(doc, depth) {
+    if (!doc || typeof doc.querySelectorAll !== "function") return true;
+    var fields = doc.querySelectorAll("input, select, textarea");
+    for (var i = 0; i < fields.length; i++) if (isPaymentInput(fields[i])) return true;
+    var frames = doc.querySelectorAll("iframe, frame, object, embed, fencedframe");
+    for (var j = 0; j < frames.length; j++) {
+      var f = frames[j];
+      var sub = frameDoc(f);
+      if (sub) {
+        if (depth >= 3 || takesCard(sub, depth + 1)) return true;
+        continue;
+      }
+      if (CAPTCHA_FRAME.test(String(f.getAttribute("src") || f.getAttribute("data") || ""))) continue;
+      var r = f.getBoundingClientRect ? f.getBoundingClientRect() : null;
+      if (r && r.width * r.height <= 4) continue; // a tracking pixel
+      return true;
+    }
+    return false;
   }
 
   var SHADOW_LOCK = { kind: "shadow", label: "hidden component", optin: false, checked: false };
