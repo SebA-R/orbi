@@ -16,6 +16,9 @@ import {
   isRememberAsk,
   MEMORY_MAX_FACTS,
   MemoryStore,
+  REDACTED,
+  answeredBy,
+  luhnCard,
   redactRule,
   redactTurn,
   sensitiveReason,
@@ -516,7 +519,7 @@ test("transcript: the log names the scrubber rule that fired, never the words", 
   log.add("user", "my password is hunter2");
   log.add("user", "a blue sweater");
   assert.deepEqual(lines, [
-    "transcript: assistant turn scrubbed (long number)",
+    "transcript: assistant turn scrubbed (card number)",
     "transcript: assistant turn scrubbed (instruction or link)",
     "transcript: user turn scrubbed (a password)",
   ]);
@@ -532,4 +535,82 @@ test("no memory given (tests, echo): nothing is read or written", async () => {
   assert.equal(text(await s.remember({ fact: "you like tea" })), "Memory is not available here.");
   assert.ok(!s.systemPrompt(false).includes("\n\nMemory\n"));
   s.close();
+});
+
+test("transcript: talk about cards, passwords and sign in stays", () => {
+  const keep = [
+    "What email and password would you like for the new account?",
+    "Should I sign you in with Google, or create an account?",
+    "Your password is required. Type it into the page, then say yes.",
+    "The password should be at least 8 characters.",
+    "That password is incorrect. Want me to reset it?",
+    "Which card should I use, the Visa or the Mastercard?",
+    "the card number is on the back",
+    "Enter the security code from the back of your card on the page.",
+    "They sent a verification code to your phone. Read it off the page when it arrives.",
+    "Stripe's demo checkout shows a test card form and a $19.00 total.",
+    "Prices are $12.99, $15.49 and $22.00.",
+    "It arrives October 29, 2026 between 10:30 and 11:45.",
+    "Your bank may ask you to confirm the payment.",
+    "Do you have a passport or a driver's licence for the form?",
+    "Log in to Amazon, then tell me when you're done.",
+  ];
+  for (const t of keep) assert.equal(redactRule(t, "assistant"), null, t);
+  for (const t of keep) assert.equal(redactRule(t, "user"), null, t);
+});
+
+test("transcript: real secrets still go", () => {
+  const drop: Array<[string, string]> = [
+    ["my card is 4242 4242 4242 4242", "card number"],
+    ["4242-4242-4242-4242 exp 12/28", "card number"],
+    ["four two four two four two four two four two four two four two four two", "card number"],
+    ["$4242 $4242 $4242 $4242", "card number"],
+    ["my password is hunter2", "a password"],
+    ["the password's Tr0ub4dor&3", "a password"],
+    ["password: correcthorse", "a password"],
+    ["my username is cookieking", "a password"],
+    ["cvv 123", "a card security code"],
+    ["the card ending in 4242", "card details"],
+    ["my pin is 4821", "a PIN"],
+    ["the verification code is 4821", "a sign in secret"],
+    ["the code is 482913", "long number"],
+    ["my mother's maiden name is smith", "a sign in secret"],
+    ["my sin is 046 454 286", "long number"],
+    ["account number 12345", "bank details"],
+    ["routing 021000021", "long number"],
+    ["the api key is abcd1234", "a secret key"],
+    ["use sk_test_51Habcdefgh", "a secret key"],
+    ["call 519 555 0199 please", "long number"],
+    ["1234 5678 9012 3456", "long number"],
+  ];
+  for (const [t, rule] of drop) {
+    assert.equal(redactRule(t), rule, t);
+    assert.equal(redactTurn(t), REDACTED, t);
+  }
+  assert.equal(luhnCard("4242 4242 4242 4241"), false);
+  assert.equal(luhnCard("4242 4242 4242 4242"), true);
+});
+
+test("transcript: an email address is blanked, the turn kept", () => {
+  assert.equal(redactTurn("Should I sign up with seb@example.com?", "assistant"), "Should I sign up with (an email address)?");
+  assert.equal(redactRule("Should I sign up with seb@example.com?", "assistant"), null);
+});
+
+test("transcript: assistant turns say which model answered; old entries still load", () => {
+  const file = path.join(tmp(), "t.json");
+  const now = Date.now();
+  fs.writeFileSync(file, JSON.stringify({ version: 1, turns: [{ role: "assistant", text: "old reply", at: now - 1000 }] }));
+  const log = new Transcript(file);
+  log.add("user", "hi", now, { provider: "claude", model: "x" });
+  log.add("assistant", "from claude", now, answeredBy({ provider: "claude", claudeModel: "claude-opus-5-5", localModel: "llama3.1:8b" }));
+  log.add("assistant", "from local", now, answeredBy({ provider: "local", claudeModel: "claude-opus-5-5", localModel: "llama3.1:8b" }));
+  assert.deepEqual(log.recent(now).map(({ role, text, provider, model }) => ({ role, text, provider, model })), [
+    { role: "assistant", text: "old reply", provider: undefined, model: undefined },
+    { role: "user", text: "hi", provider: undefined, model: undefined },
+    { role: "assistant", text: "from claude", provider: "claude", model: "claude-opus-5-5" },
+    { role: "assistant", text: "from local", provider: "local", model: "llama3.1:8b" },
+  ]);
+  const raw = JSON.parse(fs.readFileSync(file, "utf8")).turns;
+  assert.equal(raw[3].provider, "local");
+  assert.ok(!("provider" in raw[1]), "user turns carry no model");
 });

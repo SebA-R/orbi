@@ -40,7 +40,7 @@ import { cardVault } from "./cards.ts";
 import type { CardVault } from "../vault/index.ts";
 import { ACK_PROMPT, buildLocalPrompt, buildSystemPrompt, dangerNote, searchNote, type SearchEngine, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
-import { factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
+import { answeredBy, factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
   decideUnlock,
   isDirectAsk,
@@ -866,7 +866,7 @@ export class Session {
   private say(text: string, kind = "line") {
     if (this.muted) return this.unspoken(text);
     timing.mark("first_speech", { once: true, detail: kind });
-    if (memoryOn()) this.log?.add("assistant", text);
+    if (memoryOn()) this.log?.add("assistant", text, undefined, answeredBy(currentProvider()));
     this.send({ type: "agent_text", text });
   }
 

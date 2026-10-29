@@ -257,5 +257,6 @@ test("the transcript keeps sign in talk and drops a given password", () => {
   assert.equal(redactTurn("Type your password into the page, then say yes and I'll sign you in.", "assistant"), "Type your password into the page, then say yes and I'll sign you in.");
   assert.equal(redactTurn("No, I didn't type anything. I want you to create an account for me."), "No, I didn't type anything. I want you to create an account for me.");
   assert.equal(redactTurn("my password is hunter2"), REDACTED);
-  assert.equal(redactTurn("the card number is on the back"), REDACTED);
+  assert.equal(redactTurn("the card number is on the back"), "the card number is on the back");
+  assert.equal(redactTurn("the card number is 4242 4242 4242 4242"), REDACTED);
 });

@@ -135,26 +135,102 @@ export function secretReason(text: string, minDigits = 6): string | null {
   return null;
 }
 
-// The transcript's own list: SENSITIVE, except that sign in talk without a
-// value ("press Sign in", "type your password into the page, then say
-// yes") stays. Only a password or user name that is given goes.
-const TRANSCRIPT_SENSITIVE: Array<[RegExp, string]> = SENSITIVE.map(([re, what]) =>
-  what === "a password" ? [/\b(pass ?(word|code|phrase)|pwd|user ?name|log ?in|credentials)s?\b\s*(is|was|are|=|:|of|should be)\s*\S/, what] : [re, what]
-);
+// The transcript drops a turn only for a value that is in it: a card
+// number, a long ID, bank or code number, a key, or a password, PIN,
+// security code or answer actually given. Talk about them ("which card?",
+// "type your password into the page", "I'll sign you in", "the card number
+// is on the back") stays, and an email address is blanked, not the turn.
 
-// For the transcript: a turn with a long number or a secret goes whole, and
-// Orbi's own replies (which may repeat page text) are kept short and
-// dropped when they read like an instruction.
+// Amounts, dates and times, blanked before counting digits, so "$12.99,
+// $15.49" or "October 29, 2026" is not a long number. A card number is
+// checked before (luhnCard), so writing one as amounts does not hide it.
+const MONTH = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+const NOT_ID: RegExp[] = [
+  /[$€£¥]\s?\d[\d,]*(?:\.\d+)?/g,
+  /\b\d[\d,]*(?:\.\d+)?\s?(?:usd|cad|eur|dollars?|cents?|euros?|bucks|%|percent)\b/g,
+  /\b\d[\d,]*\.\d{2}\b/g,
+  new RegExp(`\\b${MONTH}\\.? \\d{1,2}(?:st|nd|rd|th)?,? \\d{4}\\b`, "g"),
+  new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)? (?:of )?${MONTH},? \\d{4}\\b`, "g"),
+  /\b\d{4}-\d{2}-\d{2}\b/g,
+  /\b\d{1,2}:\d{2}(?::\d{2})?\b/g,
+];
+const blankNotId = (f: string) => NOT_ID.reduce((t, re) => t.replace(re, " x "), f);
+
+// A run of 13 to 19 digits that passes the Luhn check: a card number.
+export function luhnCard(f: string): boolean {
+  return (f.match(DIGIT_RUN) || []).some((run) => {
+    const d = run.replace(/\D/g, "");
+    if (d.length < 13 || d.length > 19) return false;
+    let sum = 0;
+    for (let k = 0; k < d.length; k++) {
+      let n = Number(d[d.length - 1 - k]);
+      if (k % 2) n = n * 2 > 9 ? n * 2 - 9 : n * 2;
+      sum += n;
+    }
+    return sum % 10 === 0;
+  });
+}
+
+// Words after "password is" that describe it rather than give it.
+const NOT_A_VALUE = new Set(
+  ("a an the your my his her their our this that it its not no too so very also still now already just only being been set saved stored required needed " +
+    "wrong incorrect invalid correct right empty blank missing hidden masked weak strong short long ready filled entered typed changed updated reset " +
+    "expired locked accepted rejected taken available unavailable different same fine ok okay good bad done in on off at for to of and or what which " +
+    "where how there here shown visible case optional pending sent working asked new old usually probably something anything nothing").split(" ")
+);
+const UNIT = /^(characters?|chars?|digits?|letters?|numbers?|symbols?|long|or)$/;
+// "<name> is <value>": the value is a word that is not a description, or a
+// number that is not a length ("at least 8 characters").
+function givenValue(f: string, names: string): boolean {
+  const re = new RegExp(`\\b(?:${names})\\b(?:'s|\\s*(?:is|was|are|=|:|should be|will be))\\s*([^\\s.,!?;]+)(?:\\s+(\\S+))?`, "g");
+  for (const m of f.matchAll(re)) {
+    const [v, next = ""] = [m[1], m[2]?.replace(/[^a-z]/g, "")];
+    if (NOT_A_VALUE.has(v)) continue;
+    if (/^\d{1,2}$/.test(v) && UNIT.test(next)) continue;
+    return true;
+  }
+  return false;
+}
+// "<name> ... 1234": digits (three or more) close after the name.
+const nearDigits = (names: string, gap = 20) => new RegExp(`\\b(?:${names})\\b[^\\d.!?]{0,${gap}}\\d{3,}`);
+
+const TRANSCRIPT_DIGITS: Array<[RegExp, string]> = [
+  [nearDigits("cvc|cvv2?|cvn|cid|csc|security code|card code|card verification|digits on the back|back of (?:the|your|my) card"), "a card security code"],
+  [nearDigits("card number|credit card|debit card|card ending|card no|(?:my|your|the) card|visa|mastercard|master card|amex|american express|discover"), "card details"],
+  [/\b(exp(iry|iration)?( date)?)\b.{0,12}\d{1,2}\s*\/\s*\d{2,4}/, "card details"],
+  [nearDigits("pin(?: code| number)?", 12), "a PIN"],
+  [nearDigits("(?:one|1)[- ]time (?:code|password)|otp|2fa|two[- ]factor|verification code|login code|sign ?in code"), "a sign in secret"],
+  [nearDigits("ssn|social security|social insurance|sin number|passport|driv(?:er'?s|ing) licen[cs]e|health card|national id|tax id|itin|government id|id number", 25), "a government ID"],
+  [nearDigits("bank|account number|acct|routing|transit number|institution number|iban|swift|bic code|sort code"), "bank details"],
+];
+const TRANSCRIPT_VALUES: Array<[string, string]> = [
+  ["pass ?(?:word|code|phrase)s?|pwd|user ?names?|log ?ins?|credentials", "a password"],
+  ["pin(?: code| number)?", "a PIN"],
+  ["maiden name|security (?:question|answer)|answer to (?:the|my|your) security question", "a sign in secret"],
+  ["api key|secret key|private key|access token|seed phrase|recovery phrase|recovery codes?", "a secret key"],
+];
+// A key or token on its own: Stripe style secret keys, or a long mix of
+// letters and digits.
+const KEY_TOKEN = /\b(?:sk|rk)_(?:live|test)_\w{6,}|\b(?=[\w-]*\d)(?=[\w-]*[a-z])[\w-]{24,}\b/;
+const EMAIL = /[^\s@]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
+
+// For the transcript: a turn with a secret goes whole, and Orbi's own
+// replies (which may repeat page text) are kept short and dropped when
+// they read like an instruction.
 export const REDACTED = "(removed: it was about a card, password, ID, bank detail or long number)";
 const DROP_RULE = "instruction or link";
 
 // Which scrubber rule a turn trips, or null: the name only, for the log.
 export function redactRule(text: string, role: "user" | "assistant" = "user"): string | null {
   const f = fold(clean(text));
-  if (longNumber(f, 6)) return "long number";
-  if (/@[a-z0-9-]+\.[a-z]/.test(f)) return "email";
-  const hit = TRANSCRIPT_SENSITIVE.find(([re]) => re.test(f));
-  if (hit) return hit[1];
+  if (luhnCard(f)) return "card number";
+  const g = blankNotId(f.replace(EMAIL, " x "));
+  if (longNumber(g, 6)) return "long number";
+  const digits = TRANSCRIPT_DIGITS.find(([re]) => re.test(g));
+  if (digits) return digits[1];
+  const given = TRANSCRIPT_VALUES.find(([names]) => givenValue(g, names));
+  if (given) return given[1];
+  if (KEY_TOKEN.test(g)) return "a secret key";
   if (role === "assistant" && /\b(ignore|disregard|override|instructions?|system prompt|you must|always)\b|https?:|www\./.test(f)) return DROP_RULE;
   return null;
 }
@@ -162,6 +238,7 @@ export function redactTurn(text: string, role: "user" | "assistant" = "user"): s
   let t = clean(text);
   const rule = redactRule(t, role);
   if (rule) return rule === DROP_RULE ? "" : REDACTED;
+  t = t.replace(EMAIL, "(an email address)");
   if (role === "assistant" && t.length > ASSISTANT_MAX_CHARS) t = t.slice(0, ASSISTANT_MAX_CHARS - 1) + "…";
   if (t.length > TURN_MAX_CHARS) t = t.slice(0, TURN_MAX_CHARS - 1) + "…";
   return t;
@@ -289,7 +366,17 @@ export class MemoryStore {
   }
 }
 
-export type Turn = { role: "user" | "assistant"; text: string; at: number };
+// provider and model: which model answered an assistant turn ("claude"
+// and its model id, or "local" and the local model's name), so turns from
+// the two can be told apart. Older entries have neither and still load.
+export type Turn = { role: "user" | "assistant"; text: string; at: number; provider?: string; model?: string };
+export type AnsweredBy = { provider: string; model: string };
+// Which model answers on these settings (local/config.ts ProviderSettings):
+// the name only, never the local server's URL.
+export function answeredBy(p: { provider: string; claudeModel: string; localModel: string }): AnsweredBy {
+  return p.provider === "claude" ? { provider: "claude", model: p.claudeModel } : { provider: p.provider, model: p.localModel };
+}
+const label = (v: unknown) => (typeof v === "string" && v ? clean(v).slice(0, 80) : undefined);
 
 export class Transcript {
   // log: which scrubber rule fired on a turn being saved, never its text.
@@ -301,17 +388,23 @@ export class Transcript {
     return turns
       .filter((t) => t && (t.role === "user" || t.role === "assistant") && typeof t.text === "string" && now - Number(t.at) <= this.windowMs && Number(t.at) <= now + 60_000)
       .slice(-TRANSCRIPT_MAX_TURNS)
-      .map((t) => ({ role: t.role, text: redactTurn(t.text, t.role), at: Number(t.at) }))
+      .map((t): Turn => {
+        const turn: Turn = { role: t.role, text: redactTurn(t.text, t.role), at: Number(t.at) };
+        const provider = label(t.provider), model = label(t.model);
+        if (t.role === "assistant" && provider) turn.provider = provider;
+        if (t.role === "assistant" && model) turn.model = model;
+        return turn;
+      })
       .filter((t) => t.text);
   }
 
-  add(role: Turn["role"], text: string, now = Date.now()) {
+  add(role: Turn["role"], text: string, now = Date.now(), by?: AnsweredBy) {
     const rule = redactRule(text, role);
     if (rule) this.log(`transcript: ${role} turn scrubbed (${rule})`);
     const t = redactTurn(text, role);
     if (!t) return;
     try {
-      writeJson(this.file, { version: 1, turns: [...this.recent(now), { role, text: t, at: now }].slice(-TRANSCRIPT_MAX_TURNS) });
+      writeJson(this.file, { version: 1, turns: [...this.recent(now), { role, text: t, at: now, ...(role === "assistant" && by ? { provider: label(by.provider), model: label(by.model) } : {}) }].slice(-TRANSCRIPT_MAX_TURNS) });
     } catch {}
   }
 
