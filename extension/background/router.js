@@ -607,12 +607,6 @@ export function createRouter({
     return clickCentre(tabId, r, params.ref, "press_ref", check, check, epoch);
   }
 
-  // The card fields in every frame of the tab, by kind ([{ frameId,
-  // documentId, fields: [{ kind, filled, usable }] }]). The page itself must
-  // still pass the full site check and, when the pay flow names one
-  // (origin), be on the origin the user said yes on. Another frame counts
-  // only when it may get card values (tabs.frameAllowed: the page's own
-  // origin, a payment provider's hosted fields or an allowed site).
   // Injects the card fill into every frame and runs func there, answering
   // each frame's result; any failure is an internal error saying fail.
   async function inCardFrames(tabId, func, fail) {
@@ -624,6 +618,12 @@ export function createRouter({
     }
   }
 
+  // The card fields in every frame of the tab, by kind ([{ frameId,
+  // documentId, fields: [{ kind, filled, usable }] }]). The page itself must
+  // still pass the full site check and, when the pay flow names one
+  // (origin), be on the origin the user said yes on. Another frame counts
+  // only when it may get card values (tabs.frameAllowed: the page's own
+  // origin, a payment provider's hosted fields or an allowed site).
   async function cardFrames(tabId, origin = null) {
     const found = await inCardFrames(
       tabId,
