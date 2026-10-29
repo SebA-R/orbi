@@ -101,7 +101,10 @@ test("call: not connected and timeout", async () => {
 test("requestTimeoutFor: type scales with the text, dismiss_overlay gets headroom", () => {
   assert.equal(requestTimeoutFor("tabs_context"), REQUEST_TIMEOUT_MS);
   assert.equal(requestTimeoutFor("type", { text: "" }), REQUEST_TIMEOUT_MS);
-  assert.equal(requestTimeoutFor("type", { text: "a".repeat(400) }), REQUEST_TIMEOUT_MS + 400 * TYPE_MS_PER_CHAR);
+  assert.equal(requestTimeoutFor("type", { text: "a".repeat(100) }), REQUEST_TIMEOUT_MS + 100 * TYPE_MS_PER_CHAR);
+  // Never past the 90 s tool timeout, so the bridge's own timeout (and its
+  // actions_stop) always comes first.
+  assert.ok(MAX_REQUEST_TIMEOUT_MS < 90_000);
   // Counted in characters, not UTF-16 units.
   assert.equal(requestTimeoutFor("type", { text: "😀😀" }), REQUEST_TIMEOUT_MS + 2 * TYPE_MS_PER_CHAR);
   assert.equal(requestTimeoutFor("type", { text: "a".repeat(100_000) }), MAX_REQUEST_TIMEOUT_MS);
@@ -119,9 +122,11 @@ test("call: a timed-out paced action sends actions_stop; other methods do not", 
     assert.equal(ext.requests.filter((r) => r.method === "actions_stop").length, 0);
     await assert.rejects(b.bridge.call("type", { tabId: 1, text: "hello" }, 50), (e: any) => e.code === ERR.TIMEOUT);
     await new Promise((r) => setTimeout(r, 50));
+    await assert.rejects(b.bridge.call("press_protected", { tabId: 1, ref: "e1" }, 50), (e: any) => e.code === ERR.TIMEOUT);
+    await new Promise((r) => setTimeout(r, 50));
     assert.deepEqual(
       ext.requests.map((r) => r.method),
-      ["tabs_context", "type", "actions_stop"]
+      ["tabs_context", "type", "actions_stop", "press_protected", "actions_stop"]
     );
     ext.close();
   } finally {

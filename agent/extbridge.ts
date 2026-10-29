@@ -63,10 +63,14 @@ export const REQUEST_TIMEOUT_MS = 30_000;
 export const TYPE_MS_PER_CHAR = 250;
 // dismiss_overlay can try two paced clicks and an Escape, each with a settle.
 export const DISMISS_TIMEOUT_MS = 60_000;
-export const MAX_REQUEST_TIMEOUT_MS = 10 * 60_000;
+// Under the 90 s browser tool timeout (exttools.ts, session.ts), so this
+// timer fires first and sends actions_stop: text too long for it stops
+// part way instead of typing on behind a retry.
+export const MAX_REQUEST_TIMEOUT_MS = 85_000;
 // Paced actions the extension keeps playing after the server gives up on
-// them: a timeout sends actions_stop so nothing keeps going behind a retry.
-const STOP_ON_TIMEOUT: ReadonlySet<string> = new Set(["type", "click", "scroll", "dismiss_overlay"]);
+// them: a timeout sends actions_stop so nothing keeps going behind a retry
+// (or presses a button after the caller was told it failed).
+const STOP_ON_TIMEOUT: ReadonlySet<string> = new Set(["type", "click", "scroll", "dismiss_overlay", "press_protected", "press_unlocked"]);
 
 // The default timeout for a request: the flat one, plus time per character
 // for type and more headroom for dismiss_overlay.

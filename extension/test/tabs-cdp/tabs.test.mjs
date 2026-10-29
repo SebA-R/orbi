@@ -243,7 +243,7 @@ test("navigate and tabsCreate fail with NET_ERROR when the page did not load", a
   const c = fresh();
   const down = "https://down.example/";
   patchLoads(c, { fail: { [down]: "net::ERR_NAME_NOT_RESOLVED", [`${down}?code=secret`]: "net::ERR_CONNECTION_REFUSED" } });
-  await assert.rejects(tabsCreate({ url: down }), (e) => e.code === ERR.NET_ERROR && /down\.example/.test(e.message) && /ERR_NAME_NOT_RESOLVED/.test(e.message));
+  await assert.rejects(tabsCreate({ url: down }), (e) => e.code === ERR.NET_ERROR && /down\.example/.test(e.message) && /ERR_NAME_NOT_RESOLVED/.test(e.message) && /in tab \d+, which is still open/.test(e.message));
   const { tabId } = await tabsCreate({ url: `${SHOP}/` });
   await assert.rejects(navigate({ tabId, url: `${down}?code=secret` }), (e) => e.code === ERR.NET_ERROR && !/secret/.test(e.message));
   // A later load that works is not blamed for the earlier failure.

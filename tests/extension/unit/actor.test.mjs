@@ -147,8 +147,8 @@ test("a newline in a text field is a real Enter key, so it can submit; \\r\\n is
   assert.equal(checks.filter((c) => c === "\n").length, 2, "the \\n of \\r\\n is not checked or typed again");
   // Off a text field it stays insertText: no key a button could take.
   cdp.sent.length = 0;
-  await clock.run(actor.type(5, "\n", { check: async () => ({ keys: false }) }));
-  assert.deepEqual(cdp.sent.map((s) => [s.method, s.text]), [["Input.insertText", "\n"]]);
+  await clock.run(actor.type(5, "\r\n", { check: async () => ({ keys: false }) }));
+  assert.deepEqual(cdp.sent.map((s) => [s.method, s.text]), [["Input.insertText", "\r"], ["Input.insertText", "\n"]], "nothing dropped");
 });
 
 test("a scroll glides to the point, then sends wheel steps that add up", async () => {

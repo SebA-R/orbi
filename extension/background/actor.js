@@ -218,10 +218,12 @@ export function createActor({
       const at = pointers.get(tabId);
       emit(tabId, at ? at.x : null, at ? at.y : null, "type", "type", { text: String(text) });
       let spent = 0;
-      let prev = null;
+      // The last character went in as an Enter key: a "\n" after its "\r"
+      // is the same line break.
+      let enterR = false;
       for (const k of planTyping(text, rng)) {
-        const crlf = prev === "\r" && k.ch === "\n";
-        prev = k.ch;
+        const crlf = enterR && k.ch === "\n";
+        enterR = false;
         if (crlf) continue;
         // Time spent checking and holding counts toward the next gap.
         await sleep(run, k.gapMs - spent);
@@ -237,6 +239,7 @@ export function createActor({
           continue;
         }
         const ev = { key: key.key, code: key.code, windowsVirtualKeyCode: key.vk, modifiers: key.shift ? MOD_SHIFT : 0 };
+        enterR = k.ch === "\r";
         await cdp.send(tabId, "Input.dispatchKeyEvent", { ...ev, type: "rawKeyDown" });
         try {
           const after = await check(k.ch);

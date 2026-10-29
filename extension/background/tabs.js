@@ -26,7 +26,7 @@ import { BridgeError, ERR } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
 import { assertAllowed, blockReason, frameAllowed, isAllowed } from "./allowlist.js";
 import { assertNetSafe, flagOf } from "./netguard.js";
-import { ERROR_URL, isErrorPage, recordFor } from "./errpage.js";
+import { ERROR_URL, isErrorPage, noHash, recordFor } from "./errpage.js";
 
 // The router's lock_arm checks the site again with isAllowed, and saved-card
 // fill checks payment frames with frameAllowed.
@@ -142,8 +142,6 @@ export function onMainFrameError(d) {
   if (typeof d.error !== "string" || d.error === "net::ERR_ABORTED") return;
   loadErrors.set(d.tabId, { url: String(d.url || ""), error: d.error, at: Date.now() });
 }
-
-const noHash = (url) => String(url || "").split("#")[0];
 
 // Throws NET_ERROR when the load navigateAndWait just waited for failed: a
 // main-frame error since `since` and the tab still on that address
@@ -372,13 +370,20 @@ export async function tabsCreate({ url, onCreated } = {}) {
     const since = Date.now();
     await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
     const now = await api().tabs.get(tab.id);
-    // A redirect can lead to a site that is not allowed, as in navigate.
-    // Orbi's error page for an allowed address is not one of those.
-    if (!onErrorPage(now) && !BLANK.test(now.url || "") && !(await isAllowed(now.url))) {
-      throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${originOf(now.url)}`);
+    try {
+      // A redirect can lead to a site that is not allowed, as in navigate.
+      // Orbi's error page for an allowed address is not one of those.
+      if (!onErrorPage(now) && !BLANK.test(now.url || "") && !(await isAllowed(now.url))) {
+        throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${originOf(now.url)}`);
+      }
+      assertNetSafe(tab.id);
+      await assertLoaded(tab.id, since, now);
+    } catch (e) {
+      // The tab is open: name it, so the caller can navigate or close it
+      // instead of opening another.
+      if (e instanceof BridgeError) e.message = `${e.message} (in tab ${tab.id}, which is still open)`;
+      throw e;
     }
-    assertNetSafe(tab.id);
-    await assertLoaded(tab.id, since, now);
   }
   return { tabId: tab.id };
 }

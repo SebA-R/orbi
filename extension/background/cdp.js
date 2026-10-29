@@ -126,6 +126,9 @@ async function barSettled(tabId) {
 }
 
 export async function detach(tabId) {
+  // An attach in flight finishes first, so it is not left attached.
+  const busy = attaching.get(tabId);
+  if (busy) await busy.catch(() => {});
   if (!attached.delete(tabId)) return;
   try {
     await api().debugger.detach({ tabId });
