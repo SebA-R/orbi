@@ -160,10 +160,7 @@ test("unlockClass: checkout, account, subscription and saved card unlock on requ
   for (const l of ["Continue to payment now", "Continue to payment →", "Continue to payment step", "CONTINUE TO PAYMENT"]) assert.equal(P.isCheckoutStep(l), true, l);
   for (const l of ["Continue to payment and confirm", "Continue to payment & submit", "Continue to payment $49.99", "Continue to payment (1 item)", "Pay and continue to payment"]) {
     assert.equal(P.isCheckoutStep(l), false, l);
-    assert.equal(P.isStepOnly(l), false, l);
   }
-  assert.equal(P.isStepOnly("Continue to payment"), true);
-  assert.equal(P.isStepOnly("Checkout"), false);
   for (const l of ["Place order", "Buy now", "Pay now", "Pay and checkout", "Pay and continue to payment", "Continue to payment and place order", "Submit payment", "Confirm payment", "Complete payment", "Checkout and place order", "Confirm purchase"]) {
     assert.equal(P.unlockClass(lock(l)), null, l);
   }

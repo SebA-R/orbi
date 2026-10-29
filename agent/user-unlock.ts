@@ -297,11 +297,13 @@ const NOT_YES = new RegExp(
     ")(?= )"
 );
 const ABOUT: Record<UnlockClass, RegExp> = {
-  checkout: / (check ?out|check (it|them|this|that|these) out|order|purchase|buy|cart|bag|payment|billing) /,
+  checkout: / (check ?out|check (it|them|this|that|these) out|order|purchase|buy|cart|bag) /,
   account: / (sign ?in|sign ?up|log ?in|login|account|password|register) /,
   subscription: / (subscribe|subscription|trial|member|membership|plan|join|enroll|upgrade) /,
   "payment-method": / (card|payment) /,
 };
+
+const STEP_ABOUT = / (payment|billing) /;
 
 function stripAll(s: string, ...res: RegExp[]): string {
   for (let prev = ""; prev !== s; ) {
@@ -331,7 +333,8 @@ export function isUnlockYes(answer: string, cls: UnlockClass | null, label: stri
       if (!c.trim() || YES_TAIL.test(c)) continue;
       if (NOT_YES.test(c)) return false;
       if ([...userIntents(clauses(c), "")].some((i) => !mine.has(i))) return false;
-      if (!ABOUT[cls].test(c)) return false;
+      // "payment" and "billing" are about a checkout step's own button only.
+      if (!ABOUT[cls].test(c) && !(mine.has("checkout-step") && STEP_ABOUT.test(c))) return false;
     }
   }
   return led;
@@ -461,7 +464,7 @@ export type Decision =
 // Place order never has an unlock class.
 export const CHECKOUT_PRESSES_PER_ASK = 3;
 function spentKey(cls: UnlockClass, label: string): string {
-  return cls === "checkout" && !Protect.isCheckoutNav(label) ? "checkout-step" : cls;
+  return cls === "checkout" && Protect.isCheckoutStep(label) && !Protect.isCheckoutNav(label) ? "checkout-step" : cls;
 }
 export function spendDirect(spent: Set<string>, cls: UnlockClass, label: string): void {
   const key = spentKey(cls, label);

@@ -296,10 +296,11 @@ export function fitScale(w, h) {
 }
 
 const near = (a, b) => Math.abs(a - b) <= 2;
-// Tabs where the clipped capture did not come back at CSS size (an older
-// Chrome, or browser zoom on a 2x screen): they go straight to the plain
-// capture and the resize.
-const noClip = new Set();
+// Tabs where the clipped capture last came back at the wrong size (an
+// older Chrome, or browser zoom on a 2x screen), and when: for a minute
+// they go straight to the plain capture and the resize, then try again.
+const noClip = new Map();
+const NO_CLIP_MS = 60_000;
 
 // A JPEG of the viewport in CSS pixels, the space click and scroll take:
 // on a 2x screen Chrome captures device pixels (2880x1800 for a 1440x900
@@ -317,6 +318,8 @@ export async function screenshot({ tabId } = {}) {
   // The visible viewport's place on the page. Under pinch zoom it is not
   // the layout viewport input uses, so the plain capture below is taken.
   const vis = m.cssVisualViewport;
+  const skip = noClip.get(tabId);
+  if (skip !== undefined && Date.now() - skip > NO_CLIP_MS) noClip.delete(tabId);
   if (!noClip.has(tabId) && vis && Number.isFinite(vis.pageX) && Number.isFinite(vis.pageY) && (vis.scale == null || vis.scale === 1) &&
       near(vis.clientWidth, vp.width) && near(vis.clientHeight, vp.height)) {
     try {
@@ -331,7 +334,10 @@ export async function screenshot({ tabId } = {}) {
       if (size && near(size.width, want.width) && near(size.height, want.height)) {
         return { data, mimeType: "image/jpeg", width: vp.width, height: vp.height, scale: fit };
       }
-      if (size) noClip.add(tabId);
+      if (size) {
+        if (noClip.size > 200) noClip.clear();
+        noClip.set(tabId, Date.now());
+      }
     } catch {}
   }
   const { data } = await send(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70 });

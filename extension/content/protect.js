@@ -146,12 +146,16 @@
   // phrase and no other order or money word ("Checkout", "Proceed to
   // checkout", not "Pay and checkout" or "Checkout and place order").
   function isCheckoutNav(label) {
-    return onlyNav(label, CHECKOUT_NAV);
-  }
-
-  // True for a checkout step label that is not plain checkout navigation.
-  function isStepOnly(label) {
-    return !isCheckoutNav(label) && isCheckoutStep(label);
+    var norm = normalize(label);
+    var nav = false;
+    for (var i = 0; i < CHECKOUT_NAV.length; i++) if (has(norm, CHECKOUT_NAV[i])) nav = true;
+    if (!nav) return false;
+    var rest = norm;
+    var sorted = CHECKOUT_NAV.slice().sort(function (a, b) { return b.length - a.length; });
+    for (var j = 0; j < sorted.length; j++) rest = rest.split(" " + sorted[j] + " ").join(" ");
+    var order = PHRASES.order;
+    for (var k = 0; k < order.length; k++) if (has(rest, order[k])) return false;
+    return true;
   }
 
   // True when a label only goes to checkout, or is exactly a checkout step
@@ -162,19 +166,6 @@
     if (isCheckoutNav(label)) return true;
     var t = normalize(label).trim().replace(/( (now|step))+$/, "");
     return CHECKOUT_STEP.indexOf(t) !== -1;
-  }
-
-  function onlyNav(label, phrases) {
-    var norm = normalize(label);
-    var nav = false;
-    for (var i = 0; i < phrases.length; i++) if (has(norm, phrases[i])) nav = true;
-    if (!nav) return false;
-    var rest = norm;
-    var sorted = phrases.slice().sort(function (a, b) { return b.length - a.length; });
-    for (var j = 0; j < sorted.length; j++) rest = rest.split(" " + sorted[j] + " ").join(" ");
-    var order = PHRASES.order;
-    for (var k = 0; k < order.length; k++) if (has(rest, order[k])) return false;
-    return true;
   }
 
   // Unlock class of a lock for request_unlock: "checkout", "account",
@@ -198,7 +189,7 @@
         // step never unlocks then, and plain checkout navigation is judged
         // by its label (the press itself re-checks with the element).
         if (!el || el.nodeType !== 1) return isCheckoutNav(lock.label) ? "checkout" : null;
-        return takesCard(el) ? null : "checkout";
+        return takesCard(el, !isCheckoutNav(lock.label)) ? null : "checkout";
       case "account": return "account";
       case "subscription": return "subscription";
       case "payment-method": return "payment-method";
@@ -583,49 +574,73 @@
     return null;
   }
 
-  // True when el's page could take a card: a card field or a visible
-  // cross-origin frame other than a captcha (hosted card fields: Stripe,
-  // Adyen, Braintree, Shopify) anywhere in the top document, its open and
-  // closed shadow roots and its same-origin frames. Fails closed on what it
-  // cannot read: a cross-origin parent frame, or a custom element whose
-  // closed root it cannot open (Open Claude in Chrome's main world).
+  // Frames that hold hosted card fields, by their src, name or title:
+  // they count whatever their size (a collapsed card section is 0x0).
+  var CARD_FRAME = /stripe|adyen|checkoutshopper|braintree|card.?field|cardinal|pci|hosted.?field|squareup|worldpay|checkout\.com|recurly|spreedly|cybersource|paymentus|authorize\.net|globalpay|moneris|elavon|bluesnap|\bcard\b|card.?number|payment.?field/i;
+  function frameWords(e) {
+    return [e.getAttribute("src"), e.getAttribute("data"), e.getAttribute("name"), e.getAttribute("title"), e.id].filter(Boolean).join(" ");
+  }
+
+  // A card number, expiry or security code field: no gift card or a
+  // "card message" (strict mode counts every payment-looking field).
+  function cardNumberField(e) {
+    var ac = String(e.getAttribute("autocomplete") || "").toLowerCase();
+    if (/(^|\s)cc-(number|exp|exp-month|exp-year|csc)(\s|$)/.test(ac)) return true;
+    var w = [e.getAttribute("name"), e.id, e.getAttribute("aria-label"), e.getAttribute("placeholder")].filter(Boolean).join(" ").toLowerCase();
+    if (/gift/.test(w)) return false;
+    return /(card|cc|credit).?(num|number|no\b)|cardnumber|\bcvv|\bcvc|\bcsc\b|security.?code|expir/.test(w);
+  }
+
+  // True when el's page could take a card, anywhere in the top document,
+  // its open and closed shadow roots and same-origin frames, or when a
+  // parent frame is cross-origin (its fields cannot be seen).
+  // strict (a checkout step, "Continue to payment"): any payment-looking
+  // field, any visible cross-origin frame but a captcha or a pixel, and a
+  // custom element whose closed root cannot be opened (Open Claude in
+  // Chrome's main world) all count. Not strict (plain checkout navigation
+  // on a cart page that may carry PayPal buttons, chat, video or a gift card
+  // box): only card number, expiry and code fields and card-field frames.
+  // A card-field frame counts at any size in both.
   // One scan serves a synchronous burst of calls (get_page_text checks
   // every locked control); it is dropped at the next microtask, so a later
   // message (lock_info, then the press) always scans the page afresh.
   var cardScan = null;
-  function takesCard(el) {
+  function takesCard(el, strict) {
     var top = topDocOf(el);
     if (!top) return true;
-    if (cardScan && cardScan.doc === top) return cardScan.result;
-    var result = scanForCard(top, 0);
-    cardScan = { doc: top, result: result };
+    strict = !!strict;
+    if (cardScan && cardScan.doc === top && cardScan.strict === strict) return cardScan.result;
+    var result = scanForCard(top, 0, strict);
+    cardScan = { doc: top, strict: strict, result: result };
     Promise.resolve().then(function () { cardScan = null; });
     return result;
   }
 
-  function scanForCard(root, depth) {
+  function scanForCard(root, depth, strict) {
     if (!root || typeof root.querySelectorAll !== "function" || depth > 6) return true;
     var all = root.querySelectorAll("*");
     for (var i = 0; i < all.length; i++) {
       var e = all[i];
-      if (FIELD_TAGS[e.tagName] && isPaymentInput(e)) return true;
+      if (FIELD_TAGS[e.tagName] && (strict ? isPaymentInput(e) : cardNumberField(e))) return true;
       if (FRAME_TAGS[e.tagName]) {
         var sub = frameDoc(e);
         if (sub) {
-          if (scanForCard(sub, depth + 1)) return true;
+          if (scanForCard(sub, depth + 1, strict)) return true;
           continue;
         }
-        if (CAPTCHA_FRAME.test(String(e.getAttribute("src") || e.getAttribute("data") || ""))) continue;
+        var words = frameWords(e);
+        if (CARD_FRAME.test(words)) return true;
+        if (!strict || CAPTCHA_FRAME.test(words)) continue;
         var r = e.getBoundingClientRect ? e.getBoundingClientRect() : null;
         if (r && r.width * r.height <= 4) continue; // a tracking pixel
         return true;
       }
       var sr = shadowOf(e);
       if (sr === SHADOW_UNKNOWN) {
-        if (e.tagName.indexOf("-") !== -1) return true;
+        if (strict && e.tagName.indexOf("-") !== -1) return true;
         continue;
       }
-      if (sr && scanForCard(sr, depth + 1)) return true;
+      if (sr && scanForCard(sr, depth + 1, strict)) return true;
     }
     return false;
   }
@@ -1057,7 +1072,6 @@
     pressable: function (lock) { return !!lock && !lock.optin && !!PRESSABLE[lock.kind]; },
     isCheckoutNav: isCheckoutNav,
     isCheckoutStep: isCheckoutStep,
-    isStepOnly: isStepOnly,
     unlockClass: unlockClass,
     sameLabel: sameLabel,
     dangerLifts: dangerLifts,

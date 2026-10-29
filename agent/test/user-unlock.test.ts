@@ -192,6 +192,9 @@ test("checkout steps: Continue to payment needs the user's own words for it; 'ch
   assert.equal(isUnlockYes("yes, continue to payment", "checkout", "Continue to payment"), true);
   assert.equal(isUnlockYes("yes, sign me in", "checkout", "Continue to payment"), false);
   assert.equal(isUnlockYes("yes, save my payment", "checkout", "Continue to payment"), false, "saving a card is another action");
+  // "payment" is about the step's own button, not checkout navigation.
+  assert.equal(isUnlockYes("yes, the payment one", "checkout", "Proceed to checkout"), false);
+  assert.equal(isUnlockYes("yes, the payment one", "checkout", "Continue to payment"), true);
   // Checkout navigation may take a few presses on one ask; others take one.
   const spent = new Set<string>();
   for (let i = 0; i < CHECKOUT_PRESSES_PER_ASK; i++) {
@@ -396,6 +399,21 @@ test("request_unlock: 'check out' counts for checkout navigation for the whole t
     f.s.userText("no");
     await pending;
     assert.equal(f.pressed(), 0);
+
+    // Said while an earlier turn was still running (barge-in): that turn's
+    // end does not cut the reach of the turn these words start.
+    f = session(locked({}));
+    (f.s as any).turnsOpen = 1;
+    f.s.userText("check out");
+    (f.s as any).turnsEnded++;
+    assert.match((await f.s.requestUnlock({ ...ask(), tabId: 9 })).content[0].text, /^pressed Proceed to checkout once/);
+    (f.s as any).turnsEnded++;
+    pending = f.s.requestUnlock({ ...ask(), tabId: 9 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(f.out.some((m) => m.type === "agent_text"), "its own turn is over: asks");
+    f.s.userText("no");
+    await pending;
+    assert.equal(f.pressed(), 1);
 
     // A step's own words do not reach another tab: it asks.
     f = session(locked({ label: "Continue to payment" }));

@@ -140,6 +140,24 @@ test("a 2x screen is captured straight at CSS size, so image pixels are click co
   assert.doesNotThrow(() => assertInViewport(vp, 1086, 543));
 });
 
+test("a tab whose clip came back the wrong size skips it for a minute, then tries again", async () => {
+  c._viewport = { width: 1440, height: 900, dpr: 2 };
+  c._capture = (p) => (p.clip ? fakeJpeg(960, 600) : fakeJpeg(2880, 1800)); // zoom: the clip is off
+  const clips = () => sent().filter(([m, p]) => m === "Page.captureScreenshot" && p.clip).length;
+  await screenshot({ tabId });
+  await screenshot({ tabId });
+  assert.equal(clips(), 1, "skipped the second time");
+  const realNow = Date.now;
+  const t0 = realNow();
+  Date.now = () => t0 + 61_000;
+  try {
+    await screenshot({ tabId });
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(clips(), 2, "tried again after a minute");
+});
+
 test("a viewport too big for the model is shrunk to fit, with its scale", async () => {
   assert.equal(fitScale(1440, 900), 1);
   assert.equal(fitScale(2560, 1440), 1);

@@ -77,6 +77,34 @@ test("Checkout and Continue to payment unlock only on a page that takes no card"
   assert.equal(P.unlockClass({ kind: "order", label: "Continue to payment", optin: false }), null);
 });
 
+test("a cart's PayPal buttons, chat, video, gift card box or web components leave Checkout unlockable, not a step", async () => {
+  const { P, $, document } = load(`<cart-drawer><span>Bag</span></cart-drawer><pay-later></pay-later>
+    <label>Gift card code <input name="gift_card_code"></label><textarea name="gift-card-message"></textarea>
+    <button id="co" type="button">Checkout</button><button id="next" type="button">Continue to payment</button>`);
+  for (const [src, title] of [["https://www.paypal.com/smart/buttons?x=1", "PayPal"], ["https://widget.intercom.io/frame", "Chat"], ["https://www.youtube.com/embed/x", "Video"]]) {
+    const f = document.createElement("iframe");
+    f.setAttribute("src", src);
+    f.setAttribute("title", title);
+    Object.defineProperty(f, "contentDocument", { get: () => { throw new Error("cross-origin"); } });
+    f.getBoundingClientRect = () => ({ width: 300, height: 50 });
+    document.body.appendChild(f);
+  }
+  assert.equal(P.unlockClass(P.lockOf($("#co")), $("#co")), "checkout", "Checkout on a busy cart page");
+  assert.equal(P.unlockClass(P.lockOf($("#next")), $("#next")), null, "a step stays strict there");
+  // Hosted card fields in a collapsed section (0x0) count for both.
+  const f = document.createElement("iframe");
+  f.setAttribute("src", "https://js.stripe.com/v3/elements-inner-card");
+  f.setAttribute("title", "Secure card payment input frame");
+  Object.defineProperty(f, "contentDocument", { get: () => { throw new Error("cross-origin"); } });
+  f.getBoundingClientRect = () => ({ width: 0, height: 0 });
+  document.body.appendChild(f);
+  await tick();
+  assert.equal(P.unlockClass(P.lockOf($("#co")), $("#co")), null, "collapsed hosted card fields");
+  // A card number field (not a gift card one) keeps Checkout locked too.
+  const { P: P2, $: $2 } = load(`<input autocomplete="cc-number"><button id="co" type="button">Checkout</button>`);
+  assert.equal(P2.unlockClass(P2.lockOf($2("#co")), $2("#co")), null);
+});
+
 test("card fields in shadow roots, in the parent of a frame, or behind an unreadable host keep the steps locked", async () => {
   // An open shadow root holding hosted card fields.
   let { P, $, document, window } = load(`<div id="host"></div><button id="next" type="button">Continue to payment</button>`);

@@ -471,14 +471,15 @@ type UserWords = {
   tabId: number | null;
   origin: Promise<string | null>;
   passwordYes: { tabId: number; label: string; origin: string } | null;
-  // Session.turnsEnded when these words came: a turn ending after them
-  // ends their checkout reach (wordsFor).
-  turnsEnded: number;
+  // Their checkout reach (wordsFor) lasts while Session.turnsEnded is below
+  // this: the turns open when they came, plus the one they start, if any
+  // (an answer to a question starts none).
+  turnLimit: number;
   // Facts the remember tool saved from these words without a question.
   saves: number;
 };
 
-const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, turnsEnded: 0, saves: 0 });
+const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, turnLimit: 0, saves: 0 });
 
 // How many facts one utterance can save without a question ("I'm vegan and
 // I wear a medium" is two).
@@ -647,7 +648,7 @@ export class Session {
       tabId,
       origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
       passwordYes: pw && isExplicitYes(text) ? pw : null,
-      turnsEnded: this.turnsEnded,
+      turnLimit: this.turnsEnded + this.turnsOpen,
       saves: 0,
     };
     // New words after a yes that has not paid yet: the conversation moved
@@ -674,6 +675,7 @@ export class Session {
     }
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
+    this.lastUser.turnLimit++;
     const fetch = this.pageContext;
     if (!fetch) {
       timing.mark("to_model");
@@ -1057,14 +1059,14 @@ export class Session {
   // (bound when spoken, USER_WORDS_TTL_MS), else empty words.
   // cls: the control's unlock class. For checkout navigation the words
   // still have to be the user's latest and on this site, but may be from
-  // another tab of it, as long as no turn has ended since they were said
-  // (the turn they started is still running).
+  // another tab of it, as long as the turn they started (or, for an answer,
+  // the turn under way) is still running.
   private async wordsFor(tabId: number, href: string, cls?: string | null): Promise<UserWords | null> {
     const w = this.lastUser;
     if (!w.text) return null;
     const age = Date.now() - w.at;
     const near = w.tabId === tabId && age <= USER_WORDS_TTL_MS;
-    const checkoutTurn = cls === "checkout" && w.tabId != null && this.turnsEnded === w.turnsEnded && age <= CHECKOUT_WORDS_TTL_MS;
+    const checkoutTurn = cls === "checkout" && w.tabId != null && this.turnsEnded < w.turnLimit && age <= CHECKOUT_WORDS_TTL_MS;
     if (!near && !checkoutTurn) return null;
     const origin = await w.origin;
     // Read again after the wait: new words replace these.
