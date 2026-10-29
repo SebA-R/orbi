@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { containsCardNumber, createRouter } from "../../../extension/background/router.js";
 
-function fakes({ focus = { kind: "other", payment: false }, failFirstSend = false, cdpClickFails = false, tabsExtra = {} } = {}) {
+function fakes({ focus = { kind: "other", payment: false }, failFirstSend = false, cdpClickFails = false, cdpClickPressed = false, tabsExtra = {} } = {}) {
   const calls = [];
   let sends = 0;
   const chromeApi = {
@@ -31,6 +31,7 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
   const cdp = {
     click: async (o) => {
       if (cdpClickFails) throw Object.assign(new Error("attach failed"), { code: "internal" });
+      if (cdpClickPressed) throw Object.assign(new Error("Input.dispatchMouseEvent failed"), { code: "internal", noFallback: true });
       calls.push(["cdp.click", o]);
     },
     type: async (o) => calls.push(["cdp.type", o]),
@@ -95,6 +96,12 @@ test("click and key answer through tabs.actAndSettle: the press's result plus wh
   // Refused before the press: nothing settles.
   await assert.rejects(router.route("key", { key: "\r" }));
   assert.deepEqual(seen, [7, 3]);
+});
+
+test("a CDP click that failed after the press went down never falls back to a DOM click", async () => {
+  const f = fakes({ cdpClickPressed: true });
+  await assert.rejects(f.router.route("click", { ref: "ref_4" }), { code: "internal" });
+  assert.ok(!f.calls.some((c) => c[0] === "page" && c[2] === "click_ref"), "no second click");
 });
 
 // Typing goes key by key through the actor (background/actor.js).

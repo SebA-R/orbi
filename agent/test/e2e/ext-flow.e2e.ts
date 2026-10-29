@@ -239,7 +239,7 @@ test("full shopping flow over the extension bridge, card never leaks", { skip },
   await tools.clickRef(bridge, link.ref, tabId);
   await waitFor(async () => (await urlOf(tabId)).includes("/product/"), "the product page");
 
-  // Add to cart (click by ref through rect + CDP).
+  // Add to cart (click by ref: the extension guards the rect and presses over CDP).
   const add = await findOne(tabId, "Add to cart", (m) => m.role === "button");
   const via = await tools.clickRef(bridge, add.ref, tabId);
   assert.equal(via.via, "cdp");

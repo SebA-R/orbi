@@ -170,9 +170,17 @@ export async function click({ tabId, x, y } = {}) {
   const px = num(x, "x");
   const py = num(y, "y");
   const base = { x: px, y: py, button: "left", clickCount: 1 };
+  // A failed move pressed nothing: callers may fall back to a DOM click.
   await send(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: px, y: py, button: "none", buttons: 0 });
-  await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mousePressed", buttons: 1 });
-  await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mouseReleased", buttons: 0 });
+  // From the press on, a failure may follow a press the page already took
+  // (a mousedown handler, an order placed), as in actor.click: callers must
+  // not click again by DOM, and the message tells the model to look first.
+  try {
+    await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mousePressed", buttons: 1 });
+    await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mouseReleased", buttons: 0 });
+  } catch (e) {
+    throw Object.assign(new BridgeError(ERR.INTERNAL, `the click may have reached the page (${message(e)}); check the page before clicking again`), { noFallback: true });
+  }
 }
 
 export async function type({ tabId, text } = {}) {
