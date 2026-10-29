@@ -144,7 +144,17 @@ test("messages name the control and never offer a way around", () => {
 test("unlockClass: checkout, account, subscription and saved card unlock on request; paying never does", () => {
   const lock = (label, extra = {}) => ({ kind: P.classifyLabel(label), label, optin: false, checked: false, ...extra });
   for (const l of ["Checkout", "Proceed to checkout", "Secure checkout", "Go to checkout"]) assert.equal(P.unlockClass(lock(l)), "checkout", l);
-  for (const l of ["Place order", "Buy now", "Pay now", "Pay and checkout", "Continue to payment", "Checkout and place order", "Confirm purchase"]) {
+  // A checkout step that only moves on unlocks like checkout navigation; it
+  // stays locked and is still not checkout navigation for the desktop lock
+  // or the pay flow's order buttons.
+  for (const l of ["Continue to payment", "Proceed to payment", "Continue to billing"]) {
+    assert.equal(P.classifyLabel(l), "order", l);
+    assert.equal(P.unlockClass(lock(l)), "checkout", l);
+    assert.equal(P.isCheckoutStep(l), true, l);
+    assert.equal(P.isCheckoutNav(l), false, l);
+    assert.match(P.message(lock(l), "ref_3"), /next checkout step.*request_unlock/, l);
+  }
+  for (const l of ["Place order", "Buy now", "Pay now", "Pay and checkout", "Pay and continue to payment", "Continue to payment and place order", "Submit payment", "Confirm payment", "Complete payment", "Checkout and place order", "Confirm purchase"]) {
     assert.equal(P.unlockClass(lock(l)), null, l);
   }
   for (const l of ["Apple Pay", "Checkout with PayPal", "Shop Pay"]) assert.equal(P.unlockClass(lock(l)), null, l);

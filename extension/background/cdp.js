@@ -226,7 +226,10 @@ export async function scroll({ tabId, x, y, dx = 0, dy = 0 } = {}) {
 // takes, and its device pixel ratio (device px per CSS px).
 export async function viewport(tabId) {
   assertTabId(tabId);
-  const m = (await send(tabId, "Page.getLayoutMetrics")) || {};
+  return viewportOf((await send(tabId, "Page.getLayoutMetrics")) || {});
+}
+
+function viewportOf(m) {
   // The layout viewport: input goes in window coordinates, which pinch zoom
   // does not shrink.
   const css = m.cssLayoutViewport || m.cssVisualViewport;
@@ -279,14 +282,53 @@ async function resize(data, w, h) {
   return btoa(bin);
 }
 
-// A JPEG of the viewport at CSS-pixel size: on a 2x screen Chrome captures
-// device pixels (2880x1800 for a 1440x900 viewport), and coordinates read
-// off that image would land outside the page. width and height are the
-// image's size in CSS px; scale is image px per CSS px (1 unless the
-// capture could not be resized).
+// The largest image Claude takes without shrinking it (2576 px on the long
+// edge, about 3.75 megapixels). A bigger one is scaled down before the
+// model sees it, and points it reads off it no longer match the page.
+export const MAX_IMAGE_EDGE = 2576;
+export const MAX_IMAGE_PIXELS = 3_750_000;
+
+// Image px per CSS px that keeps a w x h CSS viewport inside those limits:
+// 1 for any ordinary window.
+export function fitScale(w, h) {
+  if (!(w > 0) || !(h > 0)) return 1;
+  return Math.min(1, MAX_IMAGE_EDGE / Math.max(w, h), Math.sqrt(MAX_IMAGE_PIXELS / (w * h)));
+}
+
+const near = (a, b) => Math.abs(a - b) <= 2;
+
+// A JPEG of the viewport in CSS pixels, the space click and scroll take:
+// on a 2x screen Chrome captures device pixels (2880x1800 for a 1440x900
+// viewport), and points read off that image land outside the page. Chrome
+// renders the viewport straight at CSS size (a clip at scale 1 / dpr);
+// failing that, the device-pixel capture is shrunk here. width and height
+// are the viewport in CSS px; scale is image px per CSS px (1 unless the
+// viewport is too big for the model, or the capture could not be resized).
 export async function screenshot({ tabId } = {}) {
   assertTabId(tabId);
-  const vp = await viewport(tabId);
+  const m = (await send(tabId, "Page.getLayoutMetrics")) || {};
+  const vp = viewportOf(m);
+  const fit = fitScale(vp.width, vp.height);
+  const want = { width: Math.round(vp.width * fit), height: Math.round(vp.height * fit) };
+  // The visible viewport's place on the page. Under pinch zoom it is not
+  // the layout viewport input uses, so the plain capture below is taken.
+  const vis = m.cssVisualViewport;
+  if (vis && Number.isFinite(vis.pageX) && Number.isFinite(vis.pageY) && (vis.scale == null || vis.scale === 1) &&
+      near(vis.clientWidth, vp.width) && near(vis.clientHeight, vp.height)) {
+    try {
+      const { data } = await send(tabId, "Page.captureScreenshot", {
+        format: "jpeg",
+        quality: 70,
+        clip: { x: vis.pageX, y: vis.pageY, width: vp.width, height: vp.height, scale: fit / vp.dpr },
+      });
+      const size = jpegSize(data);
+      // Only when Chrome gave exactly that size (older builds read scale
+      // differently).
+      if (size && near(size.width, want.width) && near(size.height, want.height)) {
+        return { data, mimeType: "image/jpeg", width: vp.width, height: vp.height, scale: fit };
+      }
+    } catch {}
+  }
   const { data } = await send(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70 });
   let size = null;
   try {
@@ -297,9 +339,10 @@ export async function screenshot({ tabId } = {}) {
   // captured at CSS size.
   const ratio = Math.abs(img.width / vp.width - 1) < 0.05 ? 1 : vp.dpr;
   const css = { width: Math.round(img.width / ratio), height: Math.round(img.height / ratio) };
-  if (ratio === 1) return { data, mimeType: "image/jpeg", ...css, scale: 1 };
-  const small = await resize(data, css.width, css.height).catch(() => null);
-  if (small) return { data: small, mimeType: "image/jpeg", ...css, scale: 1 };
+  const f = fitScale(css.width, css.height);
+  if (ratio === 1 && f === 1) return { data, mimeType: "image/jpeg", ...css, scale: 1 };
+  const small = await resize(data, Math.round(css.width * f), Math.round(css.height * f)).catch(() => null);
+  if (small) return { data: small, mimeType: "image/jpeg", ...css, scale: f };
   return { data, mimeType: "image/jpeg", ...css, scale: ratio };
 }
 

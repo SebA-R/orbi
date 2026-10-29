@@ -31,6 +31,15 @@ test("the submit of a form with card fields is locked whatever it says", () => {
   assert.equal(P.lockOf($("#plain")), null, "a type=button is not the submit");
 });
 
+test("Continue to payment unlocks as a checkout step, never as a card form's submit", () => {
+  const { P, $ } = load(`<form id="ship"><input name="address1"><button id="next">Continue to payment</button></form>
+    <form><label>Card number <input name="cardnumber"></label><button id="card">Continue to payment</button></form>`);
+  const next = P.lockOf($("#next"));
+  assert.equal(next.kind, "order");
+  assert.equal(P.unlockClass(next, $("#next")), "checkout");
+  assert.equal(P.unlockClass(P.lockOf($("#card")), $("#card")), null, "a card form's submit never unlocks");
+});
+
 test("the submit of a password form is an account control", () => {
   const { P, $ } = load(`<form><input name="email"><input type="password" name="pw"><input type="submit" id="s" value="Continue"></form>`);
   assert.deepEqual({ ...P.lockOf($("#s")) }, { kind: "account", label: "Continue", optin: false, checked: false });

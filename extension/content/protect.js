@@ -94,6 +94,12 @@
   // through request_checkout and pay_with_saved_card.
   var CHECKOUT_NAV = ["checkout", "check out", "secure checkout", "proceed to checkout", "continue to checkout",
     "go to checkout"];
+  // Steps inside checkout that only move to the next page ("Continue to
+  // payment" from the shipping step). They stay on the order list, so they
+  // are locked and isCheckoutNav (the desktop lock, the pay flow's order
+  // buttons) is unchanged, but request_unlock may press them like checkout
+  // navigation. A card form's submit never unlocks, whatever it says.
+  var CHECKOUT_STEP = ["continue to payment", "proceed to payment", "continue to billing"];
 
   // Kinds that make a checkbox or radio uncheck-only.
   var OPTIN_KINDS = { subscription: 1, "payment-method": 1, account: 1, express: 1 };
@@ -140,12 +146,22 @@
   // phrase and no other order or money word ("Checkout", "Proceed to
   // checkout", not "Pay and checkout" or "Checkout and place order").
   function isCheckoutNav(label) {
+    return onlyNav(label, CHECKOUT_NAV);
+  }
+
+  // True when a label only goes to checkout or to its next step ("Continue
+  // to payment"), with no other order or money word.
+  function isCheckoutStep(label) {
+    return onlyNav(label, CHECKOUT_NAV.concat(CHECKOUT_STEP));
+  }
+
+  function onlyNav(label, phrases) {
     var norm = normalize(label);
     var nav = false;
-    for (var i = 0; i < CHECKOUT_NAV.length; i++) if (has(norm, CHECKOUT_NAV[i])) nav = true;
+    for (var i = 0; i < phrases.length; i++) if (has(norm, phrases[i])) nav = true;
     if (!nav) return false;
     var rest = norm;
-    var sorted = CHECKOUT_NAV.slice().sort(function (a, b) { return b.length - a.length; });
+    var sorted = phrases.slice().sort(function (a, b) { return b.length - a.length; });
     for (var j = 0; j < sorted.length; j++) rest = rest.split(" " + sorted[j] + " ").join(" ");
     var order = PHRASES.order;
     for (var k = 0; k < order.length; k++) if (has(rest, order[k])) return false;
@@ -163,7 +179,7 @@
     // whatever its label says: the page marked it for the pay flow only.
     if (el && el.nodeType === 1 && el.closest && el.closest("[data-clearcart-protected]")) return null;
     switch (lock.kind) {
-      case "order": return !lock.optin && isCheckoutNav(lock.label) ? "checkout" : null;
+      case "order": return !lock.optin && isCheckoutStep(lock.label) ? "checkout" : null;
       case "account": return "account";
       case "subscription": return "subscription";
       case "payment-method": return "payment-method";
@@ -713,7 +729,7 @@
       case "express":
         return "Locked: " + name + " is a one-tap wallet or pay later button, so nothing was pressed." + userOnly;
       default:
-        if (cls === "checkout") return "Locked: " + name + " starts checkout, so it needs the user's permission and nothing was pressed. If the user wants this, " + unlock;
+        if (cls === "checkout") return "Locked: " + name + (isCheckoutNav(label) ? " starts checkout" : " goes to the next checkout step") + ", so it needs the user's permission and nothing was pressed. If the user wants this, " + unlock;
         return "Locked: " + name + " places the order or pays, so nothing was pressed." + pay;
     }
   }
@@ -952,6 +968,7 @@
     isActivationKey: isActivationKey,
     pressable: function (lock) { return !!lock && !lock.optin && !!PRESSABLE[lock.kind]; },
     isCheckoutNav: isCheckoutNav,
+    isCheckoutStep: isCheckoutStep,
     unlockClass: unlockClass,
     sameLabel: sameLabel,
     dangerLifts: dangerLifts,

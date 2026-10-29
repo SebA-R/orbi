@@ -50,6 +50,8 @@ const USER_INTENTS: Array<[Intent, RegExp]> = [
   ["checkout", /^ check ?out( (now|please|for me|thanks|thank you|right now))* $/],
   ["checkout", /^ (start|begin|open) (the )?check ?out /],
   ["checkout", /^ (press|click|tap|hit|push) (on )?(the )?check ?out( button| link)?( (now|please|for me))* $/],
+  // The next checkout step ("Continue to payment"), never paying itself.
+  ["checkout", /^ (go|proceed|continue|move) (on )?(to|into) (the )?(payment|billing)( page| step| section)?( (now|please|for me))* $/],
   ["signin", /^ (sign|log) (me |us )?(back )?in(to)? /],
   ["signin", /^ (signin|login)( me)? /],
   ["signout", /^ (sign|log) (me |us )?out /],
@@ -67,7 +69,7 @@ const USER_INTENTS: Array<[Intent, RegExp]> = [
 
 // What a control's label is for.
 const LABEL_INTENTS: Array<[Intent, RegExp]> = [
-  ["checkout", / check ?out /],
+  ["checkout", / (check ?out|(continue|proceed) to payment|continue to billing) /],
   ["signin", / (sign in|signin|log in|login|sign in with|log in with|continue with) /],
   ["signout", / (sign out|signout|log out|logout) /],
   ["signup", / (sign up|signup|create (an |my )?account|register) /],
@@ -288,7 +290,7 @@ const NOT_YES = new RegExp(
     ")(?= )"
 );
 const ABOUT: Record<UnlockClass, RegExp> = {
-  checkout: / (check ?out|check (it|them|this|that|these) out|order|purchase|buy|cart|bag) /,
+  checkout: / (check ?out|check (it|them|this|that|these) out|order|purchase|buy|cart|bag|payment|billing) /,
   account: / (sign ?in|sign ?up|log ?in|login|account|password|register) /,
   subscription: / (subscribe|subscription|trial|member|membership|plan|join|enroll|upgrade) /,
   "payment-method": / (card|payment) /,
@@ -444,6 +446,23 @@ export type Decision =
   | { kind: "grant"; cls: UnlockClass; label: string; direct: true }
   | { kind: "ask"; cls: UnlockClass; label: string; question: string };
 
+// One direct ask presses one control of its class, except checkout
+// navigation: "check out" may take the cart's Checkout, then a checkout
+// step such as "Continue to payment", up to CHECKOUT_PRESSES_PER_ASK
+// presses. None of them pays; Place order never has an unlock class.
+export const CHECKOUT_PRESSES_PER_ASK = 3;
+export function spendDirect(spent: Set<string>, cls: UnlockClass): void {
+  if (cls === "checkout") {
+    for (let i = 1; i < CHECKOUT_PRESSES_PER_ASK; i++) {
+      if (!spent.has(`checkout#${i}`)) {
+        spent.add(`checkout#${i}`);
+        return;
+      }
+    }
+  }
+  spent.add(cls);
+}
+
 export const NOT_LOCKED = "That control is not locked. Press it with click as usual.";
 
 // What request_unlock does for a control: refuse it, wait for the user's
@@ -482,6 +501,6 @@ export function decideUnlock(
   const spent = opts.spent?.has(cls);
   const direct = !spent && (isDirectAsk(opts.userText, cls, label) || (!!opts.passwordYes && cls === "account"));
   if (direct) return { kind: "grant", cls, label, direct: true };
-  const question = cls === "checkout" ? "Do you want me to go to checkout?" : `Do you want me to press ${label}?`;
+  const question = cls === "checkout" && / check ?out /.test(norm(label)) ? "Do you want me to go to checkout?" : `Do you want me to press ${label}?`;
   return { kind: "ask", cls, label, question };
 }

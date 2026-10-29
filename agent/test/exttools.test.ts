@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { z } from "zod";
 
 import { ExtError, INTERNAL, TOOLS } from "../extbridge.ts";
-import { createExtToolsServer, extToolDefinitions } from "../exttools.ts";
+import { createExtToolsServer, extToolDefinitions, seenScale } from "../exttools.ts";
 
 type Call = { method: string; params: any };
 function fakeBridge(answer: (method: string, params: any) => any) {
@@ -106,9 +106,16 @@ test("screenshot says its CSS size, and the scale when the image is not 1:1", as
   let shot: any = await defs.screenshot.handler({}, {});
   assert.equal(shot.content[0].type, "image");
   assert.match(shot.content[1].text, /Viewport 1440x900 CSS px; image pixels are click coordinates/);
+  // A device-pixel capture (2880x1800) is past the model's image limits, so
+  // it sees it shrunk to about 2449x1531, not twice the viewport: the
+  // offsite_aritzia clicks read off that rendering landed outside the page.
   answer = { ...answer, scale: 2 };
   shot = await defs.screenshot.handler({}, {});
-  assert.match(shot.content[1].text, /divide image coordinates by 2/);
+  assert.match(shot.content[1].text, /this image is 2449x1531, so divide image coordinates by 1\.70\d*/);
+  assert.equal(seenScale(1440, 900, 1), 1);
+  assert.equal(seenScale(1440, 900, 1.5), 1.5);
+  // Shrunk by the extension to fit (an ultrawide window): kept as sent.
+  assert.ok(Math.abs(seenScale(3440, 1440, 0.7488) - 0.7488) < 0.001);
   assert.match(defs.click.description, /CSS pixels/);
 });
 

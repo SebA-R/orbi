@@ -45,6 +45,7 @@ import {
   decideUnlock,
   isDirectAsk,
   isUnlockYes,
+  spendDirect,
   lockInfoExt,
   ocicLockInfoScript,
   ocicPressScript,
@@ -454,6 +455,10 @@ export function passCovers(pass: CheckoutPass | null, tabId: number | null, url:
 
 // How long the user's last words count for request_unlock's direct match.
 export const USER_WORDS_TTL_MS = 60_000;
+// A spoken checkout ask ("check out") counts for checkout navigation for as
+// long as the turn it started runs (adding to the bag and opening the cart
+// can take longer than USER_WORDS_TTL_MS, in a new tab), up to this cap.
+export const CHECKOUT_WORDS_TTL_MS = 5 * 60_000;
 
 // The user's most recent words, bound to the tab Orbi was on when they
 // spoke and that tab's origin then. spent: unlock classes already pressed
@@ -1044,11 +1049,19 @@ export class Session {
 
   // The user's last words if they still count for this tab and its origin
   // (bound when spoken, USER_WORDS_TTL_MS), else empty words.
-  private async wordsFor(tabId: number, href: string): Promise<UserWords | null> {
+  // cls: the control's unlock class. For checkout navigation the words
+  // still have to be the user's latest and on this site, but may be from
+  // another tab of it, as long as the turn they started is still running.
+  private async wordsFor(tabId: number, href: string, cls?: string | null): Promise<UserWords | null> {
     const w = this.lastUser;
-    if (!w.text || w.tabId !== tabId || Date.now() - w.at > USER_WORDS_TTL_MS) return null;
+    if (!w.text) return null;
+    const age = Date.now() - w.at;
+    const near = w.tabId === tabId && age <= USER_WORDS_TTL_MS;
+    const checkoutTurn = cls === "checkout" && w.tabId != null && this.turnsOpen > 0 && age <= CHECKOUT_WORDS_TTL_MS;
+    if (!near && !checkoutTurn) return null;
     const origin = await w.origin;
-    return origin && origin === originOf(href) ? w : null;
+    // Read again after the wait: new words replace these.
+    return origin && origin === originOf(href) && this.lastUser === w ? w : null;
   }
 
   // The tabs the sweep checks: the checkout pass tab is left out while it is
@@ -1259,7 +1272,7 @@ export class Session {
     const ref = args.ref || "label";
     const label = String(info.label || args.label);
     const origin = originOf(href);
-    const words = await this.wordsFor(tabId, href);
+    const words = await this.wordsFor(tabId, href, info.cls);
     const userText = words?.text ?? "";
     const pw = words?.passwordYes;
     const passwordYes = !!pw && pw.tabId === tabId && pw.origin === origin && Protect.sameLabel(pw.label, label);
@@ -1296,7 +1309,7 @@ export class Session {
       }
       how = "user confirmed";
     } else {
-      words!.spent.add(d.cls);
+      spendDirect(words!.spent, d.cls);
     }
     if (d.cls === "account") this.passwordAsk = null;
     let failed: string | null;

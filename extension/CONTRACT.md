@@ -42,7 +42,7 @@ export async function click({ tabId, x, y }): Promise<void>         // Input.dis
 export async function type({ tabId, text }): Promise<void>          // Input.insertText
 export async function key({ tabId, key }): Promise<void>            // e.g. "Enter", "Tab", "Escape", "ArrowDown"
 export async function scroll({ tabId, x, y, dx, dy }): Promise<void> // Input.dispatchMouseEvent mouseWheel
-export async function screenshot({ tabId }): Promise<{ data: string, mimeType: "image/jpeg" }> // Page.captureScreenshot jpeg q70
+export async function screenshot({ tabId }): Promise<{ data: string, mimeType: "image/jpeg", width, height, scale }> // Page.captureScreenshot jpeg q70, clipped to the viewport at CSS size (width x height CSS px; scale = image px per CSS px, 1 unless the viewport is past the model's 2576 px / 3.75 MP image limit)
 ```
 
 ### B. Page content script (`content/page.js`, injected with `chrome.scripting.executeScript` on demand, idempotent)

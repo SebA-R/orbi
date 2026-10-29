@@ -6,8 +6,8 @@ import { test } from "node:test";
 
 import { extBridge } from "../extbridge.ts";
 import { SessionHub } from "../hub.ts";
-import { Session, isExplicitYes, navigateLockReason, passCovers, PASS_MAX_MS, USER_WORDS_TTL_MS } from "../session.ts";
-import { decideUnlock, isDirectAsk, isUnlockYes, pressUnlockedExt, UserUnlockGate, type LockInfo } from "../user-unlock.ts";
+import { CHECKOUT_WORDS_TTL_MS, Session, isExplicitYes, navigateLockReason, passCovers, PASS_MAX_MS, USER_WORDS_TTL_MS } from "../session.ts";
+import { CHECKOUT_PRESSES_PER_ASK, decideUnlock, isDirectAsk, isUnlockYes, pressUnlockedExt, spendDirect, UserUnlockGate, type LockInfo } from "../user-unlock.ts";
 import { LockedError } from "../unlock.ts";
 
 process.env.CLEARCART_BROWSER = "ext";
@@ -177,6 +177,34 @@ test("decideUnlock: grants a direct ask once per utterance, else asks", () => {
   assert.equal((decideUnlock(locked({}), { userText: "hmm" }) as any).question, "Do you want me to go to checkout?");
 });
 
+test("checkout steps: 'check out' covers Continue to payment, a few presses per ask, never paying", () => {
+  const step = locked({ label: "Continue to payment" });
+  for (const userText of ["check out", "go to checkout", "I want to check out", "continue to payment", "proceed to payment please"]) {
+    assert.equal(decideUnlock(step, { userText }).kind, "grant", userText);
+  }
+  for (const userText of ["pay", "pay for it", "place my order", "continue to payment, after you add the socks", "should I continue to payment?"]) {
+    assert.equal(decideUnlock(step, { userText }).kind, "ask", userText);
+  }
+  const q = decideUnlock(step, { userText: "add the socks" }) as any;
+  assert.equal(q.question, "Do you want me to press Continue to payment?");
+  assert.equal(isUnlockYes("yes, continue to payment", "checkout", "Continue to payment"), true);
+  assert.equal(isUnlockYes("yes, sign me in", "checkout", "Continue to payment"), false);
+  // Checkout navigation may take a few presses on one ask; others take one.
+  const spent = new Set<string>();
+  for (let i = 0; i < CHECKOUT_PRESSES_PER_ASK; i++) {
+    assert.equal(decideUnlock(locked({}), { userText: "check out", spent }).kind, "grant", `press ${i + 1}`);
+    spendDirect(spent, "checkout");
+  }
+  assert.equal(decideUnlock(locked({}), { userText: "check out", spent }).kind, "ask");
+  const acct = new Set<string>();
+  spendDirect(acct, "account");
+  assert.equal(decideUnlock(locked({ kind: "account", label: "Sign in", cls: "account" }), { userText: "sign me in", spent: acct }).kind, "ask");
+  // Paying never unlocks on these words.
+  for (const label of ["Place order", "Pay now", "Buy now"]) {
+    assert.equal(decideUnlock(locked({ kind: "order", label, cls: null }), { userText: "check out" }).kind, "refuse", label);
+  }
+});
+
 test("decideUnlock: a sign in waits for the user's own password, then their 'done'", () => {
   const signin = locked({ kind: "account", label: "Sign in", cls: "account", password: true, passwordFilled: false });
   const d = decideUnlock(signin, { userText: "sign me in" });
@@ -281,12 +309,14 @@ test("request_unlock: no checkout pass when the press fails", async () => {
 });
 
 test("request_unlock: the user's words are bound to the tab and origin they were spoken on, and expire", async () => {
-  // Another tab.
-  let f = session(locked({}));
-  f.s.userText("go to checkout");
-  let pending = f.s.requestUnlock({ ...ask(), tabId: 9 });
+  // Another tab (checkout navigation may use another tab of the site in the
+  // same turn; see below).
+  const signIn = locked({ kind: "account", label: "Sign in", cls: "account" });
+  let f = session(signIn);
+  f.s.userText("sign me in");
+  let pending = f.s.requestUnlock({ ...ask("Sign in"), tabId: 9 });
   await new Promise((r) => setTimeout(r, 10));
-  assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to go to checkout?");
+  assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to press Sign in?");
   f.s.userText("no");
   await pending;
   assert.equal(f.pressed(), 0);
@@ -304,13 +334,13 @@ test("request_unlock: the user's words are bound to the tab and origin they were
   await pending;
   assert.equal(f.pressed(), 0);
   // Expired words.
-  f = session(locked({}));
+  f = session(signIn);
   const realNow = Date.now;
-  f.s.userText("go to checkout");
+  f.s.userText("sign me in");
   const t0 = realNow();
   Date.now = () => t0 + USER_WORDS_TTL_MS + 1;
   try {
-    pending = f.s.requestUnlock(ask());
+    pending = f.s.requestUnlock(ask("Sign in"));
     await new Promise((r) => setTimeout(r, 10));
     assert.ok(f.out.some((m) => m.type === "agent_text"), "asks instead");
     f.s.userText("no");
@@ -319,6 +349,83 @@ test("request_unlock: the user's words are bound to the tab and origin they were
     Date.now = realNow;
   }
   assert.equal(f.pressed(), 0);
+});
+
+test("request_unlock: 'check out' counts for checkout navigation for the whole turn it started, on that site", async () => {
+  const realNow = Date.now;
+  try {
+    // Opening the cart took over a minute and used a new tab of the site:
+    // still the user's latest words, in the turn they started, so no re-ask.
+    let f = session(locked({ label: "Checkout" }));
+    f.s.userText("check out");
+    const t0 = realNow();
+    Date.now = () => t0 + USER_WORDS_TTL_MS + 30_000;
+    assert.match((await f.s.requestUnlock({ ...ask("Checkout"), tabId: 9 })).content[0].text, /^pressed Checkout once/);
+    assert.ok(!f.out.some((m) => m.type === "agent_text"), "no question");
+    // Then the checkout's own next step, on the same words.
+    f.calls.length = 0;
+    const step = locked({ label: "Continue to payment" });
+    (f.s as any).lockInfo = async () => step;
+    assert.match((await f.s.requestUnlock({ ...ask("Continue to payment"), tabId: 9 })).content[0].text, /^pressed Continue to payment once/);
+    assert.equal(f.pressed(), 1);
+    Date.now = realNow;
+
+    // The turn is over: the words count only as before (same tab, a minute).
+    f = session(locked({}));
+    f.s.userText("check out");
+    (f.s as any).turnsOpen = 0;
+    let pending = f.s.requestUnlock({ ...ask(), tabId: 9 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(f.out.find((m) => m.type === "agent_text")?.text, "Do you want me to go to checkout?");
+    f.s.userText("no");
+    await pending;
+    assert.equal(f.pressed(), 0);
+
+    // Past the cap, even in the same turn.
+    f = session(locked({}));
+    f.s.userText("check out");
+    const t1 = realNow();
+    Date.now = () => t1 + CHECKOUT_WORDS_TTL_MS + 1;
+    pending = f.s.requestUnlock(ask());
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(f.out.some((m) => m.type === "agent_text"), "asks instead");
+    f.s.userText("no");
+    await pending;
+    Date.now = realNow;
+    assert.equal(f.pressed(), 0);
+
+    // Another site: asks.
+    const urls = ["https://shop.example/cart", "https://evil.example/cart"];
+    f = session(locked({}));
+    const call = (extBridge as any).call;
+    let n = 0;
+    (extBridge as any).call = async (m: string, p: any) => (m === "tab_info" ? { url: urls[Math.min(n++, 1)] } : call(m, p));
+    f.s.userText("check out");
+    pending = f.s.requestUnlock({ ...ask(), tabId: 9 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(f.out.some((m) => m.type === "agent_text"), "asks instead");
+    f.s.userText("no");
+    await pending;
+    assert.equal(f.pressed(), 0);
+
+    // Only checkout navigation: a sign in on another tab still asks.
+    f = session(locked({ kind: "account", label: "Sign in", cls: "account" }));
+    f.s.userText("sign me in");
+    pending = f.s.requestUnlock({ ...ask("Sign in"), tabId: 9 });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(f.out.some((m) => m.type === "agent_text"), "asks instead");
+    f.s.userText("no");
+    await pending;
+    assert.equal(f.pressed(), 0);
+
+    // Place order is refused on the same words, never armed.
+    f = session(locked({ kind: "order", label: "Place order", cls: null }));
+    f.s.userText("check out");
+    assert.match((await f.s.requestUnlock(ask("Place order"))).content[0].text, /places the order or pays/);
+    assert.ok(!f.calls.some((c) => c[0] === "lock_arm"));
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("request_unlock: page text or Claude's reason never counts as the user's ask", async () => {
