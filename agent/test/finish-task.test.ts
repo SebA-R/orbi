@@ -26,6 +26,13 @@ function setup() {
 const reply = (text: string) => ({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text }] } }) as any;
 let id = 0;
 const toolCall = (name: string) => ({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: `t${++id}`, name, input: {} }] } }) as any;
+const toolResult = (tool_use_id: string) => ({ type: "user", parent_tool_use_id: null, message: { content: [{ type: "tool_result", tool_use_id, content: "ok" }] } }) as any;
+// A browser tool call and its result.
+const browse = (s: Session, name = "mcp__browser__navigate") => {
+  const m = toolCall(name);
+  s.onSdkMessage(m);
+  s.onSdkMessage(toolResult(m.message.content[0].id));
+};
 const result = () => ({ type: "result", subtype: "success" }) as any;
 const stop = (s: Session, last: string, active = false) =>
   (s as any).finishTask({ hook_event_name: "Stop", stop_hook_active: active, last_assistant_message: last, session_id: "x", transcript_path: "", cwd: "" }, undefined, { signal: new AbortController().signal });
@@ -55,12 +62,12 @@ test("prompt: do the whole task, decide with the user's criteria, keep confirmat
 test("Stop hook: a task turn that ends on a question halfway is sent back once, unspoken", async () => {
   const { s, spoken, sent } = setup();
   s.userText("buy me black pants under fifty dollars on uniqlo");
-  s.onSdkMessage(toolCall("mcp__browser__navigate"));
+  browse(s, "mcp__browser__navigate");
   s.onSdkMessage(reply("Which size would you like?"));
   const out = await stop(s, "Which size would you like?");
   assert.deepEqual(out, { decision: "block", reason: FINISH_TASK });
   // Only once per turn: the next stop goes through.
-  s.onSdkMessage(toolCall("mcp__browser__click"));
+  browse(s, "mcp__browser__click");
   s.onSdkMessage(reply("Which colour, black or navy?"));
   assert.deepEqual(await stop(s, "Which colour, black or navy?"), {});
   s.onSdkMessage(result());
@@ -72,10 +79,10 @@ test("Stop hook: a task turn that ends on a question halfway is sent back once, 
 test("Stop hook: the held question is dropped even when its message comes after the hook", async () => {
   const { s, spoken } = setup();
   s.userText("buy me black pants under fifty dollars");
-  s.onSdkMessage(toolCall("mcp__browser__navigate"));
+  browse(s, "mcp__browser__navigate");
   assert.equal((await stop(s, "Which size?")).decision, "block");
   s.onSdkMessage(reply("Which size?"));
-  s.onSdkMessage(toolCall("mcp__browser__click"));
+  browse(s, "mcp__browser__click");
   s.onSdkMessage(reply("Added the Smart Ankle Pants in black, size medium, to your cart."));
   s.onSdkMessage(result());
   assert.deepEqual(spoken(), ["Added the Smart Ankle Pants in black, size medium, to your cart."]);
@@ -84,13 +91,13 @@ test("Stop hook: the held question is dropped even when its message comes after 
 
 test("Stop hook: lets the turn end when it should", async () => {
   const cases: Array<[string, (s: Session) => void, string]> = [
-    ["not a question", (s) => { s.userText("buy me black pants"); s.onSdkMessage(toolCall("mcp__browser__navigate")); }, "Added the black pants to your cart."],
+    ["not a question", (s) => { s.userText("buy me black pants"); browse(s, "mcp__browser__navigate"); }, "Added the black pants to your cart."],
     ["no browsing yet (asking before starting)", (s) => { s.userText("buy me pants"); }, "Which store should I use?"],
-    ["the user asked a question", (s) => { s.userText("what pants do they have?"); s.onSdkMessage(toolCall("mcp__browser__navigate")); }, "Want me to read more?"],
-    ["after request_checkout", (s) => { s.userText("check out and pay"); s.onSdkMessage(toolCall("mcp__browser__navigate")); s.onSdkMessage(toolCall("mcp__clearcart__request_checkout")); }, "What should I change?"],
-    ["after request_unlock", (s) => { s.userText("sign me in please"); s.onSdkMessage(toolCall("mcp__browser__navigate")); s.onSdkMessage(toolCall("mcp__clearcart__request_unlock")); }, "Is your password in?"],
-    ["after a desktop tool", (s) => { s.userText("message Sam the link"); s.onSdkMessage(toolCall("mcp__browser__navigate")); s.onSdkMessage(toolCall("mcp__desktop__desktop_type")); }, "Send it to Sam?"],
-    ["interrupted", (s) => { s.userText("buy me pants"); s.onSdkMessage(toolCall("mcp__browser__navigate")); s.interrupt(); }, "Which size?"],
+    ["the user asked a question", (s) => { s.userText("what pants do they have?"); browse(s, "mcp__browser__navigate"); }, "Want me to read more?"],
+    ["after request_checkout", (s) => { s.userText("check out and pay"); browse(s, "mcp__browser__navigate"); s.onSdkMessage(toolCall("mcp__clearcart__request_checkout")); }, "What should I change?"],
+    ["after request_unlock", (s) => { s.userText("sign me in please"); browse(s, "mcp__browser__navigate"); s.onSdkMessage(toolCall("mcp__clearcart__request_unlock")); }, "Is your password in?"],
+    ["after a desktop tool", (s) => { s.userText("message Sam the link"); browse(s, "mcp__browser__navigate"); s.onSdkMessage(toolCall("mcp__desktop__desktop_type")); }, "Send it to Sam?"],
+    ["interrupted", (s) => { s.userText("buy me pants"); browse(s, "mcp__browser__navigate"); s.interrupt(); }, "Which size?"],
   ];
   for (const [name, arrange, last] of cases) {
     const { s } = setup();
@@ -100,7 +107,7 @@ test("Stop hook: lets the turn end when it should", async () => {
   }
   const { s } = setup();
   s.userText("buy me pants");
-  s.onSdkMessage(toolCall("mcp__browser__navigate"));
+  browse(s, "mcp__browser__navigate");
   assert.deepEqual(await stop(s, "Which size?", true), {}, "stop_hook_active");
   s.close();
 });
@@ -108,12 +115,12 @@ test("Stop hook: lets the turn end when it should", async () => {
 test("Stop hook: a new turn can be sent back again; only the Claude hooks carry it", async () => {
   const { s } = setup();
   s.userText("buy me pants");
-  s.onSdkMessage(toolCall("mcp__browser__navigate"));
+  browse(s, "mcp__browser__navigate");
   assert.equal((await stop(s, "Which size?")).decision, "block");
   s.onSdkMessage(reply("Done."));
   s.onSdkMessage(result());
   s.userText("now get a black belt too");
-  s.onSdkMessage(toolCall("mcp__browser__navigate"));
+  browse(s, "mcp__browser__navigate");
   assert.equal((await stop(s, "Which length?")).decision, "block");
   assert.ok(!("Stop" in s.hooks()), "the shared hooks (local backend) have no Stop hook");
   assert.ok("Stop" in s.claudeHooks());
@@ -123,14 +130,14 @@ test("Stop hook: a new turn can be sent back again; only the Claude hooks carry 
 test("remember: no question mid-task; at the start of a turn it still asks", async () => {
   const { s, memory, spoken } = setup();
   s.userText("buy me black pants under fifty dollars");
-  s.onSdkMessage(toolCall("mcp__browser__navigate"));
+  browse(s, "mcp__browser__navigate");
   const r = text(await s.remember({ fact: "you like black pants" }));
   assert.match(r, /^Not saved; don't ask now\./);
   assert.deepEqual(spoken(), [], "nothing asked");
   assert.equal(memory.list().length, 0);
   // The user's own lasting fact still saves quietly mid-task.
   s.userText("I wear a medium, get the medium");
-  s.onSdkMessage(toolCall("mcp__browser__click"));
+  browse(s, "mcp__browser__click");
   assert.match(text(await s.remember({ fact: "you wear a medium" })), /^Saved/);
   s.onSdkMessage(result());
 
@@ -141,5 +148,54 @@ test("remember: no question mid-task; at the start of a turn it still asks", asy
   assert.deepEqual(spoken(), ["Want me to remember that you like blue?"]);
   s.userText("no");
   assert.match(text(await p), /^Not saved/);
+  s.close();
+});
+
+test("Stop hook: polite questions count as tasks; Guided mode is left alone", async () => {
+  const { s } = setup();
+  s.userText("Can you find me black pants under $50?");
+  browse(s);
+  assert.equal((await stop(s, "Which size?”")).decision, "block", "curly quote after the question mark");
+  s.close();
+  const g = setup();
+  g.s.userText("find me headphones on amazon");
+  g.s.guided = true; // as the model heard it with this turn
+  browse(g.s);
+  assert.deepEqual(await stop(g.s, "Which would you like?"), {});
+  g.s.close();
+});
+
+test("Stop hook: every block of a late question is dropped, and a repeat later is spoken", async () => {
+  const { s, spoken } = setup();
+  s.userText("buy me black pants");
+  browse(s);
+  assert.equal((await stop(s, "Found three pairs. Which size?")).decision, "block");
+  s.onSdkMessage({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Found three pairs." }, { type: "text", text: "Which size?" }] } } as any);
+  s.onSdkMessage(reply("Which size?"));
+  s.onSdkMessage(result());
+  assert.deepEqual(spoken(), ["Which size?"]);
+  s.close();
+});
+
+test("remember: in the same step as the first navigate it is still the start; an explicit ask still asks", async () => {
+  const { s, spoken } = setup();
+  s.userText("buy me pants from my usual store");
+  const nav = toolCall("mcp__browser__navigate");
+  s.onSdkMessage(nav);
+  const p = s.remember({ fact: "you like Uniqlo" });
+  await tick();
+  assert.deepEqual(spoken(), ["Want me to remember that you like Uniqlo?"]);
+  s.userText("no");
+  await p;
+  s.onSdkMessage(toolResult(nav.message.content[0].id));
+  s.onSdkMessage(result());
+
+  s.userText("remember I'm vegetarian and find me a meal kit");
+  browse(s);
+  const q = s.remember({ fact: "you don't eat meat" });
+  await tick();
+  assert.equal(spoken().at(-1), "Want me to remember that you don't eat meat?");
+  s.userText("yes");
+  assert.match(text(await q), /^Saved/);
   s.close();
 });

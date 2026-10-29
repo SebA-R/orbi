@@ -98,7 +98,13 @@ export const DISALLOWED_BROWSER = [
 // words just asked for it; forget the same way; recall lists.
 // record_purchase adds to the purchase history (history.ts) the same way.
 // The Stop hook's reason: the model's question was not spoken; it goes on.
-export const FINISH_TASK = "Not spoken: the task is not done. Decide using the user's criteria and saved facts and keep going; ask only for a detail only they know.";
+export const FINISH_TASK = "Not spoken: the task is not done. Decide using the user's criteria and saved facts and keep going; ask only for a detail only they know. If they gave nothing to choose by, or the rules need their yes first (sending a message, a confirmation), reply with the same question again.";
+
+// The user's words ask for something done, polite questions included
+// ("can you find me black pants?").
+function isTask(words: string): boolean {
+  return isRequest(words.trim().replace(/^(?:please\s+)?(?:can|could|would|will) you\s+(?:please\s+)?(.+?)[?.!\s]*$/i, "$1"));
+}
 
 const MEMORY_TOOLS = [C + "remember", C + "forget", C + "recall", C + "record_purchase"];
 // Tools whose question, or the reply after them, belongs to the user: a
@@ -568,9 +574,12 @@ export class Session {
   private muted = false;
   // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
   private held: string[] = [];
-  // This turn so far: a browser tool ran, a tool asked the user something
-  // (or may lead to a question that belongs there: checkout, unlock,
-  // memory), and the Stop hook already sent the model back to work once.
+  // This turn so far (reset when a turn's result comes back): a browser
+  // tool came back, a tool asked the user something or may lead to a
+  // question that belongs to them (checkout, unlock, pay, desktop, a
+  // remember or forget question), and the Stop hook already sent the model
+  // back to work once.
+  private browseIds = new Set<string>();
   private turnBrowsed = false;
   private turnAsked = false;
   private turnNudged = false;
@@ -677,8 +686,6 @@ export class Session {
       this.status("Danger mode is off while using a local model: the button lock and the spoken yes stay on");
       this.say(DANGER_LOCAL_LINE);
     }
-    // A new request: the per-turn bookkeeping starts over.
-    this.newTurn();
     // Counted now, while its context is fetched, so an interrupt sees it.
     this.turnsOpen++;
     const fetch = this.pageContext;
@@ -1512,7 +1519,7 @@ export class Session {
       // never its own idea or a page's, not even after a question.
       this.status("memory: not saved (local model, not the user's own words)");
       return said("Not saved: on this model Orbi saves only facts the user just said in their own words. Do not ask about it.");
-    } else if (this.taskUnderway()) {
+    } else if (this.taskUnderway() && !isRememberAsk(this.lastUser.text)) {
       // Halfway through a task a memory question would stop it: nothing
       // is saved and nothing asked (stricter, so consent still holds).
       this.status("memory: not saved (asked mid-task)");
@@ -1907,6 +1914,7 @@ export class Session {
 
   // Start of a user turn: nothing done or asked yet.
   private newTurn() {
+    this.browseIds.clear();
     this.turnBrowsed = false;
     this.turnAsked = false;
     this.turnNudged = false;
@@ -1916,7 +1924,7 @@ export class Session {
   // A task the user asked for is under way: their words ask for something
   // done and a browser tool already ran this turn.
   private taskUnderway(): boolean {
-    return this.turnsOpen > 0 && this.turnBrowsed && isRequest(this.lastUser.text);
+    return this.turnsOpen > 0 && this.turnBrowsed && isTask(this.lastUser.text);
   }
 
   // The Stop hook (Claude only). A turn that ends on a question halfway
@@ -1926,8 +1934,10 @@ export class Session {
   // when another question waits, or when the turn was interrupted.
   private finishTask: HookCallback = async (input) => {
     if (input.hook_event_name !== "Stop" || input.stop_hook_active || this.muted || this.turnNudged || this.turnAsked) return {};
+    // Guided mode lets the user choose, and Danger mode's own check-ins stay.
+    if (this.guided || dangerModeOn()) return {};
     const reply = (input.last_assistant_message ?? this.held.join(" ")).trim();
-    if (!/\?["')\]]?\s*$/.test(reply) || !this.taskUnderway()) return {};
+    if (!/\?["'\u201d\u2019)\]]?\s*$/.test(reply) || !this.taskUnderway()) return {};
     if (this.awaitingAnswer || this.memoryAsk || this.state.confirmation?.state === "pending") return {};
     this.turnNudged = true;
     // Its message may not have come through yet: drop it when it does.
@@ -1955,6 +1965,7 @@ export class Session {
       // Only a message with no tool calls is a reply to the user. Text next
       // to tool calls is the model thinking aloud: log it, never speak it.
       const working = blocks.some((b) => b.type === "tool_use");
+      let dropped = false;
       if (working) {
         this.held.forEach((t) => this.unspoken(t));
         this.held = [];
@@ -1963,21 +1974,25 @@ export class Session {
         if (block.type === "text" && block.text?.trim()) {
           const t = block.text.trim();
           if (this.dropText && this.dropText.includes(t)) {
-            this.dropText = "";
+            dropped = true;
             this.unspoken(t);
           } else if (working || this.muted) this.unspoken(t);
           else this.held.push(t);
         } else if (block.type === "tool_use") {
-          if (String(block.name).startsWith(B)) this.turnBrowsed = true;
+          if (String(block.name).startsWith(B)) this.browseIds.add(block.id);
           if (ASKING_TOOLS.has(block.name) || String(block.name).startsWith(D)) this.turnAsked = true;
           this.toolNames.set(block.id, shortName(block.name));
           this.status(toolLabel(block.name, block.input));
           timing.toolStart(block.id, toolLabel(block.name, block.input));
         }
       }
+      if (dropped) this.dropText = "";
     } else if (m.type === "user" && Array.isArray((m as any).message?.content)) {
       for (const b of (m as any).message.content) {
         if (b?.type !== "tool_result") continue;
+        // Browsing counts once its result is back, so a remember in the
+        // same step as the first navigate is still the start of the turn.
+        if (this.browseIds.has(b.tool_use_id)) this.turnBrowsed = true;
         const name = this.toolNames.get(b.tool_use_id);
         this.toolNames.delete(b.tool_use_id);
         if (name) this.toolLog(`tool ${name} ${b.is_error ? `error ${errorCode(b.content)}` : "ok"}`);
