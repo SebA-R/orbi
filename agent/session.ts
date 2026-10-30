@@ -27,7 +27,7 @@ import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
 import { desktopBridge } from "./desktop/bridge.ts";
 import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
 import { DESKTOP_TOOL_NAMES, desktopToolDefinitions, type DesktopHost } from "./desktop/tools.ts";
-import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
+import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envLocalKeepAlive, envLocalThink, envProviderSettings, type ProviderSettings } from "./local/config.ts";
 import { localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
 import { isInjectionLine, looksLikeReasoning, pageData, REMOVED_LINE } from "./local/harden.ts";
 import { withContext, type PageContext } from "./context.ts";
@@ -198,6 +198,16 @@ export function currentProvider(): ProviderSettings {
 function localContext(): number | undefined {
   try {
     return envLocalContext();
+  } catch {
+    return undefined;
+  }
+}
+
+// CLEARCART_LOCAL_KEEP_ALIVE, or the default when unset or bad (server.ts
+// refuses to start on a bad one).
+function localKeepAlive(): string | number | null | undefined {
+  try {
+    return envLocalKeepAlive();
   } catch {
     return undefined;
   }
@@ -584,6 +594,11 @@ export class Session {
   // Orbi Desktop was connected when the local session started, so its tools
   // are offered (they stay as they were for the rest of the session).
   private localDesktop = false;
+  // The server says the acknowledgement for a small local model (localAck),
+  // once per turn (acked), for the call ackFor once the guard allows it.
+  private serverAck = false;
+  private acked = false;
+  private ackFor: string | null = null;
   // The user's own words this turn, as the local scaffold last saw them.
   private localWords = "";
 
@@ -751,7 +766,9 @@ export class Session {
     // Desktop is connected (localScaffold drops the tools otherwise).
     const desktop = ext && (!local || this.localDesktop) ? DESKTOP_PROMPT : "";
     const rules = local ? buildLocalPrompt({ guided: this.guided, search: this.search }) : buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined, search: this.search });
-    const base = rules + desktop + (search ? SEARCH_PROMPT : "") + (ackOn() ? ACK_PROMPT : "");
+    // A small local model gets no ACK_PROMPT: the server speaks the
+    // acknowledgement itself (localAck), at no model cost.
+    const base = rules + desktop + (search ? SEARCH_PROMPT : "") + (ackOn() && !local ? ACK_PROMPT : "");
     this.memSeen = this.memKey();
     if (!this.mem) return base;
     if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
@@ -916,7 +933,20 @@ export class Session {
     }
   }
 
-  private guard: HookCallback = async (input) => {
+  // The PreToolUse guard (check), and after it the local acknowledgement
+  // for the call it waits for: spoken only when the call is allowed, from
+  // the input as checked, so a refused site is never announced.
+  private guard: HookCallback = async (input, toolUseID, opts) => {
+    const out = await this.check(input, toolUseID, opts);
+    if (input.hook_event_name === "PreToolUse" && this.ackFor && this.ackFor === input.tool_use_id) {
+      this.ackFor = null;
+      const denied = (out as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision === "deny";
+      if (!denied && !this.muted) this.say(localAck(input.tool_name, input.tool_input), "ack");
+    }
+    return out;
+  };
+
+  private check: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const name = input.tool_name;
     const args = (input.tool_input || {}) as Record<string, unknown>;
@@ -1736,7 +1766,7 @@ export class Session {
       [C + "request_checkout"]: ["size", "cardNickname"],
     };
     const browser = extToolDefinitions().map((d) => b(d.name));
-    const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"]));
+    const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"], ["desktop_open_app", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll"].map((t) => D + t)));
     // The last page the hint reported per tab (origin and path), so a
     // result that does not say whether it navigated lists the page's
     // controls only when it moved.
@@ -1745,13 +1775,25 @@ export class Session {
       drop,
       describe,
       hide,
-      pageTools: new Set(browser.filter((t) => t !== b("screenshot"))),
+      // desktop_read is another app's text: untrusted data like a page.
+      pageTools: new Set([...browser.filter((t) => t !== b("screenshot")), D + "desktop_read"]),
       actionTools: acting,
       prepare: async (tool, args) => {
         const a = { ...args };
         if (tool === C + "say" && looksLikeReasoning(String(a.text ?? ""))) {
           this.status(`(not spoken) local say read like reasoning: ${String(a.text ?? "").slice(0, 120)}`);
           throw new Error('Not spoken: say is only for a few words to the user, like "Opening the shop." Never notes about the user or tools.');
+        }
+        if (tool === b("click") && !vision) {
+          // Without screenshots a point is a guess: refs only.
+          delete a.x;
+          delete a.y;
+          if (typeof a.ref !== "string") throw new Error('Not run: click needs a ref. Call find with a few words of the button or link\'s name, then click with the ref it returns.');
+        } else if ((tool === b("navigate") || tool === b("tabs_create")) && typeof a.url === "string") {
+          const u = a.url.trim();
+          const fixed = webAddress(u);
+          if (fixed) a.url = fixed;
+          else if (u) throw new Error(`Not run: "${u.slice(0, 40)}" is not a web address. Use the site's full address, for example ${suggestAddress(u)}, or search for it.`);
         }
         if (tool === b("read_page")) {
           a.filter = "interactive";
@@ -1939,6 +1981,15 @@ export class Session {
         this.held.forEach((t) => this.unspoken(t));
         this.held = [];
       }
+      // A small local model's first tool step: the server says a few words
+      // for it (ACK_PROMPT is left out of its rules), unless it calls say
+      // itself or the step is one that speaks for itself. They are said
+      // when the guard allows the step's first call (guard).
+      if (working && this.serverAck && !this.acked) {
+        this.acked = true;
+        const tools = blocks.filter((b) => b.type === "tool_use");
+        if (!tools.some((b) => /^(say|request_checkout|request_unlock|pay_with_saved_card)$/.test(shortName(b.name)))) this.ackFor = tools[0].id;
+      }
       for (const block of blocks) {
         if (block.type === "text" && block.text?.trim()) {
           if (working || this.muted) this.unspoken(block.text.trim());
@@ -1973,6 +2024,8 @@ export class Session {
       }
       if (this.held.length) this.say(this.held.join(" "), "reply");
       this.held = [];
+      this.acked = false;
+      this.ackFor = null;
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
       // Nothing paced (a click on its way, typing) outlives its turn.
       this.stopActions();
@@ -1997,6 +2050,7 @@ export class Session {
     const allowedTools = ext ? [...EXT_ALLOWED, ...DESKTOP_ALLOWED] : ALLOWED;
     this.localMode = p.provider === "local";
     this.localDesktop = desktopBridge.connected();
+    this.serverAck = p.provider === "local" && ext && this.scaffoldLocal && ackOn();
     const q = (this.q =
       p.provider === "local"
         ? localQuery({
@@ -2006,6 +2060,11 @@ export class Session {
               model: p.localModel,
               vision: p.localVision,
               contextTokens: localContext(),
+              keepAlive: localKeepAlive(),
+              // Ollama: load the model and process the rules and tools now,
+              // not when the user first speaks.
+              warmUp: true,
+              think: envLocalThink(),
               // Rebuilt for every request: the local loop drops old turns
               // when the conversation gets long, and with them the one-time
               // notes about Guided mode or Memory changing, so the system
@@ -2068,6 +2127,8 @@ export class Session {
     try {
       for await (const m of q) this.onSdkMessage(m);
     } catch (e) {
+      this.acked = false;
+      this.ackFor = null;
       if (!this.closed) {
         this.muted = false;
         this.status(`agent error: ${(e as Error).message}`);
@@ -2079,6 +2140,58 @@ export class Session {
 }
 
 const shortName = (name: string) => name.replace(B, "").replace(C, "");
+
+// A url a local model wrote, as navigate and tabs_create take it: with a
+// scheme as given, "back" or "forward", or a bare host ("aritzia.com/new",
+// "aritzia.com.", "127.0.0.1:4000", "localhost:4000") with https:// put in
+// front. Null when it is no web address at all: no dot ("aritzia"), or no
+// name a site has ("1.5", "file.txt": a host needs a top-level domain of
+// letters that is not a file type, unless it is an IP address or
+// localhost). The guard still checks the result.
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const FILE_TYPE = /\.(txt|pdf|docx?|xlsx?|pptx?|csv|json|jpe?g|png|gif|webp|svg|mp3|mp4|exe|dmg|js|html?|xml|log|zip)$/i;
+export function webAddress(u: string): string | null {
+  if (/^(back|forward)$/i.test(u)) return u.toLowerCase();
+  const bare = /^((?:[a-z0-9-]+\.)+[a-z0-9-]+|localhost|\[[0-9a-f:]+\])\.?((?::\d{1,5})?(?:[/?#]\S*)?)$/i.exec(u);
+  if (bare) {
+    const host = bare[1];
+    const site = host.startsWith("[") || /^localhost$/i.test(host) || IPV4.test(host) || (/\.[a-z]{2,63}$/i.test(host) && !FILE_TYPE.test(host));
+    return site ? `https://${host}${bare[2]}` : null;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^[a-z0-9.-]+:\d/i.test(u)) return u;
+  return null;
+}
+
+// The full address a refusal suggests for words that are not one, dots
+// kept: "aritzia .ca" is https://www.aritzia.ca, "aritzia" https://www.aritzia.com.
+export function suggestAddress(u: string): string {
+  const name =
+    u
+      .toLowerCase()
+      .replace(/^[a-z]+:\/\//, "")
+      .replace(/[^a-z0-9.-]+/g, "")
+      .replace(/^www\./, "")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .slice(0, 40) || "example";
+  return `https://www.${/\.[a-z]{2,}$/.test(name) && !FILE_TYPE.test(name) ? name : `${name}.com`}`;
+}
+
+// The few words the server says when a local model starts tool work:
+// "Opening aritzia.com." for a site, else "On it.". Built only from a
+// checked URL's host, never from page text or the model's words.
+export function localAck(name: string, input: unknown): string {
+  const short = shortName(name);
+  const url = (input as { url?: unknown } | null)?.url;
+  const fixed = typeof url === "string" ? webAddress(url.trim()) : null;
+  if ((short === "tabs_create" || short === "navigate") && fixed && fixed !== "back" && fixed !== "forward") {
+    try {
+      const u = new URL(fixed);
+      const host = u.hostname.replace(/^www\./, "");
+      if (/^https?:$/.test(u.protocol) && /^[a-z0-9.-]{1,60}$/i.test(host) && host.includes(".")) return `Opening ${host}.`;
+    } catch {}
+  }
+  return "On it.";
+}
 
 // The code of a failed tool result ("Error (no_element): ..." from
 // exttools.ts), or a word for what kind of failure it was. Never its text.
