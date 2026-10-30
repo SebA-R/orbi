@@ -180,6 +180,8 @@ export type LocalOptions = {
   vision?: boolean;
   // Ollama only: the context window to load the model with.
   contextTokens?: number;
+  // Ollama only: keep_alive (config.ts envLocalKeepAlive); null sends none.
+  keepAlive?: string | number | null;
   // A function is called for every request, so it can say the settings
   // as they are now.
   systemPrompt: string | (() => string);
@@ -210,6 +212,8 @@ type Offered = { full: string; server: ToolServer; tool: string };
 type Outcome = { text: string; isError: boolean; images: ContentPart[] };
 
 const ABORTED = Symbol("aborted");
+
+const noUsage = () => ({ input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 });
 
 // Settles with p, or with ABORTED as soon as signal fires.
 function unlessAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T | typeof ABORTED> {
@@ -313,8 +317,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   private warming: Promise<void> | null = null;
   // The model said it cannot think: think is not asked for again.
   private thinkOff = false;
+  // The warm-up found that out: the first turn says so.
+  private thinkUnsaid = false;
   // The turn in progress's token counts, for its result.
-  private usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+  private usage = noUsage();
 
   constructor(private prompt: AsyncIterable<SDKUserMessage>, private o: LocalOptions) {}
 
@@ -371,7 +377,14 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       await Promise.all(servers.map((s) => s.start()));
       this.offer();
       yield { type: "system", subtype: "init", session_id: this.sessionId, model: this.o.model, tools: this.specs.map((t) => t.function.name), mcp_servers: await this.mcpServerStatus() } as unknown as SDKMessage;
-      if (this.o.warmUp) this.warming = this.warm();
+      if (this.o.warmUp) {
+        // Cleared when the request ends, not when a turn stops waiting
+        // for it (an interrupted first turn leaves it running).
+        const w: Promise<void> = this.warm().finally(() => {
+          if (this.warming === w) this.warming = null;
+        });
+        this.warming = w;
+      }
       for await (const m of this.prompt) {
         if (closed?.aborted) return;
         const text = userText(m);
@@ -402,8 +415,8 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       const signal = this.o.abortController?.signal ?? new AbortController().signal;
       this.flavor ??= await detectFlavor(this.o.baseUrl, this.o.fetch);
       if (this.flavor !== "ollama" || signal.aborted) return;
-      const r = await chat({ ...this.request(signal), messages: [{ role: "system", content: this.systemText() }, { role: "user", content: "Hi" }], timeoutMs: 120_000, maxTokens: 1 });
-      if (r.thinkRefused) this.thinkOff = true;
+      const r = await chat({ ...this.request(signal), messages: [{ role: "system", content: this.systemText() }, { role: "user", content: "Hi" }], maxTokens: 1 });
+      if (r.thinkRefused && !this.thinkOff) this.thinkOff = this.thinkUnsaid = true;
       timing.note(`local warm-up ${Date.now() - t0}ms ${statLine(r.stats)}`);
     } catch (e) {
       timing.note(`local warm-up failed: ${(e as Error).message}`);
@@ -424,6 +437,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       timeoutMs: this.o.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
       flavor: this.flavor ?? ("openai" as const),
       contextTokens: this.o.contextTokens,
+      keepAlive: this.o.keepAlive,
       think: this.o.think && !this.thinkOff,
       fetch: this.o.fetch,
     };
@@ -445,8 +459,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     // Scaffold: how often the model was told not to stop yet this turn.
     let nudged = 0;
     // What the server said the turn's steps cost (the turn_end timing line).
-    const usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
-    this.usage = usage;
+    const usage = (this.usage = noUsage());
     try {
       for (let step = 1; ; step++) {
         if (step > max) {
@@ -463,7 +476,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         let t0 = Date.now();
         try {
           if (this.warming) await unlessAborted(this.warming, signal);
-          this.warming = null;
+          if (this.thinkUnsaid && !signal.aborted) {
+            this.thinkUnsaid = false;
+            this.cannotThink();
+          }
           this.flavor ??= await unlessAborted(detectFlavor(this.o.baseUrl, this.o.fetch), signal).then((f) => (f === ABORTED ? null : f));
           t0 = Date.now();
           timing.mark("model_step", { detail: `#${step}` });
@@ -481,10 +497,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           yield this.result("error_during_execution", step);
           return;
         }
-        timing.mark("model_done", { detail: `#${step} ${Date.now() - t0}ms ${statLine(reply.stats)}${reply.toolCalls.length ? ` -> ${reply.toolCalls.map((c) => c.function.name).join(",")}` : " -> reply"}` });
+        if (timing.timingOn()) timing.mark("model_done", { detail: `#${step} ${Date.now() - t0}ms ${statLine(reply.stats)}${reply.toolCalls.length ? ` -> ${reply.toolCalls.map((c) => c.function.name).join(",")}` : " -> reply"}` });
         if (reply.thinkRefused && !this.thinkOff) {
           this.thinkOff = true;
-          this.o.onStatus?.(`local model: ${this.o.model} cannot think, so CLEARCART_LOCAL_THINK is ignored`);
+          this.cannotThink();
         }
         // As on the SDK path: input_tokens leaves out what was read from cache.
         usage.input_tokens += Math.max(0, (reply.stats.promptTokens ?? 0) - (reply.stats.cachedTokens ?? 0));
@@ -641,6 +657,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     } finally {
       if (this.turn === ctl) this.turn = null;
     }
+  }
+
+  private cannotThink() {
+    this.o.onStatus?.(`local model: ${this.o.model} cannot think, so CLEARCART_LOCAL_THINK is ignored`);
   }
 
   // A server that reports far fewer prompt tokens than were sent has cut

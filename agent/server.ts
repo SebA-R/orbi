@@ -19,7 +19,7 @@ import { extBridge, extMode } from "./extbridge.ts";
 import * as timing from "./timing.ts";
 import { extensionOrigins, hostAllowed, isLoopbackAddress, memoryRequestAllowed, upgradeOriginAllowed } from "./hostcheck.ts";
 import { echoSession, SessionHub, type HubMessage } from "./hub.ts";
-import { backendKey, describeBackend, envLocalContext, envProviderSettings, parseLocalBaseUrl } from "./local/config.ts";
+import { backendKey, describeBackend, envLocalContext, envLocalKeepAlive, envProviderSettings, parseLocalBaseUrl } from "./local/config.ts";
 import { listModels, LocalModelError } from "./local/openai.ts";
 import { purchaseHistory } from "./history.ts";
 import { conversationLog, memoryStore } from "./memory.ts";
@@ -103,11 +103,12 @@ export function envBool(name: string, fallback: boolean): boolean {
 const VOICE_ENABLED: boolean = envBool("CLEARCART_VOICE", true);
 
 // CLEARCART_PROVIDER, CLEARCART_LOCAL_URL, CLEARCART_LOCAL_MODEL,
-// CLEARCART_LOCAL_VISION and CLEARCART_LOCAL_CONTEXT: refuse to start on a
-// value that can't be used (a typo, or a local model URL that is not on
-// this computer).
+// CLEARCART_LOCAL_VISION, CLEARCART_LOCAL_CONTEXT and
+// CLEARCART_LOCAL_KEEP_ALIVE: refuse to start on a value that can't be used
+// (a typo, or a local model URL that is not on this computer).
 envProviderSettings();
 envLocalContext();
+envLocalKeepAlive();
 
 // No Cartesia key: the extension uses basic voice (Chrome's own speech),
 // and /healthz says so with cartesia: false.
