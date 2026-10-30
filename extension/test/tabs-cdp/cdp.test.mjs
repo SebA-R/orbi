@@ -101,6 +101,22 @@ test("screenshot captures jpeg quality 70 and reports its CSS size", async () =>
   ]);
 });
 
+test("a clip whose size cannot be read, or that fails, is not retried on every screenshot", async () => {
+  await screenshot({ tabId });
+  await screenshot({ tabId });
+  const shots = () => sent().filter(([m]) => m === "Page.captureScreenshot");
+  assert.equal(shots().length, 3, "one capture the second time");
+  assert.equal(shots().filter(([, p]) => p.clip).length, 1);
+  _resetForTests();
+  c._capture = (p) => {
+    if (p.clip) throw new Error("clip failed");
+    return "BASE64JPEG";
+  };
+  await screenshot({ tabId });
+  await screenshot({ tabId });
+  assert.equal(shots().filter(([, p]) => p.clip).length, 2, "one more clip try, then none");
+});
+
 // SOI, then a SOF0 frame header for w x h.
 const fakeJpeg = (w, h) => Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 17, 8, h >> 8, h & 255, w >> 8, w & 255, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0]).toString("base64");
 

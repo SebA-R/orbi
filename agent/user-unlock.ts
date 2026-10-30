@@ -469,6 +469,21 @@ export const CHECKOUT_PRESSES_PER_ASK = 3;
 function spentKey(cls: UnlockClass, label: string): string {
   return cls === "checkout" && Protect.isCheckoutStep(label) && !Protect.isCheckoutNav(label) ? "checkout-step" : cls;
 }
+export function isSpent(spent: Set<string> | undefined, cls: UnlockClass, label: string): boolean {
+  return !!spent?.has(spentKey(cls, label));
+}
+// Orbi Desktop: one press per ask for the whole class, checkout steps
+// included, counted in the same set the browser path uses.
+function classKeys(spent: Set<string>, cls: string): string[] {
+  return cls === "checkout" ? ["checkout", "checkout-step", ...[...spent].filter((k) => k.startsWith("checkout#"))] : [cls];
+}
+export function isSpentDesktop(spent: Set<string> | undefined, cls: string): boolean {
+  return !!spent && classKeys(spent, cls).some((k) => spent.has(k));
+}
+export function spendDesktop(spent: Set<string>, cls: string): void {
+  spent.add(cls);
+  if (cls === "checkout") spent.add("checkout-step");
+}
 export function spendDirect(spent: Set<string>, cls: UnlockClass, label: string): void {
   const key = spentKey(cls, label);
   if (key === "checkout") {
@@ -517,7 +532,7 @@ export function decideUnlock(
       message: "The password field is empty. Orbi never types or reads passwords. Ask the user to type their password into the page themselves and to say yes when they are done, then call request_unlock again for this control.",
     };
   }
-  const spent = opts.spent?.has(spentKey(cls, label));
+  const spent = isSpent(opts.spent, cls, label);
   const direct = !spent && (isDirectAsk(opts.userText, cls, label) || (!!opts.passwordYes && cls === "account"));
   if (direct) return { kind: "grant", cls, label, direct: true };
   const question = cls === "checkout" && / check ?out /.test(norm(label)) ? "Do you want me to go to checkout?" : `Do you want me to press ${label}?`;

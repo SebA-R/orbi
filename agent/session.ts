@@ -1452,8 +1452,10 @@ export class Session {
       this.status(`unlock failed: ${d.cls}`);
       return said(`Not pressed: ${failed}`);
     }
-    // The pass starts only after the press worked, for this tab alone.
-    if (d.cls === "checkout" && origin) {
+    // The pass starts only after the press worked, for this tab alone, and
+    // only for checkout navigation: a step ("Continue to payment") leaves
+    // the pass as it is, so it never re-arms the free navigate or extends it.
+    if (d.cls === "checkout" && Protect.isCheckoutNav(label) && origin) {
       const now = Date.now();
       const pass: CheckoutPass = { tabId, origin, landBy: now + PASS_LAND_MS, until: now + PASS_MAX_MS, landed: false };
       this.checkoutPass = pass;

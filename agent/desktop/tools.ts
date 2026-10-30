@@ -8,7 +8,7 @@
 import { tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
-import { isUnlockYes, type UnlockClass } from "../user-unlock.ts";
+import { isUnlockYes, spendDesktop, type UnlockClass } from "../user-unlock.ts";
 import { DERR, DesktopError, desktopBridge, type DesktopBridge } from "./bridge.ts";
 import {
   appBlockReason,
@@ -160,7 +160,7 @@ export function desktopToolDefinitions(host: DesktopHost, bridge: DesktopBridgeL
     }
     const grantAt = grantPlace(lock, t);
     if (d.kind === "press") {
-      words!.spent.add(d.lock.cls!);
+      spendDesktop(words!.spent, d.lock.cls!);
       host.status(`desktop unlocked once: ${d.lock.cls} (user asked)`);
       return { grant: gate.issue(grantAt) };
     }
