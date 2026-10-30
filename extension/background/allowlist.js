@@ -84,6 +84,17 @@ export async function frameAllowed(url, topOrigin) {
   return isPaymentFrameHost(url);
 }
 
+// The url's origin, or null for an invalid url or one with no origin
+// (data:, about:, file:).
+export function originOf(url) {
+  try {
+    const o = new URL(String(url)).origin;
+    return o === "null" ? null : o;
+  } catch {
+    return null;
+  }
+}
+
 // Throws BridgeError(ERR.NOT_ALLOWED) unless the settings allow this url.
 export async function assertAllowed(url) {
   const settings = await loadSettings();

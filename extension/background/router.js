@@ -41,13 +41,14 @@
 // instead of answering ok for text that went nowhere.
 
 import * as tabsModule from "./tabs.js";
+import { originOf } from "./allowlist.js";
 import * as cdpModule from "./cdp.js";
 import { ACT_METHODS, createFollower } from "./follow.js";
 import { assertInViewport, parseKey } from "./cdp.js";
 import { createActor } from "./actor.js";
 import { BridgeError, ERR, RT } from "../lib/protocol.js";
 import "../content/mask.js";
-import { luhnValid } from "../lib/log.js";
+import { luhnValid } from "../lib/cards.js";
 import { APPS, editNote, exportText, googleFileOf } from "./gdocs.js";
 
 export const PAGE_FILES = ["content/mask.js", "content/protect.js", "content/page.js"];
@@ -92,6 +93,14 @@ function activationOf(spec) {
   if (k.key === " " || k.code === "Space" || k.windowsVirtualKeyCode === 32 || /\s/.test(text)) return " ";
   return null;
 }
+
+// Keys that move within the page and never load one by themselves: after
+// them the key route reports where the tab is without the settle window.
+// Enter, Space, letters (a site's own shortcuts) and anything with Ctrl,
+// Alt or Meta (Alt+ArrowLeft is Back) keep it.
+const STAY_KEYS = new Set(["Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Backspace", "Delete"]);
+const SHIFT_BIT = 8;
+const staysPut = (k) => STAY_KEYS.has(k.key) && !(k.modifiers & ~SHIFT_BIT);
 
 // Page-script methods the bridge may call as is (read_page and
 // get_page_text have their own cases in route). focused_field is used by the
@@ -176,15 +185,6 @@ export function planCard(frames) {
   const zip = one("postal-code");
   if (zip) put(zip, "postal-code");
   return { plan, name: !!name, zip: !!zip };
-}
-
-function originOf(url) {
-  try {
-    const o = new URL(String(url)).origin;
-    return o === "null" ? null : o;
-  } catch {
-    return null;
-  }
 }
 
 export function createRouter({
@@ -398,7 +398,8 @@ export function createRouter({
   // select, the page) a key press could act on its own. A space in a hidden
   // field (a canvas editor's, such as Google Docs') goes in without a Space
   // key, which content/hotkey.js would take for the user holding Space.
-  const keysFor = (focus, ch) => ({ keys: !!(focus && focus.text === true) && !(focus.hidden === true && ch === " ") });
+  // multiline: a textarea or editor, where a newline is a line break.
+  const keysFor = (focus, ch) => ({ keys: !!(focus && focus.text === true) && !(focus.hidden === true && ch === " "), multiline: !!(focus && focus.multiline === true) });
 
   // Typing: the check for every character. The focus may have moved to a
   // card or password field since the last one, a newline may now land in a
@@ -526,7 +527,7 @@ export function createRouter({
     };
     // An interrupt or turn end stops the ladder between steps.
     const live = () => {
-      if (actor.epoch() !== epoch) throw Object.assign(new BridgeError(ERR.INTERRUPTED, "stopped: the turn ended"), { noFallback: true });
+      if (actor.stoppedSince(epoch, tabId)) throw Object.assign(new BridgeError(ERR.INTERRUPTED, "stopped: the turn ended"), { noFallback: true });
     };
     const steps = [
       ["close button", async () => now.closeRef && (await clickAt(tabId, { ref: now.closeRef }, epoch), true)],
@@ -777,8 +778,9 @@ export function createRouter({
   // actAndSettle). Without that helper, the press's own result.
   // An interrupt or turn end (actor.abortAll) after the call began ends
   // the wait.
-  function settled(tabId, act, epoch) {
-    return typeof tabs.actAndSettle === "function" ? tabs.actAndSettle(tabId, act, { stop: () => actor.epoch() !== epoch }) : act();
+  // opts: actAndSettle's, e.g. windowMs 0 after a key that stays put.
+  function settled(tabId, act, epoch, opts = {}) {
+    return typeof tabs.actAndSettle === "function" ? tabs.actAndSettle(tabId, act, { ...opts, stop: () => actor.stoppedSince(epoch, tabId) }) : act();
   }
 
   async function route(method, params = {}) {
@@ -821,10 +823,23 @@ export function createRouter({
         // Asked once per user turn: following starts again.
         follow.newTurn();
         return pageContext();
-      case "actions_stop":
+      case "actions_stop": {
+        // The server gave up on one request (timedOut): only that tab's paced
+        // action stops, not another tab's (a press the user unlocked there).
+        // Its tab is the one it named, else the default tab it went to.
+        // Answers how far typing there got. A tab that can't be told stops
+        // everything, as at turn end.
+        if (params.timedOut === true) {
+          const id = Number.isInteger(params.tabId) ? params.tabId : await Promise.resolve().then(() => tabs.resolveTab(undefined)).catch(() => null);
+          if (Number.isInteger(id)) {
+            const typing = actor.stopTab(id, "the request timed out");
+            return typing ? { ok: true, typing } : { ok: true };
+          }
+        }
         // The turn ended or was interrupted: nothing paced keeps playing.
         actor.abortAll("the turn ended");
         return { ok: true };
+      }
     }
     const tabId = await tabs.resolveAllowedTab(params.tabId);
     indicate(tabId);
@@ -852,7 +867,7 @@ export function createRouter({
         if (parsed.text && !/[\r\n]/.test(parsed.text)) await guardType(tabId, parsed.text);
         const act = activationOf(params.key);
         if (act) await pageCall(tabId, "guard_key", { key: act === "Enter" ? "Enter" : "Space" });
-        return settled(tabId, async () => (await cdp.key({ tabId, key: params.key }), { ok: true }), epoch);
+        return settled(tabId, async () => (await cdp.key({ tabId, key: params.key }), { ok: true }), epoch, staysPut(parsed) ? { windowMs: 0 } : {});
       }
       case "lock_arm":
         return lockArm(tabId, params.scope ?? "order");

@@ -183,11 +183,12 @@ export function installChrome({ local = {}, session = {}, autoComplete = true } 
       async sendCommand({ tabId }, method, params) {
         if (!attached.has(tabId)) throw new Error(`Debugger is not attached to the tab with id: ${tabId}.`);
         calls.push(["send", tabId, method, params]);
-        if (method === "Page.captureScreenshot") return { data: chrome._shot || "BASE64JPEG" };
+        // _capture(params), when set, stands in for Chrome's capture (a clip).
+        if (method === "Page.captureScreenshot") return { data: chrome._capture ? chrome._capture(params || {}) : chrome._shot || "BASE64JPEG" };
         if (method === "Page.getLayoutMetrics") {
-          const { width = 1440, height = 900, dpr = 1 } = chrome._viewport || {};
+          const { width = 1440, height = 900, dpr = 1, pageY = 0 } = chrome._viewport || {};
           return {
-            cssVisualViewport: { clientWidth: width, clientHeight: height, pageX: 0, pageY: 0 },
+            cssVisualViewport: { clientWidth: width, clientHeight: height, pageX: 0, pageY },
             visualViewport: { clientWidth: width * dpr, clientHeight: height * dpr, pageX: 0, pageY: 0 },
           };
         }

@@ -678,6 +678,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
             if (clickAsk && !out.isError && /__request_unlock$/.test(full) && /^pressed /.test(out.text)) pressed = String(this.callOf(call).args.label ?? "it");
             if (sc && !out.isError && sc.actionTools.has(full)) {
               acted++;
+              loops?.acted();
               const ref = this.callOf(call).args.ref;
               didNames.push(`${full.replace(/^mcp__\w+__/, "")} ${typeof ref === "string" ? (/\(That was the ([^\n]*)\.\)/.exec(out.text)?.[1] ?? "") : ""}`);
             }
@@ -700,6 +701,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
             if (!fo.isError) {
               if (clickAsk && /^pressed /.test(fo.text)) pressed = String(next.args.label ?? "it");
               acted++;
+              loops?.acted();
               didNames.push(`request_unlock ${String(next.args.label ?? "")}`);
             }
             trace(`(follow) ${t.tool} ${fc.function.arguments} -> ${fo.text}`);
@@ -1120,11 +1122,6 @@ export function asksChoice(said: string, userWords: string): boolean {
   return !!verb && verb.length >= 3 && new RegExp(`\\b${verb}(s|es|ed|d|ing)?\\b`, "i").test(userWords);
 }
 
-// Words that ask something rather than ask for something done.
-function isQuestion(words: string): boolean {
-  const w = words.trim().toLowerCase();
-  return /\?\s*$/.test(w) || /^(what|why|how|who|where|when|which|is|are|do|does|did|tell me)\b/.test(w);
-}
 
 // The same words, case, punctuation and spacing aside.
 function sameWords(a: string, b: string): boolean {
@@ -1158,10 +1155,22 @@ function announces(text: string): boolean {
   return ANNOUNCES.test(text);
 }
 
-// Words that ask for something done, not a question or a chat.
-function isRequest(words: string): boolean {
-  const w = words.trim().toLowerCase();
-  if (!w || /\?\s*$/.test(w) || /^(what|why|how|who|where|when|which|is|are|do|does|did|can i|tell me|hi|hello|thanks|thank you)\b/.test(w)) return false;
+// The user's words without a polite "can you ...?" around them: "Can you
+// add the black one to my bag?" asks for something done, not a question.
+const plainWords = (words: string) =>
+  words.trim().replace(/^(?:please\s+)?(?:can|could|would|will) you\s+(?:please\s+)?(.+?)[?.!\s]*$/i, "$1").toLowerCase();
+
+// Words that ask something rather than ask for something done.
+export function isQuestion(words: string): boolean {
+  const w = plainWords(words);
+  return /\?\s*$/.test(w) || /^(what|why|how|who|where|when|which|is|are|do|does|did|can i|tell me)\b/.test(w);
+}
+
+// Words that ask for something done, not a question or a chat. Both
+// backends use it (the Stop hook in session.ts too).
+export function isRequest(words: string): boolean {
+  const w = plainWords(words);
+  if (!w || isQuestion(w) || /^(hi|hello|thanks|thank you)\b/.test(w)) return false;
   return w.split(/\s+/).length >= 2;
 }
 
@@ -1207,7 +1216,7 @@ function arrived(userWords: string, title: string): boolean {
 function claimBacked(said: string, did: string[]): boolean {
   // "in size medium", "in black": an option was chosen, so a form_input ran.
   if (/\b(in (size|colou?r)|in (a |an )?(xx?s|xx?l|small|medium|large|s|m|l))\b/i.test(said) && !did.some((d) => /^form_input\b/.test(d))) return false;
-  if (/\b(bag|cart|basket)\b/i.test(said) && /\b(added|add(ed)? (it|them)|in your)\b/i.test(said)) return did.some((d) => /\badd\b/i.test(d));
+  if (/\b(bag|cart|basket)\b/i.test(said) && /\b(added|add(ed)? (it|them)|in your|(bag|cart|basket) (now )?(has|contains))\b/i.test(said)) return did.some((d) => /\badd\b/i.test(d));
   if (/\badded\b/i.test(said)) return did.some((d) => /\badd\b/i.test(d) || /^(form_input|type)\b/.test(d));
   if (/\b(filled|entered|typed)\b/i.test(said)) return did.some((d) => /^(form_input|type)\b/.test(d));
   return did.length > 0;

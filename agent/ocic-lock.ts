@@ -39,6 +39,7 @@ type ProtectApi = {
   sameLabel(a: string, b: string): boolean;
   dangerLifts(l: Lock | null): boolean;
   isCheckoutNav(label: string): boolean;
+  isCheckoutStep(label: string): boolean;
 };
 export const Protect: ProtectApi = require(path.join(EXT, "protect.js"));
 const Mask: { maskCardRuns(s: string): string; CARD_MASK: string } = require(path.join(EXT, "mask.js"));

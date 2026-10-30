@@ -8,6 +8,7 @@ import {
 
 test("hello carries the protocol version and extension name", () => {
   assert.deepEqual(hello("0.1.0"), { type: "hello", protocol: PROTOCOL_VERSION, ext: "clearcart", version: "0.1.0" });
+  assert.equal(hello("0.1.0", "install-1234").client, "install-1234", "the install's id when it has one");
 });
 
 test("responses have the expected shapes", () => {

@@ -37,13 +37,17 @@ export class AgentSession {
     };
   }
 
+  // True when it went out on the open socket now; false when queued for
+  // the next one (none yet, connecting, or closing).
   send(obj) {
     const msg = JSON.stringify(obj);
-    if (this.ws && this.ws.readyState === 1) this.ws.send(msg);
-    else {
-      this.outbox.push(msg);
-      this.connect();
+    if (this.ws && this.ws.readyState === 1) {
+      this.ws.send(msg);
+      return true;
     }
+    this.outbox.push(msg);
+    this.connect();
+    return false;
   }
 
   // Point at a new URL (settings changed): drop the socket and reconnect.

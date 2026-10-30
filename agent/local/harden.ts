@@ -137,29 +137,37 @@ const key = (c: Call) => `${c.name} ${JSON.stringify(Object.keys(c.args).sort().
 // The same call made LOOP_REPEATS times in a row, the same page action
 // (click, type, key, form_input, navigate...) LOOP_REPEATS times in one
 // turn, or the same read (find "add to bag" between read_pages) READ_REPEATS
-// times in one turn, is a loop: check() says so before the call runs.
+// times with no page action done in between, is a loop: check() says so
+// before the call runs. A read after the page changed reads a new page.
 export const LOOP_REPEATS = 3;
 export const READ_REPEATS = 4;
 export class LoopGuard {
   private seq: string[] = [];
   private acts = new Map<string, number>();
   constructor(private isAction: (name: string) => boolean) {}
+  private reads = new Map<string, number>();
   check(c: Call): boolean {
     const k = key(c);
     this.seq.push(k);
     const tail = this.seq.slice(-LOOP_REPEATS);
     if (tail.length === LOOP_REPEATS && tail.every((x) => x === k)) return true;
-    const n = (this.acts.get(k) ?? 0) + 1;
-    this.acts.set(k, n);
+    const counts = this.isAction(c.name) ? this.acts : this.reads;
+    const n = (counts.get(k) ?? 0) + 1;
+    counts.set(k, n);
     return n >= (this.isAction(c.name) ? LOOP_REPEATS : READ_REPEATS);
+  }
+  // A page action ran: the page may have changed, so reads count afresh.
+  acted() {
+    this.reads.clear();
   }
   // A page action that was refused (a made-up ref, a field it may not
   // fill) did nothing on the page, so it does not count toward the turn's
   // repeats. The same call over and over still does.
   undo(c: Call) {
     const k = key(c);
-    const n = this.acts.get(k);
-    if (n) this.acts.set(k, n - 1);
+    const counts = this.isAction(c.name) ? this.acts : this.reads;
+    const n = counts.get(k);
+    if (n) counts.set(k, n - 1);
   }
 }
 

@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { WebSocketServer } from "ws";
 
 import { BridgeClient } from "../../../extension/lib/bridge.js";
+import { CLIENT_ID_RE } from "../../../extension/lib/protocol.js";
 
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
 const cleanups = [];
@@ -158,4 +159,52 @@ test("setUrl moves the client to a new server", async () => {
   await once(sock, "message");
   sock.send(JSON.stringify({ type: "welcome", protocol: 1 }));
   await waitFor(() => c.state === "open");
+});
+
+test("hello carries the install's client id", async () => {
+  const { wss, url } = await server();
+  const { c } = client(url, { clientId: "install-1234" });
+  c.start();
+  const [sock] = await once(wss, "connection");
+  const [raw] = await once(sock, "message");
+  assert.equal(JSON.parse(String(raw)).client, "install-1234");
+});
+
+test("refused as busy (4004): keeps retrying on a growing backoff, never resets it", async () => {
+  const { wss, url } = await server();
+  const { c } = client(url, { timing: FAST });
+  const at = [];
+  wss.on("connection", (sock) => {
+    at.push(Date.now());
+    sock.once("message", () => sock.close(4004, "another extension is connected"));
+  });
+  c.start();
+  await waitFor(() => at.length >= 4, 3000);
+  assert.equal(c.state === "open", false);
+  assert.ok(c.backoff.attempt >= 3, "the backoff grows while refused");
+});
+
+test("replaced by a newer connection (4002): waits the longest backoff before coming back", async () => {
+  const { wss, sock, c } = await openClient({ timing: { BACKOFF_MIN_MS: 10, BACKOFF_MAX_MS: 300 } });
+  let again = 0;
+  wss.on("connection", () => again++);
+  const t0 = Date.now();
+  sock.close(4002, "replaced");
+  await waitFor(() => c.state === "closed");
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(again, 0, "no quick reconnect that would take the bridge back");
+  await waitFor(() => again === 1, 2000);
+  assert.ok(Date.now() - t0 >= 280);
+});
+
+test("replaced (4002) while alive: takes a fresh client id, so a copied profile stops trading places", async () => {
+  const saved = [];
+  const { sock, c } = await openClient({ clientId: "install-1234", onClientId: (id) => saved.push(id), timing: { BACKOFF_MIN_MS: 10, BACKOFF_MAX_MS: 300 } });
+  sock.close(4002, "replaced");
+  await waitFor(() => c.state === "closed");
+  assert.equal(saved.length, 1);
+  assert.notEqual(c.clientId, "install-1234");
+  assert.equal(c.clientId, saved[0]);
+  assert.match(c.clientId, CLIENT_ID_RE);
+  c.stop();
 });

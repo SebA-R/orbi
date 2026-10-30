@@ -33,6 +33,16 @@ import { createRng, entryPoint, planClick, planHover, planScroll, planTyping, ke
 
 const MOD_SHIFT = 8;
 
+// A newline is the Enter key in a textarea or editor, where the char
+// event's "\r" puts a line break as Enter does, and at the end of the text
+// in a single-line field, where it submits the form the way a person's
+// would (the router's check refuses it first when that submit is locked).
+// A newline inside the text in a single-line field goes in with insertText,
+// as it always did, so "123 Main St\nApt 4" does not submit half an address.
+const ENTER = Object.freeze({ key: "Enter", code: "Enter", vk: 13, shift: false, text: "\r" });
+const NEWLINE = /[\r\n]/;
+const keyOf = (ch, enter) => (NEWLINE.test(ch) ? (enter ? ENTER : null) : keyFor(ch));
+
 function interrupted(reason) {
   return Object.assign(new BridgeError(ERR.INTERRUPTED, `stopped: ${reason}`), { noFallback: true });
 }
@@ -72,16 +82,27 @@ export function createActor({
   let activations = 0;
   const activeIn = new Map();
 
-  // Bumped by abortAll. A caller passes the epoch it read when its call
-  // began, so an abort during its own checks, before the run exists here,
-  // still stops it.
+  // Bumped by abortAll and stopTab. A caller passes the epoch it read when
+  // its call began, so a stop during its own checks, before the run exists
+  // here, still stops it: abortAll's for every tab, stopTab's for its tab.
   let stopEpoch = 0;
+  let allAt = 0;
   let lastAbort = "the user interrupted";
+  const tabAt = new Map(); // tabId -> { at, reason }, the last stopTab
+
+  // Why a call that read `epoch` when it began must stop, or null.
+  function stoppedSince(epoch, tabId) {
+    if (epoch == null) return null;
+    if (allAt > epoch) return lastAbort;
+    const t = tabAt.get(tabId);
+    return t && t.at > epoch ? t.reason : null;
+  }
 
   async function begin(tabId, epoch) {
     const run = { tabId, kind: null, windowId: null, aborted: null, wake: new Set() };
     runs.add(run);
-    if (epoch != null && epoch !== stopEpoch) stop(run, lastAbort);
+    const why = stoppedSince(epoch, tabId);
+    if (why) stop(run, why);
     const seen = activations;
     try {
       run.windowId = await tabWindow(tabId);
@@ -203,25 +224,45 @@ export function createActor({
   // focus that moved during the gap (a button a Space would press, a card
   // field), and again after the keydown, since a page handler may move the
   // focus then. In a text field a character is rawKeyDown, the check, a
-  // char event that types it, keyUp. Characters with no key (emoji, IME
-  // text, newlines), or a focus that is not a text field, go in with
-  // insertText.
+  // char event that types it, keyUp. A newline is the Enter key when the
+  // check says multiline, or when only newlines follow it (ENTER above);
+  // "\r\n" is one. Characters with no key (emoji, IME text), a newline
+  // inside a single-line field's text, or a focus that is not a text
+  // field, go in with insertText.
   function type(tabId, text, { check = async () => ({ keys: false }), epoch } = {}) {
     return within(tabId, async (run) => {
       run.kind = "type";
+      // How far it got, for stopTab: characters of text done.
+      run.typed = 0;
       const at = pointers.get(tabId);
       emit(tabId, at ? at.x : null, at ? at.y : null, "type", "type", { text: String(text) });
       let spent = 0;
-      for (const k of planTyping(text, rng)) {
+      const plan = planTyping(text, rng);
+      run.total = plan.length;
+      // From this index on the text is only newlines.
+      let tail = plan.length;
+      while (tail > 0 && NEWLINE.test(plan[tail - 1].ch)) tail--;
+      // The last character was a "\r", by key or insertText: a "\n" after
+      // it is the same line break.
+      let lastR = false;
+      for (let i = 0; i < plan.length; i++) {
+        const k = plan[i];
+        const crlf = lastR && k.ch === "\n";
+        lastR = k.ch === "\r";
+        if (crlf) {
+          run.typed = i + 1;
+          continue;
+        }
         // Time spent checking and holding counts toward the next gap.
         await sleep(run, k.gapMs - spent);
         const t0 = now();
         const before = await check(k.ch);
         live(run);
-        const key = before && before.keys ? keyFor(k.ch) : null;
+        const key = before && before.keys ? keyOf(k.ch, before.multiline === true || i >= tail) : null;
         if (!key) {
           // No key for it, or not a text field: no key event at all.
           await cdp.send(tabId, "Input.insertText", { text: k.ch });
+          run.typed = i + 1;
           key_(tabId);
           spent = now() - t0;
           continue;
@@ -231,9 +272,11 @@ export function createActor({
         try {
           const after = await check(k.ch);
           live(run);
-          const char = { ...ev, type: "char", text: k.ch, unmodifiedText: k.ch };
+          const t = key.text ?? k.ch;
+          const char = { ...ev, type: "char", text: t, unmodifiedText: t };
           if (after && after.keys) await cdp.send(tabId, "Input.dispatchKeyEvent", char);
           else await cdp.send(tabId, "Input.insertText", { text: k.ch });
+          run.typed = i + 1;
         } finally {
           // A key that went down comes up, stopped or not.
           await new Promise((r) => setTimer(r, k.holdMs));
@@ -247,7 +290,7 @@ export function createActor({
   }
 
   function abortAll(reason = "the user interrupted") {
-    stopEpoch++;
+    allAt = ++stopEpoch;
     lastAbort = reason;
     for (const run of runs) stop(run, reason);
     tell({ tabId: null, x: null, y: null, t: now(), action: null, phase: "stop" });
@@ -257,14 +300,27 @@ export function createActor({
     for (const run of runs) if (run.tabId === tabId) stop(run, reason);
   }
 
+  // Stops the paced action on one tab, and any call on it that began
+  // before this (as abortAll does for every tab). Answers how far typing
+  // there got, { typed, of } in characters, or null when none was playing.
+  function stopTab(tabId, reason = "the request timed out") {
+    tabAt.set(tabId, { at: ++stopEpoch, reason });
+    let typing = null;
+    for (const run of runs) if (run.tabId === tabId && run.kind === "type" && !run.aborted) typing = { typed: run.typed, of: run.total ?? 0 };
+    abortTab(tabId, reason);
+    return typing;
+  }
+
   return {
     click,
     scroll,
     type,
     abortAll,
+    stopTab,
     // Read when a call begins; pass it as { epoch } to stop on any abortAll
-    // after that.
+    // (or stopTab of its tab) after that.
     epoch: () => stopEpoch,
+    stoppedSince: (epoch, tabId) => !!stoppedSince(epoch, tabId),
     // Listener bodies for the worker.
     onTabActivated({ tabId, windowId } = {}) {
       activeIn.set(windowId, { tabId, n: ++activations });
@@ -275,6 +331,7 @@ export function createActor({
     onTabRemoved(tabId) {
       abortTab(tabId, "the tab closed");
       pointers.delete(tabId);
+      tabAt.delete(tabId);
     },
     // The tab started loading (a navigation, reload or form post): stops a
     // click or scroll. Typing is left to its per-character check, which

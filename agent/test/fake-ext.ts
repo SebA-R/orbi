@@ -16,7 +16,8 @@ export class FakeExt {
   closed: { code: number; reason: string } | null = null;
   private pongs: Array<(m: any) => void> = [];
 
-  constructor(public url: string, public handler: Handler = () => null, public version = "0.0.1") {}
+  // client: the hello's install id (extbridge.ts); none, like an older extension.
+  constructor(public url: string, public handler: Handler = () => null, public version = "0.0.1", public client?: string) {}
 
   open(sendHello = true): Promise<void> {
     this.ws = new WebSocket(this.url);
@@ -44,7 +45,7 @@ export class FakeExt {
         }
       });
       this.ws.once("open", () => {
-        if (sendHello) this.ws.send(JSON.stringify({ type: "hello", protocol: 1, ext: "clearcart", version: this.version }));
+        if (sendHello) this.ws.send(JSON.stringify({ type: "hello", protocol: 1, ext: "clearcart", version: this.version, ...(this.client ? { client: this.client } : {}) }));
         else resolve();
       });
     });

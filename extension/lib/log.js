@@ -8,9 +8,6 @@ const SECRET_KEYS = /^(number|card|card_?number|cc-?(number|csc|exp)|csc|cvc|cvv
 const MAX_STRING = 400;
 const RING_SIZE = 200;
 
-// The card check lives with the cards (lib/cards.js); kept here for callers.
-export { luhnValid } from "./cards.js";
-
 // Any digit run holding a card number, by content/mask.js's check (a card
 // glued to other digits too).
 export function maskCardNumbers(text) {

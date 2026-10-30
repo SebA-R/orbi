@@ -63,9 +63,23 @@ let settleOnAttach = true;
 // Attaches if needed. Answers true when this call attached and the
 // viewport changed size meanwhile (the debugging bar opened): points and
 // screenshots taken before it are stale.
+// A concurrent call for the same tab waits for the attach in flight,
+// debugging-bar settle included, and answers the same.
+const attaching = new Map(); // tabId -> Promise<boolean>
+
 export async function attach(tabId) {
   assertTabId(tabId);
+  const busy = attaching.get(tabId);
+  if (busy) return busy;
   if (attached.has(tabId)) return false;
+  const p = attachOnce(tabId).finally(() => {
+    if (attaching.get(tabId) === p) attaching.delete(tabId);
+  });
+  attaching.set(tabId, p);
+  return p;
+}
+
+async function attachOnce(tabId) {
   let ours = true;
   try {
     await api().debugger.attach({ tabId }, PROTOCOL);
@@ -111,7 +125,16 @@ async function barSettled(tabId) {
   return last !== first;
 }
 
+// Explicit detaches per tab, so a send() whose command then finds the tab
+// detached fails instead of attaching again: the detach wins.
+const detaches = new Map(); // tabId -> count
+const detachCount = (tabId) => detaches.get(tabId) || 0;
+
 export async function detach(tabId) {
+  detaches.set(tabId, detachCount(tabId) + 1);
+  // An attach in flight finishes first, so it is not left attached.
+  const busy = attaching.get(tabId);
+  if (busy) await busy.catch(() => {});
   if (!attached.delete(tabId)) return;
   try {
     await api().debugger.detach({ tabId });
@@ -119,12 +142,15 @@ export async function detach(tabId) {
 }
 
 export async function detachAll() {
-  await Promise.all([...attached].map(detach));
+  // Tabs still attaching too: detach waits for the attach to finish.
+  await Promise.all([...new Set([...attached, ...attaching.keys()])].map(detach));
 }
 
 // Listener bodies for the worker to register at top level.
 export function onTabRemoved(tabId) {
   attached.delete(tabId);
+  detaches.delete(tabId);
+  noClip.delete(tabId);
 }
 
 export function onDetach(source) {
@@ -132,11 +158,14 @@ export function onDetach(source) {
 }
 
 export async function send(tabId, method, params = {}) {
+  const gen = detachCount(tabId);
   await attach(tabId);
   try {
     return await api().debugger.sendCommand({ tabId }, method, params);
   } catch (e) {
     if (!/not attached/i.test(message(e))) throw new BridgeError(ERR.INTERNAL, `${method} failed: ${message(e)}`);
+    // Detached by detach() since this call began: it stays detached.
+    if (detachCount(tabId) !== gen) throw new BridgeError(ERR.INTERNAL, `${method} failed: the debugger was detached`);
     // Detached behind our back (e.g. user dismissed the banner): retry once.
     attached.delete(tabId);
     await attach(tabId);
@@ -153,9 +182,17 @@ export async function click({ tabId, x, y } = {}) {
   const px = num(x, "x");
   const py = num(y, "y");
   const base = { x: px, y: py, button: "left", clickCount: 1 };
+  // A failed move pressed nothing: callers may fall back to a DOM click.
   await send(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: px, y: py, button: "none", buttons: 0 });
-  await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mousePressed", buttons: 1 });
-  await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mouseReleased", buttons: 0 });
+  // From the press on, a failure may follow a press the page already took
+  // (a mousedown handler, an order placed), as in actor.click: callers must
+  // not click again by DOM, and the message tells the model to look first.
+  try {
+    await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mousePressed", buttons: 1 });
+    await send(tabId, "Input.dispatchMouseEvent", { ...base, type: "mouseReleased", buttons: 0 });
+  } catch (e) {
+    throw Object.assign(new BridgeError(ERR.INTERNAL, `the click may have reached the page (${message(e)}); check the page before clicking again`), { noFallback: true });
+  }
 }
 
 export async function type({ tabId, text } = {}) {
@@ -226,7 +263,10 @@ export async function scroll({ tabId, x, y, dx = 0, dy = 0 } = {}) {
 // takes, and its device pixel ratio (device px per CSS px).
 export async function viewport(tabId) {
   assertTabId(tabId);
-  const m = (await send(tabId, "Page.getLayoutMetrics")) || {};
+  return viewportOf((await send(tabId, "Page.getLayoutMetrics")) || {});
+}
+
+function viewportOf(m) {
   // The layout viewport: input goes in window coordinates, which pinch zoom
   // does not shrink.
   const css = m.cssLayoutViewport || m.cssVisualViewport;
@@ -279,31 +319,86 @@ async function resize(data, w, h) {
   return btoa(bin);
 }
 
-// A JPEG of the viewport at CSS-pixel size: on a 2x screen Chrome captures
-// device pixels (2880x1800 for a 1440x900 viewport), and coordinates read
-// off that image would land outside the page. width and height are the
-// image's size in CSS px; scale is image px per CSS px (1 unless the
-// capture could not be resized).
+// The largest image Claude takes without shrinking it (2576 px on the long
+// edge, about 3.75 megapixels). A bigger one is scaled down before the
+// model sees it, and points it reads off it no longer match the page.
+export const MAX_IMAGE_EDGE = 2576;
+export const MAX_IMAGE_PIXELS = 3_750_000;
+
+// Image px per CSS px that keeps a w x h CSS viewport inside those limits:
+// 1 for any ordinary window.
+export function fitScale(w, h) {
+  if (!(w > 0) || !(h > 0)) return 1;
+  return Math.min(1, MAX_IMAGE_EDGE / Math.max(w, h), Math.sqrt(MAX_IMAGE_PIXELS / (w * h)));
+}
+
+const near = (a, b) => Math.abs(a - b) <= 2;
+// Tabs where the clipped capture last came back at the wrong size (an
+// older Chrome, or browser zoom on a 2x screen), and when: for a minute
+// they go straight to the plain capture and the resize, then try again.
+const noClip = new Map();
+const NO_CLIP_MS = 60_000;
+
+// A JPEG of the viewport in CSS pixels, the space click and scroll take:
+// on a 2x screen Chrome captures device pixels (2880x1800 for a 1440x900
+// viewport), and points read off that image land outside the page. Chrome
+// renders the viewport straight at CSS size (a clip at scale 1 / dpr);
+// failing that, the device-pixel capture is shrunk here. width and height
+// are the viewport in CSS px; scale is image px per CSS px (1 unless the
+// viewport is too big for the model, or the capture could not be resized).
 export async function screenshot({ tabId } = {}) {
   assertTabId(tabId);
-  const vp = await viewport(tabId);
+  const m = (await send(tabId, "Page.getLayoutMetrics")) || {};
+  const vp = viewportOf(m);
+  const fit = fitScale(vp.width, vp.height);
+  const want = { width: Math.round(vp.width * fit), height: Math.round(vp.height * fit) };
+  // The visible viewport's place on the page. Under pinch zoom it is not
+  // the layout viewport input uses, so the plain capture below is taken.
+  const vis = m.cssVisualViewport;
+  const skip = noClip.get(tabId);
+  if (skip !== undefined && Date.now() - skip > NO_CLIP_MS) noClip.delete(tabId);
+  if (!noClip.has(tabId) && vis && Number.isFinite(vis.pageX) && Number.isFinite(vis.pageY) && (vis.scale == null || vis.scale === 1) &&
+      near(vis.clientWidth, vp.width) && near(vis.clientHeight, vp.height)) {
+    try {
+      const { data } = await send(tabId, "Page.captureScreenshot", {
+        format: "jpeg",
+        quality: 70,
+        clip: { x: vis.pageX, y: vis.pageY, width: vp.width, height: vp.height, scale: fit / vp.dpr },
+      });
+      const size = jpegSize(data);
+      // Only when Chrome gave exactly that size (older builds read scale
+      // differently).
+      if (size && near(size.width, want.width) && near(size.height, want.height)) {
+        return { data, mimeType: "image/jpeg", width: vp.width, height: vp.height, scale: fit };
+      }
+    } catch {}
+    // Wrong size, a size that cannot be read, or a failed capture: the
+    // plain capture serves this tab for a while (one capture per screenshot).
+    if (noClip.size > 200) noClip.clear();
+    noClip.set(tabId, Date.now());
+  }
   const { data } = await send(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70 });
   let size = null;
   try {
     size = jpegSize(data);
   } catch {}
   const img = size || { width: Math.round(vp.width * vp.dpr), height: Math.round(vp.height * vp.dpr) };
-  // Image px per CSS px: the device pixel ratio, or 1 when Chrome already
+  // Image px per CSS px, read off the image (browser zoom makes the
+  // layout's dpr differ from the screen's), or 1 when Chrome already
   // captured at CSS size.
-  const ratio = Math.abs(img.width / vp.width - 1) < 0.05 ? 1 : vp.dpr;
-  const css = { width: Math.round(img.width / ratio), height: Math.round(img.height / ratio) };
-  if (ratio === 1) return { data, mimeType: "image/jpeg", ...css, scale: 1 };
-  const small = await resize(data, css.width, css.height).catch(() => null);
-  if (small) return { data: small, mimeType: "image/jpeg", ...css, scale: 1 };
+  const ratio = Math.abs(img.width / vp.width - 1) < 0.05 ? 1 : img.width / vp.width;
+  const css = ratio === 1 ? { width: img.width, height: img.height } : { width: vp.width, height: vp.height };
+  const f = fitScale(css.width, css.height);
+  if (ratio === 1 && f === 1) return { data, mimeType: "image/jpeg", ...css, scale: 1 };
+  const small = await resize(data, Math.round(css.width * f), Math.round(css.height * f)).catch(() => null);
+  if (small) return { data: small, mimeType: "image/jpeg", ...css, scale: f };
   return { data, mimeType: "image/jpeg", ...css, scale: ratio };
 }
 
 export function _resetForTests({ settle = false } = {}) {
   attached.clear();
+  attaching.clear();
+  detaches.clear();
+  noClip.clear();
   settleOnAttach = settle;
 }

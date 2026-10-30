@@ -275,6 +275,7 @@ test("a hush from another tab only drops that tab's silent start", async () => {
 test("VOICE_STATE_QUERY answers the asking tab with the current state", async () => {
   const { relay, state } = make();
   relay.onMessage({ type: RT.VOICE_STATE_QUERY }, { tab: { id: 5 } });
+  await new Promise((r) => setTimeout(r, 10)); // no offscreen document: idle
   relay.onMessage({ type: RT.VOICE_STATE, state: "listening", latched: true, from: "offscreen" });
   relay.onMessage({ type: RT.VOICE_STATE_QUERY }, { tab: { id: 5 } });
   await relay.idle();
@@ -320,4 +321,107 @@ test("karaoke: a word for another line is not replayed; a barge-in or a new line
   state.tabSent.length = 0;
   await relay.onTabActivated({ tabId: 9 });
   assert.deepEqual(state.tabSent.map((x) => x.m.type), [RT.VOICE_STATE]);
+});
+
+test("a page loading in the talking tab mid-turn gets the state and recent lines again", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  await relay.idle();
+  relay.onMessage({ type: RT.SUBTITLE, speaker: "user", text: "find socks", final: true, from: "offscreen" });
+  relay.onMessage({ type: RT.VOICE_STATE, state: "thinking", from: "offscreen" });
+  await new Promise((r) => setTimeout(r, 0));
+  state.tabSent.length = 0;
+  await relay.onTabUpdated(3, { status: "loading" });
+  await relay.onTabUpdated(9, { status: "complete" }); // not the talking tab
+  assert.deepEqual(state.tabSent, []);
+  await relay.onTabUpdated(3, { status: "complete" });
+  assert.deepEqual(state.tabSent.map((x) => [x.tabId, x.m.type, x.m.state || x.m.text]), [
+    [3, RT.VOICE_STATE, "thinking"], [3, RT.SUBTITLE, "find socks"],
+  ]);
+});
+
+test("a load completing again in the same document (a frame, a same-page navigation) replays nothing", async () => {
+  const { relay, state, chromeApi } = make({ activeTab: 3 });
+  let doc = "doc-1";
+  chromeApi.scripting = { executeScript: async () => [{ frameId: 0, documentId: doc }] };
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 }, frameId: 0, documentId: "doc-1" });
+  await relay.idle();
+  relay.onMessage({ type: RT.SUBTITLE, speaker: "user", text: "find socks", final: true, from: "offscreen" });
+  relay.onMessage({ type: RT.VOICE_STATE, state: "thinking", from: "offscreen" });
+  await new Promise((r) => setTimeout(r, 0));
+  state.tabSent.length = 0;
+  await relay.onTabUpdated(3, { status: "complete" }); // an ad frame loaded
+  assert.deepEqual(state.tabSent, [], "the page that pressed the key has the card");
+  doc = "doc-2"; // a link followed
+  await relay.onTabUpdated(3, { status: "complete" });
+  assert.deepEqual(state.tabSent.map((x) => x.m.type), [RT.VOICE_STATE, RT.SUBTITLE]);
+  state.tabSent.length = 0;
+  await relay.onTabUpdated(3, { status: "complete" });
+  assert.deepEqual(state.tabSent, [], "replayed once per document");
+});
+
+test("an idle tab's load replays nothing", async () => {
+  const { relay, state } = make({ activeTab: 3 });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  await relay.idle();
+  relay.onMessage({ type: RT.VOICE_STATE, state: "idle", from: "offscreen" });
+  await new Promise((r) => setTimeout(r, 0));
+  state.tabSent.length = 0;
+  await relay.onTabUpdated(3, { status: "complete" });
+  assert.deepEqual(state.tabSent, []);
+});
+
+test("a switch-to replay that found no content script is sent again when that tab loads", async () => {
+  const { relay, state, chromeApi } = make({ activeTab: 3 });
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
+  await relay.idle();
+  relay.onMessage({ type: RT.SUBTITLE, speaker: "agent", text: "All done.", final: true, from: "offscreen" });
+  relay.onMessage({ type: RT.VOICE_STATE, state: "idle", from: "offscreen" });
+  await new Promise((r) => setTimeout(r, 0));
+  const send = chromeApi.tabs.sendMessage;
+  chromeApi.tabs.sendMessage = async () => { throw new Error("Receiving end does not exist"); };
+  await relay.onTabActivated({ tabId: 8 }); // still loading
+  chromeApi.tabs.sendMessage = send;
+  state.tabSent.length = 0;
+  await relay.onTabUpdated(8, { status: "complete" });
+  assert.deepEqual(state.tabSent.map((x) => [x.tabId, x.m.type, x.m.state || x.m.text]), [
+    [8, RT.VOICE_STATE, "idle"], [8, RT.SUBTITLE, "All done."],
+  ]);
+  state.tabSent.length = 0;
+  await relay.onTabUpdated(8, { status: "complete" });
+  assert.deepEqual(state.tabSent, [], "only once: it is idle");
+});
+
+test("the popup's VOICE_STATE_QUERY is answered as the reply", async () => {
+  const { relay, state } = make();
+  relay.onMessage({ type: RT.VOICE_STATE, state: "thinking", from: "offscreen" });
+  const got = [];
+  relay.onMessage({ type: RT.VOICE_STATE_QUERY }, { id: "id" }, (r) => got.push(r));
+  assert.deepEqual(got, [{ type: RT.VOICE_STATE, state: "thinking" }]);
+  assert.ok(!state.tabSent.some((x) => x.m.type === RT.VOICE_STATE && x.tabId == null));
+});
+
+test("a restarted worker asks the offscreen document before answering a state query", async () => {
+  const f = fakeChrome();
+  f.state.offscreen = true;
+  let relay;
+  f.chromeApi.runtime.sendMessage = async (m) => {
+    f.state.runtimeSent.push(m);
+    if (m.type === RT.VOICE_SYNC) setTimeout(() => relay.onMessage({ type: RT.VOICE_STATE, state: "thinking", from: "offscreen" }), 1);
+  };
+  relay = createVoiceRelay({ chromeApi: f.chromeApi, getSettings: async () => SETTINGS });
+  const got = await new Promise((resolve) => relay.onMessage({ type: RT.VOICE_STATE_QUERY }, {}, resolve));
+  assert.deepEqual(got, { type: RT.VOICE_STATE, state: "thinking" }, "not idle: a turn is in progress");
+  assert.ok(f.state.runtimeSent.some((m) => m.type === RT.VOICE_SYNC));
+  relay.onMessage({ type: RT.VOICE_STATE_QUERY }, { tab: { id: 5 } });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(f.state.tabSent.filter((x) => x.tabId === 5).map((x) => x.m.state), ["thinking"]);
+});
+
+test("installVoiceRelay keeps the channel open for a state query only", () => {
+  const { chromeApi, state } = fakeChrome();
+  installVoiceRelay({ chromeApi, getSettings: async () => SETTINGS });
+  assert.equal(state.listeners.message({ type: RT.VOICE_STATE_QUERY }, {}, () => {}), true);
+  assert.equal(state.listeners.message({ type: RT.VOICE_STATE_QUERY }, { tab: { id: 2 } }, () => {}), true);
+  assert.equal(state.listeners.message({ type: RT.PTT_STOP }, { tab: { id: 2 } }, () => {}), undefined);
 });
