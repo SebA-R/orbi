@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { z } from "zod";
 
 import { ExtError, INTERNAL, TOOLS } from "../extbridge.ts";
-import { createExtToolsServer, extToolDefinitions, seenScale } from "../exttools.ts";
+import { createExtToolsServer, extToolDefinitions, MAX_IMAGE_EDGE, MAX_IMAGE_PIXELS, seenScale } from "../exttools.ts";
 
 type Call = { method: string; params: any };
 function fakeBridge(answer: (method: string, params: any) => any) {
@@ -132,4 +132,19 @@ test("dismiss_overlay passes through to the extension", async () => {
   assert.deepEqual(JSON.parse(r.content[0].text), { dismissed: true, via: "close button", name: "Get 10% off" });
   assert.deepEqual(b.calls, [{ method: "dismiss_overlay", params: { tabId: 4 } }]);
   assert.match(defs.dismiss_overlay.description, /Sign-in, checkout, payment/);
+});
+
+// The extension's cdp.js keeps its own copy of the image limits (it runs in
+// the browser): the two must agree, so a screenshot sent at fitScale is seen
+// by the model at that scale, with no further shrink.
+test("the image limits match the extension's cdp.js fitScale", async () => {
+  const cdpPath = new URL("../../extension/background/cdp.js", import.meta.url).href;
+  const cdp: any = await import(cdpPath);
+  assert.equal(cdp.MAX_IMAGE_EDGE, MAX_IMAGE_EDGE);
+  assert.equal(cdp.MAX_IMAGE_PIXELS, MAX_IMAGE_PIXELS);
+  for (const [w, h] of [[1440, 900], [2560, 1440], [3440, 1440], [5120, 2880], [7680, 4320], [1000, 6000]]) {
+    const fit = cdp.fitScale(w, h);
+    assert.ok(Math.abs(seenScale(w, h, fit) - fit) < 1e-9, `${w}x${h}`);
+    assert.ok(Math.round(Math.max(w, h) * fit) <= MAX_IMAGE_EDGE && Math.round(w * fit) * Math.round(h * fit) <= MAX_IMAGE_PIXELS * 1.001, `${w}x${h} within limits`);
+  }
 });

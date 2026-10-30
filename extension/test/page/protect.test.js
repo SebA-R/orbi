@@ -374,3 +374,63 @@ test("a <div onclick> or pointer-cursor div with no role that says Place order i
   assert.equal(P.lockAt(document, 1, 1).kind, "order");
   assert.ok(P.listLocks(document).some((x) => x.el.id === "d1"), "listLocks lists the onclick div");
 });
+
+test("plain checkout navigation stays locked next to hosted card fields of any vendor, a mask.js card field or an unreadable payment component", async () => {
+  const xframe = (document, attrs, parent = document.body) => {
+    const f = document.createElement("iframe");
+    for (const [k, v] of Object.entries(attrs)) f.setAttribute(k, v);
+    Object.defineProperty(f, "contentDocument", { get: () => { throw new Error("cross-origin"); } });
+    f.getBoundingClientRect = () => ({ width: 300, height: 40 });
+    parent.appendChild(f);
+    return f;
+  };
+  const co = (P, $) => P.unlockClass(P.lockOf($("#co")), $("#co"));
+  // An unknown processor's frame named by its title, its src, or its place.
+  for (const attrs of [{ src: "https://secure.acme-psp.net/v2/frame", title: "Secure payment input" }, { src: "https://secure.acme-psp.net/v2/frame" }, { src: "https://psp.example/pay/v2" }, { src: "https://psp.example/v2/frame", "aria-label": "Billing details" }]) {
+    const { P, $, document } = load(`<button id="co" type="button">Checkout</button>`);
+    assert.equal(co(P, $), "checkout");
+    xframe(document, attrs);
+    await tick();
+    assert.equal(co(P, $), null, JSON.stringify(attrs));
+  }
+  for (const html of [`<form id="pay"></form>`, `<div class="checkout__payment-section"><div id="pay"></div></div>`]) {
+    const { P, $, document } = load(`${html}<button id="co" type="button">Checkout</button>`);
+    xframe(document, { src: "https://psp.example/v2/frame" }, $("#pay"));
+    assert.equal(co(P, $), null, html);
+  }
+  // Ads, video and wallet buttons, even in the cart form, leave it unlockable.
+  {
+    const { P, $, document } = load(`<form id="cart"></form><div class="ad-slot" id="ad"></div><button id="co" type="button">Checkout</button>`);
+    xframe(document, { src: "https://securepubads.g.doubleclick.net/gampad/ads?iu=/1/home&sz=300x250", title: "3rd party ad content" }, $("#ad"));
+    xframe(document, { src: "https://www.youtube.com/embed/x", title: "Video" });
+    xframe(document, { src: "https://www.paypal.com/smart/buttons?x=1", title: "PayPal" }, $("#cart"));
+    xframe(document, { src: "https://www.google.com/recaptcha/api2/anchor" }, $("#cart"));
+    assert.equal(co(P, $), "checkout");
+  }
+  // Fields mask.js counts as card fields, not gift card ones.
+  for (const html of [`<input name="ccnum_field">`, `<label>Credit card <input name="f1"></label>`, `<span id="l">Card</span><input aria-labelledby="l">`]) {
+    const { P, $ } = load(`${html}<button id="co" type="button">Checkout</button>`);
+    assert.equal(co(P, $), null, html);
+  }
+  {
+    const { P, $ } = load(`<label>Gift card <input name="code"></label><label>Card message <textarea name="note"></textarea></label><button id="co" type="button">Checkout</button>`);
+    assert.equal(co(P, $), "checkout", "gift card box and card message");
+  }
+  // No chrome.dom (the page main world): a payment-named custom element, or
+  // any custom element on a checkout page, fails closed; a product card or
+  // cart drawer elsewhere does not.
+  for (const html of [`<payment-element></payment-element>`, `<card-number-field></card-number-field>`, `<x-box id="billing-form"></x-box>`]) {
+    const { P, $ } = load(`${html}<button id="co" type="button">Checkout</button>`);
+    assert.equal(co(P, $), null, html);
+  }
+  {
+    const { P, $ } = load(`<product-card></product-card><cart-drawer></cart-drawer><button id="co" type="button">Checkout</button>`);
+    assert.equal(co(P, $), "checkout");
+    const dom = new JSDOM(`<x-widget></x-widget><button id="co" type="button">Proceed to checkout</button>`, { url: "https://shop.example/checkout/step1", runScripts: "outside-only" });
+    dom.window.eval(MASK);
+    dom.window.eval(PROTECT);
+    const P2 = dom.window.ClearcartProtect;
+    const b = dom.window.document.querySelector("#co");
+    assert.equal(P2.unlockClass(P2.lockOf(b), b), null, "an unreadable host on a checkout page");
+  }
+});

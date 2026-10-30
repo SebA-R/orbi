@@ -584,3 +584,40 @@ test("request_unlock: a question asked in one window is declined when the user m
   assert.equal(f.pressed(), 0);
   assert.ok(!f.calls.some((c) => c[0] === "lock_arm"));
 });
+
+test("request_unlock: a checkout step neither starts nor extends the checkout pass", async () => {
+  // A step with no pass: none is made.
+  let f = session(locked({ label: "Continue to payment" }));
+  f.s.userText("continue to payment");
+  assert.match((await f.s.requestUnlock(ask("Continue to payment"))).content[0].text, /^pressed Continue to payment once/);
+  assert.equal(f.s.checkoutPass, null);
+  // After Checkout, its navigate used: the step leaves that pass as it is.
+  f = session(locked({ label: "Checkout" }));
+  f.s.userText("check out");
+  assert.match((await f.s.requestUnlock(ask("Checkout"))).content[0].text, /^pressed Checkout once/);
+  const p = f.s.checkoutPass!;
+  const until = p.until;
+  assert.equal(f.s.useCheckoutPass(3, "https://shop.example/checkout"), true);
+  (f.s as any).lockInfo = async () => locked({ label: "Continue to payment" });
+  f.s.userText("continue to payment");
+  assert.match((await f.s.requestUnlock(ask("Continue to payment"))).content[0].text, /^pressed Continue to payment once/);
+  assert.equal(f.s.checkoutPass, p);
+  assert.equal(p.until, until);
+  assert.equal(f.s.useCheckoutPass(3, "https://shop.example/checkout"), false, "no second free navigate");
+});
+
+test("request_unlock: when the agent loop fails, the turns it closed end the checkout words' reach", async () => {
+  const f = session(locked({ label: "Checkout" }));
+  f.s.userText("check out");
+  async function* broken(): AsyncGenerator<any> {
+    throw new Error("socket hang up");
+  }
+  await f.s.consume(broken());
+  // Another tab of the site: only the turn's reach covered it, and it is over.
+  const pending = f.s.requestUnlock({ ...ask("Checkout"), tabId: 9 });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(f.out.filter((m) => m.type === "agent_text").at(-1)?.text, "Do you want me to go to checkout?");
+  f.s.userText("no");
+  await pending;
+  assert.equal(f.pressed(), 0);
+});

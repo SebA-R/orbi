@@ -361,11 +361,11 @@ export async function screenshot({ tabId } = {}) {
       if (size && near(size.width, want.width) && near(size.height, want.height)) {
         return { data, mimeType: "image/jpeg", width: vp.width, height: vp.height, scale: fit };
       }
-      if (size) {
-        if (noClip.size > 200) noClip.clear();
-        noClip.set(tabId, Date.now());
-      }
     } catch {}
+    // Wrong size, a size that cannot be read, or a failed capture: the
+    // plain capture serves this tab for a while (one capture per screenshot).
+    if (noClip.size > 200) noClip.clear();
+    noClip.set(tabId, Date.now());
   }
   const { data } = await send(tabId, "Page.captureScreenshot", { format: "jpeg", quality: 70 });
   let size = null;
