@@ -336,8 +336,9 @@ export async function actAndSettle(tabId, act, { windowMs = SETTLE_WINDOW_MS, ti
   const before = await c.tabs.get(tabId).catch(() => null);
   // Still loading (the cap hit before the page committed): where it is going.
   const urlOf = (t) => (t ? (t.status === "loading" && t.pendingUrl) || t.url || t.pendingUrl || "" : "");
-  // A #fragment change (an in-page anchor, a tab widget) is no move.
-  const page = (u) => String(u || "").split("#")[0];
+  // A #fragment change (an in-page anchor, a tab widget) is no move; a
+  // hash route (#/cart, #!/cart) is.
+  const page = (u) => String(u || "").replace(/#(?![/!]).*$/, "");
   const from = before ? page(urlOf(before)) : null;
   let loading = false;
   let complete = false;

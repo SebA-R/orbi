@@ -105,8 +105,11 @@ test("a #fragment change (an in-page anchor) is no move: not navigated, no rende
   const r = await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/listing/9#reviews" }), { ok: true }), { windowMs: 60, renderMs: 2_000 });
   assert.deepEqual(r, { ok: true, navigated: false, url: "https://www.etsy.com/listing/9", title: "Mug" });
   assert.ok(Date.now() - t0 < 1_000);
-  // From one fragment to another, also none; a new path after a fragment is.
+  // From one anchor to another, also none; a new path after a fragment is.
+  tab = { id: 4, url: "https://www.etsy.com/app#reviews", title: "App", status: "complete" };
+  assert.equal((await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/app#specs" }), { ok: true }), { windowMs: 60 })).navigated, false);
+  assert.equal((await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/shop#reviews" }), { ok: true }), { windowMs: 2_000, renderMs: 40 })).navigated, true);
+  // A hash route (#/cart to #/checkout) is a move.
   tab = { id: 4, url: "https://www.etsy.com/app#/cart", title: "App", status: "complete" };
-  assert.equal((await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/app#/cart?x=1" }), { ok: true }), { windowMs: 60 })).navigated, false);
-  assert.equal((await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/shop#/cart" }), { ok: true }), { windowMs: 2_000, renderMs: 40 })).navigated, true);
+  assert.equal((await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/app#/checkout" }), { ok: true }), { windowMs: 2_000, renderMs: 40 })).navigated, true);
 });
