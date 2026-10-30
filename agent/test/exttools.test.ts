@@ -58,6 +58,18 @@ test("click by ref calls rect then clicks the centre", async () => {
   assert.equal(JSON.parse(r.content[0].text).via, "cdp");
 });
 
+test("click answers where the tab settled: navigated, url and title from the extension", async () => {
+  const settled = { ok: true, navigated: true, url: "https://shop.example/c/jackets", title: "Jackets", junk: "x" };
+  const b = fakeBridge((m) => (m === "rect" ? { x: 0, y: 0, width: 10, height: 10 } : settled));
+  const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
+  const byRef = JSON.parse(((await defs.click.handler({ ref: "ref_7" }, {})) as any).content[0].text);
+  assert.deepEqual(byRef, { ok: true, x: 5, y: 5, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" });
+  const byPoint = JSON.parse(((await defs.click.handler({ x: 1, y: 2 }, {})) as any).content[0].text);
+  assert.deepEqual(byPoint, { ok: true, x: 1, y: 2, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" });
+  const key = JSON.parse(((await defs.key.handler({ key: "Enter" }, {})) as any).content[0].text);
+  assert.equal(key.navigated, true);
+});
+
 test("click by ref falls back to click_ref when rect is unknown", async () => {
   const b = fakeBridge((m) => {
     if (m === "rect") throw new ExtError("unknown_method", "rect");
