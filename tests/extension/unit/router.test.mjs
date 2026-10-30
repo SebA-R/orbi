@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { containsCardNumber, createRouter } from "../../../extension/background/router.js";
 
-function fakes({ focus = { kind: "other", payment: false }, failFirstSend = false, cdpClickFails = false } = {}) {
+function fakes({ focus = { kind: "other", payment: false }, failFirstSend = false, cdpClickFails = false, tabsExtra = {} } = {}) {
   const calls = [];
   let sends = 0;
   const chromeApi = {
@@ -26,6 +26,7 @@ function fakes({ focus = { kind: "other", payment: false }, failFirstSend = fals
     resolveAllowedTab: async (id) => (calls.push(["resolve", id]), id ?? 7),
     tabsContext: async () => ({ tabs: [], groupId: 1 }),
     assertPageAllowed: async () => {},
+    ...tabsExtra,
   };
   const cdp = {
     click: async (o) => {
@@ -77,6 +78,23 @@ test("click by ref clicks the rect centre over CDP, and falls back to click_ref"
   const b = fakes({ cdpClickFails: true });
   assert.deepEqual(await b.router.route("click", { ref: "ref_4" }), { ok: true, via: "dom" });
   assert.ok(b.calls.some((c) => c[0] === "page" && c[2] === "click_ref"));
+});
+
+test("click and key answer through tabs.actAndSettle: the press's result plus where the tab settled", async () => {
+  const seen = [];
+  const actAndSettle = async (tabId, act) => {
+    seen.push(tabId);
+    const r = await act();
+    return { ...r, navigated: true, url: "https://shop.example/next", title: "Next" };
+  };
+  const { calls, router } = fakes({ tabsExtra: { actAndSettle } });
+  assert.deepEqual(await router.route("click", { ref: "ref_4" }), { ok: true, via: "cdp", navigated: true, url: "https://shop.example/next", title: "Next" });
+  assert.deepEqual(await router.route("key", { tabId: 3, key: "Enter" }), { ok: true, navigated: true, url: "https://shop.example/next", title: "Next" });
+  assert.deepEqual(seen, [7, 3]);
+  assert.ok(calls.some((c) => c[0] === "cdp.click") && calls.some((c) => c[0] === "cdp.key"));
+  // Refused before the press: nothing settles.
+  await assert.rejects(router.route("key", { key: "\r" }));
+  assert.deepEqual(seen, [7, 3]);
 });
 
 // Typing goes key by key through the actor (background/actor.js).

@@ -35,8 +35,20 @@ function clean<T extends Record<string, unknown>>(o: T): Partial<T> {
 
 // click by ref: ask the page for the element's rect (it scrolls it into view
 // first), then click its centre through CDP. If rect/CDP is unavailable, fall
-// back to a DOM click on the ref.
-export async function clickRef(bridge: Bridge, ref: string, tab?: number): Promise<{ x?: number; y?: number; via: "cdp" | "dom" }> {
+// back to a DOM click on the ref. The extension's click answers where the
+// tab is once the page settled (Settled); that comes back too.
+export type Settled = { navigated?: boolean; url?: string; title?: string };
+
+function settledOf(r: unknown): Settled {
+  const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+  const out: Settled = {};
+  if (typeof o.navigated === "boolean") out.navigated = o.navigated;
+  if (typeof o.url === "string") out.url = o.url;
+  if (typeof o.title === "string") out.title = o.title;
+  return out;
+}
+
+export async function clickRef(bridge: Bridge, ref: string, tab?: number): Promise<{ x?: number; y?: number; via: "cdp" | "dom" } & Settled> {
   let r: { x: number; y: number; width: number; height: number };
   try {
     r = await bridge.call("rect", clean({ tabId: tab, ref }));
@@ -51,8 +63,8 @@ export async function clickRef(bridge: Bridge, ref: string, tab?: number): Promi
   const x = Math.round(r.x + r.width / 2);
   const y = Math.round(r.y + r.height / 2);
   try {
-    await bridge.call("click", clean({ tabId: tab, x, y }));
-    return { x, y, via: "cdp" };
+    const done = await bridge.call("click", clean({ tabId: tab, x, y }));
+    return { x, y, via: "cdp", ...settledOf(done) };
   } catch (e) {
     if (e instanceof ExtError && (e.code === ERR.UNKNOWN_METHOD || e.code === ERR.INTERNAL)) {
       await bridge.call("click_ref", clean({ tabId: tab, ref }));
@@ -82,7 +94,7 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "tabs_create",
-      "Open a new tab next to the user's tab, optionally at a URL. Orbi brings the user to it unless they turned that off. Prefer this over navigating away from a page the user had open. Returns { tabId }.",
+      "Open a new tab next to the user's tab, optionally at a URL. Orbi brings the user to it unless they turned that off. Prefer this over navigating away from a page the user had open. Returns { tabId }, and with a url { tabId, url, title } once it loaded.",
       { url: z.string().optional() },
       pass("tabs_create")
     ),
@@ -130,7 +142,7 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     ),
     tool(
       "click",
-      "Click an element by ref (preferred), or at viewport coordinates x, y in CSS pixels, the same space as the screenshot image (its size is given with it). A point outside the viewport is refused. A click that would press a locked control is refused with a message starting Locked: that names the control and its ref and says the next step (usually request_unlock with that ref if the user wants it). Nothing is pressed then; do not retry it.",
+      "Click an element by ref (preferred), or at viewport coordinates x, y in CSS pixels, the same space as the screenshot image (its size is given with it). A point outside the viewport is refused. A click that would press a locked control is refused with a message starting Locked: that names the control and its ref and says the next step (usually request_unlock with that ref if the user wants it). Nothing is pressed then; do not retry it. Returns { ok, navigated, url, title }: where the tab is once a page the click opened has loaded.",
       {
         tabId,
         ref: z.string().optional().describe("Element ref from read_page or find, e.g. ref_12"),
@@ -144,8 +156,8 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
             return text({ ok: true, ...r });
           }
           if (typeof x === "number" && typeof y === "number") {
-            await bridge.call("click", clean({ tabId: tab, x, y }));
-            return text({ ok: true, x, y, via: "cdp" });
+            const done = await bridge.call("click", clean({ tabId: tab, x, y }));
+            return text({ ok: true, x, y, via: "cdp", ...settledOf(done) });
           }
           return failure(new ExtError(ERR.BAD_REQUEST, "click needs a ref, or both x and y"));
         } catch (e) {
@@ -156,7 +168,7 @@ export function extToolDefinitions(bridge: Bridge = extBridge): SdkMcpToolDefini
     tool("type", "Type text into the focused element. A newline that would submit a locked form is refused like a locked click.", { tabId, text: z.string() }, pass("type")),
     tool(
       "key",
-      'Press one key, e.g. "Enter", "Tab", "Escape", "ArrowDown". Enter or Space that would press or submit a locked control is refused like a locked click.',
+      'Press one key, e.g. "Enter", "Tab", "Escape", "ArrowDown". Enter or Space that would press or submit a locked control is refused like a locked click. Returns { ok, navigated, url, title }: where the tab is once a page the key opened has loaded.',
       { tabId, key: z.string() },
       pass("key")
     ),

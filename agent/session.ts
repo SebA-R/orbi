@@ -318,6 +318,9 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
     : `A tab left the allowed sites and was sent to a blank page. ${allowed.length ? `Only browse ${allowed.join(", ")}.` : "No sites are allowed yet; tell the user."}`;
 }
 
+// Matches sweepNote's text in a tool's outcome: the sweep moved a tab.
+export const SWEPT_NOTE = /\bwas sent (?:back|to a blank page)\b/;
+
 // Button lock for navigation: checkout and payment pages are off limits on
 // every site, unless the user asked to check out. Both browser paths,
 // for navigate and for tabs_create / tabs_create_mcp with a url. passed:
@@ -539,6 +542,9 @@ export class Session {
   // only until the next utterance, which becomes passwordYes if it is an
   // explicit yes.
   private passwordAsk: { tabId: number; label: string; origin: string } | null = null;
+  // Where the last request_unlock press over the extension landed, for the
+  // local model's hint ({ navigated, url, title } as press_unlocked answers).
+  private lastPress: { tabId: number; navigated?: boolean; url?: string; title?: string } | null = null;
   checkoutPass: CheckoutPass | null = null;
   // Set when a tab sweep could not run or could not move a stray tab. Every
   // browser call is refused until a sweep succeeds (fail closed).
@@ -1232,7 +1238,8 @@ export class Session {
     const issued = userUnlockGate.issue({ tabId, href: await this.tabUrl(tabId), ref, label, cls });
     if (!issued.ok) return issued.error;
     if (extMode()) {
-      await pressUnlockedExt(extBridge, issued.grant, { tabId, ref, label, cls });
+      const r = await pressUnlockedExt(extBridge, issued.grant, { tabId, ref, label, cls });
+      this.lastPress = { tabId, navigated: r.navigated, url: r.url, title: r.title };
       return null;
     }
     if (!userUnlockGate.consume(issued.grant, { tabId, href: await this.tabUrl(tabId), ref, label, cls })) return "The page changed before the press.";
@@ -1244,6 +1251,7 @@ export class Session {
   // user's own last words (this.lastUser), never anything Claude passes.
   async requestUnlock(args: { tabId?: number; ref?: string; label: string; action: string; reason?: string }, signal?: AbortSignal): Promise<ToolText> {
     const tabId = args.tabId ?? this.state.lastTabId;
+    this.lastPress = null;
     if (tabId == null) return said("No tab is open yet. Open the page first, then call request_unlock with its tabId.");
     const href = await this.tabUrl(tabId);
     if (!href) return said("Could not check which page that tab is on. Try again in a moment.");
@@ -1729,6 +1737,10 @@ export class Session {
     };
     const browser = extToolDefinitions().map((d) => b(d.name));
     const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"]));
+    // The last page the hint reported per tab (origin and path), so a
+    // result that does not say whether it navigated lists the page's
+    // controls only when it moved.
+    const seenUrl = new Map<number, string>();
     return {
       drop,
       describe,
@@ -1760,18 +1772,48 @@ export class Session {
       hint: async (tool, args, text, isError) => {
         const short = tool.replace(B, "").replace(C, "");
         const tabId = typeof args.tabId === "number" ? args.tabId : this.state.lastTabId;
-        // Where an action landed and what is on that page, so the model
-        // knows which page it is on and has the refs to go on with.
-        if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && tabId != null && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
-          await new Promise((r) => setTimeout(r, 700));
-          const t = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId }, 5_000).catch(() => null);
+        // Where an action landed, and when it opened another page, what is
+        // on it, so the model has the refs to go on with. The extension
+        // answers click, key and press_unlocked once the page settled
+        // ({ navigated, url, title }); navigate and tabs_create once it
+        // loaded ({ url, title }).
+        if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && (tabId != null || short === "tabs_create") && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
+          let t: { tabId?: number; url?: string; title?: string; navigated?: boolean } | null = null;
+          try {
+            // The result's own JSON line (page tools come wrapped in page-data markers).
+            const line = text.split("\n").find((l) => l.startsWith("{"));
+            if (line) t = JSON.parse(line);
+          } catch {}
+          const opened = short === "navigate" || short === "tabs_create";
+          // tabs_create without a url opened a blank tab: nothing to say.
+          if (opened && typeof t?.url !== "string") return null;
+          const on = opened && typeof t?.tabId === "number" ? t.tabId : tabId;
+          if (on == null) return null;
+          if (opened) t = { ...t, navigated: true };
+          // request_unlock answers a sentence: where its press landed was
+          // kept aside (lastPress).
+          if (short === "request_unlock") {
+            const p = this.lastPress;
+            this.lastPress = null;
+            if (p?.tabId === on && typeof p.url === "string") t = p;
+          }
+          // A DOM-fallback click has no settled fields: the press already
+          // waited, so ask the tab. So too when the tab sweep (it runs
+          // before this hint) sent a tab back from where the result says.
+          if (typeof t?.url !== "string" || SWEPT_NOTE.test(text)) {
+            const navigated = t?.navigated;
+            const now = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId: on }, 5_000).catch(() => null);
+            t = now && { ...now, navigated };
+          }
           if (!t?.url) return null;
           const title = String(t.title ?? "").slice(0, 80);
           let where = originOf(t.url) ?? "";
           try {
             where += new URL(t.url).pathname;
           } catch {}
-          const controls = await this.controlsOn(tabId);
+          const changed = typeof t.navigated === "boolean" ? t.navigated : seenUrl.get(on) !== where;
+          seenUrl.set(on, where);
+          const controls = changed ? await this.controlsOn(on) : [];
           return `Now on: ${title && !isInjectionLine(title) ? `${JSON.stringify(title)}, ` : ""}${where}${controls.length ? `\nOn this page:\n${pageData(controls.join("\n"), 1_500)}` : ""}`;
         }
         if (short === "find" && /"matches":\[\]/.test(text)) {
