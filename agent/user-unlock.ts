@@ -411,7 +411,7 @@ export async function pressUnlockedExt(
   grant: UserGrant,
   target: { tabId: number; ref: string; label: string; cls: UnlockClass },
   gate: UserUnlockGate = userUnlockGate
-): Promise<{ via?: string }> {
+): Promise<{ via?: string; navigated?: boolean; url?: string; title?: string }> {
   let href: string | null = null;
   try {
     href = (await bridge.call<{ url?: string }>("tab_info", { tabId: target.tabId }, 10_000))?.url ?? null;
@@ -422,7 +422,7 @@ export async function pressUnlockedExt(
   // 30 s: the extension answers once the page the press opened has loaded
   // (up to 8 s on top of a paced press), and a timeout here would read as
   // not pressed when it was.
-  return (await bridge.call<{ via?: string }>("press_unlocked", { ...target, nonce: armed.nonce }, 30_000)) || {};
+  return (await bridge.call<{ via?: string; navigated?: boolean; url?: string; title?: string }>("press_unlocked", { ...target, nonce: armed.nonce }, 30_000)) || {};
 }
 
 // Open Claude in Chrome path: refs live in that extension's own world, so

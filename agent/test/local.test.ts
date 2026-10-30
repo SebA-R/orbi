@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url";
 import { DESKTOP_TOOL_NAMES } from "../desktop/tools.ts";
 import { extBridge } from "../extbridge.ts";
 import { SessionHub, type HubMessage, type HubSession } from "../hub.ts";
-import { envProviderSettings, parseLocalBaseUrl, parseLocalModel } from "../local/config.ts";
+import { envLocalKeepAlive, envProviderSettings, parseLocalBaseUrl, parseLocalModel } from "../local/config.ts";
+import { chat } from "../local/openai.ts";
 import { FREE_STEPS, localQuery, MAX_STEPS, type ToolServer } from "../local/query.ts";
 import { claimConfirmation } from "../pay.ts";
 import { DISALLOWED_BROWSER, EXT_ALLOWED, Session, type ServerMessage } from "../session.ts";
@@ -242,6 +243,167 @@ test("Ollama: CLEARCART_LOCAL_THINK on a model that cannot think: the step runs 
     await r.stop();
     await model.close();
     resetEnv();
+  }
+});
+
+// User turns for localQuery, given one at a time; end() closes the stream.
+function turnQueue() {
+  const waiting: Array<(v: IteratorResult<any>) => void> = [];
+  const queued: any[] = [];
+  let ended = false;
+  const iter: AsyncIterableIterator<any> = {
+    [Symbol.asyncIterator]: () => iter,
+    next: () => (queued.length ? Promise.resolve({ value: queued.shift(), done: false }) : ended ? Promise.resolve({ value: undefined, done: true }) : new Promise((r) => waiting.push(r))),
+  };
+  return {
+    iter,
+    say(text: string) {
+      const m = { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+      const w = waiting.shift();
+      if (w) w({ value: m, done: false });
+      else queued.push(m);
+    },
+    end() {
+      ended = true;
+      for (const w of waiting.splice(0)) w({ value: undefined, done: true });
+    },
+  };
+}
+
+// A localQuery on its own (no Session), its results and statuses kept.
+function plainLocal(url: string, extra: Partial<Parameters<typeof localQuery>[0]["options"]> = {}) {
+  const turns = turnQueue();
+  const statuses: string[] = [];
+  const results: any[] = [];
+  const q = localQuery({ prompt: turns.iter, options: { baseUrl: url, model: "tiny:1b", systemPrompt: "rules", servers: {}, allowedTools: [], warmUp: true, onStatus: (t) => statuses.push(t), ...extra } });
+  const done = (async () => {
+    for await (const m of q) if ((m as any).type === "result") results.push(m);
+  })();
+  return { q, turns, statuses, results, stop: async () => (turns.end(), await done) };
+}
+
+test("Ollama warm-up: a model that cannot think is said on the first turn; it gets the step's timeout; an interrupted first turn still waits for it", async () => {
+  // The warm-up finds out the model cannot think: the first turn says so.
+  const refuses = await fakeModel((b) => (b.think === true ? { status: 400, body: { error: '"tiny:1b" does not support thinking' } } : { text: "Hi" }), { ollama: true });
+  const a = plainLocal(refuses.url, { think: true });
+  try {
+    await until(() => refuses.requests.length === 2, "the warm-up and its retry");
+    await tick(20);
+    assert.ok(!a.statuses.some((t) => /cannot think/.test(t)), "not said before the user speaks");
+    a.turns.say("hello");
+    await until(() => a.results.length === 1, "the first turn");
+    assert.equal(a.statuses.filter((t) => /tiny:1b cannot think, so CLEARCART_LOCAL_THINK is ignored/.test(t)).length, 1, a.statuses.join("\n"));
+    assert.equal(refuses.requests.filter((q) => q.think === true).length, 1, "the turn does not ask again");
+  } finally {
+    await a.stop();
+    await refuses.close();
+  }
+
+  // A warm-up that never answers runs out after requestTimeoutMs, not a
+  // fixed two minutes.
+  const hangs = await fakeModel((b) => (b.options?.num_predict === 1 ? { hang: true } : { text: "Hello." }), { ollama: true });
+  const b = plainLocal(hangs.url, { requestTimeoutMs: 300 });
+  try {
+    b.turns.say("hello");
+    const t0 = Date.now();
+    await until(() => b.results.length === 1, "the first turn", 3_000);
+    assert.ok(Date.now() - t0 < 2_000);
+    assert.equal(b.results[0].subtype, "success");
+  } finally {
+    await b.stop();
+    await hangs.close();
+  }
+
+  // An interrupted first turn stops waiting, but the next turn's request
+  // still waits until the warm-up has ended.
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  const slow = await fakeModel(async (b) => (b.options?.num_predict === 1 ? (await held, { text: "Hi" }) : { text: "Hello." }), { ollama: true });
+  const c = plainLocal(slow.url);
+  try {
+    await until(() => slow.requests.length === 1, "the warm-up");
+    c.turns.say("hello");
+    await tick(30);
+    await c.q.interrupt();
+    await until(() => c.results.length === 1, "the interrupted turn");
+    assert.equal(c.results[0].subtype, "error_during_execution");
+    c.turns.say("hello again");
+    await tick(100);
+    assert.equal(slow.requests.length, 1, "no step runs beside the warm-up");
+    release();
+    await until(() => c.results.length === 2, "the second turn");
+    assert.equal(slow.requests.length, 2);
+  } finally {
+    release();
+    await c.stop();
+    await slow.close();
+  }
+});
+
+test("Ollama: a step whose think is refused and asked again shares one timeout across both requests", async () => {
+  const model = await fakeModel(async (b) => (b.think === true ? (await tick(150), { status: 400, body: { error: '"tiny:1b" does not support thinking' } }) : { hang: true }), { ollama: true });
+  try {
+    const t0 = Date.now();
+    await assert.rejects(chat({ baseUrl: model.url, model: "tiny:1b", messages: [{ role: "user", content: "hi" }], tools: [], signal: new AbortController().signal, timeoutMs: 400, flavor: "ollama", think: true }), (e: any) => e.kind === "timeout");
+    const took = Date.now() - t0;
+    assert.ok(took < 520, `timed out after ${took}ms, not 150 + 400`);
+  } finally {
+    await model.close();
+  }
+});
+
+test("CLEARCART_LOCAL_KEEP_ALIVE: seconds, a Go duration or default; anything else is refused; the value goes to Ollama as keep_alive", async () => {
+  const k = (v?: string) => envLocalKeepAlive(v === undefined ? {} : { CLEARCART_LOCAL_KEEP_ALIVE: v });
+  assert.equal(k(), "30m");
+  assert.equal(k(" "), "30m");
+  assert.equal(k("-1"), -1);
+  assert.equal(k("0"), 0);
+  assert.equal(k("300"), 300);
+  for (const v of ["90s", "30m", "1h", "1h30m", "1.5h", "-1m", "500ms"]) assert.equal(k(v), v);
+  assert.equal(k("default"), null);
+  assert.equal(k("DEFAULT"), null);
+  for (const v of ["1d", "10min", "1.5", "1 h", "forever", "m"]) assert.throws(() => k(v), /CLEARCART_LOCAL_KEEP_ALIVE must be/, v);
+
+  const model = await fakeModel(() => ({ text: "Hi" }), { ollama: true });
+  const ask = (keepAlive?: string | number | null) => chat({ baseUrl: model.url, model: "tiny:1b", messages: [{ role: "user", content: "hi" }], tools: [], signal: new AbortController().signal, timeoutMs: 5_000, flavor: "ollama", keepAlive });
+  try {
+    await ask();
+    await ask(-1);
+    await ask(null);
+    assert.equal(model.requests[0].keep_alive, "30m");
+    assert.equal(model.requests[1].keep_alive, -1);
+    assert.ok(!("keep_alive" in model.requests[2]), "default: the server's own setting applies");
+  } finally {
+    await model.close();
+  }
+});
+
+test("a context window too small for the rules and tools is said once; a nudge's note counts toward what fits", async () => {
+  const model = await fakeModel(() => ({ text: "Hi." }));
+  const big = "Rule. ".repeat(3_000);
+  const a = plainLocal(model.url, { warmUp: false, contextTokens: 4_096, systemPrompt: big });
+  try {
+    a.turns.say("hello");
+    await until(() => a.results.length === 1, "the first turn");
+    a.turns.say("hello again");
+    await until(() => a.results.length === 2, "the second turn");
+    assert.equal(a.statuses.filter((t) => /^local model: the context window \(4096 tokens\) is too small for Orbi's rules and tools \(about \d+ tokens\)/.test(t)).length, 1, a.statuses.join("\n"));
+  } finally {
+    await a.stop();
+  }
+  const b = plainLocal(model.url, { warmUp: false, contextTokens: 4_096 });
+  try {
+    const q = b.q as any;
+    const fill = (n: number): any[] => [{ role: "user", content: "x".repeat(n) }];
+    const room = q.budget("rules");
+    q.turns = [fill(room / 2), fill(room / 2 - 100)];
+    q.fit("rules");
+    assert.equal(q.turns.length, 2, "fits without the note");
+    q.fit("rules", 500);
+    assert.equal(q.turns.length, 1, "the older turn goes to make room for the note");
+  } finally {
+    await b.stop();
+    await model.close();
   }
 });
 

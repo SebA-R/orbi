@@ -190,6 +190,8 @@ export type LocalOptions = {
   vision?: boolean;
   // Ollama only: the context window to load the model with.
   contextTokens?: number;
+  // Ollama only: keep_alive (config.ts envLocalKeepAlive); null sends none.
+  keepAlive?: string | number | null;
   // A function is called for every request, so it can say the settings
   // as they are now.
   systemPrompt: string | (() => string);
@@ -221,6 +223,8 @@ type Offered = { full: string; server: ToolServer; tool: string };
 type Outcome = { text: string; isError: boolean; images: ContentPart[]; ran?: boolean };
 
 const ABORTED = Symbol("aborted");
+
+const noUsage = () => ({ input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 });
 
 // Settles with p, or with ABORTED as soon as signal fires.
 function unlessAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T | typeof ABORTED> {
@@ -297,6 +301,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // Ollama or plain chat completions, once the server has said.
   private flavor: Flavor | null = null;
   private warnedShort = false;
+  private warnedSmall = false;
   // Scaffold only: refs the model has been shown, and each
   // offered tool's parameters by full name.
   private refs = new Set<string>();
@@ -328,8 +333,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // size in characters.
   private compacted = new WeakSet<ChatMessage[]>();
   private specChars: number | null = null;
+  // The warm-up found that out: the first turn says so.
+  private thinkUnsaid = false;
   // The turn in progress's token counts, for its result.
-  private usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
+  private usage = noUsage();
 
   constructor(private prompt: AsyncIterable<SDKUserMessage>, private o: LocalOptions) {}
 
@@ -386,7 +393,14 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       await Promise.all(servers.map((s) => s.start()));
       this.offer();
       yield { type: "system", subtype: "init", session_id: this.sessionId, model: this.o.model, tools: this.specs.map((t) => t.function.name), mcp_servers: await this.mcpServerStatus() } as unknown as SDKMessage;
-      if (this.o.warmUp) this.warming = this.warm();
+      if (this.o.warmUp) {
+        // Cleared when the request ends, not when a turn stops waiting
+        // for it (an interrupted first turn leaves it running).
+        const w: Promise<void> = this.warm().finally(() => {
+          if (this.warming === w) this.warming = null;
+        });
+        this.warming = w;
+      }
       for await (const m of this.prompt) {
         if (closed?.aborted) return;
         const text = userText(m);
@@ -418,8 +432,8 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       const signal = this.o.abortController?.signal ?? new AbortController().signal;
       this.flavor ??= await detectFlavor(this.o.baseUrl, this.o.fetch);
       if (this.flavor !== "ollama" || signal.aborted) return;
-      const r = await chat({ ...this.request(signal), messages: [{ role: "system", content: this.systemText() }, { role: "user", content: "Hi" }], timeoutMs: 120_000, maxTokens: 1 });
-      if (r.thinkRefused) this.thinkOff = true;
+      const r = await chat({ ...this.request(signal), messages: [{ role: "system", content: this.systemText() }, { role: "user", content: "Hi" }], maxTokens: 1 });
+      if (r.thinkRefused && !this.thinkOff) this.thinkOff = this.thinkUnsaid = true;
       timing.note(`local warm-up ${Date.now() - t0}ms ${statLine(r.stats)}`);
     } catch (e) {
       timing.note(`local warm-up failed: ${(e as Error).message}`);
@@ -440,6 +454,7 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
       timeoutMs: this.o.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
       flavor: this.flavor ?? ("openai" as const),
       contextTokens: this.o.contextTokens,
+      keepAlive: this.o.keepAlive,
       think: this.o.think && !this.thinkOff,
       fetch: this.o.fetch,
     };
@@ -473,20 +488,19 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     // answers): never kept in the conversation, so what came before stays
     // the same from step to step and the server can reuse it.
     let extra: ChatMessage[] = [];
-    // After a nudge, a short reminder stays at the end of every request for
-    // the rest of the turn (at the end, so it never changes what comes
-    // before), or the model forgets the note one step later and stops the
-    // same way again.
-    let reminder: ChatMessage | null = null;
+    // After a nudge on a task turn, a short reminder stays at the end of
+    // every request for the rest of the turn (at the end, so it never
+    // changes what comes before), or the model forgets the note one step
+    // later and stops the same way again. A question or chit-chat gets none.
+    let reminder: string | null = null;
     const nudge = (reply: string, note: string) => {
       turn.pop();
       extra = [{ role: "assistant", content: reply }, { role: "user", content: note }];
       if (free < FREE_STEPS) free++;
-      reminder = { role: "user", content: `${REMINDER} ${JSON.stringify(lastWords(turn).slice(0, 200))}` };
+      if (isRequest(lastWords(turn))) reminder = `${REMINDER} ${JSON.stringify(lastWords(turn).slice(0, 200))}`;
     };
     // What the server said the turn's steps cost (the turn_end timing line).
-    const usage = { input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 };
-    this.usage = usage;
+    const usage = (this.usage = noUsage());
     try {
       for (let step = 1; ; step++) {
         if (counted(step) > max) {
@@ -498,14 +512,24 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
         }
         let reply;
         const system = this.systemText();
-        this.fit(system);
-        const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat(), ...(extra.length ? extra : reminder ? [reminder] : [])];
+        const tail: ChatMessage[] = extra.length ? extra : reminder ? [{ role: "user", content: reminder }] : [];
+        this.fit(system, tail.reduce((n, m) => n + chars(m), 0));
+        const messages: ChatMessage[] = [{ role: "system", content: system }, ...this.turns.flat()];
+        // The reminder joins a user message already last (a screenshot), so
+        // user and assistant still take turns, as strict chat templates need.
+        const last = messages.at(-1)!;
+        if (!extra.length && reminder && last.role === "user") messages[messages.length - 1] = withText(last, reminder);
+        else messages.push(...tail);
         extra = [];
         let t0 = Date.now();
         try {
           if (this.warming) await unlessAborted(this.warming, signal);
-          this.warming = null;
+          if (this.thinkUnsaid && !signal.aborted) {
+            this.thinkUnsaid = false;
+            this.cannotThink();
+          }
           this.flavor ??= await unlessAborted(detectFlavor(this.o.baseUrl, this.o.fetch), signal).then((f) => (f === ABORTED ? null : f));
+          this.checkWindow(system);
           t0 = Date.now();
           timing.mark("model_step", { detail: `#${step}` });
           reply = await chat({ ...this.request(signal), messages });
@@ -522,10 +546,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
           yield this.result("error_during_execution", step);
           return;
         }
-        timing.mark("model_done", { detail: `#${step} ${Date.now() - t0}ms ${statLine(reply.stats)}${reply.toolCalls.length ? ` -> ${reply.toolCalls.map((c) => c.function.name).join(",")}` : " -> reply"}` });
+        if (timing.timingOn()) timing.mark("model_done", { detail: `#${step} ${Date.now() - t0}ms ${statLine(reply.stats)}${reply.toolCalls.length ? ` -> ${reply.toolCalls.map((c) => c.function.name).join(",")}` : " -> reply"}` });
         if (reply.thinkRefused && !this.thinkOff) {
           this.thinkOff = true;
-          this.o.onStatus?.(`local model: ${this.o.model} cannot think, so CLEARCART_LOCAL_THINK is ignored`);
+          this.cannotThink();
         }
         // As on the SDK path: input_tokens leaves out what was read from cache.
         usage.input_tokens += Math.max(0, (reply.stats.promptTokens ?? 0) - (reply.stats.cachedTokens ?? 0));
@@ -710,6 +734,10 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     }
   }
 
+  private cannotThink() {
+    this.o.onStatus?.(`local model: ${this.o.model} cannot think, so CLEARCART_LOCAL_THINK is ignored`);
+  }
+
   // A server that reports far fewer prompt tokens than were sent has cut
   // the prompt (its context window is too small): say so once. Ollama's
   // prompt_eval_count counts the whole prompt, cached part included.
@@ -718,8 +746,11 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     const approx = Math.round((messages.reduce((n, m) => n + chars(m), 0) + JSON.stringify(this.specs).length) / 4);
     if (promptTokens >= approx * 0.6) return;
     this.warnedShort = true;
-    const fix = this.flavor === "ollama" ? "Set CLEARCART_LOCAL_CONTEXT to a larger window (for example 32768)." : "Give the model a context window of 16k tokens or more in your model server.";
-    this.o.onStatus?.(`local model: the prompt looks cut short (${promptTokens} of about ${approx} tokens). ${fix}`);
+    this.o.onStatus?.(`local model: the prompt looks cut short (${promptTokens} of about ${approx} tokens). ${this.contextFix()}`);
+  }
+
+  private contextFix(): string {
+    return this.flavor === "ollama" ? "Set CLEARCART_LOCAL_CONTEXT to a larger window (for example 32768)." : "Give the model a context window of 16k tokens or more in your model server.";
   }
 
   private toolResult(id: string, out: Outcome): SDKMessage {
@@ -971,13 +1002,31 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
     }
   }
 
-  // The characters the conversation may take: the context window less the
-  // rules, the tools and the longest answer.
-  private budget(system: string): number {
+  // The tokens the conversation may take: the context window less the
+  // rules, the tools and the longest answer. Below 0 when those alone do
+  // not fit.
+  private room(system: string): { window: number; fixed: number; left: number } {
     const window = this.o.contextTokens ?? DEFAULT_CONTEXT_TOKENS;
     this.specChars ??= JSON.stringify(this.specs).length;
     const fixed = (system.length + this.specChars) / CHARS_PER_TOKEN;
-    return Math.max(1_000, window - REPLY_TOKENS - fixed - 300) * CHARS_PER_TOKEN;
+    return { window, fixed, left: window - REPLY_TOKENS - fixed - 300 };
+  }
+
+  // The same in characters, never under 1000 tokens' worth: a window too
+  // small for that cannot hold the request anyway (checkWindow says so).
+  private budget(system: string): number {
+    return Math.max(1_000, this.room(system).left) * CHARS_PER_TOKEN;
+  }
+
+  // A context window that leaves under 1000 tokens for the conversation
+  // after the rules and tools: every request overflows it and the server
+  // cuts it. Said once, with the fix.
+  private checkWindow(system: string) {
+    if (this.warnedSmall) return;
+    const { window, fixed, left } = this.room(system);
+    if (left >= 1_000) return;
+    this.warnedSmall = true;
+    this.o.onStatus?.(`local model: the context window (${window} tokens) is too small for Orbi's rules and tools (about ${Math.round(fixed)} tokens) and a conversation. ${this.contextFix()}`);
   }
 
   // Keeps the conversation within the context window: what is left of it
@@ -986,8 +1035,9 @@ export class LocalQuery implements AsyncIterable<SDKMessage> {
   // its work on them from step to step. When they do not fit, the oldest
   // turns go together (down to 70%, so it happens seldom), then, only if
   // the turn in progress alone is too long, its older tool results are cut.
-  private fit(system: string) {
-    const budget = this.budget(system);
+  // reserve: characters the request adds after the conversation (a nudge).
+  private fit(system: string, reserve = 0) {
+    const budget = Math.max(0, this.budget(system) - reserve);
     const size = () => this.turns.reduce((n, t) => n + t.reduce((k, m) => k + chars(m), 0), 0);
     if (size() <= budget) return;
     while (this.turns.length > 1 && size() > budget * 0.7) this.turns.shift();
@@ -1012,6 +1062,11 @@ function statLine(s: ChatStats): string {
   if (s.outputTokens !== undefined) parts.push(`out ${s.outputTokens} tok${s.outputMs !== undefined ? ` ${s.outputMs}ms` : ""}`);
   if (s.loadMs !== undefined) parts.push(`load ${s.loadMs}ms`);
   return parts.join(", ");
+}
+
+// m, a user message, with text added at its end (a copy).
+function withText(m: Extract<ChatMessage, { role: "user" }>, text: string): ChatMessage {
+  return typeof m.content === "string" ? { role: "user", content: `${m.content}\n\n${text}` } : { role: "user", content: [...m.content, { type: "text", text }] };
 }
 
 // Whether two names share a word of three letters or more ("Checkout" and
@@ -1044,18 +1099,25 @@ function givesUp(text: string, looked = 0): boolean {
 // leave for what the user already asked ("Would you like me to add it?"
 // after "add it to my bag"). Not one for a detail only the user knows
 // (their email, a size they never gave), nor one about paying, removing,
-// signing up or anything else they did not ask for.
-const CHOICE = /\bwhich\b|\bor\b[^?]*\?\s*$/i;
-const LEAVE = /\b(?:would you like|do you want|should i|shall i|want me)\b(?: me)?(?: to)?\s+([a-z]+)/i;
+// signing up or anything else they did not ask for, nor the offer of more
+// that ends a task ("Anything else?", "Shall I add another pair?"). Only
+// the question itself is read (its last sentence): "the Swift, which is
+// black, is in your bag" chooses nothing.
+const CHOICE = /(?<!,\s*)\bwhich\b|\bor\b[^?]*\?\s*$/i;
+const LEAVE = /\b(?:(?:would you like|do you want|want) me to|should i|shall i)\s+([a-z]+)/i;
+const OFFERS_MORE = /\b(another|anything|something|else|more|all set|that'?s (all|it)|or not)\b/i;
 const ONLY_THEY_KNOW = /\b(e-?mail|address|phone|name|password|passcode|card|account|sign(ed)? (in|up)|log(ged)? in|subscribe|newsletter|check ?out|pay|order|buy|purchase|remove|delete|cancel|quantity|how many)\b/i;
 const SIZE_WORD = /\b(sizes?|xx?s|xx?l|small|medium|large|petite)\b/i;
 const SIZE_GIVEN = /\bsize\s*[a-z0-9.]+|\b(xx?s|xx?l|small|medium|large|petite)\b/i;
 export function asksChoice(said: string, userWords: string): boolean {
   if (!/\?\s*$/.test(said) || ONLY_THEY_KNOW.test(said)) return false;
   if (SIZE_WORD.test(said) && !SIZE_GIVEN.test(userWords)) return false;
-  if (CHOICE.test(said)) return true;
-  const verb = LEAVE.exec(said)?.[1]?.toLowerCase();
-  return !!verb && verb.length >= 3 && new RegExp(`\\b${verb}`, "i").test(userWords);
+  const question = said.trim().split(/(?<=[.!?])\s+/).at(-1) ?? "";
+  if (OFFERS_MORE.test(question)) return false;
+  if (CHOICE.test(question)) return true;
+  // The same verb as the user's, whole ("add" is not "address").
+  const verb = LEAVE.exec(question)?.[1]?.toLowerCase();
+  return !!verb && verb.length >= 3 && new RegExp(`\\b${verb}(s|es|ed|d|ing)?\\b`, "i").test(userWords);
 }
 
 // Words that ask something rather than ask for something done.

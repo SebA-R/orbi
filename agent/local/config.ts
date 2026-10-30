@@ -106,7 +106,26 @@ export function envLocalContext(env: NodeJS.ProcessEnv = process.env): number {
   return n;
 }
 
-// CLEARCART_LOCAL_THINK=1: a reasoning model (qwen3, deepseek-r1) thinks
+// How long Ollama keeps the model loaded after a request (its own default
+// is 5 minutes, so a pause in shopping would pay the load again).
+export const DEFAULT_KEEP_ALIVE = "30m";
+
+// CLEARCART_LOCAL_KEEP_ALIVE: Ollama's keep_alive, sent with every request,
+// so it overrides the Ollama server's own OLLAMA_KEEP_ALIVE. Whole seconds
+// ("-1": always, "0": unload at once) or a Go duration ("90s", "30m",
+// "1h30m"); "default" sends none, so the server's setting applies. Unset:
+// DEFAULT_KEEP_ALIVE. null: send none. Throws on a value Ollama would refuse
+// (every request would fail).
+export function envLocalKeepAlive(env: NodeJS.ProcessEnv = process.env): string | number | null {
+  const raw = env.CLEARCART_LOCAL_KEEP_ALIVE?.trim();
+  if (!raw) return DEFAULT_KEEP_ALIVE;
+  if (raw.toLowerCase() === "default") return null;
+  if (/^[-+]?\d+$/.test(raw)) return Number(raw);
+  if (/^[-+]?((\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h))+$/.test(raw)) return raw;
+  throw new Error(`CLEARCART_LOCAL_KEEP_ALIVE must be whole seconds (-1 keeps the model loaded), a duration such as 30m, 1h or 90s, or "default", got "${raw}"`);
+}
+
+// CLEARCART_LOCAL_THINK=1:a reasoning model (qwen3, deepseek-r1) thinks
 // before each step on Ollama. Off by default: thinking takes seconds per
 // step and spends the answer's token budget before any tool call.
 export function envLocalThink(env: NodeJS.ProcessEnv = process.env): boolean {

@@ -173,6 +173,17 @@ test("navigate reports origin and path only, never the query string or fragment"
   assert.match((await tabInfo({ tabId })).url, /code=SECRET/);
 });
 
+test("tabsCreate on an address that does not load reports Orbi's error page, like navigate", async () => {
+  const c = fresh();
+  c.runtime = { getURL: (p) => `chrome-extension://x/${p}` };
+  // Chrome's load failure, shown as Orbi's own error page.
+  const update = c.tabs.update;
+  c.tabs.update = (id, props) => update(id, props.url === "https://down.example/" ? { ...props, url: "chrome-extension://x/newtab/error.html#k=00000000-0000-0000-0000-000000000000" } : props);
+  const r = await tabsCreate({ url: "https://down.example/" });
+  assert.deepEqual(r, { tabId: r.tabId, url: "chrome-error://chromewebdata/", title: "Can't reach this site" });
+  delete c.runtime;
+});
+
 test("assertPageAllowed drops a result from a page that moved to a blocked site", async () => {
   const c = fresh();
   const id = await userTab(c, "https://www.etsy.com/");

@@ -27,7 +27,7 @@ import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
 import { desktopBridge } from "./desktop/bridge.ts";
 import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
 import { DESKTOP_TOOL_NAMES, desktopToolDefinitions, type DesktopHost } from "./desktop/tools.ts";
-import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envLocalThink, envProviderSettings, type ProviderSettings } from "./local/config.ts";
+import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envLocalKeepAlive, envLocalThink, envProviderSettings, type ProviderSettings } from "./local/config.ts";
 import { isRequest, localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
 import { isInjectionLine, looksLikeReasoning, pageData, REMOVED_LINE } from "./local/harden.ts";
 import { withContext, type PageContext } from "./context.ts";
@@ -217,6 +217,16 @@ function localContext(): number | undefined {
   }
 }
 
+// CLEARCART_LOCAL_KEEP_ALIVE, or the default when unset or bad (server.ts
+// refuses to start on a bad one).
+function localKeepAlive(): string | number | null | undefined {
+  try {
+    return envLocalKeepAlive();
+  } catch {
+    return undefined;
+  }
+}
+
 // The spoken acknowledgement at the start of tool work (ACK_PROMPT): on
 // unless ORBI_ACK=0.
 export function ackOn(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -331,6 +341,9 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
     ? `A tab opened a blocked site or a checkout page and was sent back${n > 1 ? " (" + n + " tabs)" : ""}. Never open sites on the user's blocked list; tell the user instead.`
     : `A tab left the allowed sites and was sent to a blank page. ${allowed.length ? `Only browse ${allowed.join(", ")}.` : "No sites are allowed yet; tell the user."}`;
 }
+
+// Matches sweepNote's text in a tool's outcome: the sweep moved a tab.
+export const SWEPT_NOTE = /\bwas sent (?:back|to a blank page)\b/;
 
 // Button lock for navigation: checkout and payment pages are off limits on
 // every site, unless the user asked to check out. Both browser paths,
@@ -577,6 +590,9 @@ export class Session {
   // only until the next utterance, which becomes passwordYes if it is an
   // explicit yes.
   private passwordAsk: { tabId: number; label: string; origin: string } | null = null;
+  // Where the last request_unlock press over the extension landed, for the
+  // local model's hint ({ navigated, url, title } as press_unlocked answers).
+  private lastPress: { tabId: number; navigated?: boolean; url?: string; title?: string } | null = null;
   checkoutPass: CheckoutPass | null = null;
   // Set when a tab sweep could not run or could not move a stray tab. Every
   // browser call is refused until a sweep succeeds (fail closed).
@@ -642,9 +658,10 @@ export class Session {
   // are offered (they stay as they were for the rest of the session).
   private localDesktop = false;
   // The server says the acknowledgement for a small local model (localAck),
-  // once per turn (acked).
+  // once per turn (acked), for the call ackFor once the guard allows it.
   private serverAck = false;
   private acked = false;
+  private ackFor: string | null = null;
   // The user's own words this turn, as the local scaffold last saw them.
   private localWords = "";
 
@@ -1009,7 +1026,20 @@ export class Session {
     }
   }
 
-  private guard: HookCallback = async (input) => {
+  // The PreToolUse guard (check), and after it the local acknowledgement
+  // for the call it waits for: spoken only when the call is allowed, from
+  // the input as checked, so a refused site is never announced.
+  private guard: HookCallback = async (input, toolUseID, opts) => {
+    const out = await this.check(input, toolUseID, opts);
+    if (input.hook_event_name === "PreToolUse" && this.ackFor && this.ackFor === input.tool_use_id) {
+      this.ackFor = null;
+      const denied = (out as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision === "deny";
+      if (!denied && !this.muted) this.say(localAck(input.tool_name, input.tool_input), "ack");
+    }
+    return out;
+  };
+
+  private check: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const name = input.tool_name;
     const args = (input.tool_input || {}) as Record<string, unknown>;
@@ -1340,7 +1370,8 @@ export class Session {
     const issued = userUnlockGate.issue({ tabId, href: await this.tabUrl(tabId), ref, label, cls });
     if (!issued.ok) return issued.error;
     if (extMode()) {
-      await pressUnlockedExt(extBridge, issued.grant, { tabId, ref, label, cls });
+      const r = await pressUnlockedExt(extBridge, issued.grant, { tabId, ref, label, cls });
+      this.lastPress = { tabId, navigated: r.navigated, url: r.url, title: r.title };
       return null;
     }
     if (!userUnlockGate.consume(issued.grant, { tabId, href: await this.tabUrl(tabId), ref, label, cls })) return "The page changed before the press.";
@@ -1352,6 +1383,7 @@ export class Session {
   // user's own last words (this.lastUser), never anything Claude passes.
   async requestUnlock(args: { tabId?: number; ref?: string; label: string; action: string; reason?: string }, signal?: AbortSignal): Promise<ToolText> {
     const tabId = args.tabId ?? this.state.lastTabId;
+    this.lastPress = null;
     if (tabId == null) return said("No tab is open yet. Open the page first, then call request_unlock with its tabId.");
     const href = await this.tabUrl(tabId);
     if (!href) return said("Could not check which page that tab is on. Try again in a moment.");
@@ -1845,7 +1877,8 @@ export class Session {
     const browser = extToolDefinitions().map((d) => b(d.name));
     const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"], ["desktop_open_app", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll"].map((t) => D + t)));
     // The last page the hint reported per tab (origin and path), so a
-    // request_unlock press lists the page's controls only when it moved.
+    // result that does not say whether it navigated lists the page's
+    // controls only when it moved.
     const seenUrl = new Map<number, string>();
     return {
       drop,
@@ -1869,7 +1902,7 @@ export class Session {
           const u = a.url.trim();
           const fixed = webAddress(u);
           if (fixed) a.url = fixed;
-          else if (u) throw new Error(`Not run: "${u.slice(0, 40)}" is not a web address. Use the site's full address, for example https://www.${u.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 30) || "example"}.com, or search for it.`);
+          else if (u) throw new Error(`Not run: "${u.slice(0, 40)}" is not a web address. Use the site's full address, for example ${suggestAddress(u)}, or search for it.`);
         }
         if (tool === b("read_page")) {
           a.filter = "interactive";
@@ -1892,8 +1925,9 @@ export class Session {
         const tabId = typeof args.tabId === "number" ? args.tabId : this.state.lastTabId;
         // Where an action landed, and when it opened another page, what is
         // on it, so the model has the refs to go on with. The extension
-        // answers click and key once the page settled ({ navigated, url,
-        // title }); navigate and tabs_create once it loaded ({ url, title }).
+        // answers click, key and press_unlocked once the page settled
+        // ({ navigated, url, title }); navigate and tabs_create once it
+        // loaded ({ url, title }).
         if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && (tabId != null || short === "tabs_create") && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
           let t: { tabId?: number; url?: string; title?: string; navigated?: boolean } | null = null;
           try {
@@ -1907,12 +1941,25 @@ export class Session {
           const on = opened && typeof t?.tabId === "number" ? t.tabId : tabId;
           if (on == null) return null;
           if (opened) t = { ...t, navigated: true };
-          // request_unlock answers a sentence, and a DOM-fallback click has
-          // no settled fields: the press already waited, so ask the tab.
+          // request_unlock answers a sentence: where its press landed was
+          // kept aside (lastPress).
+          if (short === "request_unlock") {
+            const p = this.lastPress;
+            this.lastPress = null;
+            if (p?.tabId === on && typeof p.url === "string") t = p;
+          }
+          const swept = SWEPT_NOTE.test(text);
           // A settled answer without a url is a page Orbi may not use:
           // nothing about it goes to the model.
-          if (typeof t?.navigated === "boolean" && typeof t.url !== "string") return null;
-          if (typeof t?.url !== "string") t = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId: on }, 5_000).catch(() => null);
+          if (!swept && typeof t?.navigated === "boolean" && typeof t.url !== "string") return null;
+          // A DOM-fallback click has no settled fields: the press already
+          // waited, so ask the tab. So too when the tab sweep (it runs
+          // before this hint) sent a tab back from where the result says.
+          if (typeof t?.url !== "string" || swept) {
+            const navigated = t?.navigated;
+            const now = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId: on }, 5_000).catch(() => null);
+            t = now && { ...now, navigated };
+          }
           if (!t?.url) return null;
           const title = String(t.title ?? "").slice(0, 80);
           let where = originOf(t.url) ?? "";
@@ -2041,6 +2088,7 @@ export class Session {
     this.turnNudged = false;
     this.dropText = "";
     this.acked = false;
+    this.ackFor = null;
   }
 
   // A task the user asked for is under way: their words ask for something
@@ -2094,12 +2142,12 @@ export class Session {
       }
       // A small local model's first tool step: the server says a few words
       // for it (ACK_PROMPT is left out of its rules), unless it calls say
-      // itself or the step is one that speaks for itself.
+      // itself or the step is one that speaks for itself. They are said
+      // when the guard allows the step's first call (guard).
       if (working && this.serverAck && !this.acked) {
         this.acked = true;
         const tools = blocks.filter((b) => b.type === "tool_use");
-        const text = tools.some((b) => /^(say|request_checkout|request_unlock|pay_with_saved_card)$/.test(shortName(b.name))) ? null : localAck(tools[0].name, tools[0].input);
-        if (text && !this.muted) this.say(text, "ack");
+        if (!tools.some((b) => /^(say|request_checkout|request_unlock|pay_with_saved_card)$/.test(shortName(b.name)))) this.ackFor = tools[0].id;
       }
       for (const block of blocks) {
         if (block.type === "text" && block.text?.trim()) {
@@ -2182,6 +2230,7 @@ export class Session {
               model: p.localModel,
               vision: p.localVision,
               contextTokens: localContext(),
+              keepAlive: localKeepAlive(),
               // Ollama: load the model and process the rules and tools now,
               // not when the user first speaks.
               warmUp: true,
@@ -2253,6 +2302,8 @@ export class Session {
     try {
       for await (const m of q) this.onSdkMessage(m);
     } catch (e) {
+      this.acked = false;
+      this.ackFor = null;
       if (!this.closed) {
         this.muted = false;
         this.status(`agent error: ${(e as Error).message}`);
@@ -2274,14 +2325,37 @@ const shortName = (name: string) => name.replace(B, "").replace(C, "");
 
 // A url a local model wrote, as navigate and tabs_create take it: with a
 // scheme as given, "back" or "forward", or a bare host ("aritzia.com/new",
-// "127.0.0.1:4000", "localhost:4000") with https:// put in front. Null when
-// it is no web address at all ("aritzia"). The guard still checks the result.
+// "aritzia.com.", "127.0.0.1:4000", "localhost:4000") with https:// put in
+// front. Null when it is no web address at all: no dot ("aritzia"), or no
+// name a site has ("1.5", "file.txt": a host needs a top-level domain of
+// letters that is not a file type, unless it is an IP address or
+// localhost). The guard still checks the result.
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const FILE_TYPE = /\.(txt|pdf|docx?|xlsx?|pptx?|csv|json|jpe?g|png|gif|webp|svg|mp3|mp4|exe|dmg|js|html?|xml|log|zip)$/i;
 export function webAddress(u: string): string | null {
   if (/^(back|forward)$/i.test(u)) return u.toLowerCase();
-  const host = /^((www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|localhost|\[[0-9a-f:]+\])(:\d{1,5})?([/?#]\S*)?$/i;
-  if (host.test(u)) return `https://${u}`;
+  const bare = /^((?:[a-z0-9-]+\.)+[a-z0-9-]+|localhost|\[[0-9a-f:]+\])\.?((?::\d{1,5})?(?:[/?#]\S*)?)$/i.exec(u);
+  if (bare) {
+    const host = bare[1];
+    const site = host.startsWith("[") || /^localhost$/i.test(host) || IPV4.test(host) || (/\.[a-z]{2,63}$/i.test(host) && !FILE_TYPE.test(host));
+    return site ? `https://${host}${bare[2]}` : null;
+  }
   if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^[a-z0-9.-]+:\d/i.test(u)) return u;
   return null;
+}
+
+// The full address a refusal suggests for words that are not one, dots
+// kept: "aritzia .ca" is https://www.aritzia.ca, "aritzia" https://www.aritzia.com.
+export function suggestAddress(u: string): string {
+  const name =
+    u
+      .toLowerCase()
+      .replace(/^[a-z]+:\/\//, "")
+      .replace(/[^a-z0-9.-]+/g, "")
+      .replace(/^www\./, "")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .slice(0, 40) || "example";
+  return `https://www.${/\.[a-z]{2,}$/.test(name) && !FILE_TYPE.test(name) ? name : `${name}.com`}`;
 }
 
 // The few words the server says when a local model starts tool work:
