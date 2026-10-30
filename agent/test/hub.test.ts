@@ -232,16 +232,20 @@ test("a closed session's late output never reaches the next session's window", (
 });
 
 // A backend switch (the provider setting moved) and the turn in progress.
-function switchHub() {
-  type Fake = HubSession & { working: boolean; retired: string[]; send: (m: ServerMessage) => void };
+function switchHub(log?: (line: string) => void) {
+  type Fake = HubSession & { working: boolean; paying: boolean; retired: string[]; texts: string[]; send: (m: ServerMessage) => void; ended: () => void };
   const made: Fake[] = [];
-  const hub = new SessionHub((send) => {
+  const hub = new SessionHub((send, ended) => {
     const s: Fake = {
       backend: made.length ? "local x" : "claude",
       working: false,
+      paying: false,
       retired: [],
+      texts: [],
       send,
-      userText() {},
+      ended,
+      userText: (text) => void s.texts.push(text),
+      busy: () => s.paying,
       interrupt() {},
       handOff() {},
       close() {},
@@ -250,7 +254,7 @@ function switchHub() {
     };
     made.push(s);
     return s;
-  });
+  }, log);
   return { hub, made };
 }
 
@@ -327,4 +331,89 @@ test("a local model's turn is not waited for (its locks follow the setting at on
   s.userText("find me a mug");
   assert.equal(s.midTurn(), false);
   s.close();
+});
+
+test("words said while a switch waits go to the new backend, not to a new turn on the old one", async () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  w.peer.userText("actually a blue one");
+  assert.deepEqual(made[0].texts, ["find me a mug"], "held, not a new turn on Claude");
+  // The old session's "off" leaves the held words thinking.
+  made[0].send({ type: "busy", on: false, seq: 0 });
+  assert.deepEqual(w.got.filter((m) => m.type === "busy").map((m) => (m as any).seq), [1]);
+  made[0].working = false;
+  await until(() => made.length === 2, "the switch once the turn ends");
+  assert.deepEqual(made[1].texts, ["actually a blue one"]);
+  w.peer.leave();
+});
+
+test("a cancelled switch hands the held words to the session it stays on", () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  w.peer.userText("a blue one");
+  hub.switchBackend("claude", "Claude");
+  assert.deepEqual(made[0].texts, ["find me a mug", "a blue one"]);
+  assert.equal(made.length, 1);
+  w.peer.leave();
+});
+
+test("a newer target keeps the wait's start time and says the new target once", () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  const realNow = Date.now;
+  try {
+    const t = realNow();
+    Date.now = () => t;
+    hub.switchBackend("local x", "your local model x");
+    hub.switchBackend("local x", "your local model x");
+    Date.now = () => t + SWITCH_TURN_MAX_MS / 2;
+    hub.switchBackend("local y", "your local model y");
+    Date.now = () => t + SWITCH_TURN_MAX_MS + 1;
+    assert.equal(hub.switchBackend("local y", "your local model y"), true, "the cap counts from the first request");
+  } finally {
+    Date.now = realNow;
+  }
+  const statuses = w.got.filter((m) => m.type === "status").map((m) => (m as any).text);
+  assert.deepEqual(statuses.filter((t) => t.startsWith("Switching")), ["Switching to your local model x when this turn ends.", "Switching to your local model y when this turn ends."]);
+  w.peer.leave();
+});
+
+test("a waiting switch whose session ended is forgotten: no stale \"Staying on\" later", async () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  made[0].ended();
+  await new Promise((r) => setTimeout(r, 400));
+  w.peer.userText("hello");
+  assert.equal(made[1].backend, "local x");
+  assert.deepEqual(made[1].texts, ["hello"], "not held: nothing waits any more");
+  hub.switchBackend("local x", "your local model x");
+  assert.ok(!w.got.some((m) => m.type === "status" && /Staying on/.test((m as any).text)));
+  w.peer.leave();
+});
+
+test("a switch that waits for a payment, then a turn, logs both", async () => {
+  const lines: string[] = [];
+  const { hub, made } = switchHub((l) => lines.push(l));
+  const w = windowOf(hub);
+  w.peer.userText("buy it");
+  made[0].paying = true;
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  made[0].paying = false;
+  await until(() => lines.some((l) => l.includes("turn in progress")), "the turn wait is logged");
+  assert.ok(lines.some((l) => l.includes("payment under way")));
+  made[0].working = false;
+  await until(() => made.length === 2, "switched");
+  w.peer.leave();
 });

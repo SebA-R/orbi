@@ -222,6 +222,12 @@ const bridgeClientId = () => (clientIdReady ??= (async () => {
   await chrome.storage.local.set({ [CLIENT_ID_KEY]: id });
   return id;
 })());
+// A fresh id the bridge took after another live client used this one
+// (bridge.js): kept, so a restarted worker uses it too.
+const saveBridgeClientId = (id) => {
+  clientIdReady = Promise.resolve(id);
+  chrome.storage.local.set({ [CLIENT_ID_KEY]: id }).catch(() => {});
+};
 
 async function startBridge() {
   const settings = await loadSettings();
@@ -229,7 +235,7 @@ async function startBridge() {
   if (!bridge) {
     const clientId = await bridgeClientId().catch(() => null);
     if (bridge) return bridge.setUrl(url);
-    bridge = new BridgeClient({ url, version: VERSION, clientId, log, onRequest, onOpen: sendSettings, onState: (s) => log.info(`bridge ${s}`) });
+    bridge = new BridgeClient({ url, version: VERSION, clientId, onClientId: saveBridgeClientId, log, onRequest, onOpen: sendSettings, onState: (s) => log.info(`bridge ${s}`) });
     bridge.start();
   } else {
     bridge.setUrl(url);
