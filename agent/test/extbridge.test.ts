@@ -273,10 +273,51 @@ test("an owner silent past STALE_AFTER_MS can be replaced by another install", a
     (b.bridge as any).lastSeen = Date.now() - STALE_AFTER_MS - 1;
     const other = new FakeExt(b.url, () => ({ who: "other" }), "0.0.1", "install-test");
     await other.open();
-    assert.equal((await mine.waitClosed()).code, 4002);
+    assert.equal((await mine.waitClosed()).code, 4004, "busy, not \"replaced by your own newer connection\"");
     assert.deepEqual(await b.bridge.call("tabs_context"), { who: "other" });
     other.close();
   } finally {
+    await b.stop();
+  }
+});
+
+test("hellos without an id (an older extension): the newest replaces an owner without one, as before ids", async () => {
+  const b = await startBridge();
+  try {
+    const first = new FakeExt(b.url, () => null, "0.0.1");
+    await first.open();
+    const second = new FakeExt(b.url, () => ({ who: "second" }), "0.0.1");
+    await second.open();
+    assert.equal((await first.waitClosed()).code, 4002);
+    assert.deepEqual(await b.bridge.call("tabs_context"), { who: "second" });
+    second.close();
+  } finally {
+    await b.stop();
+  }
+});
+
+test("two live BridgeClients with the same stored id (a copied profile) don't replace each other on every retry", async () => {
+  const b = await startBridge();
+  let connects = 0;
+  b.bridge.on("connect", () => connects++);
+  const quiet = { info() {}, warn() {}, debug() {} };
+  const timing = { BACKOFF_MIN_MS: 10, BACKOFF_MAX_MS: 40 };
+  const saved: string[] = [];
+  const a = new BridgeClient({ url: b.url, WebSocketImpl: WebSocket, log: quiet, timing, clientId: "install-same", onClientId: (id: string) => saved.push(id), onRequest: async () => "a" });
+  const c = new BridgeClient({ url: b.url, WebSocketImpl: WebSocket, log: quiet, timing, clientId: "install-same", onRequest: async () => "c" });
+  try {
+    a.start();
+    await onceEvent(b.bridge, "connect");
+    c.start();
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(connects, 2, "the copy takes it once, then the first is refused as busy");
+    assert.equal(await b.bridge.call("tabs_context"), "c");
+    assert.equal(saved.length, 1);
+    assert.notEqual(saved[0], "install-same");
+    assert.equal(a.clientId, saved[0]);
+  } finally {
+    a.stop();
+    c.stop();
     await b.stop();
   }
 });

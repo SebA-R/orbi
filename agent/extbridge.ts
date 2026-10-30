@@ -100,8 +100,6 @@ const HELLO_TIMEOUT_MS = 5_000;
 export const STALE_AFTER_MS = 45_000;
 // Bridge close codes; mirror extension/lib/protocol.js CLOSE.
 export const CLOSE = { REPLACED: 4002, BUSY: 4004 } as const;
-// Close code for a hello refused because another client owns the bridge.
-export const BUSY_CLOSE = CLOSE.BUSY;
 // A client id; mirrors extension/lib/protocol.js CLIENT_ID_RE.
 export const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
@@ -407,16 +405,21 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
   }
 
   // Whether a greeted client may take the bridge: nobody holds it, the
-  // holder is this same client again, or the holder has gone silent.
+  // holder is this same client again, or the holder has gone silent. A
+  // client without an id (an older extension) replacing a holder without
+  // one: the newest wins, as before ids.
   private mayTakeOver(clientId: string | null): boolean {
     if (!this.connected()) return true;
-    if (clientId !== null && clientId === this.currentId) return true;
+    if (clientId === this.currentId) return true;
     return Date.now() - this.lastSeen > STALE_AFTER_MS;
   }
 
   private promote(ws: WebSocket, version: string, clientId: string | null = null) {
     const old = this.current;
     const same = clientId !== null && clientId === this.currentId;
+    // REPLACED tells the old socket a newer one of its own install took
+    // over; another install taking a silent owner's place tells it BUSY.
+    const code = clientId === this.currentId ? CLOSE.REPLACED : CLOSE.BUSY;
     this.current = ws;
     this.currentId = clientId;
     this.lastSeen = Date.now();
@@ -426,8 +429,8 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     this.danger = false;
     let replay = false;
     if (old && old !== ws) {
-      replay = this.dropPending(old, same ? "replaced by a newer connection from the same extension" : "replaced after it went silent");
-      old.close(CLOSE.REPLACED, "replaced");
+      replay = this.dropPending(old, code === CLOSE.REPLACED ? "replaced by a newer connection from the same extension" : "replaced after it went silent");
+      old.close(code, code === CLOSE.REPLACED ? "replaced" : "another extension is connected");
     }
     ws.send(JSON.stringify({ type: "welcome", protocol: PROTOCOL_VERSION, server: SERVER_NAME }));
     // The same extension may still be playing a paced action whose call just

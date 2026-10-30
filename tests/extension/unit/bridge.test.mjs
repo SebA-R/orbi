@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { WebSocketServer } from "ws";
 
 import { BridgeClient } from "../../../extension/lib/bridge.js";
+import { CLIENT_ID_RE } from "../../../extension/lib/protocol.js";
 
 const quiet = { info() {}, warn() {}, error() {}, debug() {} };
 const cleanups = [];
@@ -194,4 +195,16 @@ test("replaced by a newer connection (4002): waits the longest backoff before co
   assert.equal(again, 0, "no quick reconnect that would take the bridge back");
   await waitFor(() => again === 1, 2000);
   assert.ok(Date.now() - t0 >= 280);
+});
+
+test("replaced (4002) while alive: takes a fresh client id, so a copied profile stops trading places", async () => {
+  const saved = [];
+  const { sock, c } = await openClient({ clientId: "install-1234", onClientId: (id) => saved.push(id), timing: { BACKOFF_MIN_MS: 10, BACKOFF_MAX_MS: 300 } });
+  sock.close(4002, "replaced");
+  await waitFor(() => c.state === "closed");
+  assert.equal(saved.length, 1);
+  assert.notEqual(c.clientId, "install-1234");
+  assert.equal(c.clientId, saved[0]);
+  assert.match(c.clientId, CLIENT_ID_RE);
+  c.stop();
 });

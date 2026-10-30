@@ -11,11 +11,13 @@ const HELLO_TIMEOUT_MS = 5_000;
 
 export class BridgeClient {
   // clientId: this install's stable id, sent in hello (protocol.js).
-  constructor({ url, version = "0", clientId = null, log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, onOpen = () => {}, onRequest = null, timing = {} }) {
+  // onClientId(id): called with a new id this client took (see onclose).
+  constructor({ url, version = "0", clientId = null, onClientId = () => {}, log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, onOpen = () => {}, onRequest = null, timing = {} }) {
     this.url = url;
     this.timing = { ...TIMING, ...timing };
     this.version = version;
     this.clientId = clientId;
+    this.onClientId = onClientId;
     this.log = log;
     this.WebSocketImpl = WebSocketImpl;
     this.onState = onState;
@@ -112,8 +114,17 @@ export class BridgeClient {
       // use, so coming straight back would only take it from it. Busy:
       // another install owns the bridge; the backoff (never reset, as no
       // welcome came) keeps the retries slow until it lets go.
+      // This client only hears REPLACED while it is alive, so the newer
+      // connection with its id is another live client: a copied profile
+      // with the same stored id. Take a fresh id, so from now on the two
+      // are different installs and the server refuses this one as busy
+      // instead of the two replacing each other on every retry.
       if (e?.code === CLOSE.REPLACED) {
         this.log.warn("bridge: replaced by a newer connection");
+        if (this.clientId !== null) {
+          this.clientId = crypto.randomUUID();
+          this.onClientId(this.clientId);
+        }
         this.scheduleReconnect(this.timing.BACKOFF_MAX_MS);
       } else {
         if (e?.code === CLOSE.BUSY) this.log.info("bridge: another Orbi extension is connected to the agent server; waiting");
