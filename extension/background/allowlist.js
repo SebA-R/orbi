@@ -25,12 +25,22 @@ export async function allowedOrigins() {
   return [...allowlist];
 }
 
+// The blocked list parsed once per distinct list, not once per url checked
+// (tabsContext checks every open tab).
+let parsed = { key: null, entries: [] };
+function blockEntries(lines) {
+  if (!Array.isArray(lines)) return parseBlockLines(lines).entries;
+  const key = lines.join("\n");
+  if (parsed.key !== key) parsed = { key, entries: parseBlockLines(lines).entries };
+  return parsed.entries;
+}
+
 // Pure policy: why `url` is not allowed under `settings`, or null.
 export function blockReason(url, settings) {
   const origin = normalizeOrigin(url);
   const listed = !!origin && settings.allowlist.includes(origin);
   if (settings.browseMode !== "open") return listed ? null : "not on the allowlist";
-  return blocklistReason(url, parseBlockLines(settings.blocklist).entries, new Set(settings.allowlist));
+  return blocklistReason(url, blockEntries(settings.blocklist), new Set(settings.allowlist));
 }
 
 export async function isAllowed(url) {
@@ -72,6 +82,17 @@ export async function frameAllowed(url, topOrigin) {
   if (topOrigin && origin === topOrigin) return true;
   if (settings.allowlist.includes(origin)) return true;
   return isPaymentFrameHost(url);
+}
+
+// The url's origin, or null for an invalid url or one with no origin
+// (data:, about:, file:).
+export function originOf(url) {
+  try {
+    const o = new URL(String(url)).origin;
+    return o === "null" ? null : o;
+  } catch {
+    return null;
+  }
 }
 
 // Throws BridgeError(ERR.NOT_ALLOWED) unless the settings allow this url.

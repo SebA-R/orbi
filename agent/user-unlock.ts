@@ -33,7 +33,10 @@ export const USER_GRANT_TTL_MS = 60_000;
 export type UnlockClass = "checkout" | "account" | "subscription" | "payment-method";
 
 // Finer intents, so "sign up" never unlocks "Sign in".
-type Intent = "checkout" | "signin" | "signout" | "signup" | "subscribe" | "save-card";
+// "checkout-step" is the next step inside checkout ("Continue to payment"):
+// only the user's own words for that step press it directly, never a bare
+// "check out".
+type Intent = "checkout" | "checkout-step" | "signin" | "signout" | "signup" | "subscribe" | "save-card";
 
 const norm = (s: string) => ` ${String(s ?? "").toLowerCase().replace(/&/g, " and ").replace(/['’]/g, "").replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim()} `;
 
@@ -50,6 +53,8 @@ const USER_INTENTS: Array<[Intent, RegExp]> = [
   ["checkout", /^ check ?out( (now|please|for me|thanks|thank you|right now))* $/],
   ["checkout", /^ (start|begin|open) (the )?check ?out /],
   ["checkout", /^ (press|click|tap|hit|push) (on )?(the )?check ?out( button| link)?( (now|please|for me))* $/],
+  // The next checkout step ("Continue to payment"), never paying itself.
+  ["checkout-step", /^ (go|proceed|continue|move) (on )?(to|into) (the )?(payment|billing)( step| section)?( (now|please|for me))* $/],
   ["signin", /^ (sign|log) (me |us )?(back )?in(to)? /],
   ["signin", /^ (signin|login)( me)? /],
   ["signout", /^ (sign|log) (me |us )?out /],
@@ -68,6 +73,7 @@ const USER_INTENTS: Array<[Intent, RegExp]> = [
 // What a control's label is for.
 const LABEL_INTENTS: Array<[Intent, RegExp]> = [
   ["checkout", / check ?out /],
+  ["checkout-step", / ((continue|proceed) to payment|continue to billing) /],
   ["signin", / (sign in|signin|log in|login|sign in with|log in with|continue with) /],
   ["signout", / (sign out|signout|log out|logout) /],
   ["signup", / (sign up|signup|create (an |my )?account|register) /],
@@ -79,6 +85,7 @@ const CLASSES = new Set<string>(["checkout", "account", "subscription", "payment
 
 const INTENT_CLASS: Record<Intent, UnlockClass> = {
   checkout: "checkout",
+  "checkout-step": "checkout",
   signin: "account",
   signout: "account",
   signup: "account",
@@ -178,6 +185,8 @@ function labelIntents(label: string): Set<Intent> {
   const out = new Set<Intent>();
   const n = norm(label);
   for (const [intent, re] of LABEL_INTENTS) if (re.test(n)) out.add(intent);
+  // "Continue to payment" moves on; it saves no card.
+  if (out.has("checkout-step")) out.delete("save-card");
   return out;
 }
 
@@ -294,6 +303,8 @@ const ABOUT: Record<UnlockClass, RegExp> = {
   "payment-method": / (card|payment) /,
 };
 
+const STEP_ABOUT = / (payment|billing) /;
+
 function stripAll(s: string, ...res: RegExp[]): string {
   for (let prev = ""; prev !== s; ) {
     prev = s;
@@ -322,7 +333,8 @@ export function isUnlockYes(answer: string, cls: UnlockClass | null, label: stri
       if (!c.trim() || YES_TAIL.test(c)) continue;
       if (NOT_YES.test(c)) return false;
       if ([...userIntents(clauses(c), "")].some((i) => !mine.has(i))) return false;
-      if (!ABOUT[cls].test(c)) return false;
+      // "payment" and "billing" are about a checkout step's own button only.
+      if (!ABOUT[cls].test(c) && !(mine.has("checkout-step") && STEP_ABOUT.test(c))) return false;
     }
   }
   return led;
@@ -399,7 +411,7 @@ export async function pressUnlockedExt(
   grant: UserGrant,
   target: { tabId: number; ref: string; label: string; cls: UnlockClass },
   gate: UserUnlockGate = userUnlockGate
-): Promise<{ via?: string }> {
+): Promise<{ via?: string; navigated?: boolean; url?: string; title?: string }> {
   let href: string | null = null;
   try {
     href = (await bridge.call<{ url?: string }>("tab_info", { tabId: target.tabId }, 10_000))?.url ?? null;
@@ -407,7 +419,10 @@ export async function pressUnlockedExt(
   if (!gate.consume(grant, { ...target, href })) throw new LockedError("the unlock is missing, used, expired or for another control");
   const armed = await bridge.call<{ nonce?: string }>("lock_arm", { tabId: target.tabId, scope: "user" }, 10_000);
   if (!armed || typeof armed.nonce !== "string") throw new LockedError("the extension did not arm the unlock");
-  return (await bridge.call<{ via?: string }>("press_unlocked", { ...target, nonce: armed.nonce }, 15_000)) || {};
+  // 30 s: the extension answers once the page the press opened has loaded
+  // (up to 8 s on top of a paced press), and a timeout here would read as
+  // not pressed when it was.
+  return (await bridge.call<{ via?: string; navigated?: boolean; url?: string; title?: string }>("press_unlocked", { ...target, nonce: armed.nonce }, 30_000)) || {};
 }
 
 // Open Claude in Chrome path: refs live in that extension's own world, so
@@ -444,6 +459,44 @@ export type Decision =
   | { kind: "grant"; cls: UnlockClass; label: string; direct: true }
   | { kind: "ask"; cls: UnlockClass; label: string; question: string };
 
+// One direct ask presses one control of its class, except checkout
+// navigation: "check out" may take the mini cart's Checkout, then the cart
+// page's, up to CHECKOUT_PRESSES_PER_ASK presses. A checkout step
+// ("Continue to payment") gets one press per ask, kept apart, so it never
+// carries on to a later step that may create the order. None of them pays;
+// Place order never has an unlock class.
+export const CHECKOUT_PRESSES_PER_ASK = 3;
+function spentKey(cls: UnlockClass, label: string): string {
+  return cls === "checkout" && Protect.isCheckoutStep(label) && !Protect.isCheckoutNav(label) ? "checkout-step" : cls;
+}
+export function isSpent(spent: Set<string> | undefined, cls: UnlockClass, label: string): boolean {
+  return !!spent?.has(spentKey(cls, label));
+}
+// Orbi Desktop: one press per ask for the whole class, checkout steps
+// included, counted in the same set the browser path uses.
+function classKeys(spent: Set<string>, cls: string): string[] {
+  return cls === "checkout" ? ["checkout", "checkout-step", ...[...spent].filter((k) => k.startsWith("checkout#"))] : [cls];
+}
+export function isSpentDesktop(spent: Set<string> | undefined, cls: string): boolean {
+  return !!spent && classKeys(spent, cls).some((k) => spent.has(k));
+}
+export function spendDesktop(spent: Set<string>, cls: string): void {
+  spent.add(cls);
+  if (cls === "checkout") spent.add("checkout-step");
+}
+export function spendDirect(spent: Set<string>, cls: UnlockClass, label: string): void {
+  const key = spentKey(cls, label);
+  if (key === "checkout") {
+    for (let i = 1; i < CHECKOUT_PRESSES_PER_ASK; i++) {
+      if (!spent.has(`checkout#${i}`)) {
+        spent.add(`checkout#${i}`);
+        return;
+      }
+    }
+  }
+  spent.add(key);
+}
+
 export const NOT_LOCKED = "That control is not locked. Press it with click as usual.";
 
 // What request_unlock does for a control: refuse it, wait for the user's
@@ -479,9 +532,9 @@ export function decideUnlock(
       message: "The password field is empty. Orbi never types or reads passwords. Ask the user to type their password into the page themselves and to say yes when they are done, then call request_unlock again for this control.",
     };
   }
-  const spent = opts.spent?.has(cls);
+  const spent = isSpent(opts.spent, cls, label);
   const direct = !spent && (isDirectAsk(opts.userText, cls, label) || (!!opts.passwordYes && cls === "account"));
   if (direct) return { kind: "grant", cls, label, direct: true };
-  const question = cls === "checkout" ? "Do you want me to go to checkout?" : `Do you want me to press ${label}?`;
+  const question = cls === "checkout" && / check ?out /.test(norm(label)) ? "Do you want me to go to checkout?" : `Do you want me to press ${label}?`;
   return { kind: "ask", cls, label, question };
 }

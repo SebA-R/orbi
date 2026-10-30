@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { MOVED_TEXT, SessionHub, STALE_TEXT, type HubMessage, type HubSession } from "../hub.ts";
+import { MOVED_TEXT, SessionHub, STALE_TEXT, SWITCH_TURN_MAX_MS, type HubMessage, type HubSession } from "../hub.ts";
 import { claimConfirmation } from "../pay.ts";
 import { Session, type ServerMessage } from "../session.ts";
 
@@ -229,4 +229,191 @@ test("a closed session's late output never reaches the next session's window", (
   made[0].send({ type: "receipt", item: "Blue mug", total: "$9.00", last4: "1111" });
   made[0].send({ type: "confirm", item: "Blue mug", quantity: 1, total: "$9.00", changes: "" });
   assert.deepEqual(b.got.filter((m) => m.type === "receipt" || m.type === "confirm"), []);
+});
+
+// A backend switch (the provider setting moved) and the turn in progress.
+function switchHub(log?: (line: string) => void) {
+  type Fake = HubSession & { working: boolean; paying: boolean; retired: string[]; texts: string[]; send: (m: ServerMessage) => void; ended: () => void };
+  const made: Fake[] = [];
+  const hub = new SessionHub((send, ended) => {
+    const s: Fake = {
+      backend: made.length ? "local x" : "claude",
+      working: false,
+      paying: false,
+      retired: [],
+      texts: [],
+      send,
+      ended,
+      userText: (text) => void s.texts.push(text),
+      busy: () => s.paying,
+      interrupt() {},
+      handOff() {},
+      close() {},
+      retire: (why) => void s.retired.push(why),
+      midTurn: () => s.working,
+    };
+    made.push(s);
+    return s;
+  }, log);
+  return { hub, made };
+}
+
+const until = async (pred: () => boolean, what: string) => {
+  for (let i = 0; i < 200 && !pred(); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(pred(), what);
+};
+
+test("a provider switch waits for the turn the agent is working on, then retires the session", async () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  assert.equal(hub.switchBackend("local x", "your local model x"), false, "not mid-turn");
+  assert.deepEqual(made[0].retired, []);
+  assert.ok(w.got.some((m) => m.type === "status" && (m as any).text === "Switching to your local model x when this turn ends."));
+  made[0].send({ type: "agent_text", text: "Found three mugs." });
+  assert.deepEqual(w.spoken(), ["Found three mugs."], "the turn's reply still reaches the window");
+  made[0].working = false;
+  await until(() => made.length === 2, "the switch once the turn ends");
+  assert.deepEqual(made[0].retired, ["switched to your local model x"]);
+  w.peer.leave();
+});
+
+test("a switch and a switch back while a turn runs: nothing is retired", async () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  assert.equal(hub.switchBackend("claude", "Claude"), false, "back to the backend it runs on");
+  made[0].working = false;
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(made.length, 1);
+  assert.deepEqual(made[0].retired, []);
+  assert.equal(hub.switchBackend("claude", "Claude"), false, "the same backend is never a switch");
+  w.peer.leave();
+});
+
+test("Session.midTurn: true from the user's words until the turn's result", () => {
+  const s = new Session(() => {});
+  assert.equal(s.midTurn(), false);
+  s.userText("find me a mug");
+  assert.equal(s.midTurn(), true);
+  s.onSdkMessage({ type: "result", subtype: "success" } as any);
+  assert.equal(s.midTurn(), false);
+  s.close();
+});
+
+test("a pending switch: switching back says so; a turn that never ends can't hold it past SWITCH_TURN_MAX_MS", async () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  hub.switchBackend("claude", "Claude");
+  assert.ok(w.got.some((m) => m.type === "status" && (m as any).text === "Staying on Claude."));
+
+  const realNow = Date.now;
+  try {
+    hub.switchBackend("local x", "your local model x");
+    const t = realNow();
+    Date.now = () => t + SWITCH_TURN_MAX_MS + 1;
+    await until(() => made.length === 2, "switched though the turn never ended");
+  } finally {
+    Date.now = realNow;
+  }
+  w.peer.leave();
+});
+
+test("a local model's turn is not waited for (its locks follow the setting at once)", () => {
+  const s = new Session(() => {});
+  s.localMode = true;
+  s.userText("find me a mug");
+  assert.equal(s.midTurn(), false);
+  s.close();
+});
+
+test("words said while a switch waits go to the new backend, not to a new turn on the old one", async () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  w.peer.userText("actually a blue one");
+  assert.deepEqual(made[0].texts, ["find me a mug"], "held, not a new turn on Claude");
+  // The old session's "off" leaves the held words thinking.
+  made[0].send({ type: "busy", on: false, seq: 0 });
+  assert.deepEqual(w.got.filter((m) => m.type === "busy").map((m) => (m as any).seq), [1]);
+  made[0].working = false;
+  await until(() => made.length === 2, "the switch once the turn ends");
+  assert.deepEqual(made[1].texts, ["actually a blue one"]);
+  w.peer.leave();
+});
+
+test("a cancelled switch hands the held words to the session it stays on", () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  w.peer.userText("a blue one");
+  hub.switchBackend("claude", "Claude");
+  assert.deepEqual(made[0].texts, ["find me a mug", "a blue one"]);
+  assert.equal(made.length, 1);
+  w.peer.leave();
+});
+
+test("a newer target keeps the wait's start time and says the new target once", () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  const realNow = Date.now;
+  try {
+    const t = realNow();
+    Date.now = () => t;
+    hub.switchBackend("local x", "your local model x");
+    hub.switchBackend("local x", "your local model x");
+    Date.now = () => t + SWITCH_TURN_MAX_MS / 2;
+    hub.switchBackend("local y", "your local model y");
+    Date.now = () => t + SWITCH_TURN_MAX_MS + 1;
+    assert.equal(hub.switchBackend("local y", "your local model y"), true, "the cap counts from the first request");
+  } finally {
+    Date.now = realNow;
+  }
+  const statuses = w.got.filter((m) => m.type === "status").map((m) => (m as any).text);
+  assert.deepEqual(statuses.filter((t) => t.startsWith("Switching")), ["Switching to your local model x when this turn ends.", "Switching to your local model y when this turn ends."]);
+  w.peer.leave();
+});
+
+test("a waiting switch whose session ended is forgotten: no stale \"Staying on\" later", async () => {
+  const { hub, made } = switchHub();
+  const w = windowOf(hub);
+  w.peer.userText("find me a mug");
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  made[0].ended();
+  await new Promise((r) => setTimeout(r, 400));
+  w.peer.userText("hello");
+  assert.equal(made[1].backend, "local x");
+  assert.deepEqual(made[1].texts, ["hello"], "not held: nothing waits any more");
+  hub.switchBackend("local x", "your local model x");
+  assert.ok(!w.got.some((m) => m.type === "status" && /Staying on/.test((m as any).text)));
+  w.peer.leave();
+});
+
+test("a switch that waits for a payment, then a turn, logs both", async () => {
+  const lines: string[] = [];
+  const { hub, made } = switchHub((l) => lines.push(l));
+  const w = windowOf(hub);
+  w.peer.userText("buy it");
+  made[0].paying = true;
+  made[0].working = true;
+  hub.switchBackend("local x", "your local model x");
+  made[0].paying = false;
+  await until(() => lines.some((l) => l.includes("turn in progress")), "the turn wait is logged");
+  assert.ok(lines.some((l) => l.includes("payment under way")));
+  made[0].working = false;
+  await until(() => made.length === 2, "switched");
+  w.peer.leave();
 });

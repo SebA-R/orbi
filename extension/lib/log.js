@@ -8,22 +8,6 @@ const SECRET_KEYS = /^(number|card|card_?number|cc-?(number|csc|exp)|csc|cvc|cvv
 const MAX_STRING = 400;
 const RING_SIZE = 200;
 
-export function luhnValid(digits) {
-  if (!/^\d{12,19}$/.test(digits)) return false;
-  let sum = 0;
-  let dbl = false;
-  for (let i = digits.length - 1; i >= 0; i--) {
-    let d = digits.charCodeAt(i) - 48;
-    if (dbl) {
-      d *= 2;
-      if (d > 9) d -= 9;
-    }
-    sum += d;
-    dbl = !dbl;
-  }
-  return sum % 10 === 0;
-}
-
 // Any digit run holding a card number, by content/mask.js's check (a card
 // glued to other digits too).
 export function maskCardNumbers(text) {

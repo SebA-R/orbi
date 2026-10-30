@@ -53,12 +53,18 @@ export const basicVoice = (health) => !!health && health.connected === true && h
 // What the badge and the update check care about: the two grants only the
 // user can give. A mic state the worker can't read ("unknown") is not
 // counted as missing.
+export const missingFrom = ({ site, mic }) => [!site && "site", mic !== "granted" && mic !== "unknown" && "mic"].filter(Boolean);
+
 export async function missingSetup({ chromeApi = globalThis.chrome, permissions = globalThis.navigator?.permissions } = {}) {
   const [site, mic] = await Promise.all([hasSiteAccess(chromeApi), micState(permissions)]);
-  const missing = [];
-  if (!site) missing.push("site");
-  if (mic !== "granted" && mic !== "unknown") missing.push("mic");
-  return missing;
+  return missingFrom({ site, mic });
+}
+
+// The setup page's three live checks, as the setup page, popup and options
+// page read them.
+export async function setupStatus(agentUrl, chromeApi = globalThis.chrome) {
+  const [site, mic, agent] = await Promise.all([hasSiteAccess(chromeApi), micState(), agentHealth(agentUrl)]);
+  return { site, mic, agent };
 }
 
 export function shouldOpenSetup(reason, missing) {

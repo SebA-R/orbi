@@ -1,7 +1,10 @@
 // Message protocol shared by the extension and the agent server.
 //
 // Bridge socket (extension <-> agent server, ws://localhost:5050/ext), JSON:
-//   ext -> server  { type: "hello", protocol, ext, version }
+//   ext -> server  { type: "hello", protocol, ext, version, client }
+//                  client: this install's stable random id (worker.js), so
+//                  a reconnect of the same install takes the bridge back at
+//                  once while another install is refused (close 4004).
 //   server -> ext  { type: "welcome", protocol, server }
 //   server -> ext  { type: "request", id, method, params }
 //   ext -> server  { type: "response", id, ok: true, result }
@@ -96,6 +99,8 @@ export const ERR = Object.freeze({
   // A watchable-pace action stopped early: the user barged in, switched
   // tabs, or the page went away (background/actor.js).
   INTERRUPTED: "interrupted",
+  // The page did not load: no connection, unknown address, refused (tabs.js).
+  NET_ERROR: "net_error",
   INTERNAL: "internal",
 });
 
@@ -128,6 +133,8 @@ export const RT = Object.freeze({
   VOICE_FINAL: "voice.final",
   VOICE_STATE: "voice.state",
   VOICE_STATE_QUERY: "voice.state.query",
+  // the mic level for the popup's orb face ({level}); optional, not sent yet.
+  VOICE_LEVEL: "voice.level",
   VOICE_ERROR: "voice.error",
   TTS_SPEAK: "tts.speak",
   TTS_STOP: "tts.stop",
@@ -162,9 +169,22 @@ export class BridgeError extends Error {
   }
 }
 
-export function hello(version) {
-  return { type: MSG.HELLO, protocol: PROTOCOL_VERSION, ext: EXT_NAME, version: String(version || "0") };
+export function hello(version, client) {
+  const m = { type: MSG.HELLO, protocol: PROTOCOL_VERSION, ext: EXT_NAME, version: String(version || "0") };
+  if (typeof client === "string" && client) m.client = client;
+  return m;
 }
+
+// An install's client id (worker.js makes one; the server checks the same).
+export const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+// Bridge close codes from the agent server.
+export const CLOSE = Object.freeze({
+  // A newer connection from this same install took over.
+  REPLACED: 4002,
+  // Another install owns the bridge; retry on the backoff.
+  BUSY: 4004,
+});
 
 export function okResponse(id, result) {
   return { type: MSG.RESPONSE, id, ok: true, result: result === undefined ? null : result };

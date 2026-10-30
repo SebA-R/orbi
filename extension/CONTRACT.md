@@ -42,7 +42,7 @@ export async function click({ tabId, x, y }): Promise<void>         // Input.dis
 export async function type({ tabId, text }): Promise<void>          // Input.insertText
 export async function key({ tabId, key }): Promise<void>            // e.g. "Enter", "Tab", "Escape", "ArrowDown"
 export async function scroll({ tabId, x, y, dx, dy }): Promise<void> // Input.dispatchMouseEvent mouseWheel
-export async function screenshot({ tabId }): Promise<{ data: string, mimeType: "image/jpeg" }> // Page.captureScreenshot jpeg q70
+export async function screenshot({ tabId }): Promise<{ data: string, mimeType: "image/jpeg", width, height, scale }> // Page.captureScreenshot jpeg q70, clipped to the viewport at CSS size (width x height CSS px; scale = image px per CSS px, 1 unless the viewport is past the model's 2576 px / 3.75 MP image limit)
 ```
 
 ### B. Page content script (`content/page.js`, injected with `chrome.scripting.executeScript` on demand, idempotent)
@@ -74,8 +74,8 @@ Bridge `INTERNAL` methods for paying: `card_state { tabId }` → `{ fields, fill
 
 ### C. Server bridge (agent, TypeScript)
 
-- `agent/extbridge.ts`: attaches a WebSocket endpoint at `/ext` to the existing HTTP server; accepts one extension at a time (newest wins); handshake per `lib/protocol.js` (reply `welcome`); `call(method, params, timeoutMs?)` → result or throws; `connected()`; events for connect/disconnect.
-- `agent/exttools.ts`: in-process MCP server (Agent SDK `createSdkMcpServer` + `tool`) named `browser` exposing the TOOLS with zod schemas; `click` takes `{ tabId?, ref }` (server calls `rect` then `click`) or `{ tabId?, x, y }`.
+- `agent/extbridge.ts`: attaches a WebSocket endpoint at `/ext` to the existing HTTP server; accepts one extension at a time (the first install keeps it until it goes away; a reconnect with the same hello `client` id replaces its old socket, another install is refused with 4004); handshake per `lib/protocol.js` (reply `welcome`); `call(method, params, timeoutMs?)` → result or throws; `connected()`; events for connect/disconnect.
+- `agent/exttools.ts`: in-process MCP server (Agent SDK `createSdkMcpServer` + `tool`) named `browser` exposing the TOOLS with zod schemas; `click` takes `{ tabId?, ref }` (sent to the bridge as `click { tabId, ref }`; the extension reads the rect, guards and presses) or `{ tabId?, x, y }`. The bridge's `click`, `key` and `press_unlocked` answer their result plus `{ navigated, url?, title? }` once the page settles (`tabs.actAndSettle`: a load that starts within 500 ms is waited for, up to 8 s, and an interrupt ends the wait; `tabs_create` with a url answers `{ tabId, url, title }`); url is origin and path only, and is left out on a page Orbi may not use.
 - `CLEARCART_BROWSER=ext` makes `session.ts` use `exttools` instead of the open-claude-in-chrome stdio MCP server, and `pay.ts` use `call("card_state")`, `call("order_buttons")`, `call("fill_card")` and `lock_arm` + `press_protected` on the order button; default (unset) keeps today's path untouched. Guard/sweep use `call("tab_info")` and `tabs_context`.
 - Test with a fake extension (a ws client in the test) — no browser needed.
 

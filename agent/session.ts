@@ -15,6 +15,7 @@
 // still waiting (it was asked in the old window, so no yes from the new one
 // may answer it) and mutes the turn in progress like a barge-in.
 
+import { randomUUID } from "node:crypto";
 import dns from "node:dns";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,13 +23,13 @@ import { createSdkMcpServer, query, tool, type HookCallback, type HookEvent, typ
 import { z } from "zod";
 
 import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
-import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
+import { ERR as EXT_ERR, ExtError, extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
 import { desktopBridge } from "./desktop/bridge.ts";
 import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
 import { DESKTOP_TOOL_NAMES, desktopToolDefinitions, type DesktopHost } from "./desktop/tools.ts";
-import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envProviderSettings, type ProviderSettings } from "./local/config.ts";
-import { localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
+import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envLocalKeepAlive, envLocalThink, envProviderSettings, type ProviderSettings } from "./local/config.ts";
+import { asksChoice, isRequest, localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
 import { isInjectionLine, looksLikeReasoning, pageData, REMOVED_LINE } from "./local/harden.ts";
 import { withContext, type PageContext } from "./context.ts";
 import * as timing from "./timing.ts";
@@ -40,11 +41,12 @@ import { cardVault } from "./cards.ts";
 import type { CardVault } from "../vault/index.ts";
 import { ACK_PROMPT, buildLocalPrompt, buildSystemPrompt, dangerNote, searchNote, type SearchEngine, EXT_TABS_PROMPT, guidedNote, HISTORY_PROMPT, MEMORY_OFF_PROMPT, MEMORY_PROMPT, SEARCH_PROMPT } from "./prompt.ts";
 import { describe as describePurchase, fieldReason, heardVariant, historyBlock, personalReason, preview as previewPurchase, isPurchaseTell, namesHistory, type PurchaseHistory } from "./history.ts";
-import { factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
+import { answeredBy, factFromUserWords, factGroundedIn, factNamedBy, fold, isForgetAllAsk, isForgetAsk, isRememberAsk, memoryBlock, statesFact, sensitiveReason, transcriptBlock, type AnsweredBy, type MemoryStore, type Transcript, type Turn } from "./memory.ts";
 import {
   decideUnlock,
   isDirectAsk,
   isUnlockYes,
+  spendDirect,
   lockInfoExt,
   ocicLockInfoScript,
   ocicPressScript,
@@ -97,7 +99,16 @@ export const DISALLOWED_BROWSER = [
 // Long-term memory (memory.ts): remember asks the user unless their own
 // words just asked for it; forget the same way; recall lists.
 // record_purchase adds to the purchase history (history.ts) the same way.
+// The Stop hook's reason: the model's question was not spoken; it goes on.
+export const SAID_BEFORE = "What you wrote before the question was spoken; do not say it again.";
+export const FINISH_TASK = "Not spoken: the task is not done. Decide using the user's criteria and saved facts and keep going; ask only for a detail only they know. If they gave nothing to choose by, or the rules need their yes first (sending a message, a confirmation), reply with the same question again.";
+
 const MEMORY_TOOLS = [C + "remember", C + "forget", C + "recall", C + "record_purchase"];
+// Tools whose question, or the reply after them, belongs to the user: a
+// question ending such a turn is never sent back (see Session.finishTask).
+// Desktop tools that act too, for the "tell them before sending a message"
+// rule; the read-only ones (frontmost, apps, read, screenshot) ask nothing.
+const ASKING_TOOLS = new Set([C + "request_checkout", C + "request_unlock", C + "pay_with_saved_card", ...["desktop_open_app", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll"].map((t) => D + t)]);
 
 // Claude's built-in web search (Agent SDK), for shopping advice: perks,
 // promo codes, prices, return policies, reviews. Its queries are checked in
@@ -203,6 +214,16 @@ function localContext(): number | undefined {
   }
 }
 
+// CLEARCART_LOCAL_KEEP_ALIVE, or the default when unset or bad (server.ts
+// refuses to start on a bad one).
+function localKeepAlive(): string | number | null | undefined {
+  try {
+    return envLocalKeepAlive();
+  } catch {
+    return undefined;
+  }
+}
+
 // The spoken acknowledgement at the start of tool work (ACK_PROMPT): on
 // unless ORBI_ACK=0.
 export function ackOn(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -253,6 +274,8 @@ type Tab = { tabId: number; url?: string };
 type Lookup = (host: string) => Promise<Array<{ address: string }>>;
 
 const DNS_TIMEOUT_MS = 1500;
+// Controls the hint lists after an action (session hint, controlsOn).
+const CONTROLS_MAX = 15;
 const BROWSER_TOOL_TIMEOUT_MS = 90_000;
 // request_checkout waits on a person; give it room.
 const CLEARCART_TOOL_TIMEOUT_MS = 10 * 60_000;
@@ -318,6 +341,9 @@ export function sweepNote(n: number, policy: SitePolicy = sitePolicy()): string 
     : `A tab left the allowed sites and was sent to a blank page. ${allowed.length ? `Only browse ${allowed.join(", ")}.` : "No sites are allowed yet; tell the user."}`;
 }
 
+// Matches sweepNote's text in a tool's outcome: the sweep moved a tab.
+export const SWEPT_NOTE = /\bwas sent (?:back|to a blank page)\b/;
+
 // Button lock for navigation: checkout and payment pages are off limits on
 // every site, unless the user asked to check out. Both browser paths,
 // for navigate and for tabs_create / tabs_create_mcp with a url. passed:
@@ -361,7 +387,14 @@ export type ServerMessage =
   | { type: "confirm"; item: string; quantity: number; total: string; changes: string }
   // How that read-back ended: paid, declined by the user, or failed (payment
   // not completed or the agent hit an error).
-  | { type: "confirm_done"; outcome: "paid" | "declined" | "failed" };
+  | { type: "confirm_done"; outcome: "paid" | "declined" | "failed" }
+  // Whether the agent is working on the user's words: on from a user turn
+  // until its result, off while a question waits for the user's answer.
+  // Sent on every user_text and whenever the value changes. The hub adds
+  // seq, how many user_text messages that window has sent (hub.ts), so a
+  // client that has sent newer words can tell a stale "off" from the one
+  // that ends its own turn.
+  | { type: "busy"; on: boolean; seq?: number };
 
 // The whole answer must be a yes: affirmative phrases plus polite filler and
 // nothing else, so "yes, but two of them", "do it later" or "pay attention"
@@ -412,11 +445,14 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   private waiters: Array<(r: IteratorResult<SDKUserMessage>) => void> = [];
   private closed = false;
 
-  push(text: string) {
-    const msg: SDKUserMessage = { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+  // Returns the message's uuid, which the SDK's result for it names.
+  push(text: string): string {
+    const uuid = randomUUID();
+    const msg: SDKUserMessage = { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, uuid };
     const w = this.waiters.shift();
     if (w) w({ value: msg, done: false });
     else this.items.push(msg);
+    return uuid;
   }
 
   close() {
@@ -454,6 +490,10 @@ export function passCovers(pass: CheckoutPass | null, tabId: number | null, url:
 
 // How long the user's last words count for request_unlock's direct match.
 export const USER_WORDS_TTL_MS = 60_000;
+// A spoken checkout ask ("check out") counts for checkout navigation for as
+// long as the turn it started runs (adding to the bag and opening the cart
+// can take longer than USER_WORDS_TTL_MS, in a new tab), up to this cap.
+export const CHECKOUT_WORDS_TTL_MS = 5 * 60_000;
 
 // The user's most recent words, bound to the tab Orbi was on when they
 // spoke and that tab's origin then. spent: unlock classes already pressed
@@ -466,11 +506,15 @@ type UserWords = {
   tabId: number | null;
   origin: Promise<string | null>;
   passwordYes: { tabId: number; label: string; origin: string } | null;
+  // Their checkout reach (wordsFor) lasts while Session.turnsEnded is below
+  // this: the turns open when they came, plus the one they start, if any
+  // (an answer to a question starts none).
+  turnLimit: number;
   // Facts the remember tool saved from these words without a question.
   saves: number;
 };
 
-const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, saves: 0 });
+const noWords = (): UserWords => ({ text: "", spent: new Set(), at: 0, tabId: null, origin: Promise.resolve(null), passwordYes: null, turnLimit: 0, saves: 0 });
 
 // How many facts one utterance can save without a question ("I'm vegan and
 // I wear a medium" is two).
@@ -519,7 +563,14 @@ const NO_ANSWER = "No answer came: the user moved to another Orbi window, or it 
 export class Session {
   private input = new InputQueue();
   private abort = new AbortController();
-  private awaitingAnswer: ((text: string | null) => void) | null = null;
+  // The answer slot of the question waiting for the user (see answerSlot).
+  // Every change re-checks busy (only the setter writes #answerWait).
+  #answerWait: ((text: string | null) => void) | null = null;
+  private get awaitingAnswer() { return this.#answerWait; }
+  private set awaitingAnswer(v: ((text: string | null) => void) | null) {
+    this.#answerWait = v;
+    this.syncBusy();
+  }
   private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false, autoOk: () => dangerModeOn() };
   // Saved cards (vault/index.ts); pay.ts uses agent/cards.ts's when unset.
   private vault: CardVault | undefined;
@@ -530,6 +581,8 @@ export class Session {
   // What the agent runs on, set when run() picks it (local/config.ts
   // backendKey). The hub starts a new session when the setting moves.
   backend?: string;
+  // Which model answers (memory.ts answeredBy), saved with its own lines.
+  private by?: AnsweredBy;
   // The user's most recent words, for request_unlock's direct-ask match.
   private lastUser: UserWords = noWords();
   // The utterance before it, so a fact said just before a short answer
@@ -539,6 +592,9 @@ export class Session {
   // only until the next utterance, which becomes passwordYes if it is an
   // explicit yes.
   private passwordAsk: { tabId: number; label: string; origin: string } | null = null;
+  // Where the last request_unlock press over the extension landed, for the
+  // local model's hint ({ navigated, url, title } as press_unlocked answers).
+  private lastPress: { tabId: number; navigated?: boolean; url?: string; title?: string } | null = null;
   checkoutPass: CheckoutPass | null = null;
   // Set when a tab sweep could not run or could not move a stray tab. Every
   // browser call is refused until a sweep succeeds (fail closed).
@@ -555,12 +611,50 @@ export class Session {
     : null;
   // Keeps user turns in order while their context is fetched.
   private turns: Promise<void> = Promise.resolve();
-  // User turns sent to the SDK whose result has not come back yet.
-  private turnsOpen = 0;
+  // User turns sent to the SDK whose result has not come back yet. Every
+  // change re-checks busy (only the setter writes #openTurns).
+  #openTurns = 0;
+  private get turnsOpen() { return this.#openTurns; }
+  private set turnsOpen(n: number) {
+    this.#openTurns = n;
+    this.syncBusy();
+  }
+  // The uuids of the user turns pushed to the SDK whose result has not come
+  // back, oldest first. A result names the ones it consumed: queued words
+  // can fold into a running turn, so one result may close several.
+  private sdkTurns: string[] = [];
+  // User turns whose result has come back, ever (or that the loop's end
+  // closed); bounds UserWords.turnLimit.
+  private turnsEnded = 0;
+  // The busy value last sent (null: send the next check whatever it
+  // finds, after a new user_text). A client starts out not busy.
+  private busySent: boolean | null = false;
   // The turn in progress was interrupted: nothing more from it is spoken.
   private muted = false;
   // Reply text of the current turn, spoken when the turn ends (see onSdkMessage).
   private held: string[] = [];
+  // This turn so far (reset when a turn's result comes back): a browser
+  // tool came back, a tool asked the user something or may lead to a
+  // question that belongs to them (checkout, unlock, pay, desktop, a
+  // remember or forget question), and the Stop hook already sent the model
+  // back to work once.
+  private browseIds = new Set<string>();
+  private turnBrowsed = false;
+  private turnAsked = false;
+  private turnNudged = false;
+  // The reply the Stop hook sent back before its message arrived: the text
+  // blocks that spell it out, in order, are not spoken when they come.
+  private dropText = "";
+  // The words of each user turn sent to the SDK whose result has not come
+  // back, oldest first: [0] is the turn in progress. lastUser can be newer
+  // (a message queued mid-turn).
+  private turnWords: string[] = [];
+  // A fact remember held back mid-task (deferredFact), the one the last
+  // reply then asked to remember (offeredFact), and that fact while the
+  // user's next words are an explicit yes to it (factYes).
+  private deferredFact: string | null = null;
+  private offeredFact: string | null = null;
+  private factYes: string | null = null;
   // ORBI_TIMING: the current model step has shown its first output.
   private stepOutput = false;
   // Guided mode as the model last heard it: the system prompt's at the
@@ -578,6 +672,14 @@ export class Session {
   // Orbi Desktop was connected when the local session started, so its tools
   // are offered (they stay as they were for the rest of the session).
   private localDesktop = false;
+  // The server says the acknowledgement for a small local model (localAck),
+  // once per turn (acked), for the call ackFor once the guard allows it.
+  private serverAck = false;
+  private acked = false;
+  private ackFor: string | null = null;
+  // The step's later calls, for ackFor when its call is refused before the
+  // guard sees it (local/query.ts ONE_AT_A_TIME, the loop guard, prepare).
+  private ackNext: string[] = [];
   // The user's own words this turn, as the local scaffold last saw them.
   private localWords = "";
 
@@ -624,11 +726,19 @@ export class Session {
 
   userText(text: string) {
     if (this.closed || !text.trim()) return;
+    // Every user_text is answered with the busy state, so its sender knows
+    // the words got here (see the busy ServerMessage).
+    this.busySent = null;
     // Only the user's own words are kept, never the context block.
     if (memoryOn()) this.log?.add("user", text);
     const tabId = this.state.lastTabId;
     const pw = this.passwordAsk;
     this.passwordAsk = null;
+    // A yes to the remember question the last reply ended on counts only as
+    // the very next words, and not when they answer another question.
+    const offered = this.offeredFact;
+    this.offeredFact = null;
+    this.factYes = offered && !this.awaitingAnswer && isExplicitYes(text) && !/\b(pay|order|buy|checkout|confirm(ed)?)\b/i.test(text) ? offered : null;
     this.prevUser = this.lastUser;
     this.lastUser = {
       text,
@@ -637,6 +747,7 @@ export class Session {
       tabId,
       origin: tabId == null ? Promise.resolve(null) : this.tabUrl(tabId).then((u) => originOf(u)),
       passwordYes: pw && isExplicitYes(text) ? pw : null,
+      turnLimit: this.turnsEnded + this.turnsOpen,
       saves: 0,
     };
     // New words after a yes that has not paid yet: the conversation moved
@@ -652,6 +763,11 @@ export class Session {
       resolve(text);
       return;
     }
+    // Counted now, while its context is fetched, so an interrupt sees it,
+    // and before the Danger mode line so the client is told busy first.
+    this.turnsOpen++;
+    this.turnWords.push(text);
+    this.lastUser.turnLimit++;
     if (!this.dangerSaid && dangerModeOn()) {
       this.dangerSaid = true;
       this.status("Danger mode is on: no button lock, and orders are placed without waiting for a yes");
@@ -661,12 +777,11 @@ export class Session {
       this.status("Danger mode is off while using a local model: the button lock and the spoken yes stay on");
       this.say(DANGER_LOCAL_LINE);
     }
-    // Counted now, while its context is fetched, so an interrupt sees it.
-    this.turnsOpen++;
     const fetch = this.pageContext;
     if (!fetch) {
       timing.mark("to_model");
-      return this.input.push(this.withMemoryNote(this.withSettingNotes(text)));
+      this.sdkTurns.push(this.input.push(this.withMemoryNote(this.withSettingNotes(text))));
+      return;
     }
     const ctx = Promise.race([
       fetch().catch(() => null),
@@ -675,7 +790,7 @@ export class Session {
     this.turns = this.turns.then(async () => {
       const c = await ctx;
       timing.mark("to_model", { detail: c ? "with context" : "no context" });
-      if (!this.closed) this.input.push(withContext(this.withMemoryNote(this.withSettingNotes(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
+      if (!this.closed) this.sdkTurns.push(this.input.push(withContext(this.withMemoryNote(this.withSettingNotes(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy())));
     });
     return this.turns;
   }
@@ -745,7 +860,9 @@ export class Session {
     // Desktop is connected (localScaffold drops the tools otherwise).
     const desktop = ext && (!local || this.localDesktop) ? DESKTOP_PROMPT : "";
     const rules = local ? buildLocalPrompt({ guided: this.guided, search: this.search }) : buildSystemPrompt({ guided: this.guided, ext: ext ? extPrompt : undefined, search: this.search });
-    const base = rules + desktop + (search ? SEARCH_PROMPT : "") + (ackOn() ? ACK_PROMPT : "");
+    // A small local model gets no ACK_PROMPT: the server speaks the
+    // acknowledgement itself (localAck), at no model cost.
+    const base = rules + desktop + (search ? SEARCH_PROMPT : "") + (ackOn() && !local ? ACK_PROMPT : "");
     this.memSeen = this.memKey();
     if (!this.mem) return base;
     if (!memoryOn()) return base + MEMORY_OFF_PROMPT;
@@ -788,6 +905,9 @@ export class Session {
     const pending = this.awaitingAnswer;
     this.awaitingAnswer = null;
     this.passwordAsk = null;
+    // A remember offer was heard there, not here.
+    this.offeredFact = null;
+    this.factYes = null;
     this.lastUser = noWords();
     this.prevUser = noWords();
     pending?.(null);
@@ -825,6 +945,17 @@ export class Session {
     return this.paying;
   }
 
+  // The agent is working on a user turn (hub.ts waits for it before
+  // switching backends). A turn only waiting for the user's answer to a
+  // question is not: retiring it declines the question, never confirms it.
+  // Nor is a local model's: Danger mode and the extension's click lock
+  // follow the provider setting at once, so a local turn left running
+  // after a switch to Claude would act with the locks lifted. It stops now,
+  // as before.
+  midTurn(): boolean {
+    return !this.closed && !this.localMode && this.turnsOpen > 0 && !this.awaitingAnswer;
+  }
+
   // What the next session must start with (SessionCarry).
   carry(): SessionCarry {
     return { cardFieldsLive: this.state.cardFieldsLive, cardTabId: this.state.cardTabId ?? null, sweepBroken: this.sweepBroken };
@@ -852,9 +983,19 @@ export class Session {
     this.closed = true;
     this.payStop?.abort();
     this.awaitingAnswer?.(null);
-    this.awaitingAnswer = null;
+    this.awaitingAnswer = null; // and busy off: nothing more comes from this session
     this.input.close();
     this.abort.abort();
+  }
+
+  // Tells the client whether the agent is working on the user's words: a
+  // turn is open and no question waits for their answer. Only on a change,
+  // unless busySent was reset (a new user_text).
+  private syncBusy() {
+    const on = this.#openTurns > 0 && !this.#answerWait && !this.closed;
+    if (on === this.busySent) return;
+    this.busySent = on;
+    this.send({ type: "busy", on });
   }
 
   // Stops any paced click, typing or scroll the extension is still playing.
@@ -863,10 +1004,13 @@ export class Session {
     extBridge.call("actions_stop", {}, 5_000).catch(() => {});
   }
 
-  private say(text: string, kind = "line") {
+  // byModel: the line came from the model's turn (its words, or a
+  // question one of its tools asks: request_unlock, askYes, desktop ask).
+  private say(text: string, kind = "line", byModel = kind === "say" || kind === "reply") {
     if (this.muted) return this.unspoken(text);
     timing.mark("first_speech", { once: true, detail: kind });
-    if (memoryOn()) this.log?.add("assistant", text);
+    // Only lines from the model's turn are tagged with it.
+    if (memoryOn()) this.log?.add("assistant", text, undefined, byModel ? this.by : undefined);
     this.send({ type: "agent_text", text });
   }
 
@@ -910,7 +1054,21 @@ export class Session {
     }
   }
 
-  private guard: HookCallback = async (input) => {
+  // The PreToolUse guard (check), and after it the local acknowledgement
+  // for the call it waits for: spoken only when the call is allowed, from
+  // the input as checked, so a refused site is never announced.
+  private guard: HookCallback = async (input, toolUseID, opts) => {
+    const out = await this.check(input, toolUseID, opts);
+    if (input.hook_event_name === "PreToolUse" && this.ackFor && this.ackFor === input.tool_use_id) {
+      this.ackFor = null;
+      this.ackNext = [];
+      const denied = (out as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision === "deny";
+      if (!denied && !this.muted) this.say(localAck(input.tool_name, input.tool_input), "ack");
+    }
+    return out;
+  };
+
+  private check: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const name = input.tool_name;
     const args = (input.tool_input || {}) as Record<string, unknown>;
@@ -1011,8 +1169,17 @@ export class Session {
   // Loads `url` (or "back") in a tab and returns where it ended up. Our
   // extension's navigate reports that (and refuses a landing it does not
   // allow); the OCIC one does not, so list again.
+  // A load that failed (net_error) still landed somewhere, an error page:
+  // ask the tab, as navigate answered before it reported the failure.
   async navTab(tabId: number, url: string): Promise<string | null> {
-    if (extMode()) return (await extBridge.call<{ url?: string }>("navigate", { url, tabId }))?.url ?? null;
+    if (extMode()) {
+      try {
+        return (await extBridge.call<{ url?: string }>("navigate", { url, tabId }))?.url ?? null;
+      } catch (e) {
+        if (!(e instanceof ExtError) || e.code !== EXT_ERR.NET_ERROR) throw e;
+        return (await extBridge.call<{ url?: string }>("tab_info", { tabId }, 5_000))?.url ?? null;
+      }
+    }
     await callBrowserTool("navigate", { url, tabId });
     return (await this.listTabs()).find((t) => t.tabId === tabId)?.url ?? null;
   }
@@ -1044,11 +1211,20 @@ export class Session {
 
   // The user's last words if they still count for this tab and its origin
   // (bound when spoken, USER_WORDS_TTL_MS), else empty words.
-  private async wordsFor(tabId: number, href: string): Promise<UserWords | null> {
+  // cls: the control's unlock class. For checkout navigation the words
+  // still have to be the user's latest and on this site, but may be from
+  // another tab of it, as long as the turn they started (or, for an answer,
+  // the turn under way) is still running.
+  private async wordsFor(tabId: number, href: string, cls?: string | null): Promise<UserWords | null> {
     const w = this.lastUser;
-    if (!w.text || w.tabId !== tabId || Date.now() - w.at > USER_WORDS_TTL_MS) return null;
+    if (!w.text) return null;
+    const age = Date.now() - w.at;
+    const near = w.tabId === tabId && age <= USER_WORDS_TTL_MS;
+    const checkoutTurn = cls === "checkout" && w.tabId != null && this.turnsEnded < w.turnLimit && age <= CHECKOUT_WORDS_TTL_MS;
+    if (!near && !checkoutTurn) return null;
     const origin = await w.origin;
-    return origin && origin === originOf(href) ? w : null;
+    // Read again after the wait: new words replace these.
+    return origin && origin === originOf(href) && this.lastUser === w ? w : null;
   }
 
   // The tabs the sweep checks: the checkout pass tab is left out while it is
@@ -1232,7 +1408,8 @@ export class Session {
     const issued = userUnlockGate.issue({ tabId, href: await this.tabUrl(tabId), ref, label, cls });
     if (!issued.ok) return issued.error;
     if (extMode()) {
-      await pressUnlockedExt(extBridge, issued.grant, { tabId, ref, label, cls });
+      const r = await pressUnlockedExt(extBridge, issued.grant, { tabId, ref, label, cls });
+      this.lastPress = { tabId, navigated: r.navigated, url: r.url, title: r.title };
       return null;
     }
     if (!userUnlockGate.consume(issued.grant, { tabId, href: await this.tabUrl(tabId), ref, label, cls })) return "The page changed before the press.";
@@ -1244,6 +1421,7 @@ export class Session {
   // user's own last words (this.lastUser), never anything Claude passes.
   async requestUnlock(args: { tabId?: number; ref?: string; label: string; action: string; reason?: string }, signal?: AbortSignal): Promise<ToolText> {
     const tabId = args.tabId ?? this.state.lastTabId;
+    this.lastPress = null;
     if (tabId == null) return said("No tab is open yet. Open the page first, then call request_unlock with its tabId.");
     const href = await this.tabUrl(tabId);
     if (!href) return said("Could not check which page that tab is on. Try again in a moment.");
@@ -1259,7 +1437,8 @@ export class Session {
     const ref = args.ref || "label";
     const label = String(info.label || args.label);
     const origin = originOf(href);
-    const words = await this.wordsFor(tabId, href);
+    // The wider reach is for plain checkout navigation only, never a step.
+    const words = await this.wordsFor(tabId, href, info.cls === "checkout" && Protect.isCheckoutNav(label) ? "checkout" : null);
     const userText = words?.text ?? "";
     const pw = words?.passwordYes;
     const passwordYes = !!pw && pw.tabId === tabId && pw.origin === origin && Protect.sameLabel(pw.label, label);
@@ -1282,7 +1461,7 @@ export class Session {
         return said("declined, nothing was pressed. The user interrupted before the question was asked.");
       }
       this.cancelMemoryAsk();
-      this.say(d.question);
+      this.say(d.question, "line", true);
       const answer = await new Promise<string | null>((resolve) => {
         this.awaitingAnswer = this.answerSlot(signal, resolve);
       });
@@ -1296,7 +1475,7 @@ export class Session {
       }
       how = "user confirmed";
     } else {
-      words!.spent.add(d.cls);
+      spendDirect(words!.spent, d.cls, label);
     }
     if (d.cls === "account") this.passwordAsk = null;
     let failed: string | null;
@@ -1309,8 +1488,10 @@ export class Session {
       this.status(`unlock failed: ${d.cls}`);
       return said(`Not pressed: ${failed}`);
     }
-    // The pass starts only after the press worked, for this tab alone.
-    if (d.cls === "checkout" && origin) {
+    // The pass starts only after the press worked, for this tab alone, and
+    // only for checkout navigation: a step ("Continue to payment") leaves
+    // the pass as it is, so it never re-arms the free navigate or extends it.
+    if (d.cls === "checkout" && Protect.isCheckoutNav(label) && origin) {
       const now = Date.now();
       const pass: CheckoutPass = { tabId, origin, landBy: now + PASS_LAND_MS, until: now + PASS_MAX_MS, landed: false };
       this.checkoutPass = pass;
@@ -1437,7 +1618,8 @@ export class Session {
   private async askYes(question: string, signal?: AbortSignal): Promise<{ yes: boolean; why: string }> {
     if (this.muted) return { yes: false, why: "The user interrupted before the question was asked." };
     if (this.awaitingAnswer || this.state.confirmation?.state === "pending") return { yes: false, why: "Another question is waiting for the user's answer. Ask again later." };
-    this.say(question);
+    this.turnAsked = true;
+    this.say(question, "line", true);
     const answer = await new Promise<string | null>((resolve) => {
       const done = this.answerSlot(signal, (t) => {
         if (this.memoryAsk === done) this.memoryAsk = null;
@@ -1488,11 +1670,22 @@ export class Session {
     if (from) {
       from.saves++;
       how = isRememberAsk(from.text) ? "asked" : "told";
+    } else if (this.factYes && this.factYes.toLowerCase() === text.toLowerCase() && !this.mem.replacing(text)) {
+      // The reply after the task asked to remember it, and they said yes.
+      this.factYes = null;
+      how = "confirmed";
     } else if (this.localMode) {
       // A local model saves only what the user said in their own words:
       // never its own idea or a page's, not even after a question.
       this.status("memory: not saved (local model, not the user's own words)");
       return said("Not saved: on this model Orbi saves only facts the user just said in their own words. Do not ask about it.");
+    } else if (this.finishHookOn() && this.taskUnderway() && !isRememberAsk(this.turnRequest())) {
+      // Halfway through a task the Stop hook keeps going, a memory question
+      // would stop it: the question waits for the reply after the task, and
+      // a yes to it then saves (factYes). Nothing is saved before.
+      this.deferredFact = text;
+      this.status("memory: not saved yet (asked mid-task, deferred)");
+      return said(`Not saved yet; don't ask now. Finish the task first, then end your last reply with "Want me to remember that ${text}?". If the user says yes, call remember again with the same fact.`);
     } else {
       // A fact it would replace is named in the question.
       const old = this.mem.replacing(text);
@@ -1728,18 +1921,37 @@ export class Session {
       [C + "request_checkout"]: ["size", "cardNickname"],
     };
     const browser = extToolDefinitions().map((d) => b(d.name));
-    const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"]));
+    const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"], ["desktop_open_app", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll"].map((t) => D + t)));
+    // The last page the hint reported per tab (origin and path), so a
+    // result that does not say whether it navigated lists the page's
+    // controls only when it moved. And the controls it last read there, so
+    // a click or Enter that opened a drawer, a dialog or results without a
+    // new address lists only the controls that came with them.
+    const seenUrl = new Map<number, string>();
+    const seenControls = new Map<number, Set<string>>();
     return {
       drop,
       describe,
       hide,
-      pageTools: new Set(browser.filter((t) => t !== b("screenshot"))),
+      // desktop_read is another app's text: untrusted data like a page.
+      pageTools: new Set([...browser.filter((t) => t !== b("screenshot")), D + "desktop_read"]),
       actionTools: acting,
       prepare: async (tool, args) => {
         const a = { ...args };
         if (tool === C + "say" && looksLikeReasoning(String(a.text ?? ""))) {
           this.status(`(not spoken) local say read like reasoning: ${String(a.text ?? "").slice(0, 120)}`);
           throw new Error('Not spoken: say is only for a few words to the user, like "Opening the shop." Never notes about the user or tools.');
+        }
+        if (tool === b("click") && !vision) {
+          // Without screenshots a point is a guess: refs only.
+          delete a.x;
+          delete a.y;
+          if (typeof a.ref !== "string") throw new Error('Not run: click needs a ref. Call find with a few words of the button or link\'s name, then click with the ref it returns.');
+        } else if ((tool === b("navigate") || tool === b("tabs_create")) && typeof a.url === "string") {
+          const u = a.url.trim();
+          const fixed = webAddress(u);
+          if (fixed) a.url = fixed;
+          else if (u) throw new Error(`Not run: "${u.slice(0, 40)}" is not a web address. Use the site's full address, for example ${suggestAddress(u)}, or search for it.`);
         }
         if (tool === b("read_page")) {
           a.filter = "interactive";
@@ -1760,18 +1972,80 @@ export class Session {
       hint: async (tool, args, text, isError) => {
         const short = tool.replace(B, "").replace(C, "");
         const tabId = typeof args.tabId === "number" ? args.tabId : this.state.lastTabId;
-        // Where an action landed and what is on that page, so the model
-        // knows which page it is on and has the refs to go on with.
-        if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && tabId != null && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
-          await new Promise((r) => setTimeout(r, 700));
-          const t = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId }, 5_000).catch(() => null);
+        // Where an action landed, and when it opened another page, what is
+        // on it, so the model has the refs to go on with. The extension
+        // answers click, key and press_unlocked once the page settled
+        // ({ navigated, url, title }); navigate and tabs_create once it
+        // loaded ({ url, title }).
+        if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && (tabId != null || short === "tabs_create") && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
+          let t: { tabId?: number; url?: string; title?: string; navigated?: boolean } | null = null;
+          let read = false;
+          try {
+            // The result's own JSON line (page tools come wrapped in page-data markers).
+            const line = text.split("\n").find((l) => l.startsWith("{"));
+            if (line) {
+              t = JSON.parse(line);
+              read = true;
+            }
+          } catch {}
+          // Unreadable (the page-data guard cut it, or replaced it for a
+          // title that read like instructions): only its tab, if that shows.
+          if (!read) {
+            const m = /"tabId":(\d+)/.exec(text);
+            t = m ? { tabId: Number(m[1]) } : null;
+          }
+          const opened = short === "navigate" || short === "tabs_create";
+          // A readable answer with no url: a blank tab (tabs_create without
+          // a url) or a page Orbi may not use. Nothing to say.
+          if (opened && read && typeof t?.url !== "string") return null;
+          // A new tab whose id did not come through: no telling which it is.
+          if (short === "tabs_create" && typeof t?.tabId !== "number") return null;
+          const on = opened && typeof t?.tabId === "number" ? t.tabId : tabId;
+          if (on == null) return null;
+          if (opened) t = { ...t, navigated: true };
+          // request_unlock answers a sentence: where its press landed was
+          // kept aside (lastPress).
+          if (short === "request_unlock") {
+            const p = this.lastPress;
+            this.lastPress = null;
+            if (p?.tabId === on && typeof p.url === "string") t = p;
+          }
+          const swept = SWEPT_NOTE.test(text);
+          // A settled answer without a url is a page Orbi may not use:
+          // nothing about it goes to the model.
+          if (!swept && read && typeof t?.navigated === "boolean" && typeof t.url !== "string") return null;
+          // No url to go on: a result that could not be read (above), or one
+          // with no settled fields (an older extension). Every press the
+          // extension answers has already settled (router.js settled), so
+          // ask the tab. So too when the tab sweep (it runs before this
+          // hint) sent a tab back from where the result says.
+          if (typeof t?.url !== "string" || swept) {
+            // The sweep moved the tab: it is on another page than the result says.
+            const navigated = swept || t?.navigated;
+            const now = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId: on }, 5_000).catch(() => null);
+            // tab_info gives the full address of a tab Orbi opened, even on
+            // a blocked site: nothing about one of those goes to the model.
+            t = now && !siteBlockReason(now.url, sitePolicy()) ? { ...now, navigated } : null;
+          }
           if (!t?.url) return null;
           const title = String(t.title ?? "").slice(0, 80);
           let where = originOf(t.url) ?? "";
           try {
             where += new URL(t.url).pathname;
           } catch {}
-          const controls = await this.controlsOn(tabId);
+          const changed = typeof t.navigated === "boolean" ? t.navigated : seenUrl.get(on) !== where;
+          seenUrl.set(on, where);
+          // A click or Enter that stayed on the page: the controls it brought
+          // (a cart drawer, a dialog, results), none when it brought none.
+          // One read_page per such press; the list stays bounded.
+          const pressed = short === "click" || (short === "key" && /^(enter|return)$/i.test(String(args.key ?? "").trim()));
+          let controls: string[] = [];
+          if (changed || pressed) {
+            const all = await this.controlLines(on);
+            const before = seenControls.get(on);
+            seenControls.set(on, new Set(all));
+            controls = (changed || !before ? all : all.filter((l) => !before.has(l))).slice(0, CONTROLS_MAX);
+          }
           return `Now on: ${title && !isInjectionLine(title) ? `${JSON.stringify(title)}, ` : ""}${where}${controls.length ? `\nOn this page:\n${pageData(controls.join("\n"), 1_500)}` : ""}`;
         }
         if (short === "find" && /"matches":\[\]/.test(text)) {
@@ -1791,6 +2065,8 @@ export class Session {
         if (/no option matching value/i.test(text)) return "Next: call form_input on the same ref with one of the options listed above, written exactly as shown.";
         if (/not a form field/i.test(text)) return "Next: call read_page to list the form's fields (textbox, combobox) with their refs, then call form_input on each field you have a value for.";
         if (/no_element|not visible|is gone|not found|covered by/i.test(text)) return "Next: call find with a few words of its name to get a fresh ref.";
+        if (short === "tabs_create" && /which is still open/.test(text)) return "Next: do not open another tab. Navigate that tab to another address or close it with tabs_close, or tell the user in one short sentence.";
+        if (/net_error/i.test(text) && (short === "navigate" || short === "tabs_create")) return "Next: the page did not load. Check the address and try once more, or tell the user in one short sentence that the site could not be reached.";
         if (/not_allowed|blocked/i.test(text) && (short === "navigate" || short === "tabs_create")) return "Next: if the user asked for this site, open it with tabs_create and its full url; if it is blocked, tell the user in one short sentence.";
         if (/payment_field|password/i.test(text)) return "Next: leave that field for the user and tell them they can fill it in themselves.";
         if (/^Locked:/.test(text)) return null;
@@ -1820,6 +2096,12 @@ export class Session {
   // Those named in the user's words come first, then fields and buttons,
   // then links: a store's header links would fill the list otherwise.
   private async controlsOn(tabId: number | null, roles?: RegExp): Promise<string[]> {
+    return (await this.controlLines(tabId, roles)).slice(0, CONTROLS_MAX);
+  }
+
+  // Every interactive control on the page as controlsOn lists them, the
+  // ones the user's words name first.
+  private async controlLines(tabId: number | null, roles?: RegExp): Promise<string[]> {
     if (!extMode()) return [];
     const page = await extBridge.call<{ tree?: string }>("read_page", { ...(tabId != null ? { tabId } : {}), filter: "interactive", maxNodes: 150 }, 10_000).catch(() => null);
     const want = new Set(this.localWords.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !/^(the|and|for|with|click|press|please|now|then|this|that|here|into|from|your|you)$/.test(w)));
@@ -1830,7 +2112,7 @@ export class Session {
       const named = m[2].toLowerCase().split(/[^a-z0-9]+/).some((w) => w.length >= 3 && [...want].some((x) => w.startsWith(x) || x.startsWith(w)));
       all.push({ line: `${m[1]} "${m[2]}" [${m[3]}]${/\[locked\]/.test(l) ? " [locked]" : ""}`, rank: named ? 0 : m[1] === "link" ? 2 : 1, i: all.length });
     }
-    return all.sort((a, b) => a.rank - b.rank || a.i - b.i).slice(0, 15).map((x) => x.line);
+    return all.sort((a, b) => a.rank - b.rank || a.i - b.i).map((x) => x.line);
   }
 
   // The ref of the locked control on the tab whose name is label, from the
@@ -1852,7 +2134,7 @@ export class Session {
         // A memory question still waiting gives way, as for request_unlock.
         if (this.muted || (this.awaitingAnswer && this.awaitingAnswer !== this.memoryAsk) || this.state.confirmation?.state === "pending") return null;
         this.cancelMemoryAsk();
-        this.say(question);
+        this.say(question, "line", true);
         return new Promise<string | null>((resolve) => {
           this.awaitingAnswer = this.answerSlot(signal, resolve);
         });
@@ -1881,6 +2163,71 @@ export class Session {
     return { PreToolUse: [{ hooks: [this.guard] }], PostToolUse: [{ hooks: [this.sweep, this.lockNotes, this.searchNote] }] };
   }
 
+  // Start of a user turn: nothing done or asked yet.
+  private newTurn() {
+    this.browseIds.clear();
+    this.turnBrowsed = false;
+    this.turnAsked = false;
+    this.turnNudged = false;
+    this.dropText = "";
+    this.deferredFact = null;
+    this.acked = false;
+    this.ackFor = null;
+    this.ackNext = [];
+  }
+
+  // The words of the turn in progress (not a message queued after them).
+  private turnRequest(): string {
+    return this.turnWords[0] ?? "";
+  }
+
+  // A task the user asked for is under way: their words ask for something
+  // done and a browser tool already ran this turn.
+  private taskUnderway(): boolean {
+    return this.turnsOpen > 0 && this.turnBrowsed && isRequest(this.turnRequest());
+  }
+
+  // The Stop hook may still send this turn back: Claude, not Guided or
+  // Danger mode, and no tool asked anything.
+  private finishHookOn(): boolean {
+    return !this.localMode && !this.guided && !dangerModeOn() && !this.turnAsked;
+  }
+
+  // The Stop hook (Claude only). A turn that ends on a check-in halfway
+  // through a task the user asked for (a choice their criteria or saved
+  // facts already make, a yes to what they asked: local/query.ts
+  // asksChoice) is sent back to work once. Never a question for a detail
+  // only they know (a size they never gave), nor the offer that closes a
+  // finished task ("Want me to read more?"); never when a tool asked or may
+  // need to ask (checkout read-back, unlock, memory), when another question
+  // waits, or when the turn was interrupted.
+  private finishTask: HookCallback = async (input) => {
+    if (input.hook_event_name !== "Stop" || input.stop_hook_active || this.muted || this.turnNudged || this.turnAsked) return {};
+    // Guided mode lets the user choose, and Danger mode's own check-ins stay.
+    if (this.guided || dangerModeOn()) return {};
+    const reply = (input.last_assistant_message ?? this.held.join(" ")).trim();
+    const question = reply.replace(/["'\u201d\u2019)\]]+\s*$/, "");
+    if (!/\?\s*$/.test(question) || !this.taskUnderway()) return {};
+    if (this.awaitingAnswer || this.memoryAsk || this.state.confirmation?.state === "pending") return {};
+    const facts = memoryOn() && this.mem ? this.mem.list().map((f) => f.text).join(". ") : "";
+    if (!asksChoice(question, `${this.turnRequest()} ${facts}`)) return {};
+    this.turnNudged = true;
+    // Its message may not have come through yet: drop it when it does.
+    if (!this.held.length) this.dropText = squash(reply);
+    this.held.forEach((t) => this.unspoken(t));
+    this.held = [];
+    // What came before the question (what it found) is still said.
+    const before = reply.split(/(?<=[.!?])\s+/).slice(0, -1).filter((x) => !x.includes("?")).join(" ");
+    if (before) this.say(before, "reply");
+    this.status("turn: sent back to finish the task");
+    return { decision: "block" as const, reason: before ? `${FINISH_TASK} ${SAID_BEFORE}` : FINISH_TASK };
+  };
+
+  // The hooks for the Claude backend: the shared ones and the Stop hook.
+  claudeHooks(): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+    return { ...this.hooks(), Stop: [{ hooks: [this.finishTask] }] };
+  }
+
   // Text-only messages are held until the turn ends: the SDK can send the
   // text and the tool call of one step as separate messages, so a tool call
   // that follows turns the held text into thinking aloud.
@@ -1897,11 +2244,34 @@ export class Session {
         this.held.forEach((t) => this.unspoken(t));
         this.held = [];
       }
+      // A small local model's first tool step: the server says a few words
+      // for it (ACK_PROMPT is left out of its rules), unless it calls say
+      // itself or the step is one that speaks for itself. They are said
+      // when the guard allows the step's first call (guard).
+      if (working && this.serverAck && !this.acked) {
+        this.acked = true;
+        const tools = blocks.filter((b) => b.type === "tool_use");
+        if (!tools.some((b) => /^(say|request_checkout|request_unlock|pay_with_saved_card)$/.test(shortName(b.name)))) {
+          this.ackFor = tools[0].id;
+          this.ackNext = tools.slice(1).map((b) => b.id);
+        }
+      }
       for (const block of blocks) {
         if (block.type === "text" && block.text?.trim()) {
-          if (working || this.muted) this.unspoken(block.text.trim());
-          else this.held.push(block.text.trim());
+          const t = block.text.trim();
+          // The sent-back reply's blocks, in order; anything else ends it.
+          const st = squash(t);
+          if (this.dropText && this.dropText.startsWith(st)) {
+            this.dropText = this.dropText.slice(st.length).trim();
+            this.unspoken(t);
+          } else {
+            this.dropText = "";
+            if (working || this.muted) this.unspoken(t);
+            else this.held.push(t);
+          }
         } else if (block.type === "tool_use") {
+          if (String(block.name).startsWith(B)) this.browseIds.add(block.id);
+          if (ASKING_TOOLS.has(block.name)) this.turnAsked = true;
           this.toolNames.set(block.id, shortName(block.name));
           this.status(toolLabel(block.name, block.input));
           timing.toolStart(block.id, toolLabel(block.name, block.input));
@@ -1910,6 +2280,12 @@ export class Session {
     } else if (m.type === "user" && Array.isArray((m as any).message?.content)) {
       for (const b of (m as any).message.content) {
         if (b?.type !== "tool_result") continue;
+        // Browsing counts once its result is back, so a remember in the
+        // same step as the first navigate is still the start of the turn.
+        if (this.browseIds.has(b.tool_use_id)) this.turnBrowsed = true;
+        // Its result came back before the guard saw it: refused, so the
+        // acknowledgement waits for the step's next call.
+        if (this.ackFor === b.tool_use_id) this.ackFor = this.ackNext.shift() ?? null;
         const name = this.toolNames.get(b.tool_use_id);
         this.toolNames.delete(b.tool_use_id);
         if (name) this.toolLog(`tool ${name} ${b.is_error ? `error ${errorCode(b.content)}` : "ok"}`);
@@ -1929,15 +2305,38 @@ export class Session {
         const u = (m as any).usage || {};
         timing.mark("turn_end", { detail: `${(m as any).num_turns ?? "?"} steps, in ${u.input_tokens ?? 0} + cache read ${u.cache_read_input_tokens ?? 0} + cache write ${u.cache_creation_input_tokens ?? 0}, out ${u.output_tokens ?? 0}` });
       }
-      if (this.held.length) this.say(this.held.join(" "), "reply");
+      const last = this.held.join(" ");
+      if (this.held.length) this.say(last, "reply");
       this.held = [];
-      this.turnsOpen = Math.max(0, this.turnsOpen - 1);
+      const fact = this.deferredFact;
+      const ended = this.endedTurns(m);
+      this.turnWords.splice(0, ended);
+      // A fact held back mid-task that this reply asks to remember: only
+      // when the reply ends on that very question and no other turn is
+      // waiting, so a yes meant for something else never saves it.
+      const offer = fact ? new RegExp(`want me to remember that ${escapeRe(fold(fact))}\\s*\\?\\s*$`) : null;
+      this.offeredFact = offer && !this.muted && !this.turnWords.length && offer.test(fold(last).replace(/["'\u201d\u2019)\]]+\s*$/, "")) ? fact : null;
+      this.newTurn();
+      this.turnsOpen = Math.max(0, this.turnsOpen - ended);
+      this.turnsEnded += ended;
       // Nothing paced (a click on its way, typing) outlives its turn.
       this.stopActions();
       // The interrupted turn is over; the next one speaks again.
       this.muted = false;
       if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
     }
+  }
+
+  // How many user turns a result closes: every one up to the last it names
+  // (turns run in order, so an earlier one cut off without a result of its
+  // own is over too). One when it names none (a local model, an older CLI).
+  private endedTurns(m: SDKMessage): number {
+    const r = m as { user_message_uuids?: string[]; user_message_uuid?: string };
+    const ids = Array.isArray(r.user_message_uuids) ? r.user_message_uuids : r.user_message_uuid ? [r.user_message_uuid] : [];
+    const last = Math.max(-1, ...ids.map((id) => this.sdkTurns.indexOf(id)));
+    const n = last >= 0 ? last + 1 : 1;
+    this.sdkTurns.splice(0, n);
+    return n;
   }
 
   // Connection state of the MCP servers; needs no model call.
@@ -1952,9 +2351,11 @@ export class Session {
     const ext = extMode();
     const p = currentProvider();
     this.backend = backendKey(p);
+    this.by = answeredBy(p);
     const allowedTools = ext ? [...EXT_ALLOWED, ...DESKTOP_ALLOWED] : ALLOWED;
     this.localMode = p.provider === "local";
     this.localDesktop = desktopBridge.connected();
+    this.serverAck = p.provider === "local" && ext && this.scaffoldLocal && ackOn();
     const q = (this.q =
       p.provider === "local"
         ? localQuery({
@@ -1964,6 +2365,11 @@ export class Session {
               model: p.localModel,
               vision: p.localVision,
               contextTokens: localContext(),
+              keepAlive: localKeepAlive(),
+              // Ollama: load the model and process the rules and tools now,
+              // not when the user first speaks.
+              warmUp: true,
+              think: envLocalThink(),
               // Rebuilt for every request: the local loop drops old turns
               // when the conversation gets long, and with them the one-time
               // notes about Guided mode or Memory changing, so the system
@@ -2015,28 +2421,100 @@ export class Session {
               // Anything not in allowedTools is denied without prompting; the
               // PreToolUse guard gates the allowed ones per call.
               permissionMode: "dontAsk",
-              hooks: this.hooks(),
+              hooks: this.claudeHooks(),
               stderr: (d) => {
                 if (process.env.CLEARCART_DEBUG) process.stderr.write(`[claude] ${d}`);
               },
             },
           }));
     if (p.provider === "local") this.status(`agent: ${describeBackend(p)}`);
+    await this.consume(q);
+  }
 
+  // Feeds the agent's messages to onSdkMessage until its loop ends. An error
+  // ends the turn out loud; either way no turn is left open (busy goes off).
+  async consume(q: AsyncIterable<SDKMessage>) {
     try {
       for await (const m of q) this.onSdkMessage(m);
     } catch (e) {
+      this.acked = false;
+      this.ackFor = null;
       if (!this.closed) {
         this.muted = false;
         this.status(`agent error: ${(e as Error).message}`);
         this.send({ type: "confirm_done", outcome: "failed" });
         this.say("Sorry, something went wrong on my side. Please try again.");
       }
+    } finally {
+      // The loop is over: no turn still open will get its result.
+      this.held = [];
+      this.sdkTurns = [];
+      this.turnWords = [];
+      this.newTurn();
+      // Turns closed here are over too, so checkout words they carried
+      // (UserWords.turnLimit) stop counting.
+      this.turnsEnded += this.turnsOpen;
+      this.turnsOpen = 0;
     }
   }
 }
 
 const shortName = (name: string) => name.replace(B, "").replace(C, "");
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Text with its spacing made plain, to match a reply block by block.
+const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+
+// A url a local model wrote, as navigate and tabs_create take it: with a
+// scheme as given, "back" or "forward", or a bare host ("aritzia.com/new",
+// "aritzia.com.", "127.0.0.1:4000", "localhost:4000") with https:// put in
+// front. Null when it is no web address at all: no dot ("aritzia"), or no
+// name a site has ("1.5", "file.txt": a host needs a top-level domain of
+// letters that is not a file type, unless it is an IP address or
+// localhost). The guard still checks the result.
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const FILE_TYPE = /\.(txt|pdf|docx?|xlsx?|pptx?|csv|json|jpe?g|png|gif|webp|svg|mp3|mp4|exe|dmg|js|html?|xml|log)$/i;
+export function webAddress(u: string): string | null {
+  if (/^(back|forward)$/i.test(u)) return u.toLowerCase();
+  const bare = /^((?:[a-z0-9-]+\.)+[a-z0-9-]+|localhost|\[[0-9a-f:]+\])\.?((?::\d{1,5})?(?:[/?#]\S*)?)$/i.exec(u);
+  if (bare) {
+    const host = bare[1];
+    const site = host.startsWith("[") || /^localhost$/i.test(host) || IPV4.test(host) || (/\.[a-z]{2,63}$/i.test(host) && !FILE_TYPE.test(host));
+    return site ? `https://${host}${bare[2]}` : null;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^[a-z0-9.-]+:\d/i.test(u)) return u;
+  return null;
+}
+
+// The full address a refusal suggests for words that are not one, dots
+// kept: "aritzia .ca" is https://www.aritzia.ca, "aritzia" https://www.aritzia.com.
+export function suggestAddress(u: string): string {
+  const name =
+    u
+      .toLowerCase()
+      .replace(/^[a-z]+:\/\//, "")
+      .replace(/[^a-z0-9.-]+/g, "")
+      .replace(/^www\./, "")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .slice(0, 40) || "example";
+  return `https://www.${/\.[a-z]{2,}$/.test(name) && !FILE_TYPE.test(name) ? name : `${name}.com`}`;
+}
+
+// The few words the server says when a local model starts tool work:
+// "Opening aritzia.com." for a site, else "On it.". Built only from a
+// checked URL's host, never from page text or the model's words.
+export function localAck(name: string, input: unknown): string {
+  const short = shortName(name);
+  const url = (input as { url?: unknown } | null)?.url;
+  const fixed = typeof url === "string" ? webAddress(url.trim()) : null;
+  if ((short === "tabs_create" || short === "navigate") && fixed && fixed !== "back" && fixed !== "forward") {
+    try {
+      const u = new URL(fixed);
+      const host = u.hostname.replace(/^www\./, "");
+      if (/^https?:$/.test(u.protocol) && /^[a-z0-9.-]{1,60}$/i.test(host) && host.includes(".")) return `Opening ${host}.`;
+    } catch {}
+  }
+  return "On it.";
+}
 
 // The code of a failed tool result ("Error (no_element): ..." from
 // exttools.ts), or a word for what kind of failure it was. Never its text.

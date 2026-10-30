@@ -13,8 +13,9 @@ import { fileURLToPath } from "node:url";
 import { DESKTOP_TOOL_NAMES } from "../desktop/tools.ts";
 import { extBridge } from "../extbridge.ts";
 import { SessionHub, type HubMessage, type HubSession } from "../hub.ts";
-import { envProviderSettings, parseLocalBaseUrl, parseLocalModel } from "../local/config.ts";
-import { localQuery, type ToolServer } from "../local/query.ts";
+import { envLocalKeepAlive, envProviderSettings, parseLocalBaseUrl, parseLocalModel } from "../local/config.ts";
+import { chat } from "../local/openai.ts";
+import { FREE_STEPS, localQuery, MAX_STEPS, type ToolServer } from "../local/query.ts";
 import { claimConfirmation } from "../pay.ts";
 import { DISALLOWED_BROWSER, EXT_ALLOWED, Session, type ServerMessage } from "../session.ts";
 import { FakeExt, onceEvent, startBridge } from "./fake-ext.ts";
@@ -39,7 +40,8 @@ async function until(ok: () => boolean, what: string, ms = 5_000) {
 // A fake OpenAI-compatible server. script(body, n) says what the nth chat
 // request gets: text and tool calls, an HTTP error, or no answer at all.
 // ollama: answers like Ollama (/api/version, /api/chat) instead.
-type Step = { text?: string; calls?: Array<{ name: string; args?: unknown }> } | { status: number; body: unknown } | { hang: true };
+// extra: more fields in the answer (Ollama's prompt_eval_count...).
+type Step = { text?: string; calls?: Array<{ name: string; args?: unknown }>; extra?: Record<string, unknown> } | { status: number; body: unknown } | { hang: true };
 async function fakeModel(script: (body: any, n: number) => Step | Promise<Step>, { ollama = false } = {}) {
   const requests: any[] = [];
   let aborted = 0;
@@ -58,7 +60,7 @@ async function fakeModel(script: (body: any, n: number) => Step | Promise<Step>,
     if ("status" in step) return void res.writeHead(step.status, { "Content-Type": "application/json" }).end(JSON.stringify(step.body));
     const tool_calls = step.calls?.map((c, i) => ({ id: `call_${n}_${i}`, type: "function", function: { name: c.name, arguments: ollama ? c.args ?? {} : typeof c.args === "string" ? c.args : JSON.stringify(c.args ?? {}) } }));
     const message = { role: "assistant", content: step.text ?? "", ...(tool_calls ? { tool_calls } : {}) };
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(ollama ? { message, done: true } : { choices: [{ message }] }));
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ...(ollama ? { message, done: true } : { choices: [{ message }] }), ...step.extra }));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as AddressInfo).port;
@@ -161,8 +163,14 @@ test("a tool call loop: the call runs over the bridge, its result goes back, the
 });
 
 test("Ollama: its own /api/chat with a context window that fits the rules and tools; a tool call written as text is not spoken", async () => {
+  // The warm-up request (a one-token answer) is answered apart.
+  let k = 0;
   const model = await fakeModel(
-    (_b, n) => (n === 1 ? { calls: [{ name: "get_page_text", args: { tabId: 9 } }] } : n === 2 ? { text: "The first line is Trip plan." } : { text: '{"type":"function","name":"say","parameters{"text":"hello"}}' }),
+    (b) => {
+      if (b.options?.num_predict === 1) return { text: "Hi" };
+      const n = ++k;
+      return n === 1 ? { calls: [{ name: "get_page_text", args: { tabId: 9 } }] } : n === 2 ? { text: "The first line is Trip plan." } : { text: '{"type":"function","name":"say","parameters{"text":"hello"}}' };
+    },
     { ollama: true }
   );
   const br = useBrowser((method, p) => (method === "get_page_text" ? { url: "https://docs.google.com/document/d/1AbC/edit", title: "Trip plan - Google Docs", text: "Trip plan\nDay 1: Lisbon" } : quietBrowser(method, p)));
@@ -171,9 +179,17 @@ test("Ollama: its own /api/chat with a context window that fits the rules and to
     r.s.userText("what does the first line of this doc say?");
     await until(() => r.spoken().length > 0, "the reply");
     assert.deepEqual(r.spoken(), ["The first line is Trip plan."]);
-    const [first, second] = model.requests;
+    const warm = model.requests.find((q) => q.options.num_predict === 1);
+    assert.ok(warm, "a warm-up request at the start");
+    assert.equal(warm.messages[0].role, "system");
+    assert.equal(warm.tools.length, model.requests.find((q) => q !== warm).tools.length, "the warm-up has the same rules and tools, so their processing is reused");
+    const [first, second] = model.requests.filter((q) => q !== warm);
     assert.equal(first.options.num_ctx, 16384);
+    assert.equal(warm.options.num_ctx, 16384, "the same window, so the model is not loaded again");
     assert.equal(first.stream, false);
+    assert.equal(first.keep_alive, "30m");
+    assert.equal(first.think, false, "a reasoning model does not spend the step thinking");
+    assert.equal(first.options.num_predict, 1024);
     assert.ok(first.tools.some((t: any) => t.function.name === "get_page_text"));
     const call = second.messages.find((m: any) => m.role === "assistant" && m.tool_calls);
     assert.deepEqual(call.tool_calls[0].function, { name: "get_page_text", arguments: { tabId: 9 } }, "arguments as an object");
@@ -189,6 +205,205 @@ test("Ollama: its own /api/chat with a context window that fits the rules and to
     br.restore();
     await model.close();
     resetEnv();
+  }
+});
+
+test("Ollama: prompt_eval_count much smaller than the prompt says the window is too small; the turn's counts go in its result", async () => {
+  const model = await fakeModel((b) => (b.options?.num_predict === 1 ? { text: "Hi" } : { text: "Hello there.", extra: { prompt_eval_count: 300, prompt_eval_cached_count: 250, eval_count: 4, prompt_eval_duration: 5e7, eval_duration: 1e8 } }), { ollama: true });
+  const r = localSession(model.url);
+  const results: any[] = [];
+  const orig = r.s.onSdkMessage.bind(r.s);
+  (r.s as any).onSdkMessage = (m: any) => (m.type === "result" && results.push(m), orig(m));
+  try {
+    r.s.userText("hello");
+    await until(() => r.spoken().length > 0, "the reply");
+    await until(() => results.length > 0, "the result");
+    assert.ok(r.statuses().some((t) => /prompt looks cut short \(300 of about \d+ tokens\)\. Set CLEARCART_LOCAL_CONTEXT/.test(t)), r.statuses().join("\n"));
+    assert.deepEqual(results[0].usage, { input_tokens: 50, cache_read_input_tokens: 250, output_tokens: 4 });
+  } finally {
+    await r.stop();
+    await model.close();
+    resetEnv();
+  }
+});
+
+test("Ollama: CLEARCART_LOCAL_THINK on a model that cannot think: the step runs without it, and think is not asked for again", async () => {
+  process.env.CLEARCART_LOCAL_THINK = "1";
+  const model = await fakeModel((b) => (b.think === true ? { status: 400, body: { error: '"tiny:1b" does not support thinking' } } : b.options?.num_predict === 1 ? { text: "Hi" } : { text: "Hello there." }), { ollama: true });
+  const r = localSession(model.url);
+  try {
+    r.s.userText("hello");
+    await until(() => r.spoken().length > 0, "the reply");
+    r.s.userText("hello again");
+    await until(() => r.spoken().length > 1, "the second reply");
+    assert.equal(model.requests.filter((q) => q.think === true).length, 1, "asked once, then remembered");
+    assert.deepEqual(r.spoken(), ["Hello there.", "Hello there."]);
+  } finally {
+    delete process.env.CLEARCART_LOCAL_THINK;
+    await r.stop();
+    await model.close();
+    resetEnv();
+  }
+});
+
+// User turns for localQuery, given one at a time; end() closes the stream.
+function turnQueue() {
+  const waiting: Array<(v: IteratorResult<any>) => void> = [];
+  const queued: any[] = [];
+  let ended = false;
+  const iter: AsyncIterableIterator<any> = {
+    [Symbol.asyncIterator]: () => iter,
+    next: () => (queued.length ? Promise.resolve({ value: queued.shift(), done: false }) : ended ? Promise.resolve({ value: undefined, done: true }) : new Promise((r) => waiting.push(r))),
+  };
+  return {
+    iter,
+    say(text: string) {
+      const m = { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+      const w = waiting.shift();
+      if (w) w({ value: m, done: false });
+      else queued.push(m);
+    },
+    end() {
+      ended = true;
+      for (const w of waiting.splice(0)) w({ value: undefined, done: true });
+    },
+  };
+}
+
+// A localQuery on its own (no Session), its results and statuses kept.
+function plainLocal(url: string, extra: Partial<Parameters<typeof localQuery>[0]["options"]> = {}) {
+  const turns = turnQueue();
+  const statuses: string[] = [];
+  const results: any[] = [];
+  const q = localQuery({ prompt: turns.iter, options: { baseUrl: url, model: "tiny:1b", systemPrompt: "rules", servers: {}, allowedTools: [], warmUp: true, onStatus: (t) => statuses.push(t), ...extra } });
+  const done = (async () => {
+    for await (const m of q) if ((m as any).type === "result") results.push(m);
+  })();
+  return { q, turns, statuses, results, stop: async () => (turns.end(), await done) };
+}
+
+test("Ollama warm-up: a model that cannot think is said on the first turn; it gets the step's timeout; an interrupted first turn still waits for it", async () => {
+  // The warm-up finds out the model cannot think: the first turn says so.
+  const refuses = await fakeModel((b) => (b.think === true ? { status: 400, body: { error: '"tiny:1b" does not support thinking' } } : { text: "Hi" }), { ollama: true });
+  const a = plainLocal(refuses.url, { think: true });
+  try {
+    await until(() => refuses.requests.length === 2, "the warm-up and its retry");
+    await tick(20);
+    assert.ok(!a.statuses.some((t) => /cannot think/.test(t)), "not said before the user speaks");
+    a.turns.say("hello");
+    await until(() => a.results.length === 1, "the first turn");
+    assert.equal(a.statuses.filter((t) => /tiny:1b cannot think, so CLEARCART_LOCAL_THINK is ignored/.test(t)).length, 1, a.statuses.join("\n"));
+    assert.equal(refuses.requests.filter((q) => q.think === true).length, 1, "the turn does not ask again");
+  } finally {
+    await a.stop();
+    await refuses.close();
+  }
+
+  // A warm-up that never answers runs out after requestTimeoutMs, not a
+  // fixed two minutes.
+  const hangs = await fakeModel((b) => (b.options?.num_predict === 1 ? { hang: true } : { text: "Hello." }), { ollama: true });
+  const b = plainLocal(hangs.url, { requestTimeoutMs: 300 });
+  try {
+    b.turns.say("hello");
+    const t0 = Date.now();
+    await until(() => b.results.length === 1, "the first turn", 3_000);
+    assert.ok(Date.now() - t0 < 2_000);
+    assert.equal(b.results[0].subtype, "success");
+  } finally {
+    await b.stop();
+    await hangs.close();
+  }
+
+  // An interrupted first turn stops waiting, but the next turn's request
+  // still waits until the warm-up has ended.
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  const slow = await fakeModel(async (b) => (b.options?.num_predict === 1 ? (await held, { text: "Hi" }) : { text: "Hello." }), { ollama: true });
+  const c = plainLocal(slow.url);
+  try {
+    await until(() => slow.requests.length === 1, "the warm-up");
+    c.turns.say("hello");
+    await tick(30);
+    await c.q.interrupt();
+    await until(() => c.results.length === 1, "the interrupted turn");
+    assert.equal(c.results[0].subtype, "error_during_execution");
+    c.turns.say("hello again");
+    await tick(100);
+    assert.equal(slow.requests.length, 1, "no step runs beside the warm-up");
+    release();
+    await until(() => c.results.length === 2, "the second turn");
+    assert.equal(slow.requests.length, 2);
+  } finally {
+    release();
+    await c.stop();
+    await slow.close();
+  }
+});
+
+test("Ollama: a step whose think is refused and asked again shares one timeout across both requests", async () => {
+  const model = await fakeModel(async (b) => (b.think === true ? (await tick(150), { status: 400, body: { error: '"tiny:1b" does not support thinking' } }) : { hang: true }), { ollama: true });
+  try {
+    const t0 = Date.now();
+    await assert.rejects(chat({ baseUrl: model.url, model: "tiny:1b", messages: [{ role: "user", content: "hi" }], tools: [], signal: new AbortController().signal, timeoutMs: 400, flavor: "ollama", think: true }), (e: any) => e.kind === "timeout");
+    const took = Date.now() - t0;
+    assert.ok(took < 520, `timed out after ${took}ms, not 150 + 400`);
+  } finally {
+    await model.close();
+  }
+});
+
+test("CLEARCART_LOCAL_KEEP_ALIVE: seconds, a Go duration or default; anything else is refused; the value goes to Ollama as keep_alive", async () => {
+  const k = (v?: string) => envLocalKeepAlive(v === undefined ? {} : { CLEARCART_LOCAL_KEEP_ALIVE: v });
+  assert.equal(k(), "30m");
+  assert.equal(k(" "), "30m");
+  assert.equal(k("-1"), -1);
+  assert.equal(k("0"), 0);
+  assert.equal(k("300"), 300);
+  for (const v of ["90s", "30m", "1h", "1h30m", "1.5h", "-1m", "500ms"]) assert.equal(k(v), v);
+  assert.equal(k("default"), null);
+  assert.equal(k("DEFAULT"), null);
+  for (const v of ["1d", "10min", "1.5", "1 h", "forever", "m"]) assert.throws(() => k(v), /CLEARCART_LOCAL_KEEP_ALIVE must be/, v);
+
+  const model = await fakeModel(() => ({ text: "Hi" }), { ollama: true });
+  const ask = (keepAlive?: string | number | null) => chat({ baseUrl: model.url, model: "tiny:1b", messages: [{ role: "user", content: "hi" }], tools: [], signal: new AbortController().signal, timeoutMs: 5_000, flavor: "ollama", keepAlive });
+  try {
+    await ask();
+    await ask(-1);
+    await ask(null);
+    assert.equal(model.requests[0].keep_alive, "30m");
+    assert.equal(model.requests[1].keep_alive, -1);
+    assert.ok(!("keep_alive" in model.requests[2]), "default: the server's own setting applies");
+  } finally {
+    await model.close();
+  }
+});
+
+test("a context window too small for the rules and tools is said once; a nudge's note counts toward what fits", async () => {
+  const model = await fakeModel(() => ({ text: "Hi." }));
+  const big = "Rule. ".repeat(3_000);
+  const a = plainLocal(model.url, { warmUp: false, contextTokens: 4_096, systemPrompt: big });
+  try {
+    a.turns.say("hello");
+    await until(() => a.results.length === 1, "the first turn");
+    a.turns.say("hello again");
+    await until(() => a.results.length === 2, "the second turn");
+    assert.equal(a.statuses.filter((t) => /^local model: the context window \(4096 tokens\) is too small for Orbi's rules and tools \(about \d+ tokens\)/.test(t)).length, 1, a.statuses.join("\n"));
+  } finally {
+    await a.stop();
+  }
+  const b = plainLocal(model.url, { warmUp: false, contextTokens: 4_096 });
+  try {
+    const q = b.q as any;
+    const fill = (n: number): any[] => [{ role: "user", content: "x".repeat(n) }];
+    const room = q.budget("rules");
+    q.turns = [fill(room / 2), fill(room / 2 - 100)];
+    q.fit("rules");
+    assert.equal(q.turns.length, 2, "fits without the note");
+    q.fit("rules", 500);
+    assert.equal(q.turns.length, 1, "the older turn goes to make room for the note");
+  } finally {
+    await b.stop();
+    await model.close();
   }
 });
 
@@ -320,7 +535,7 @@ test("endpoint down, a missing model, a model without tools: a short spoken line
   }
 });
 
-test("max steps: a model that keeps calling tools is stopped after 25 calls", async () => {
+test("max steps: a model that keeps calling tools is stopped after MAX_STEPS calls", async () => {
   const model = await fakeModel(() => ({ calls: [{ name: "tabs_context" }] }));
   const br = useBrowser(quietBrowser);
   const r = localSession(model.url);
@@ -330,7 +545,26 @@ test("max steps: a model that keeps calling tools is stopped after 25 calls", as
     assert.match(r.spoken()[0], /too many steps/);
     assert.ok(r.statuses().includes("turn ended: error_max_turns"));
     await tick(50);
-    assert.equal(model.requests.length, 25);
+    assert.equal(MAX_STEPS, 45);
+    assert.equal(model.requests.length, MAX_STEPS);
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+    resetEnv();
+  }
+});
+
+test("max steps: a step whose calls were all refused before running is free, up to FREE_STEPS", async () => {
+  const model = await fakeModel(() => ({ calls: [{ name: "no_such_tool" }] }));
+  const br = useBrowser(quietBrowser);
+  const r = localSession(model.url);
+  try {
+    r.s.userText("loop forever");
+    await until(() => r.spoken().length > 0, "the stop line");
+    assert.match(r.spoken()[0], /too many steps/);
+    await tick(50);
+    assert.equal(model.requests.length, MAX_STEPS + FREE_STEPS);
   } finally {
     await r.stop();
     br.restore();
@@ -496,6 +730,7 @@ test("switching the provider retires the session like a hand-off: a waiting read
   peer.userText("yes");
   assert.match((await paid).content[0].text, /^confirmed/);
   assert.equal((s as any).state.confirmation.state, "confirmed");
+  s.onSdkMessage({ type: "result", subtype: "success" } as any); // that turn ends without paying
   hub.switchBackend("claude", "Claude");
   assert.equal(claimConfirmation((s as any).state).ok, false, "pay_with_saved_card has nothing to use");
   assert.equal(made.length, 3);

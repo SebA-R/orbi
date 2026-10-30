@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createLogger, luhnValid, maskCardNumbers, recentLogs, redact } from "../../../extension/lib/log.js";
+import { createLogger, maskCardNumbers, recentLogs, redact } from "../../../extension/lib/log.js";
+import { luhnValid } from "../../../extension/lib/cards.js";
 
 test("luhnValid", () => {
   assert.equal(luhnValid("4111111111111111"), true);

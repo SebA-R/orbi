@@ -4,8 +4,6 @@
 // like a spoken one (lib/voice/relay.js, controller.typed).
 import { RT } from "./protocol.js";
 
-export const BASIC_VOICE_NOTE = "Basic voice (no Cartesia key)";
-
 // form holds an <input> and a submit button. Returns { show(on) }.
 export function mountTypeBox(form, { chromeApi = globalThis.chrome } = {}) {
   const input = form.querySelector("input");

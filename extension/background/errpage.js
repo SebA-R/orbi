@@ -62,7 +62,7 @@ export function isErrorPage(url) {
 }
 
 // webRequest leaves out the fragment; tab.url keeps it.
-const noHash = (url) => String(url || "").split("#")[0];
+export const noHash = (url) => String(url || "").split("#")[0];
 
 export function keyOf(url) {
   if (!isErrorPage(url)) return null;
@@ -80,8 +80,10 @@ let chain = Promise.resolve();
 function update(fn) {
   const run = async () => {
     const s = await loadState();
+    const before = JSON.stringify(s);
     const out = fn(s);
-    await api().storage.session.set({ [STATE_KEY]: s });
+    // Nothing changed (a tab Orbi never marked closed): nothing written.
+    if (JSON.stringify(s) !== before) await api().storage.session.set({ [STATE_KEY]: s });
     return out;
   };
   const p = chain.then(run, run);

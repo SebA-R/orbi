@@ -75,6 +75,11 @@ export function toolEnd(id: string) {
   line(turn, `tool_end ${s.name} ${Date.now() - s.at}ms`);
 }
 
+// A line outside any turn (the local model's warm-up).
+export function note(label: string) {
+  if (timingOn()) console.log(`[timing] ${label}`);
+}
+
 // A mark the client measured: {type:"timing", event, at}.
 export function clientMark(event: unknown, at: unknown) {
   if (!timingOn() || !turn || typeof event !== "string" || !/^[a-z_]{1,32}$/.test(event)) return;

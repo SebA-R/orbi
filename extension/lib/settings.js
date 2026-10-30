@@ -104,7 +104,6 @@ export const claudeModelLabel = (id) => `${CLAUDE_MODELS[id].name}, ${CLAUDE_MOD
 
 export const DANGER_MODE_COPY = "Danger mode. Orbi acts on its own with no locks, including placing orders with your saved card without asking. It still never sees your card or passwords, and blocked sites stay blocked.";
 
-export const SPEAK_REPLIES_COPY = "Speak replies. Turn off to read Orbi's answers in the subtitles without hearing them.";
 export const VOICE_OFF_ON_SERVER = "Voice is off on the server";
 
 // With Speak replies and subtitles both off, the user would never learn

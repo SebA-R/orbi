@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { z } from "zod";
 
 import { ExtError, INTERNAL, TOOLS } from "../extbridge.ts";
-import { createExtToolsServer, extToolDefinitions } from "../exttools.ts";
+import { createExtToolsServer, extToolDefinitions, MAX_IMAGE_EDGE, MAX_IMAGE_PIXELS, seenScale } from "../exttools.ts";
 
 type Call = { method: string; params: any };
 function fakeBridge(answer: (method: string, params: any) => any) {
@@ -47,26 +47,32 @@ test("pass-through tools forward params and drop undefined keys", async () => {
   assert.deepEqual(JSON.parse(r.content[0].text).matches[0].ref, "ref_1");
 });
 
-test("click by ref calls rect then clicks the centre", async () => {
-  const b = fakeBridge((m) => (m === "rect" ? { x: 100, y: 200, width: 50, height: 20 } : null));
+test("click by ref sends the ref to the extension's own ref path, never a rect or a DOM fallback", async () => {
+  const b = fakeBridge(() => ({ ok: true, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets", junk: "x" }));
   const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
   const r: any = await defs.click.handler({ ref: "ref_7", tabId: 9 }, {});
-  assert.deepEqual(b.calls, [
-    { method: "rect", params: { tabId: 9, ref: "ref_7" } },
-    { method: "click", params: { tabId: 9, x: 125, y: 210 } },
-  ]);
-  assert.equal(JSON.parse(r.content[0].text).via, "cdp");
+  assert.deepEqual(b.calls, [{ method: "click", params: { tabId: 9, ref: "ref_7" } }]);
+  assert.deepEqual(JSON.parse(r.content[0].text), { ok: true, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" });
 });
 
-test("click by ref falls back to click_ref when rect is unknown", async () => {
-  const b = fakeBridge((m) => {
-    if (m === "rect") throw new ExtError("unknown_method", "rect");
-    return { ok: true };
+test("click by ref: a failure comes back as an error, with no second click", async () => {
+  const b = fakeBridge(() => {
+    throw new ExtError("internal", "Input.dispatchMouseEvent failed");
   });
   const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
   const r: any = await defs.click.handler({ ref: "ref_7" }, {});
-  assert.deepEqual(b.calls.map((c) => c.method), ["rect", "click_ref"]);
-  assert.equal(JSON.parse(r.content[0].text).via, "dom");
+  assert.equal(r.isError, true);
+  assert.deepEqual(b.calls.map((c) => c.method), ["click"]);
+});
+
+test("click by point and key answer where the tab settled", async () => {
+  const settled = { ok: true, navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" };
+  const b = fakeBridge(() => settled);
+  const defs = Object.fromEntries(extToolDefinitions(b as any).map((d) => [d.name, d]));
+  const byPoint = JSON.parse(((await defs.click.handler({ x: 1, y: 2 }, {})) as any).content[0].text);
+  assert.deepEqual(byPoint, { ok: true, x: 1, y: 2, via: "cdp", navigated: true, url: "https://shop.example/c/jackets", title: "Jackets" });
+  const key = JSON.parse(((await defs.key.handler({ key: "Enter" }, {})) as any).content[0].text);
+  assert.equal(key.navigated, true);
 });
 
 test("click by coordinates and bad click args", async () => {
@@ -106,9 +112,16 @@ test("screenshot says its CSS size, and the scale when the image is not 1:1", as
   let shot: any = await defs.screenshot.handler({}, {});
   assert.equal(shot.content[0].type, "image");
   assert.match(shot.content[1].text, /Viewport 1440x900 CSS px; image pixels are click coordinates/);
+  // A device-pixel capture (2880x1800) is past the model's image limits, so
+  // it sees it shrunk to about 2449x1531, not twice the viewport: the
+  // offsite_aritzia clicks read off that rendering landed outside the page.
   answer = { ...answer, scale: 2 };
   shot = await defs.screenshot.handler({}, {});
-  assert.match(shot.content[1].text, /divide image coordinates by 2/);
+  assert.match(shot.content[1].text, /this image is 2449x1531, so divide image coordinates by 1\.70\d*/);
+  assert.equal(seenScale(1440, 900, 1), 1);
+  assert.equal(seenScale(1440, 900, 1.5), 1.5);
+  // Shrunk by the extension to fit (an ultrawide window): kept as sent.
+  assert.ok(Math.abs(seenScale(3440, 1440, 0.7488) - 0.7488) < 0.001);
   assert.match(defs.click.description, /CSS pixels/);
 });
 
@@ -119,4 +132,19 @@ test("dismiss_overlay passes through to the extension", async () => {
   assert.deepEqual(JSON.parse(r.content[0].text), { dismissed: true, via: "close button", name: "Get 10% off" });
   assert.deepEqual(b.calls, [{ method: "dismiss_overlay", params: { tabId: 4 } }]);
   assert.match(defs.dismiss_overlay.description, /Sign-in, checkout, payment/);
+});
+
+// The extension's cdp.js keeps its own copy of the image limits (it runs in
+// the browser): the two must agree, so a screenshot sent at fitScale is seen
+// by the model at that scale, with no further shrink.
+test("the image limits match the extension's cdp.js fitScale", async () => {
+  const cdpPath = new URL("../../extension/background/cdp.js", import.meta.url).href;
+  const cdp: any = await import(cdpPath);
+  assert.equal(cdp.MAX_IMAGE_EDGE, MAX_IMAGE_EDGE);
+  assert.equal(cdp.MAX_IMAGE_PIXELS, MAX_IMAGE_PIXELS);
+  for (const [w, h] of [[1440, 900], [2560, 1440], [3440, 1440], [5120, 2880], [7680, 4320], [1000, 6000]]) {
+    const fit = cdp.fitScale(w, h);
+    assert.ok(Math.abs(seenScale(w, h, fit) - fit) < 1e-9, `${w}x${h}`);
+    assert.ok(Math.round(Math.max(w, h) * fit) <= MAX_IMAGE_EDGE && Math.round(w * fit) * Math.round(h * fit) <= MAX_IMAGE_PIXELS * 1.001, `${w}x${h} within limits`);
+  }
 });

@@ -13,7 +13,7 @@ import { createErrorPages, FILTER as ERROR_FILTER } from "./errpage.js";
 import { BridgeClient } from "../lib/bridge.js";
 import { createLogger } from "../lib/log.js";
 import { AGENT_SETTING_KEYS, agentSettingsMessage, endpoints, loadSettings, migrateSettings, seedBlocklist } from "../lib/settings.js";
-import { MSG, RT } from "../lib/protocol.js";
+import { CLIENT_ID_RE, MSG, RT } from "../lib/protocol.js";
 import { installVoiceRelay } from "../lib/voice/relay.js";
 import { installBasicTtsHost } from "./basic-tts-host.js";
 import { installFrame } from "./frame.js";
@@ -85,7 +85,11 @@ async function closeIfAgentTab(tabId, flag) {
 // frame in a normal tab goes on to Orbi's "Can't reach this site" page
 // (errpage.js), where Space to talk works.
 const errorPages = createErrorPages({ loadSettings });
-chrome.webRequest.onErrorOccurred.addListener((d) => errorPages.onRequestError(d), ERROR_FILTER);
+// navigate and tabs_create report a page that did not load as a failure.
+chrome.webRequest.onErrorOccurred.addListener((d) => {
+  errorPages.onRequestError(d);
+  tabs.onMainFrameError(d);
+}, ERROR_FILTER);
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => void errorPages.onTabUpdated(tabId, change, tab).catch(() => {}));
 chrome.tabs.onRemoved.addListener((tabId) => void errorPages.forget(tabId));
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
@@ -94,8 +98,10 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   return true;
 });
 
-const loadAllowlist = () => loadSettings().then((s) => netguard.setAllowlist(s.allowlist)).catch(() => {});
-loadAllowlist();
+// One read at startup feeds every cached setting below.
+const initial = loadSettings();
+const loadAllowlist = (settings = loadSettings()) => settings.then((s) => netguard.setAllowlist(s.allowlist)).catch(() => {});
+loadAllowlist(initial);
 
 // Voice: hold-to-talk relay between content scripts and the offscreen
 // document; SUBTITLE and VOICE_STATE go to the talking (or active) tab, where
@@ -105,7 +111,7 @@ loadAllowlist();
 const frame = installFrame();
 // Orbi's cursor (content/cursor.js), cached like the settings below.
 let showCursor = true;
-loadSettings().then((s) => { showCursor = s.showCursor; }).catch(() => {});
+initial.then((s) => { showCursor = s.showCursor; }).catch(() => {});
 const cursor = createCursorRelay({ enabled: () => showCursor });
 // Basic voice (no Cartesia key): chrome.tts for the offscreen document.
 installBasicTtsHost({ log: (m) => log.info(m) });
@@ -126,7 +132,7 @@ const voice = installVoiceRelay({
 // for the spoken yes and the checkout page block).
 let dangerMode = false;
 let providerLocal = false;
-const dangerReady = loadSettings().then((s) => { dangerMode = s.dangerMode; providerLocal = s.provider === "local"; }).catch(() => { dangerMode = false; });
+const dangerReady = initial.then((s) => { dangerMode = s.dangerMode; providerLocal = s.provider === "local"; }).catch(() => { dangerMode = false; });
 // Follow: the tab Orbi acts on comes to the front (follow.js). A tab or
 // window the user picks themselves pauses that until their next turn.
 const follow = createFollower();
@@ -136,7 +142,7 @@ chrome.tabs.onRemoved.addListener((tabId) => follow.forget(tabId));
 // Watchable pace (background/actor.js), cached like Danger mode. Starts
 // on, the default, so the first action after a restart is paced too.
 let watchablePace = true;
-const paceReady = loadSettings().then((s) => { watchablePace = s.watchablePace; }).catch(() => {});
+const paceReady = initial.then((s) => { watchablePace = s.watchablePace; }).catch(() => {});
 const router = createRouter({
   follow,
   onAgentTab: frame.onAgentTab,
@@ -185,25 +191,53 @@ let bridge = null;
 
 // The agent server's navigation guard and tab sweep use the user's blocked
 // sites too, so send them on every connect and every change.
-const sendBlocklist = () =>
-  loadSettings().then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
+const sendBlocklist = (settings = loadSettings()) =>
+  settings.then(({ blocklist }) => bridge?.send({ type: MSG.BLOCKLIST, lines: blocklist })).catch(() => {});
 // Guided mode, Memory and the model provider shape the agent; sent on
 // connect and on change.
-const sendAgentSettings = () =>
-  loadSettings().then((s) => bridge?.send(agentSettingsMessage(s))).catch(() => {});
+const sendAgentSettings = (settings = loadSettings()) =>
+  settings.then((s) => bridge?.send(agentSettingsMessage(s))).catch(() => {});
 
 // Danger mode too, the same way, so the agent says "Danger mode is on." and
 // tells Claude. The extension enforces the click lock itself; the server
 // also reads it to skip the spoken yes, so only the user sets it.
-const sendDangerMode = () =>
-  loadSettings().then(({ dangerMode: on }) => bridge?.send({ type: MSG.DANGER_MODE, on })).catch(() => {});
-const sendSettings = () => { sendBlocklist(); sendDangerMode(); sendAgentSettings(); };
+const sendDangerMode = (settings = loadSettings()) =>
+  settings.then(({ dangerMode: on }) => bridge?.send({ type: MSG.DANGER_MODE, on })).catch(() => {});
+const sendSettings = () => {
+  const settings = loadSettings();
+  sendBlocklist(settings);
+  sendDangerMode(settings);
+  sendAgentSettings(settings);
+};
+
+// This install's id for the bridge hello: random once, then kept in
+// storage, so a restarted worker is known as the same client and another
+// profile's install is not (agent/extbridge.ts).
+// Made once per worker, so two startBridge calls on a fresh install can't
+// store two different ids.
+const CLIENT_ID_KEY = "bridgeClientId";
+let clientIdReady = null;
+const bridgeClientId = () => (clientIdReady ??= (async () => {
+  const stored = (await chrome.storage.local.get(CLIENT_ID_KEY))[CLIENT_ID_KEY];
+  if (typeof stored === "string" && CLIENT_ID_RE.test(stored)) return stored;
+  const id = crypto.randomUUID();
+  await chrome.storage.local.set({ [CLIENT_ID_KEY]: id });
+  return id;
+})());
+// A fresh id the bridge took after another live client used this one
+// (bridge.js): kept, so a restarted worker uses it too.
+const saveBridgeClientId = (id) => {
+  clientIdReady = Promise.resolve(id);
+  chrome.storage.local.set({ [CLIENT_ID_KEY]: id }).catch(() => {});
+};
 
 async function startBridge() {
   const settings = await loadSettings();
   const url = endpoints(settings.agentUrl).ext;
   if (!bridge) {
-    bridge = new BridgeClient({ url, version: VERSION, log, onRequest, onOpen: sendSettings, onState: (s) => log.info(`bridge ${s}`) });
+    const clientId = await bridgeClientId().catch(() => null);
+    if (bridge) return bridge.setUrl(url);
+    bridge = new BridgeClient({ url, version: VERSION, clientId, onClientId: saveBridgeClientId, log, onRequest, onOpen: sendSettings, onState: (s) => log.info(`bridge ${s}`) });
     bridge.start();
   } else {
     bridge.setUrl(url);

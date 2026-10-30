@@ -15,6 +15,9 @@
 //   - Opening a socket never claims, so opening the console, or a reconnect
 //     after a server restart, takes nothing from the window in use.
 //   - Replies, read-backs, statuses and receipts go to the owner only.
+//     A {type:"busy"} message carries seq: the number of user_text messages
+//     that socket has sent, counted here (stale ones too), so its client
+//     can match it against its own count whichever session answers.
 //   - When the owner changes or goes away the Session hands off
 //     (Session.handOff): a read-back or unlock question still waiting is
 //     declined, never confirmed, so only the window that heard it can answer
@@ -28,8 +31,14 @@
 //     (switchBackend), the Session is retired the same way as a hand-off
 //     (nothing waiting is confirmed, an unused yes is withdrawn) and a
 //     fresh one starts on the new backend. The window in use keeps it. A
-//     payment under way finishes first, and the browser's fail-closed state
-//     (card values in a form, a failed tab sweep) carries over.
+//     payment under way finishes first, and so does a turn the agent is
+//     working on (its tool calls and reply are not cut off); a turn only
+//     waiting for the user's answer is retired, which declines it. The
+//     browser's fail-closed state (card values in a form, a failed tab
+//     sweep) carries over. A switch back before it happened cancels it.
+//     Words the user says while it waits are held and go to the new
+//     session once it starts (or to the old one, if the switch is
+//     cancelled), so they never start another turn on the old backend.
 
 import type { ServerMessage } from "./session.ts";
 
@@ -47,6 +56,8 @@ export interface HubSession {
   retire?(why: string): void;
   // Not to be replaced right now (a payment is under way).
   busy?(): boolean;
+  // The agent is working on a turn: a switch waits for it to end.
+  midTurn?(): boolean;
   // What the session that replaces it must start with (session.ts
   // SessionCarry).
   carry?(): unknown;
@@ -57,14 +68,16 @@ export interface HubSession {
 // handed over, if it replaces one.
 export type CreateSession = (send: (m: ServerMessage) => void, ended: () => void, carry?: unknown) => HubSession;
 
-// How often a switch waiting for a payment to finish checks again.
+// How often a switch waiting for a payment or a turn to finish checks again.
 export const SWITCH_RETRY_MS = 250;
+// The longest a switch waits for a turn in progress (not a payment).
+export const SWITCH_TURN_MAX_MS = 120_000;
 
 export const ELSEWHERE_TEXT = "Orbi is in use in another window. Talk here to use it here.";
 export const MOVED_TEXT = "Orbi moved to another window. Talk here to bring it back.";
 export const STALE_TEXT = "Not sent: Orbi is in use in another window. Talk here again to use it here.";
 
-type Peer = { send: (m: HubMessage) => void; lost: boolean };
+type Peer = { send: (m: HubMessage) => void; lost: boolean; seq: number };
 
 export type HubPeer = {
   interrupt(): void;
@@ -76,15 +89,21 @@ export class SessionHub {
   private peers = new Set<Peer>();
   private owner: Peer | null = null;
   private session: HubSession | null = null;
-  // A backend switch waiting for the session's payment to finish.
+  // A backend switch waiting for the session's payment or turn to finish.
   private pendingSwitch: NodeJS.Timeout | null = null;
+  // That switch: when it was first asked for (a newer target keeps the
+  // time), the target the window was told about, and what the log said it
+  // waits for.
+  private waiting: { since: number; told: string | null; logged: string | null } | null = null;
+  // The owner's words said while a switch waits (see userText).
+  private held: Array<{ peer: Peer; text: string }> = [];
 
   constructor(private create: CreateSession, private log: (line: string) => void = () => {}) {}
 
   // A socket opened. Starts the session if there is none yet (so the agent
   // warms up), but takes nothing from the window that owns it.
   join(send: (m: HubMessage) => void): HubPeer {
-    const peer: Peer = { send, lost: false };
+    const peer: Peer = { send, lost: false, seq: 0 };
     this.peers.add(peer);
     if (this.owner) send({ type: "status", text: ELSEWHERE_TEXT });
     this.ensure();
@@ -101,7 +120,10 @@ export class SessionHub {
     const live = () => s !== null && this.session === s;
     s = this.create(
       (m) => {
-        if (live()) this.owner?.send(m);
+        if (!live() || !this.owner) return;
+        // Held words are not this session's: its "off" must not end them.
+        const owner = this.owner;
+        this.owner.send(m.type === "busy" ? { ...m, seq: owner.seq - this.held.filter((h) => h.peer === owner).length } : m);
       },
       () => {
         if (!live()) return;
@@ -139,7 +161,8 @@ export class SessionHub {
   // starts if a window is open, with the old one's fail-closed browser
   // state (carry). While a payment is under way the switch waits for it:
   // its card may be in the form, and its receipt must reach the window.
-  // Returns whether it switched now.
+  // While the agent is working on a turn it waits too, so the turn's tool
+  // calls and reply are not cut off. Returns whether it switched now.
   switchBackend(backend: string, label = backend): boolean {
     return this.trySwitch(backend, label, true);
   }
@@ -147,14 +170,39 @@ export class SessionHub {
   private trySwitch(backend: string, label: string, first: boolean): boolean {
     if (this.pendingSwitch) clearTimeout(this.pendingSwitch);
     this.pendingSwitch = null;
+    // A newer setting replaces a switch still waiting (or cancels it
+    // below, when it is the backend the session already runs on), but keeps
+    // its start time, so retargeting can't stretch SWITCH_TURN_MAX_MS.
+    const prev = this.waiting;
     const s = this.session;
-    if (!s || s.backend === undefined || s.backend === backend) return false;
-    if (s.busy?.()) {
-      if (first) this.log(`voice session switch to ${label} waits for the payment under way`);
+    if (!s || s.backend === undefined || s.backend === backend) {
+      this.waiting = null;
+      if (first && prev?.told && s && s.backend === backend) this.owner?.send({ type: "status", text: `Staying on ${label}.` });
+      this.release();
+      return false;
+    }
+    const w = prev ?? { since: Date.now(), told: null, logged: null };
+    this.waiting = w;
+    const paying = s.busy?.() === true;
+    // A payment always finishes first. A turn is waited for up to
+    // SWITCH_TURN_MAX_MS, so a turn that never reports its end can't keep
+    // the old backend forever.
+    const turn = !paying && s.midTurn?.() === true && Date.now() - w.since < SWITCH_TURN_MAX_MS;
+    if (paying || turn) {
+      const what = paying ? "payment under way" : "turn in progress";
+      if (w.logged !== `${label}: ${what}`) {
+        w.logged = `${label}: ${what}`;
+        this.log(`voice session switch to ${label} waits for the ${what}`);
+      }
+      if (turn && w.told !== label) {
+        w.told = label;
+        this.owner?.send({ type: "status", text: `Switching to ${label} when this turn ends.` });
+      }
       this.pendingSwitch = setTimeout(() => this.trySwitch(backend, label, false), SWITCH_RETRY_MS);
       this.pendingSwitch.unref?.();
       return false;
     }
+    this.waiting = null;
     const why = `switched to ${label}`;
     const carry = s.carry?.();
     if (s.retire) s.retire(why);
@@ -166,7 +214,17 @@ export class SessionHub {
     this.log(`voice session restarted (${why})`);
     if (this.peers.size) this.ensure(carry);
     this.owner?.send({ type: "status", text: `Switched to ${label}. Starting a new conversation.` });
+    this.release();
     return true;
+  }
+
+  // Hands the words held while a switch waited to the session now in
+  // place. Only the owner's: words from a window that has since lost the
+  // session were said before the user moved, so they are dropped.
+  private release() {
+    const held = this.held;
+    this.held = [];
+    for (const h of held) if (h.peer === this.owner && this.peers.has(h.peer)) this.ensure().userText(h.text);
   }
 
   private interrupt(peer: Peer) {
@@ -176,15 +234,22 @@ export class SessionHub {
 
   private userText(peer: Peer, text: string) {
     if (!this.peers.has(peer)) return;
+    peer.seq++;
     if (peer.lost) {
       peer.send({ type: "standby", reason: "stale", text: STALE_TEXT });
       return;
     }
-    this.claim(peer).userText(text);
+    const s = this.claim(peer);
+    // A switch is waiting for the old backend's turn or payment: these
+    // words are for the new backend, and must not start a turn that keeps
+    // the old one (release).
+    if (this.waiting) this.held.push({ peer, text });
+    else s.userText(text);
   }
 
   private leave(peer: Peer) {
     if (!this.peers.delete(peer)) return;
+    this.held = this.held.filter((h) => h.peer !== peer);
     if (this.owner === peer) {
       this.owner = null;
       this.session?.handOff();

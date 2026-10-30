@@ -128,11 +128,40 @@ test("typing in a text field: rawKeyDown, check, char, keyUp per key, at a typis
 test("insertText only for characters with no key, or outside a text field", async () => {
   const { clock, cdp, actor } = setup(4);
   await clock.run(actor.type(5, "ok é😀\nz", { focus: { keys: true }, check: async () => ({ keys: true }) }));
+  // The newline inside a single-line field's text too.
   assert.deepEqual(cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text), ["é", "😀", "\n"]);
   assert.deepEqual(cdp.sent.filter((s) => s.type === "char").map((s) => s.text), ["o", "k", " ", "z"]);
   cdp.sent.length = 0;
   await clock.run(actor.type(5, "ok", { check: async () => ({ keys: false }) }));
   assert.ok(cdp.sent.every((s) => s.method === "Input.insertText"), "no key events off a text field");
+});
+
+test("a newline in a textarea or editor is a real Enter key; \\r\\n is one Enter", async () => {
+  const { clock, cdp, actor } = setup(4);
+  const checks = [];
+  await clock.run(actor.type(5, "a\nb\r\nc", { check: async (ch) => (checks.push(ch), { keys: true, multiline: true }) }));
+  const enters = cdp.sent.filter((s) => s.key === "Enter");
+  assert.deepEqual(enters.map((s) => s.type), ["rawKeyDown", "char", "keyUp", "rawKeyDown", "char", "keyUp"]);
+  assert.ok(enters.every((s) => s.code === "Enter" && s.windowsVirtualKeyCode === 13 && s.modifiers === 0));
+  assert.deepEqual(enters.filter((s) => s.type === "char").map((s) => s.text), ["\r", "\r"]);
+  assert.ok(!cdp.sent.some((s) => s.method === "Input.insertText"), "no insertText newline");
+  assert.equal(checks.filter((c) => c === "\n").length, 2, "the \\n of \\r\\n is not checked or typed again");
+  // Off a text field it stays insertText: no key a button could take.
+  cdp.sent.length = 0;
+  await clock.run(actor.type(5, "\r\n", { check: async () => ({ keys: false }) }));
+  assert.deepEqual(cdp.sent.map((s) => [s.method, s.text]), [["Input.insertText", "\r"]], "\\r\\n is one line break by insertText too");
+});
+
+test("a single-line field: a newline inside the text is no Enter, a trailing one is", async () => {
+  const { clock, cdp, actor } = setup(4);
+  const single = async () => ({ keys: true, multiline: false });
+  await clock.run(actor.type(5, "123 Main St\nApt 4", { check: single }));
+  assert.equal(cdp.sent.filter((s) => s.key === "Enter").length, 0, "no submit half way through an address");
+  assert.deepEqual(cdp.sent.filter((s) => s.method === "Input.insertText").map((s) => s.text), ["\n"]);
+  cdp.sent.length = 0;
+  await clock.run(actor.type(5, "milk\r\n", { check: single }));
+  assert.deepEqual(cdp.sent.filter((s) => s.key === "Enter").map((s) => s.type), ["rawKeyDown", "char", "keyUp"], "a trailing newline submits, once");
+  assert.ok(!cdp.sent.some((s) => s.method === "Input.insertText"));
 });
 
 test("a scroll glides to the point, then sends wheel steps that add up", async () => {
@@ -405,7 +434,10 @@ test("router: card numbers and card fields are still refused before anything is 
 test("router: a typed newline is checked against the lock again when it is typed", async () => {
   const f = routerFakes();
   await f.clock.run(f.router.route("type", { tabId: 3, text: "ab\n" }));
-  assert.equal(f.pages.filter((p) => p.method === "guard_key").length, 2, "once up front, once at the newline");
+  // The newline is an Enter key: checked before it goes down and again
+  // before its char, which is what submits.
+  assert.equal(f.pages.filter((p) => p.method === "guard_key").length, 3, "once up front, twice at the newline");
+  assert.deepEqual(f.cdp.sent.filter((s) => s.key === "Enter").map((s) => s.type), ["rawKeyDown", "char", "keyUp"]);
 });
 
 test("router: setting off makes clicks and scrolls instant; typing stays key by key", async () => {
@@ -454,6 +486,35 @@ test("router: actions_stop at turn end stops a paced click and typing, and answe
   const typed = f.cdp.sent.slice(before).filter((s) => s.type === "char").length;
   assert.ok(typed > 0 && typed < 26, `stopped part way (${typed} chars)`);
   assert.equal(f.actor.active(), 0);
+});
+
+test("stopTab stops only that tab's action, says how far typing got, and stops a call there that began before it", async () => {
+  const { clock, cdp, actor } = setup(3);
+  const epoch = actor.epoch();
+  let typing;
+  const typed = actor.type(5, "a fairly long line of text", { check: async () => ({ keys: true }) });
+  const clicked = actor.click(6, { x: 300, y: 200 }, { epoch });
+  const both = Promise.allSettled([typed, clicked]);
+  await clock.run(both, () => { if (!typing && cdp.sent.filter((s) => s.tabId === 5 && s.type === "char").length === 5) typing = actor.stopTab(5); });
+  const [t, c] = await both;
+  assert.equal(t.status, "rejected");
+  assert.equal(t.reason.code, "interrupted");
+  assert.equal(c.status, "fulfilled", "the other tab's click still lands");
+  assert.deepEqual(typing, { typed: 5, of: 26 });
+  // A call on that tab that read its epoch before the stop is stopped too;
+  // one that began after it is not.
+  await assert.rejects(clock.run(actor.click(5, { x: 1, y: 1 }, { epoch })), (e) => e.code === "interrupted");
+  await clock.run(actor.click(5, { x: 1, y: 1 }, { epoch: actor.epoch() }));
+});
+
+test("router: actions_stop for a timed-out request stops its tab only and answers the typing", async () => {
+  const f = routerFakes();
+  let stopped = null;
+  const before = f.cdp.sent.length;
+  await assert.rejects(f.clock.run(f.router.route("type", { tabId: 3, text: "a fairly long line of text" }), () => { if (!stopped && f.cdp.sent.slice(before).filter((s) => s.type === "char").length === 4) stopped = f.router.route("actions_stop", { timedOut: true, tabId: 3 }); }), (e) => e.code === "interrupted" && /timed out/.test(e.message));
+  assert.deepEqual(await stopped, { ok: true, typing: { typed: 4, of: 26 } });
+  // Not a turn-end stop: a call that began before it on another tab goes on.
+  assert.equal(f.actor.stoppedSince(0, 4), false);
 });
 
 test("router: an interrupt during the checks before the approach still stops the click", async () => {

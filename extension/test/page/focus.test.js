@@ -54,3 +54,16 @@ test("a field off screen, or in a frame off screen, is hidden; one on screen is 
   assert.equal(f.text, true);
   assert.equal(f.hidden, true);
 });
+
+test("multiline: a textarea or editor, where a newline is a line break; not a single-line input", async () => {
+  const p = loadPage(`<input id="a"><textarea id="t"></textarea><div id="e" contenteditable="true"></div>`);
+  p.document.getElementById("a").focus();
+  assert.deepEqual([(await focused(p)).text, (await focused(p)).multiline], [true, false]);
+  p.document.getElementById("t").focus();
+  assert.deepEqual([(await focused(p)).text, (await focused(p)).multiline], [true, true]);
+  const e = p.document.getElementById("e");
+  Object.defineProperty(e, "isContentEditable", { get: () => true });
+  e.tabIndex = 0;
+  e.focus();
+  assert.equal((await focused(p)).multiline, true);
+});

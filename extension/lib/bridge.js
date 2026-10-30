@@ -5,15 +5,19 @@
 // API so it runs unchanged in the service worker and in Node tests.
 
 import { Backoff } from "./backoff.js";
-import { ERR, MSG, TIMING, errorResponse, hello, okResponse, parseMessage } from "./protocol.js";
+import { CLOSE, ERR, MSG, TIMING, errorResponse, hello, okResponse, parseMessage } from "./protocol.js";
 
 const HELLO_TIMEOUT_MS = 5_000;
 
 export class BridgeClient {
-  constructor({ url, version = "0", log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, onOpen = () => {}, onRequest = null, timing = {} }) {
+  // clientId: this install's stable id, sent in hello (protocol.js).
+  // onClientId(id): called with a new id this client took (see onclose).
+  constructor({ url, version = "0", clientId = null, onClientId = () => {}, log = console, WebSocketImpl = globalThis.WebSocket, onState = () => {}, onOpen = () => {}, onRequest = null, timing = {} }) {
     this.url = url;
     this.timing = { ...TIMING, ...timing };
     this.version = version;
+    this.clientId = clientId;
+    this.onClientId = onClientId;
     this.log = log;
     this.WebSocketImpl = WebSocketImpl;
     this.onState = onState;
@@ -58,9 +62,10 @@ export class BridgeClient {
     else this.ensureConnected();
   }
 
-  scheduleReconnect() {
+  // minDelay: wait at least this long (after a replace, see onclose).
+  scheduleReconnect(minDelay = 0) {
     if (!this.wanted || this.retryTimer) return;
-    const delay = this.backoff.next();
+    const delay = Math.max(minDelay, this.backoff.next());
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       if (this.wanted && !this.ws) this.connect();
@@ -86,7 +91,7 @@ export class BridgeClient {
     this.ws = ws;
     this.setState("connecting");
     ws.onopen = () => {
-      this.send(hello(this.version));
+      this.send(hello(this.version, this.clientId));
       this.helloTimer = setTimeout(() => {
         this.log.warn("bridge: no welcome from the agent server");
         ws.close(4000, "no welcome");
@@ -99,13 +104,32 @@ export class BridgeClient {
       if (m) this.handle(m);
     };
     ws.onerror = () => {};
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (this.ws !== ws) return;
       clearTimeout(this.helloTimer);
       clearInterval(this.beatTimer);
       this.ws = null;
       this.setState("closed");
-      this.scheduleReconnect();
+      // Replaced by a newer connection of this install: that one is in
+      // use, so coming straight back would only take it from it. Busy:
+      // another install owns the bridge; the backoff (never reset, as no
+      // welcome came) keeps the retries slow until it lets go.
+      // This client only hears REPLACED while it is alive, so the newer
+      // connection with its id is another live client: a copied profile
+      // with the same stored id. Take a fresh id, so from now on the two
+      // are different installs and the server refuses this one as busy
+      // instead of the two replacing each other on every retry.
+      if (e?.code === CLOSE.REPLACED) {
+        this.log.warn("bridge: replaced by a newer connection");
+        if (this.clientId !== null) {
+          this.clientId = crypto.randomUUID();
+          this.onClientId(this.clientId);
+        }
+        this.scheduleReconnect(this.timing.BACKOFF_MAX_MS);
+      } else {
+        if (e?.code === CLOSE.BUSY) this.log.info("bridge: another Orbi extension is connected to the agent server; waiting");
+        this.scheduleReconnect();
+      }
     };
   }
 

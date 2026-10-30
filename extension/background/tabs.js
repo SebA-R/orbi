@@ -24,9 +24,9 @@
 
 import { BridgeError, ERR } from "../lib/protocol.js";
 import { loadSettings } from "../lib/settings.js";
-import { assertAllowed, blockReason, frameAllowed, isAllowed } from "./allowlist.js";
+import { assertAllowed, blockReason, frameAllowed, isAllowed, originOf } from "./allowlist.js";
 import { assertNetSafe, flagOf } from "./netguard.js";
-import { ERROR_URL, isErrorPage, recordFor } from "./errpage.js";
+import { ERROR_URL, NET_ERRORS, isErrorPage, noHash, recordFor } from "./errpage.js";
 
 // The router's lock_arm checks the site again with isAllowed, and saved-card
 // fill checks payment frames with frameAllowed.
@@ -103,6 +103,12 @@ async function errorPageHidden(tab, settings, mine) {
   return !!rec && !!blockReason(rec.url, settings);
 }
 
+// The tab is kept from Orbi: on a page the settings hide, or on the error
+// page for one. blankOk lets a blank tab through.
+async function tabHidden(tab, settings, { mine, blankOk }) {
+  return !!hiddenReason(tab, settings, { blankOk }) || (await errorPageHidden(tab, settings, mine));
+}
+
 // The address Orbi's error page in this tab failed on, origin and path
 // only, or null. Null too when that address is not allowed: a blocked
 // site's address never reaches the agent.
@@ -111,6 +117,40 @@ export async function failedAddress(tab) {
   const rec = await recordFor(tab.url || tab.pendingUrl).catch(() => null);
   if (!rec || !(await isAllowed(rec.url).catch(() => false))) return null;
   return originPath(rec.url) || null;
+}
+
+// ------------------------------------------------------- load failures
+
+// The last main-frame load failure per tab, from webRequest.onErrorOccurred
+// (worker.js, the errpage.js FILTER). Chrome's error page then completes
+// with the failed address, so without this navigate would report it as
+// loaded. Only the network errors errpage.js sends to Orbi's error page
+// (NET_ERRORS): a stop, a download or a newer navigation (ERR_ABORTED), a
+// request an extension or policy blocked, a certificate warning or a form
+// resubmission is not a site that could not be reached.
+const loadErrors = new Map(); // tabId -> { url, error, at }
+
+export function onMainFrameError(d) {
+  if (!d || d.type !== "main_frame" || d.frameId !== 0) return;
+  if (!Number.isInteger(d.tabId) || d.tabId < 0) return;
+  if (!NET_ERRORS.has(d.error)) return;
+  loadErrors.set(d.tabId, { url: String(d.url || ""), error: d.error, at: Date.now() });
+}
+
+// Throws NET_ERROR when the load navigateAndWait just waited for failed: a
+// main-frame error since `since` and the tab still on that address
+// (Chrome's error page) or on Orbi's error page. Whatever the errorPages
+// setting is.
+async function assertLoaded(tabId, since, tab) {
+  const e = loadErrors.get(tabId);
+  if (!e || e.at < since) return;
+  const t = tab || (await api().tabs.get(tabId).catch(() => null));
+  if (!t) return;
+  if (!onErrorPage(t) && noHash(t.url || t.pendingUrl) !== noHash(e.url)) return;
+  // Origin only: the failed address may carry a login code in its query.
+  // A redirect's blocked site is never named.
+  const where = (await isAllowed(e.url).catch(() => false)) ? originOf(e.url) || "the site" : "the site";
+  throw new BridgeError(ERR.NET_ERROR, `could not reach ${where} (${e.error}); the page did not load`);
 }
 
 // ------------------------------------------------------------ tab state
@@ -125,13 +165,14 @@ async function saveState(s) {
   await api().storage.session.set({ [STATE_KEY]: s });
 }
 
-// Serializes read-modify-write of the state.
+// Serializes read-modify-write of the state. Nothing changed, nothing written.
 let chain = Promise.resolve();
 function update(fn) {
   const run = async () => {
     const s = await loadState();
+    const before = JSON.stringify(s);
     fn(s);
-    await saveState(s);
+    if (JSON.stringify(s) !== before) await saveState(s);
   };
   chain = chain.then(run, run);
   return chain;
@@ -144,6 +185,7 @@ export const markUsed = (tabId) => update((s) => (s.last = tabId));
 
 // tabs.onRemoved: forget the tab.
 export function onTabRemoved(tabId) {
+  loadErrors.delete(tabId);
   return update((s) => {
     s.created = s.created.filter((id) => id !== tabId);
     if (s.last === tabId) s.last = null;
@@ -191,7 +233,7 @@ export async function tabsContext() {
   const tabs = [];
   for (const t of all) {
     const mine = state.created.includes(t.id);
-    if (hiddenReason(t, settings, { blankOk: mine }) || (await errorPageHidden(t, settings, mine))) continue;
+    if (await tabHidden(t, settings, { mine, blankOk: mine })) continue;
     const newTab = onNewTab(t);
     const errorPage = !newTab && onErrorPage(t);
     tabs.push({
@@ -219,12 +261,12 @@ export async function resolveTab(tabId, { nav = false } = {}) {
     // The last used tab, unless it has since moved somewhere blocked.
     if (state.last != null) tab = await api().tabs.get(state.last).catch(() => null);
     const mine0 = tab && state.created.includes(tab.id);
-    if (tab && (hiddenReason(tab, settings, { blankOk: mine0 }) || (await errorPageHidden(tab, settings, mine0)))) tab = null;
+    if (tab && (await tabHidden(tab, settings, { mine: mine0, blankOk: mine0 }))) tab = null;
     if (!tab) tab = await activeTab();
     if (!tab) throw new BridgeError(ERR.NO_TAB, "no open tab; call tabs_create");
   }
   const mine = state.created.includes(tab.id);
-  if (!(nav && mine) && (hiddenReason(tab, settings, { blankOk: mine && nav }) || (await errorPageHidden(tab, settings, mine)))) {
+  if (!(nav && mine) && (await tabHidden(tab, settings, { mine, blankOk: mine && nav }))) {
     // No origin in the message: a blocked tab of the user's stays private.
     throw new BridgeError(ERR.NOT_ALLOWED, `tab ${tab.id} is on a blocked site; Orbi does not use it`);
   }
@@ -250,6 +292,37 @@ export async function resolveAllowedTab(tabId, { peek = false } = {}) {
 }
 
 // ------------------------------------------------------------ navigation
+
+// A tab's address; while it is still loading (a cap hit before the page
+// committed), where it is going.
+const urlOf = (t) => (t ? (t.status === "loading" && t.pendingUrl) || t.url || t.pendingUrl || "" : "");
+
+// Where the tab is, for a reply to the agent: origin and path only, like
+// tabsContext. Orbi's error page is itself; a page Orbi may not use, or one
+// whose address is not known yet, gives no url or title.
+async function whereTab(tab) {
+  if (onErrorPage(tab)) return { url: ERROR_URL, title: ERROR_TITLE };
+  const url = urlOf(tab);
+  if (!url || onEmptyPage(tab) || flagOf(tab.id) || !(await isAllowed(url).catch(() => false))) return {};
+  const pending = tab.status === "loading" && tab.pendingUrl && tab.pendingUrl !== tab.url;
+  return { url: originPath(url), title: pending ? "" : String(tab.title || "").slice(0, TITLE_MAX) };
+}
+
+// After the load navigate or tabsCreate waited for (since `since`): throws
+// when the tab landed on a site Orbi does not drive (history or a redirect
+// can lead there; a check that fails counts as not allowed), on a local
+// address, or the load failed (NET_ERROR). Orbi's error page for an allowed
+// address is no such site, and a blank page is fine in a tab Orbi opened
+// (blankOk). An address not known yet (a slow page, no url or pendingUrl)
+// is not refused here; whereTab tells nothing about it.
+async function checkLanding(tab, since, { blankOk = false } = {}) {
+  const url = tab.url || tab.pendingUrl || "";
+  if (url && !onErrorPage(tab) && !(blankOk && BLANK.test(url)) && !(await isAllowed(url).catch(() => false))) {
+    throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${originOf(url) || "unknown"}`);
+  }
+  assertNetSafe(tab.id);
+  await assertLoaded(tab.id, since, tab);
+}
 
 // Resolves once the tab reaches status "complete" after `start()` runs.
 // The listener is installed before start() so no event is missed. If no
@@ -306,6 +379,87 @@ export function navigateAndWait(tabId, start, timeoutMs = NAV_TIMEOUT_MS) {
   });
 }
 
+// How long after a click or key a page load may start and still count as
+// its doing, how long that load then gets to finish, and how long a page
+// whose address changed without a load (pushState) gets to render.
+export const SETTLE_WINDOW_MS = 500;
+export const SETTLE_TIMEOUT_MS = 8_000;
+export const SETTLE_RENDER_MS = 300;
+
+// Runs act() (a click or key press in tab tabId), then waits for the page
+// it may have started to load: if the tab starts loading within windowMs
+// after act() returns, this waits for "complete", at most timeoutMs (a slow
+// page is reported as it is then, not failed). An address change with no
+// load (a single page app) gets renderMs to draw. Otherwise it answers
+// after windowMs. stop() answering true (an interrupt) ends any wait at
+// once. The listener is installed before act() runs, so a load that starts
+// during the press is seen too.
+// Answers act()'s result plus { navigated, url, title } of where the tab
+// is now. url is origin and path only, like navigate's; a page Orbi may not
+// use gives no url or title.
+export async function actAndSettle(tabId, act, { windowMs = SETTLE_WINDOW_MS, timeoutMs = SETTLE_TIMEOUT_MS, renderMs = SETTLE_RENDER_MS, stop = () => false } = {}) {
+  const c = api();
+  const before = await c.tabs.get(tabId).catch(() => null);
+  // A #fragment change (an in-page anchor, a tab widget) is no move; a
+  // hash route (#/cart, #!/cart) is.
+  const page = (u) => String(u || "").replace(/#(?![/!]).*$/, "");
+  const from = before ? page(urlOf(before)) : null;
+  let loading = false;
+  let complete = false;
+  let moved = false;
+  let wake = null;
+  // A load already under way before act() is not its doing: its "loading"
+  // updates (no address, or the one it was going to) are ignored until it
+  // completes.
+  let earlier = before?.status === "loading";
+  const onUpdated = (id, change) => {
+    if (id !== tabId || !change) return;
+    if (earlier && change.status === "complete" && !loading) earlier = false;
+    else if (change.status === "loading" && !(earlier && (change.url == null || page(change.url) === from))) loading = true;
+    if (change.status === "complete" && loading) complete = true;
+    if (change.url != null && page(change.url) !== from) moved = true;
+    if (wake) wake();
+  };
+  c.tabs.onUpdated.addListener(onUpdated);
+  // Waits until done() or ms pass, waking on every tab update. It polls
+  // stop(), and with poll the tab's own status too, as navigateAndWait
+  // does, for a missed "complete".
+  const until = (done, ms, poll = false) =>
+    new Promise((resolve) => {
+      const over = () => stop() || done();
+      if (over()) return resolve();
+      const end = () => {
+        clearTimeout(timer);
+        clearInterval(iv);
+        wake = null;
+        resolve();
+      };
+      const timer = setTimeout(end, ms);
+      wake = () => over() && end();
+      const iv = setInterval(async () => {
+        if (poll) {
+          const t = await c.tabs.get(tabId).catch(() => null);
+          if (!t || t.status === "complete") complete = true;
+        }
+        if (over()) end();
+      }, poll ? 250 : 100);
+    });
+  let result;
+  try {
+    result = await act();
+    await until(() => loading || moved, windowMs);
+    // A pushState first may still be followed by a real load.
+    if (moved && !loading) await until(() => loading, renderMs);
+    if (loading) await until(() => complete, timeoutMs, true);
+  } finally {
+    c.tabs.onUpdated.removeListener(onUpdated);
+  }
+  const tab = await c.tabs.get(tabId).catch(() => null);
+  const navigated = loading || moved || (!!before && !!tab && from !== page(urlOf(tab)));
+  const out = { ...(result && typeof result === "object" ? result : {}), navigated };
+  return tab ? { ...out, ...(await whereTab(tab)) } : out;
+}
+
 // Opens a tab right after the user's current tab. It is created in the
 // background; onCreated (the router's follow) may then bring it to the
 // front before it loads.
@@ -319,8 +473,20 @@ export async function tabsCreate({ url, onCreated } = {}) {
   await markUsed(tab.id);
   if (typeof onCreated === "function") await Promise.resolve(onCreated(tab.id)).catch(() => {});
   if (url != null) {
+    const since = Date.now();
     await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
-    assertNetSafe(tab.id);
+    const now = await api().tabs.get(tab.id).catch(() => null);
+    if (!now) throw new BridgeError(ERR.NO_TAB, `tab ${tab.id} closed while loading`);
+    try {
+      await checkLanding(now, since, { blankOk: true });
+    } catch (e) {
+      // The tab is open: name it, so the caller can navigate or close it
+      // instead of opening another.
+      if (e instanceof BridgeError) e.message = `${e.message} (in tab ${tab.id}, which is still open)`;
+      throw e;
+    }
+    // Where it went, like navigate.
+    return { tabId: tab.id, ...(await whereTab(now)) };
   }
   return { tabId: tab.id };
 }
@@ -358,22 +524,15 @@ export async function navigate({ tabId, url } = {}) {
     start = () => api().tabs.update(id, { url });
   }
   await markUsed(id);
+  const since = Date.now();
   await navigateAndWait(id, start);
   const tab = await api().tabs.get(id);
-  // The address did not load and the tab is already on Orbi's error page.
-  if (onErrorPage(tab)) return { tabId: tab.id, url: ERROR_URL, title: ERROR_TITLE };
-  // History or a redirect can lead to a site that is not allowed; report it
-  // so callers stop driving. A blank page in a tab Orbi opened is fine.
-  if (!(mine && BLANK.test(tab.url || "")) && !(await isAllowed(tab.url))) {
-    let origin = "unknown";
-    try {
-      origin = new URL(tab.url).origin;
-    } catch {}
-    throw new BridgeError(ERR.NOT_ALLOWED, `navigated to a site Orbi does not drive: ${origin}`);
-  }
-  assertNetSafe(id);
+  // Refused so callers stop driving; a load that failed is NET_ERROR.
+  await checkLanding(tab, since, { blankOk: mine });
+  // A blank page in a tab Orbi opened (the sweep's) is named as it is.
+  if (mine && BLANK.test(tab.url || "")) return { tabId: tab.id, url: originPath(tab.url), title: tab.title || "" };
   // Origin and path only: a query string or fragment can carry login codes.
-  return { tabId: tab.id, url: originPath(tab.url || tab.pendingUrl || ""), title: tab.title || "" };
+  return { tabId: tab.id, ...(await whereTab(tab)) };
 }
 
 // Checks a page again right after Orbi read from it, so a tab that
@@ -421,12 +580,8 @@ export async function tabInfo({ tabId } = {}) {
 // even ones Orbi navigated, clicked or typed in.
 export async function agentTabs() {
   const state = await loadState();
-  const tabs = [];
-  for (const id of state.created) {
-    const t = await api().tabs.get(id).catch(() => null);
-    if (t) tabs.push({ ...info(t), openedByClearcart: true });
-  }
-  return { tabs };
+  const found = await Promise.all(state.created.map((id) => api().tabs.get(id).catch(() => null)));
+  return { tabs: found.filter(Boolean).map((t) => ({ ...info(t), openedByClearcart: true })) };
 }
 
 // Earlier versions kept agent tabs in a "Orbi" tab group. On install or

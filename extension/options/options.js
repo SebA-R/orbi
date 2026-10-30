@@ -15,12 +15,13 @@
 // - Text that has to be checked first (allowed sites, blocked sites, the
 //   agent address) saves only with the Save button, after validation.
 // Danger mode has its own two-press switch (lib/danger-toggle.js).
-import { CLAUDE_MODELS, DEFAULTS, HOTKEYS, claudeModelLabel, SPEED_MIN, SPEED_MAX, loadSettings, localModels, saveSettings, normalizeAgentUrl, normalizeLocalBaseUrl, normalizeLocalModel, parseOriginLines, speakRepliesNote } from "../lib/settings.js";
+import { DEFAULTS, loadSettings, localModels, saveSettings, normalizeAgentUrl, normalizeLocalBaseUrl, normalizeLocalModel, parseOriginLines, speakRepliesNote } from "../lib/settings.js";
 import { RT } from "../lib/protocol.js";
 import { SUGGESTED_BLOCKLIST, SUGGESTED_ENTRIES, parseBlockLines } from "../lib/blocklist.js";
 import { grantMic, micPermission, micStateMessage } from "../lib/mic-grant.js";
 import { bindDangerToggle } from "../lib/danger-toggle.js";
-import { SETUP_STEPS, agentHealth, basicVoice, hasSiteAccess, keyName, setupDone } from "../lib/setup.js";
+import { SETUP_STEPS, basicVoice, setupDone, setupStatus } from "../lib/setup.js";
+import { fillSettingControls, speedLabel } from "../lib/setting-controls.js";
 import { forgetAll, forgetFact, listMemory } from "../lib/memory.js";
 import { addCard, cardLabel, checkCard, listCards, removeCard, setDefaultCard } from "../lib/cards.js";
 
@@ -37,12 +38,9 @@ const els = {
   localTest: $("local-test"), localState: $("local-state"), localStatus: $("local-test-status"),
 };
 
-for (const value of Object.keys(HOTKEYS)) els.hotkey.append(new Option(keyName(value), value));
-for (const id of Object.keys(CLAUDE_MODELS)) $("claude-model").append(new Option(claudeModelLabel(id), id));
-els.speed.min = String(SPEED_MIN);
-els.speed.max = String(SPEED_MAX);
+fillSettingControls({ hotkey: els.hotkey, model: $("claude-model"), speed: els.speed });
 
-const showSpeed = () => { els.speedOut.textContent = `${Number(els.speed.value).toFixed(1)}x`; };
+const showSpeed = () => { els.speedOut.textContent = speedLabel(els.speed.value); };
 els.speed.addEventListener("input", showSpeed);
 
 // Simple settings: every [data-setting] input, by storage key.
@@ -506,7 +504,7 @@ let setupRun = 0;
 async function refreshSetup() {
   const run = ++setupRun;
   const s = await loadSettings();
-  const [site, mic, agent] = await Promise.all([hasSiteAccess(), micPermission(), agentHealth(s.agentUrl)]);
+  const { site, mic, agent } = await setupStatus(s.agentUrl);
   if (run !== setupRun) return;
   const done = setupDone({ site, mic, agent });
   tag(els.setupState, done === SETUP_STEPS ? "ok" : "todo", done === SETUP_STEPS ? "Complete" : `${done} of ${SETUP_STEPS} done`);
