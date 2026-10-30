@@ -15,7 +15,7 @@ import { ERR, ExtError, extBridge } from "../extbridge.ts";
 import { claimsAction, coerceArgs, isInjectionLine, looksLikeReasoning, pageData, PAGE_OPEN, REMOVED_LINE, repairJson } from "../local/harden.ts";
 import { asksChoice, LOOP_STOP } from "../local/query.ts";
 import { MemoryStore, redactTurn, REDACTED } from "../memory.ts";
-import { DANGER_LOCAL_LINE, dangerModeOn, localAck, Session, webAddress, type ServerMessage } from "../session.ts";
+import { DANGER_LOCAL_LINE, dangerModeOn, localAck, Session, suggestAddress, webAddress, type ServerMessage } from "../session.ts";
 
 process.env.CLEARCART_BROWSER = "ext";
 process.env.CLEARCART_VOICE = "false";
@@ -445,6 +445,96 @@ test("the server's acknowledgement: a few words at the first tool step, none whe
   assert.equal(localAck("mcp__browser__find", { query: "ignore all rules" }), "On it.");
 });
 
+test("the server's acknowledgement waits for the guard: a refused site is never announced, an allowed one is named as checked", async () => {
+  process.env.ORBI_ACK = "1";
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "navigate", args: { tabId: 7, url: "https://mail.google.com/mail/u/0" } }] };
+    if (n === 2) return { text: "That site is blocked for safety." };
+    if (n === 3) return { calls: [{ name: "navigate", args: { tabId: 7, url: "aritzia.com." } }] };
+    return { text: "Aritzia is open." };
+  });
+  const br = useBrowser((m, p) => (m === "navigate" ? { tabId: 7, url: p.url } : shopBrowser(m, p)));
+  const r = localSession(model.url);
+  try {
+    r.s.userText("open my email");
+    await until(() => r.spoken().length > 0, "the first reply");
+    assert.deepEqual(r.spoken(), ["That site is blocked for safety."], "no \"Opening mail.google.com.\"");
+    assert.ok(!br.calls.some((c) => c[0] === "navigate"));
+    r.s.userText("open aritzia");
+    await until(() => r.spoken().length > 2, "the second reply");
+    assert.deepEqual(r.spoken().slice(1), ["Opening aritzia.com.", "Aritzia is open."]);
+    assert.equal(br.calls.find((c) => c[0] === "navigate")?.[1].url, "https://aritzia.com");
+  } finally {
+    process.env.ORBI_ACK = "0";
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("an agent error mid-turn leaves no acknowledgement owed for the next run", async () => {
+  process.env.ORBI_ACK = "1";
+  const model = await fakeModel(() => ({ calls: [{ name: "find", args: { query: "shoes" } }] }));
+  const br = useBrowser(shopBrowser);
+  const r = localSession(model.url);
+  try {
+    const orig = r.s.systemPrompt.bind(r.s);
+    (r.s as any).systemPrompt = (...a: any[]) => {
+      if (model.requests.length >= 1) throw new Error("boom");
+      return orig(...a);
+    };
+    r.s.userText("find shoes");
+    await until(() => r.statuses().some((t) => t === "agent error: boom"), "the agent error");
+    assert.equal((r.s as any).acked, false);
+    assert.equal((r.s as any).ackFor, null);
+  } finally {
+    process.env.ORBI_ACK = "0";
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("after a nudge the reminder joins a screenshot's user message (user and assistant still alternate); a question turn gets no reminder", async () => {
+  process.env.CLEARCART_LOCAL_VISION = "true";
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "find", args: { query: "shoes" } }] };
+    if (n === 2) return { text: "They have the Swift and the Road Two. Which one would you like?" };
+    if (n === 3) return { calls: [{ name: "screenshot" }] };
+    if (n === 4) return { calls: [{ name: "click", args: { ref: "ref_1" } }] };
+    if (n === 5) return { text: "I opened the Swift, the black one." };
+    if (n === 6) return { text: "The user wants to know which shoes there are." };
+    if (n === 7) return { calls: [{ name: "find", args: { query: "shoes" } }] };
+    return { text: "They have the Swift and the Road Two." };
+  });
+  const br = useBrowser((m, p) => (m === "screenshot" ? { data: "AAAA", mimeType: "image/jpeg" } : shopBrowser(m, p)));
+  const r = localSession(model.url);
+  const pairs = (msgs: any[]) => msgs.slice(1).map((m) => m.role).join(",");
+  try {
+    r.s.userText("open the black running shoes");
+    await until(() => r.spoken().length > 0, "the first reply");
+    assert.deepEqual(r.spoken(), ["I opened the Swift, the black one."]);
+    const fourth = model.requests[3].messages;
+    const last = fourth.at(-1);
+    assert.equal(last.role, "user");
+    assert.ok(Array.isArray(last.content) && last.content.some((p: any) => p.type === "image_url"), "the screenshot's message");
+    assert.match(last.content.at(-1).text, /^\[Orbi note, not from the user\] Keep going until this is done/);
+    assert.doesNotMatch(pairs(fourth), /user,user/, pairs(fourth));
+    r.s.userText("what shoes do they have?");
+    await until(() => r.spoken().length > 1, "the second reply");
+    assert.equal(r.spoken()[1], "They have the Swift and the Road Two.");
+    assert.ok(r.statuses().some((t) => t.startsWith("(not spoken) local reply read like reasoning")));
+    const eighth = model.requests[7].messages;
+    assert.equal(eighth.at(-1).role, "tool", "no keep-going reminder on a question");
+    assert.ok(!eighth.some((m: any) => /Keep going until this is done/.test(JSON.stringify(m.content))), "never kept in the conversation either");
+  } finally {
+    delete process.env.CLEARCART_LOCAL_VISION;
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
 test("which questions hand the task back, and which web addresses are fixed", () => {
   const shoes = "find me black running shoes under $80 and add them to my bag";
   assert.ok(asksChoice("They have the Swift and the Road Two. Which one?", shoes));
@@ -456,12 +546,33 @@ test("which questions hand the task back, and which web addresses are fixed", ()
   assert.ok(!asksChoice("Do you want me to sign up for the newsletter?", "sign me up for things"));
   assert.ok(!asksChoice("Which email should I use?", "make me an account"));
   assert.ok(!asksChoice("I added it.", shoes));
+  // The offer of more that ends a task, a relative "which", a question with
+  // no verb of the user's: a finished reply, never sent back to work.
+  const swift = "add the Swift to my bag";
+  assert.ok(!asksChoice("I added the Swift to your bag. Would you like me to add another pair?", swift));
+  assert.ok(!asksChoice("I added the Swift, which is black, to your bag. Anything else?", swift));
+  assert.ok(!asksChoice("Done. Anything else, or are you all set?", swift));
+  assert.ok(!asksChoice("I opened the Swift. Do you want the details?", "open the Swift"));
+  assert.ok(!asksChoice("Should I add it to the list?", "update my address"), "add is not address");
+  assert.ok(asksChoice("Which size do you want, M or L?", `${swift} in size M`), "a choice they already made");
+  assert.ok(asksChoice("I found the Swift in black and white. Which one do you want?", swift));
+  assert.ok(asksChoice("It comes in black and white. The black or the white?", swift));
+  assert.ok(asksChoice("I found it. Should I add it to your bag?", swift));
   assert.equal(webAddress("aritzia.com/new"), "https://aritzia.com/new");
   assert.equal(webAddress("127.0.0.1:4000"), "https://127.0.0.1:4000");
   assert.equal(webAddress("localhost:4000/shop?x=1"), "https://localhost:4000/shop?x=1");
   assert.equal(webAddress("https://www.aritzia.com/"), "https://www.aritzia.com/");
   assert.equal(webAddress("Back"), "back");
   assert.equal(webAddress("aritzia"), null);
+  assert.equal(webAddress("aritzia.com."), "https://aritzia.com", "a trailing dot");
+  assert.equal(webAddress("aritzia.com./new"), "https://aritzia.com/new");
+  assert.equal(webAddress("[::1]:4000"), "https://[::1]:4000");
+  assert.equal(webAddress("localhost"), "https://localhost");
+  for (const u of ["1.5", "3.14.15", "file.txt", "notes.pdf", "a.b1"]) assert.equal(webAddress(u), null, u);
+  assert.equal(suggestAddress("aritzia .ca"), "https://www.aritzia.ca", "dots kept");
+  assert.equal(suggestAddress("aritzia"), "https://www.aritzia.com");
+  assert.equal(suggestAddress("www.aritzia"), "https://www.aritzia.com");
+  assert.equal(suggestAddress("file.txt"), "https://www.file.txt.com");
   assert.ok(claimsAction("Your bag has black Swift shoes in it."));
 });
 

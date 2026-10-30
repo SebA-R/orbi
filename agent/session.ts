@@ -589,9 +589,10 @@ export class Session {
   // are offered (they stay as they were for the rest of the session).
   private localDesktop = false;
   // The server says the acknowledgement for a small local model (localAck),
-  // once per turn (acked).
+  // once per turn (acked), for the call ackFor once the guard allows it.
   private serverAck = false;
   private acked = false;
+  private ackFor: string | null = null;
   // The user's own words this turn, as the local scaffold last saw them.
   private localWords = "";
 
@@ -926,7 +927,20 @@ export class Session {
     }
   }
 
-  private guard: HookCallback = async (input) => {
+  // The PreToolUse guard (check), and after it the local acknowledgement
+  // for the call it waits for: spoken only when the call is allowed, from
+  // the input as checked, so a refused site is never announced.
+  private guard: HookCallback = async (input, toolUseID, opts) => {
+    const out = await this.check(input, toolUseID, opts);
+    if (input.hook_event_name === "PreToolUse" && this.ackFor && this.ackFor === input.tool_use_id) {
+      this.ackFor = null;
+      const denied = (out as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision === "deny";
+      if (!denied && !this.muted) this.say(localAck(input.tool_name, input.tool_input), "ack");
+    }
+    return out;
+  };
+
+  private check: HookCallback = async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const name = input.tool_name;
     const args = (input.tool_input || {}) as Record<string, unknown>;
@@ -1767,7 +1781,7 @@ export class Session {
           const u = a.url.trim();
           const fixed = webAddress(u);
           if (fixed) a.url = fixed;
-          else if (u) throw new Error(`Not run: "${u.slice(0, 40)}" is not a web address. Use the site's full address, for example https://www.${u.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 30) || "example"}.com, or search for it.`);
+          else if (u) throw new Error(`Not run: "${u.slice(0, 40)}" is not a web address. Use the site's full address, for example ${suggestAddress(u)}, or search for it.`);
         }
         if (tool === b("read_page")) {
           a.filter = "interactive";
@@ -1927,12 +1941,12 @@ export class Session {
       }
       // A small local model's first tool step: the server says a few words
       // for it (ACK_PROMPT is left out of its rules), unless it calls say
-      // itself or the step is one that speaks for itself.
+      // itself or the step is one that speaks for itself. They are said
+      // when the guard allows the step's first call (guard).
       if (working && this.serverAck && !this.acked) {
         this.acked = true;
         const tools = blocks.filter((b) => b.type === "tool_use");
-        const text = tools.some((b) => /^(say|request_checkout|request_unlock|pay_with_saved_card)$/.test(shortName(b.name))) ? null : localAck(tools[0].name, tools[0].input);
-        if (text && !this.muted) this.say(text, "ack");
+        if (!tools.some((b) => /^(say|request_checkout|request_unlock|pay_with_saved_card)$/.test(shortName(b.name)))) this.ackFor = tools[0].id;
       }
       for (const block of blocks) {
         if (block.type === "text" && block.text?.trim()) {
@@ -1969,6 +1983,7 @@ export class Session {
       if (this.held.length) this.say(this.held.join(" "), "reply");
       this.held = [];
       this.acked = false;
+      this.ackFor = null;
       this.turnsOpen = Math.max(0, this.turnsOpen - 1);
       // Nothing paced (a click on its way, typing) outlives its turn.
       this.stopActions();
@@ -2070,6 +2085,8 @@ export class Session {
     try {
       for await (const m of q) this.onSdkMessage(m);
     } catch (e) {
+      this.acked = false;
+      this.ackFor = null;
       if (!this.closed) {
         this.muted = false;
         this.status(`agent error: ${(e as Error).message}`);
@@ -2084,14 +2101,37 @@ const shortName = (name: string) => name.replace(B, "").replace(C, "");
 
 // A url a local model wrote, as navigate and tabs_create take it: with a
 // scheme as given, "back" or "forward", or a bare host ("aritzia.com/new",
-// "127.0.0.1:4000", "localhost:4000") with https:// put in front. Null when
-// it is no web address at all ("aritzia"). The guard still checks the result.
+// "aritzia.com.", "127.0.0.1:4000", "localhost:4000") with https:// put in
+// front. Null when it is no web address at all: no dot ("aritzia"), or no
+// name a site has ("1.5", "file.txt": a host needs a top-level domain of
+// letters that is not a file type, unless it is an IP address or
+// localhost). The guard still checks the result.
+const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
+const FILE_TYPE = /\.(txt|pdf|docx?|xlsx?|pptx?|csv|json|jpe?g|png|gif|webp|svg|mp3|mp4|exe|dmg|js|html?|xml|log|zip)$/i;
 export function webAddress(u: string): string | null {
   if (/^(back|forward)$/i.test(u)) return u.toLowerCase();
-  const host = /^((www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+|localhost|\[[0-9a-f:]+\])(:\d{1,5})?([/?#]\S*)?$/i;
-  if (host.test(u)) return `https://${u}`;
+  const bare = /^((?:[a-z0-9-]+\.)+[a-z0-9-]+|localhost|\[[0-9a-f:]+\])\.?((?::\d{1,5})?(?:[/?#]\S*)?)$/i.exec(u);
+  if (bare) {
+    const host = bare[1];
+    const site = host.startsWith("[") || /^localhost$/i.test(host) || IPV4.test(host) || (/\.[a-z]{2,63}$/i.test(host) && !FILE_TYPE.test(host));
+    return site ? `https://${host}${bare[2]}` : null;
+  }
   if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^[a-z0-9.-]+:\d/i.test(u)) return u;
   return null;
+}
+
+// The full address a refusal suggests for words that are not one, dots
+// kept: "aritzia .ca" is https://www.aritzia.ca, "aritzia" https://www.aritzia.com.
+export function suggestAddress(u: string): string {
+  const name =
+    u
+      .toLowerCase()
+      .replace(/^[a-z]+:\/\//, "")
+      .replace(/[^a-z0-9.-]+/g, "")
+      .replace(/^www\./, "")
+      .replace(/^[.-]+|[.-]+$/g, "")
+      .slice(0, 40) || "example";
+  return `https://www.${/\.[a-z]{2,}$/.test(name) && !FILE_TYPE.test(name) ? name : `${name}.com`}`;
 }
 
 // The few words the server says when a local model starts tool work:

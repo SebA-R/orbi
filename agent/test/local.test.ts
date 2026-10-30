@@ -378,6 +378,35 @@ test("CLEARCART_LOCAL_KEEP_ALIVE: seconds, a Go duration or default; anything el
   }
 });
 
+test("a context window too small for the rules and tools is said once; a nudge's note counts toward what fits", async () => {
+  const model = await fakeModel(() => ({ text: "Hi." }));
+  const big = "Rule. ".repeat(3_000);
+  const a = plainLocal(model.url, { warmUp: false, contextTokens: 4_096, systemPrompt: big });
+  try {
+    a.turns.say("hello");
+    await until(() => a.results.length === 1, "the first turn");
+    a.turns.say("hello again");
+    await until(() => a.results.length === 2, "the second turn");
+    assert.equal(a.statuses.filter((t) => /^local model: the context window \(4096 tokens\) is too small for Orbi's rules and tools \(about \d+ tokens\)/.test(t)).length, 1, a.statuses.join("\n"));
+  } finally {
+    await a.stop();
+  }
+  const b = plainLocal(model.url, { warmUp: false, contextTokens: 4_096 });
+  try {
+    const q = b.q as any;
+    const fill = (n: number): any[] => [{ role: "user", content: "x".repeat(n) }];
+    const room = q.budget("rules");
+    q.turns = [fill(room / 2), fill(room / 2 - 100)];
+    q.fit("rules");
+    assert.equal(q.turns.length, 2, "fits without the note");
+    q.fit("rules", 500);
+    assert.equal(q.turns.length, 1, "the older turn goes to make room for the note");
+  } finally {
+    await b.stop();
+    await model.close();
+  }
+});
+
 test("a guard deny: the reason is the tool result and the tool never runs", async () => {
   const model = await fakeModel((_b, n) => (n === 1 ? { calls: [{ name: "navigate", args: { url: "https://mail.google.com/mail/u/0" } }] } : { text: "That site is blocked." }));
   const br = useBrowser(quietBrowser);
