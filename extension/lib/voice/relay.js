@@ -18,7 +18,9 @@
 //                                 offscreen document first (VOICE_SYNC)
 //   tab load complete          -> a new document in the talking tab (a link
 //                                 followed mid-turn) starts idle: the state and
-//                                 recent lines again, as on a tab switch
+//                                 recent lines again, as on a tab switch. Not
+//                                 for the same document loading again (a
+//                                 frame, a same-page navigation): it has them
 //   storage change             -> SETTINGS_CHANGED {settings} to offscreen (if open)
 //   offscreen SUBTITLE / SUBTITLE_WORD / VOICE_STATE / VOICE_ERROR / STATUS -> the active tab
 //   offscreen VOICE_ERROR code "mic_blocked" -> open the options page once
@@ -62,8 +64,12 @@ export function createVoiceRelay({
   // A tab whose switch-to replay found no content script yet (still
   // loading): it gets the replay again when its load completes.
   let retryTab = null;
-  // Waiting for the offscreen document's VOICE_STATE (stateKnown).
-  let stateWaiters = [];
+  // The top document (documentId) each tab's card is known to be live in:
+  // one that sent us a message, or got a replay. A load that completes in
+  // it again needs no replay.
+  const liveDoc = new Map();
+  // Resolves the pending stateKnown() when the offscreen VOICE_STATE comes.
+  let stateHeard = null;
   const STATE_WAIT_MS = 1000;
   const RELOAD_RETRY_MS = 400;
 
@@ -151,17 +157,15 @@ export function createVoiceRelay({
     if (replay.state) return Promise.resolve();
     if (asking) return asking;
     asking = new Promise((resolve) => {
-      let done = false;
       const finish = () => {
-        if (done) return;
-        done = true;
-        stateWaiters = stateWaiters.filter((w) => w !== finish);
+        if (stateHeard !== finish) return;
+        stateHeard = null;
         asking = null;
         resolve();
       };
-      stateWaiters.push(finish);
+      stateHeard = finish;
       setTimeout(finish, STATE_WAIT_MS);
-      toOffscreen({ type: RT.VOICE_SYNC }, { create: false }).then(() => hasOffscreen()).then((open) => { if (!open) finish(); }, finish);
+      resync().then(() => hasOffscreen()).then((open) => { if (!open) finish(); }, finish);
     });
     return asking;
   }
@@ -173,11 +177,7 @@ export function createVoiceRelay({
     if (msg.from === "offscreen") {
       if (!TO_TAB.has(msg.type)) return false;
       remember(msg);
-      if (msg.type === RT.VOICE_STATE && stateWaiters.length) {
-        const waiters = stateWaiters;
-        stateWaiters = [];
-        for (const w of waiters) w();
-      }
+      if (msg.type === RT.VOICE_STATE) stateHeard?.();
       toTab(msg);
       if (msg.type === RT.VOICE_STATE) {
         ducker.onState(msg.state);
@@ -191,6 +191,7 @@ export function createVoiceRelay({
       return true;
     }
     if (msg.target === "offscreen") return false; // our own outbound copy
+    if (sender.tab && sender.tab.id != null && sender.frameId === 0 && sender.documentId) liveDoc.set(sender.tab.id, sender.documentId);
     switch (msg.type) {
       case RT.PTT_START:
         if (sender.tab && sender.tab.id != null) lastTabId = sender.tab.id;
@@ -359,11 +360,28 @@ export function createVoiceRelay({
   async function onTabUpdated(tabId, change) {
     if (!change || change.status !== "complete" || tabId == null || tabId !== lastTabId) return;
     const busy = replay.state && replay.state.state !== "idle";
-    if (!busy && retryTab !== tabId) return;
+    const retry = retryTab === tabId;
+    if (!busy && !retry) return;
     retryTab = null;
-    if ((await replayTo(tabId)) !== "failed") return;
-    await new Promise((r) => setTimeout(r, RELOAD_RETRY_MS));
-    if (tabId === lastTabId) await replayTo(tabId);
+    const doc = await topDocument(tabId);
+    if (!retry && doc && liveDoc.get(tabId) === doc) return; // the same page: it has them
+    let sent = await replayTo(tabId);
+    if (sent === "failed") {
+      await new Promise((r) => setTimeout(r, RELOAD_RETRY_MS));
+      if (tabId === lastTabId) sent = await replayTo(tabId);
+    }
+    if (sent === "sent" && doc) liveDoc.set(tabId, doc);
+  }
+
+  // The documentId of the tab's top frame now, or null (no access: a
+  // chrome:// page; an older Chrome).
+  async function topDocument(tabId) {
+    try {
+      const [r] = await chromeApi.scripting.executeScript({ target: { tabId, frameIds: [0] }, func: () => 0 });
+      return (r && r.documentId) || null;
+    } catch {
+      return null;
+    }
   }
 
   // Switching windows changes the visible tab too.

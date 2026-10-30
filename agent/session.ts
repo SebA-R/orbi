@@ -15,6 +15,7 @@
 // still waiting (it was asked in the old window, so no yes from the new one
 // may answer it) and mutes the turn in progress like a barge-in.
 
+import { randomUUID } from "node:crypto";
 import dns from "node:dns";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -391,11 +392,11 @@ export type ServerMessage =
   | { type: "confirm_done"; outcome: "paid" | "declined" | "failed" }
   // Whether the agent is working on the user's words: on from a user turn
   // until its result, off while a question waits for the user's answer.
-  // seq is how many user_text messages had come in when it was sent (the
-  // hub restamps it per window), so a client that has sent newer words can
-  // tell a stale "off" from the one that ends its own turn. Sent on every
-  // user_text and whenever the value changes.
-  | { type: "busy"; on: boolean; seq: number };
+  // Sent on every user_text and whenever the value changes. The hub adds
+  // seq, how many user_text messages that window has sent (hub.ts), so a
+  // client that has sent newer words can tell a stale "off" from the one
+  // that ends its own turn.
+  | { type: "busy"; on: boolean; seq?: number };
 
 // The whole answer must be a yes: affirmative phrases plus polite filler and
 // nothing else, so "yes, but two of them", "do it later" or "pay attention"
@@ -446,11 +447,14 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   private waiters: Array<(r: IteratorResult<SDKUserMessage>) => void> = [];
   private closed = false;
 
-  push(text: string) {
-    const msg: SDKUserMessage = { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+  // Returns the message's uuid, which the SDK's result for it names.
+  push(text: string): string {
+    const uuid = randomUUID();
+    const msg: SDKUserMessage = { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, uuid };
     const w = this.waiters.shift();
     if (w) w({ value: msg, done: false });
     else this.items.push(msg);
+    return uuid;
   }
 
   close() {
@@ -562,11 +566,11 @@ export class Session {
   private input = new InputQueue();
   private abort = new AbortController();
   // The answer slot of the question waiting for the user (see answerSlot).
-  // Every change re-checks busy.
-  private answerWait: ((text: string | null) => void) | null = null;
-  private get awaitingAnswer() { return this.answerWait; }
+  // Every change re-checks busy (only the setter writes #answerWait).
+  #answerWait: ((text: string | null) => void) | null = null;
+  private get awaitingAnswer() { return this.#answerWait; }
   private set awaitingAnswer(v: ((text: string | null) => void) | null) {
-    this.answerWait = v;
+    this.#answerWait = v;
     this.syncBusy();
   }
   private state: PayState = { lastTabId: null, confirmation: null, cardFieldsLive: false, autoOk: () => dangerModeOn() };
@@ -610,19 +614,22 @@ export class Session {
   // Keeps user turns in order while their context is fetched.
   private turns: Promise<void> = Promise.resolve();
   // User turns sent to the SDK whose result has not come back yet. Every
-  // change re-checks busy.
-  private openTurns = 0;
-  private get turnsOpen() { return this.openTurns; }
+  // change re-checks busy (only the setter writes #openTurns).
+  #openTurns = 0;
+  private get turnsOpen() { return this.#openTurns; }
   private set turnsOpen(n: number) {
-    this.openTurns = n;
+    this.#openTurns = n;
     this.syncBusy();
   }
+  // The uuids of the user turns pushed to the SDK whose result has not come
+  // back, oldest first. A result names the ones it consumed: queued words
+  // can fold into a running turn, so one result may close several.
+  private sdkTurns: string[] = [];
   // User turns whose result has come back, ever (or that the loop's end
   // closed); bounds UserWords.turnLimit.
   private turnsEnded = 0;
-  // user_text messages received, and the busy value last sent (null: send
-  // the next check whatever it finds). A client starts out not busy.
-  private userSeq = 0;
+  // The busy value last sent (null: send the next check whatever it
+  // finds, after a new user_text). A client starts out not busy.
   private busySent: boolean | null = false;
   // The turn in progress was interrupted: nothing more from it is spoken.
   private muted = false;
@@ -710,7 +717,6 @@ export class Session {
     if (this.closed || !text.trim()) return;
     // Every user_text is answered with the busy state, so its sender knows
     // the words got here (see the busy ServerMessage).
-    this.userSeq++;
     this.busySent = null;
     // Only the user's own words are kept, never the context block.
     if (memoryOn()) this.log?.add("user", text);
@@ -757,7 +763,8 @@ export class Session {
     const fetch = this.pageContext;
     if (!fetch) {
       timing.mark("to_model");
-      return this.input.push(this.withMemoryNote(this.withSettingNotes(text)));
+      this.sdkTurns.push(this.input.push(this.withMemoryNote(this.withSettingNotes(text))));
+      return;
     }
     const ctx = Promise.race([
       fetch().catch(() => null),
@@ -766,7 +773,7 @@ export class Session {
     this.turns = this.turns.then(async () => {
       const c = await ctx;
       timing.mark("to_model", { detail: c ? "with context" : "no context" });
-      if (!this.closed) this.input.push(withContext(this.withMemoryNote(this.withSettingNotes(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy()));
+      if (!this.closed) this.sdkTurns.push(this.input.push(withContext(this.withMemoryNote(this.withSettingNotes(text)), c, process.env.CLEARCART_ALLOW_ANY_SITE ? undefined : sitePolicy())));
     });
     return this.turns;
   }
@@ -956,8 +963,7 @@ export class Session {
     this.closed = true;
     this.payStop?.abort();
     this.awaitingAnswer?.(null);
-    this.awaitingAnswer = null;
-    this.syncBusy(); // off: nothing more comes from this session
+    this.awaitingAnswer = null; // and busy off: nothing more comes from this session
     this.input.close();
     this.abort.abort();
   }
@@ -966,10 +972,10 @@ export class Session {
   // turn is open and no question waits for their answer. Only on a change,
   // unless busySent was reset (a new user_text).
   private syncBusy() {
-    const on = this.openTurns > 0 && !this.answerWait && !this.closed;
+    const on = this.#openTurns > 0 && !this.#answerWait && !this.closed;
     if (on === this.busySent) return;
     this.busySent = on;
-    this.send({ type: "busy", on, seq: this.userSeq });
+    this.send({ type: "busy", on });
   }
 
   // Stops any paced click, typing or scroll the extension is still playing.
@@ -2198,14 +2204,27 @@ export class Session {
       if (this.held.length) this.say(this.held.join(" "), "reply");
       this.held = [];
       this.newTurn();
-      this.turnsOpen = Math.max(0, this.turnsOpen - 1);
-      this.turnsEnded++;
+      const ended = this.endedTurns(m);
+      this.turnsOpen = Math.max(0, this.turnsOpen - ended);
+      this.turnsEnded += ended;
       // Nothing paced (a click on its way, typing) outlives its turn.
       this.stopActions();
       // The interrupted turn is over; the next one speaks again.
       this.muted = false;
       if (m.subtype !== "success") this.status(`turn ended: ${m.subtype}`);
     }
+  }
+
+  // How many user turns a result closes: every one up to the last it names
+  // (turns run in order, so an earlier one cut off without a result of its
+  // own is over too). One when it names none (a local model, an older CLI).
+  private endedTurns(m: SDKMessage): number {
+    const r = m as { user_message_uuids?: string[]; user_message_uuid?: string };
+    const ids = Array.isArray(r.user_message_uuids) ? r.user_message_uuids : r.user_message_uuid ? [r.user_message_uuid] : [];
+    const last = Math.max(-1, ...ids.map((id) => this.sdkTurns.indexOf(id)));
+    const n = last >= 0 ? last + 1 : 1;
+    this.sdkTurns.splice(0, n);
+    return n;
   }
 
   // Connection state of the MCP servers; needs no model call.
@@ -2317,6 +2336,7 @@ export class Session {
     } finally {
       // The loop is over: no turn still open will get its result.
       this.held = [];
+      this.sdkTurns = [];
       // Turns closed here are over too, so checkout words they carried
       // (UserWords.turnLimit) stop counting.
       this.turnsEnded += this.turnsOpen;

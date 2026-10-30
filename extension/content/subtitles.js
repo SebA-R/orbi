@@ -546,8 +546,10 @@
 
   function onState(state, latched) {
     if (!STATES.has(state)) return;
+    // The same state said again (a replay, a resync) keeps its start time,
+    // so a busy state that never ended still stops holding the card.
+    if (state !== ui.state) ui.stateAt = Date.now();
     ui.state = state;
-    ui.stateAt = Date.now();
     ui.latched = state === "listening" && latched === true;
     if (ui.hint) ui.hint.textContent = ui.latched ? LATCH_HINT : "";
     if (ui.wrap) ui.wrap.dataset.state = state;
