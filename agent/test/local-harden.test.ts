@@ -12,8 +12,8 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { ERR, ExtError, extBridge } from "../extbridge.ts";
-import { claimsAction, coerceArgs, isInjectionLine, looksLikeReasoning, pageData, PAGE_OPEN, REMOVED_LINE, repairJson } from "../local/harden.ts";
-import { asksChoice, LOOP_STOP } from "../local/query.ts";
+import { claimsAction, coerceArgs, isInjectionLine, LoopGuard, looksLikeReasoning, pageData, PAGE_OPEN, READ_REPEATS, REMOVED_LINE, repairJson } from "../local/harden.ts";
+import { asksChoice, isQuestion, isRequest, LOOP_STOP } from "../local/query.ts";
 import { MemoryStore, redactTurn, REDACTED } from "../memory.ts";
 import { DANGER_LOCAL_LINE, dangerModeOn, localAck, Session, suggestAddress, webAddress, type ServerMessage } from "../session.ts";
 
@@ -717,6 +717,7 @@ test("which questions hand the task back, and which web addresses are fixed", ()
   assert.equal(webAddress("[::1]:4000"), "https://[::1]:4000");
   assert.equal(webAddress("localhost"), "https://localhost");
   for (const u of ["1.5", "3.14.15", "file.txt", "notes.pdf", "a.b1"]) assert.equal(webAddress(u), null, u);
+  assert.equal(webAddress("example.zip"), "https://example.zip", ".zip is a real top-level domain");
   assert.equal(suggestAddress("aritzia .ca"), "https://www.aritzia.ca", "dots kept");
   assert.equal(suggestAddress("aritzia"), "https://www.aritzia.com");
   assert.equal(suggestAddress("www.aritzia"), "https://www.aritzia.com");
@@ -733,6 +734,93 @@ test("a false claim after \"thanks, now ...\" still gets the claim retry", async
     await until(() => r.spoken().length > 0, "the reply");
     assert.deepEqual(r.spoken(), ["I couldn't add it yet."]);
     assert.ok(r.statuses().some((t) => t.startsWith("(not spoken) local reply claimed an action")));
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("one classifier for both backends: a polite \"can you ...?\" is a request", () => {
+  assert.ok(isRequest("Can you add the black one to my bag?"));
+  assert.ok(isRequest("could you please find me black pants under $50?"));
+  assert.ok(!isQuestion("Can you add the black one to my bag?"));
+  assert.ok(isQuestion("can you tell me what's in my cart?"));
+  assert.ok(!isRequest("what pants do they have?"));
+  assert.ok(!isRequest("thanks"));
+  assert.ok(isRequest("add the Swift to my bag"));
+});
+
+test("a false \"your bag now has\" claim gets the claim retry, after a polite request too; a navigate is no add", async () => {
+  for (const ask of ["Can you add the Swift to my bag?", "add the Swift to my bag"]) {
+    const model = await fakeModel((_b, n) => {
+      if (n === 1) return { calls: [{ name: "navigate", args: { url: `${SHOP}/c/shoes` } }] };
+      if (n === 2) return { text: "Your bag now has the Swift." };
+      return { text: "I opened the shoes page." };
+    });
+    const br = useBrowser(shopBrowser);
+    const r = localSession(model.url);
+    try {
+      r.s.userText(ask);
+      await until(() => r.spoken().length > 0, "the reply");
+      assert.deepEqual(r.spoken(), ["I opened the shoes page."], ask);
+      assert.ok(r.statuses().some((t) => t.startsWith("(not spoken) local reply claimed an action")), ask);
+    } finally {
+      await r.stop();
+      br.restore();
+      await model.close();
+    }
+  }
+});
+
+test("loop guard: the same read after a page action counts afresh; with nothing done in between it is a loop", () => {
+  const isAction = (n: string) => n === "click";
+  const read = { name: "read_page", args: {} };
+  const g = new LoopGuard(isAction);
+  for (let i = 0; i < READ_REPEATS + 2; i++) {
+    assert.equal(g.check(read), false, `read ${i + 1} after an action`);
+    assert.equal(g.check({ name: "click", args: { ref: `ref_${i}` } }), false);
+    g.acted();
+  }
+  const h = new LoopGuard(isAction);
+  const find = { name: "find", args: { query: "bag" } };
+  for (let i = 0; i < READ_REPEATS - 1; i++) {
+    assert.equal(h.check(read), false, `read ${i + 1}`);
+    assert.equal(h.check(find), false);
+  }
+  assert.equal(h.check(read), true, "the same read again with no action in between");
+});
+
+test("a click that said navigated false but the tab sweep sent back: the controls are listed", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "find", args: { query: "jackets" } }] };
+    if (n === 2) return { calls: [{ name: "click", args: { ref: "ref_4" } }] };
+    return { text: "Done." };
+  });
+  let at = `${SHOP}/c/jackets`;
+  const br = useBrowser((method, p) => {
+    if (method === "agent_tabs") return { tabs: [{ tabId: 7, url: at }] };
+    if (method === "find") return { matches: [{ ref: "ref_4", role: "link", name: "Jackets" }] };
+    if (method === "rect") return { x: 1, y: 1, width: 10, height: 10 };
+    if (method === "click") {
+      // It settled before the page moved on.
+      const url = at;
+      at = `${SHOP}/checkout`;
+      return { ok: true, via: "cdp", navigated: false, url, title: "Jackets" };
+    }
+    if (method === "navigate" && p.url === "back") return { tabId: 7, url: (at = `${SHOP}/c/jackets`), title: "Jackets" };
+    if (method === "tab_info") return { url: at, title: "Jackets" };
+    if (method === "read_page") return { tree: '- link "Coats" [ref_9]' };
+    return {};
+  });
+  const r = localSession(model.url);
+  try {
+    (r.s as any).state.lastTabId = 7;
+    r.s.userText("open jackets");
+    await until(() => r.spoken().length > 0, "the reply");
+    const out = toolMessages(model.requests[2]).at(-1).content;
+    assert.match(out, /was sent back/);
+    assert.match(out, /Now on: "Jackets", https:\/\/www\.etsy\.com\/c\/jackets\nOn this page:/);
   } finally {
     await r.stop();
     br.restore();
