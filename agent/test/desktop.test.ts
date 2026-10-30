@@ -14,7 +14,7 @@ import { appBlockReason, classifyElement, decidePress, DesktopUnlockGate, keyEff
 import { desktopToolDefinitions, type DesktopHost } from "../desktop/tools.ts";
 import { DesktopVoice, s16ToF32, SonicSpeaker, VOICE_OFF_TEXT } from "../desktop/voice.ts";
 import { ensureDesktopToken, helperProof, newNonce, proofMatches, serverProof, tokenMatches } from "../desktop/token.ts";
-import { isSpent, spendDirect } from "../user-unlock.ts";
+import { isSpent, spendDesktop, spendDirect } from "../user-unlock.ts";
 
 const TOKEN = "ab".repeat(32);
 
@@ -244,9 +244,14 @@ test("lock decisions on a table of fake elements", () => {
   assert.equal(coLock.cls, "checkout");
   const words = new Set<string>();
   assert.equal(decidePress(coLock, co, { userText: "check out", spent: words, danger: false }).kind, "press");
-  spendDirect(words, "checkout", coLock.label, 1);
+  spendDesktop(words, "checkout");
   assert.equal(decidePress(coLock, co, { userText: "check out", spent: words, danger: false }).kind, "ask", "desktop: one press");
   assert.equal(isSpent(words, "checkout", "Checkout"), true, "the browser path sees it spent");
+  assert.equal(isSpent(words, "checkout", "Continue to payment"), true, "and its checkout steps too");
+  // A browser press first: the desktop sees the class spent as well.
+  const web = new Set<string>();
+  spendDirect(web, "checkout", "Proceed to checkout");
+  assert.equal(decidePress(coLock, co, { userText: "check out", spent: web, danger: false }).kind, "ask", "desktop sees the browser's press");
 });
 
 test("keys: Return in a chat app's message field sends, cmd+Delete deletes, Return on a default Pay button is locked", () => {

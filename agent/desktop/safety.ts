@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 // extbridge.ts before user-unlock.ts: origins.ts and prompt.ts import each
 // other through it, and only this order initializes them.
 import "../extbridge.ts";
-import { isDesktopDirectAsk, isDirectAsk, isSpent, type DesktopUnlockClass, type UnlockClass } from "../user-unlock.ts";
+import { isDesktopDirectAsk, isDirectAsk, isSpentDesktop, type DesktopUnlockClass, type UnlockClass } from "../user-unlock.ts";
 import { orbiConfigPath } from "../userconfig.ts";
 
 const require = createRequire(import.meta.url);
@@ -359,7 +359,7 @@ export function decidePress(
     return { kind: "refuse", message: `Locked: ${name} is a one-tap wallet or pay later button, so nothing was pressed. Only the user can press it. Tell them where it is if they want it.` };
   }
   if (lock.money) return { kind: "ask", lock, question: `Do you want me to press ${maskText(lock.label)} in ${where}? It may pay or place an order.` };
-  if (!isSpent(opts.spent, lock.cls!, lock.label) && directAsk(opts.userText, lock)) return { kind: "press", lock };
+  if (!isSpentDesktop(opts.spent, lock.cls!) && directAsk(opts.userText, lock)) return { kind: "press", lock };
   return { kind: "ask", lock, question: `Do you want me to press ${maskText(lock.label)} in ${where}?` };
 }
 

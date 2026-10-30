@@ -465,19 +465,29 @@ export type Decision =
 // ("Continue to payment") gets one press per ask, kept apart, so it never
 // carries on to a later step that may create the order. None of them pays;
 // Place order never has an unlock class.
-// presses: the budget for checkout navigation (Orbi Desktop keeps one
-// press per ask). Desktop classes (send, delete, install) spend as their own.
 export const CHECKOUT_PRESSES_PER_ASK = 3;
-function spentKey(cls: string, label: string): string {
+function spentKey(cls: UnlockClass, label: string): string {
   return cls === "checkout" && Protect.isCheckoutStep(label) && !Protect.isCheckoutNav(label) ? "checkout-step" : cls;
 }
-export function isSpent(spent: Set<string> | undefined, cls: string, label: string): boolean {
+export function isSpent(spent: Set<string> | undefined, cls: UnlockClass, label: string): boolean {
   return !!spent?.has(spentKey(cls, label));
 }
-export function spendDirect(spent: Set<string>, cls: string, label: string, presses = CHECKOUT_PRESSES_PER_ASK): void {
+// Orbi Desktop: one press per ask for the whole class, checkout steps
+// included, counted in the same set the browser path uses.
+function classKeys(spent: Set<string>, cls: string): string[] {
+  return cls === "checkout" ? ["checkout", "checkout-step", ...[...spent].filter((k) => k.startsWith("checkout#"))] : [cls];
+}
+export function isSpentDesktop(spent: Set<string> | undefined, cls: string): boolean {
+  return !!spent && classKeys(spent, cls).some((k) => spent.has(k));
+}
+export function spendDesktop(spent: Set<string>, cls: string): void {
+  spent.add(cls);
+  if (cls === "checkout") spent.add("checkout-step");
+}
+export function spendDirect(spent: Set<string>, cls: UnlockClass, label: string): void {
   const key = spentKey(cls, label);
   if (key === "checkout") {
-    for (let i = 1; i < presses; i++) {
+    for (let i = 1; i < CHECKOUT_PRESSES_PER_ASK; i++) {
       if (!spent.has(`checkout#${i}`)) {
         spent.add(`checkout#${i}`);
         return;
