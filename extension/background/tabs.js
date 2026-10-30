@@ -334,6 +334,11 @@ export const SETTLE_RENDER_MS = 300;
 export async function actAndSettle(tabId, act, { windowMs = SETTLE_WINDOW_MS, timeoutMs = SETTLE_TIMEOUT_MS, renderMs = SETTLE_RENDER_MS, stop = () => false } = {}) {
   const c = api();
   const before = await c.tabs.get(tabId).catch(() => null);
+  // Still loading (the cap hit before the page committed): where it is going.
+  const urlOf = (t) => (t ? (t.status === "loading" && t.pendingUrl) || t.url || t.pendingUrl || "" : "");
+  // A #fragment change (an in-page anchor, a tab widget) is no move.
+  const page = (u) => String(u || "").split("#")[0];
+  const from = before ? page(urlOf(before)) : null;
   let loading = false;
   let complete = false;
   let moved = false;
@@ -342,7 +347,7 @@ export async function actAndSettle(tabId, act, { windowMs = SETTLE_WINDOW_MS, ti
     if (id !== tabId || !change) return;
     if (change.status === "loading") loading = true;
     if (change.status === "complete" && loading) complete = true;
-    if (change.url != null) moved = true;
+    if (change.url != null && page(change.url) !== from) moved = true;
     if (wake) wake();
   };
   c.tabs.onUpdated.addListener(onUpdated);
@@ -380,9 +385,7 @@ export async function actAndSettle(tabId, act, { windowMs = SETTLE_WINDOW_MS, ti
     c.tabs.onUpdated.removeListener(onUpdated);
   }
   const tab = await c.tabs.get(tabId).catch(() => null);
-  // Still loading (the cap hit before the page committed): where it is going.
-  const urlOf = (t) => (t ? (t.status === "loading" && t.pendingUrl) || t.url || t.pendingUrl || "" : "");
-  const navigated = loading || moved || (!!before && !!tab && urlOf(before) !== urlOf(tab));
+  const navigated = loading || moved || (!!before && !!tab && from !== page(urlOf(tab)));
   const out = { ...(result && typeof result === "object" ? result : {}), navigated };
   if (!tab) return out;
   if (onErrorPage(tab)) return { ...out, url: ERROR_URL, title: ERROR_TITLE };
@@ -406,8 +409,10 @@ export async function tabsCreate({ url, onCreated } = {}) {
   if (url != null) {
     await navigateAndWait(tab.id, () => api().tabs.update(tab.id, { url }));
     assertNetSafe(tab.id);
-    // Where it went, origin and path only, like navigate.
+    // Where it went, origin and path only, like navigate; the error page
+    // when the address did not load.
     const now = await api().tabs.get(tab.id).catch(() => null);
+    if (now && onErrorPage(now)) return { tabId: tab.id, url: ERROR_URL, title: ERROR_TITLE };
     if (now && !onEmptyPage(now) && (await isAllowed(now.url || "").catch(() => false))) {
       return { tabId: tab.id, url: originPath(now.url || ""), title: String(now.title || "").slice(0, TITLE_MAX) };
     }

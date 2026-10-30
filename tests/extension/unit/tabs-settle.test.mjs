@@ -98,3 +98,15 @@ test("still loading at the cap: reports where the tab is going, without the old 
   delete tab.pendingUrl;
   assert.deepEqual(r, { ok: true, navigated: true, url: "https://www.etsy.com/checkout", title: "" });
 });
+
+test("a #fragment change (an in-page anchor) is no move: not navigated, no render wait", async () => {
+  tab = { id: 4, url: "https://www.etsy.com/listing/9", title: "Mug", status: "complete" };
+  const t0 = Date.now();
+  const r = await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/listing/9#reviews" }), { ok: true }), { windowMs: 60, renderMs: 2_000 });
+  assert.deepEqual(r, { ok: true, navigated: false, url: "https://www.etsy.com/listing/9", title: "Mug" });
+  assert.ok(Date.now() - t0 < 1_000);
+  // From one fragment to another, also none; a new path after a fragment is.
+  tab = { id: 4, url: "https://www.etsy.com/app#/cart", title: "App", status: "complete" };
+  assert.equal((await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/app#/cart?x=1" }), { ok: true }), { windowMs: 60 })).navigated, false);
+  assert.equal((await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/shop#/cart" }), { ok: true }), { windowMs: 2_000, renderMs: 40 })).navigated, true);
+});
