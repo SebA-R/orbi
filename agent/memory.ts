@@ -82,10 +82,13 @@ const DIGIT_RUN = /\d(?:[^a-z\d]{0,3}\d)+/g;
 const digitCount = (s: string) => s.replace(/\D/g, "").length;
 export const longNumber = (t: string, min: number) => (t.match(DIGIT_RUN) || []).some((run) => digitCount(run) >= min);
 
+// A card expiry ("exp 12/27", "the expiry is 11/28"), the date captured.
+const EXPIRY = /\bexp(?:iry|iration)?(?: date)?\b.{0,12}?(\d{1,2}\s*\/\s*\d{2,4})/;
+
 const SENSITIVE: Array<[RegExp, string]> = [
   [/\b(cvc|cvv2?|cvn|cid|csc|security code|card code|card verification|digits on the back|back of (the|your|my) card)\b/, "a card security code"],
   [/\b(card number|credit card|debit card|card ending|card no|(visa|mastercard|master card|amex|american express|discover)\b.{0,20}\d{3})/, "card details"],
-  [/\b(?:exp(?:iry|iration)?(?: date)?)\b.{0,12}(\d{1,2}\s*\/\s*\d{2,4})/, "card details"],
+  [EXPIRY, "card details"],
   [/\b(pass ?(word|code|phrase)s?|pwd|log ?ins?|sign ?in details|credentials|user ?names?)\b/, "a password"],
   [/\bpin\b(\s*(code|number|is|:|=)|\s*\d)/, "a PIN"],
   [/\b((one|1)[- ]time (code|password)|otp|2fa|two[- ]factor|verification code|security question|maiden name)\b/, "a sign in secret"],
@@ -155,14 +158,20 @@ const NOT_ID: RegExp[] = [
   /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g,
   /\b\d{1,2}:\d{2}(?::\d{2})?\b/g,
 ];
-const blankNotId = (f: string) => NOT_ID.reduce((t, re) => t.replace(re, " x "), f);
+// A date, time or decimal right after a sensitive name ("otp is 12:34",
+// "account number is 12345.67") is the value, so it stays; amounts go.
+const blankNotId = (f: string) =>
+  NOT_ID.reduce((t, re, i) => t.replace(re, (m: string, at: number, s: string) => (i > 1 && AFTER_NAME.test(s.slice(0, at)) ? m : " x ")), f);
 
 // A run of 13 to 19 digits that passes the Luhn check: a card number.
-// Only digits joined by spaces or dashes (a currency sign is ignored), so
-// a list of prices is not read as one number.
+// Only digits joined by spaces or dashes, so a list of prices is not read
+// as one number. Across currency signs only in card groups ("$4242 $4242
+// $4242 $4242", 4-6-5), never "$10 $20 $30".
 const CARD_RUN = /\d(?:[\s-]{0,3}\d)+/g;
+const CARD_GROUPS = /^(?:\d{4}(?:[\s-]+\d{4})*(?:[\s-]+\d{1,4})?|\d{4}[\s-]+\d{6}[\s-]+\d{4,5})$/;
 export function luhnCard(f: string): boolean {
-  return (f.replace(/[$€£¥]/g, "").match(CARD_RUN) || []).some((run) => {
+  const runs = [...(f.match(CARD_RUN) || []), ...(f.replace(/[$€£¥]/g, "").match(CARD_RUN) || []).filter((r) => CARD_GROUPS.test(r))];
+  return runs.some((run) => {
     const d = run.replace(/\D/g, "");
     if (d.length < 13 || d.length > 19) return false;
     let sum = 0;
@@ -180,7 +189,7 @@ const NOT_A_VALUE = new Set(
   ("a an the your my his her their our this that it its not no too so very also still now already just only being been set saved stored required needed " +
     "wrong incorrect invalid correct right empty blank missing hidden masked weak strong weaker stronger short shorter long longer ready filled entered " +
     "typed changed updated reset expired locked accepted rejected taken available unavailable different same fine ok okay good bad done to of what which " +
-    "where how there here shown visible case optional pending sent working asked new old usually probably something anything nothing least most as before yours mine safe secure encrypted protected sensitive used").split(" ")
+    "where how there here shown visible case optional course pending sent working asked new old usually probably something anything nothing least most as before yours mine safe secure encrypted protected sensitive used").split(" ")
 );
 // Where the words about it end: "is saved in the page", "should be at least".
 const VALUE_END = new Set("in on at from with by into inside under when if because but and or then".split(" "));
@@ -202,21 +211,33 @@ function givenValue(f: string, re: RegExp): boolean {
   return false;
 }
 // "<name> <verb> <rest of the clause>"; verb optional where any words
-// after the name are an answer (a maiden name or security answer).
+// after the name are an answer (a maiden name or security answer). Pauses
+// after the verb ("is, um, hunter2", "is... hunter2") are skipped.
+const FILLER = "(?:[\\s.,!?;:-]|\\b(?:um+|uh+|er+|erm|hmm+|like|so|well|ok(?:ay)?)\\b)*";
 const valueRe = (names: string, verbOptional = false) =>
-  new RegExp(`\\b(?:${names})\\b(?:'s\\b|\\s*(?:(?:is|was|are|should be|will be)\\b|[=:]))${verbOptional ? "?" : ""}([^.,!?;]*)`, "g");
+  new RegExp(`\\b(?:${names})\\b(?:'s\\b|\\s*(?:(?:is|was|are|of|should be|will be)\\b|[=:]))${verbOptional ? "?" : ""}${FILLER}([^.,!?;]*)`, "g");
 // "<name> ... 1234": three or more digits close after the name, counted
-// across spaces ("cvv 1 2 3").
-const nearDigits = (names: string, gap = 20) => new RegExp(`\\b(?:${names})\\b[^\\d.!?]{0,${gap}}(\\d(?:[^a-z\\d.!?]{0,3}\\d)*)`);
+// across spaces ("cvv 1 2 3"), past shorter numbers ("pin for card 1 is
+// 4821") and an abbreviation's period ("card no. 4821").
+const nearDigits = (names: string, gap = 20) => new RegExp(`\\b(?:${names})\\b(?:[^.!?]|\\.(?=\\s?\\d)){0,${gap}}?\\d(?:[^a-z\\d.!?]{0,3}\\d){2,}`);
+
+const CVC_NAMES = "cvc|cvv2?|cvn|cid|csc|security code|card code|card verification|digits on the back|back of (?:the|your|my) card";
+const CARD_NAMES = "card number|credit card|debit card|card ending|card no|(?:my|your|the) card|visa|mastercard|master card|amex|american express|discover";
+const PIN_NAMES = "pin(?: code| number)?";
+const SIGN_IN_NAMES = "(?:one|1)[- ]time (?:code|password)|otp|2fa|two[- ]factor|verification code|login code|sign ?in code";
+const ID_NAMES = "ssn|social security|social insurance|sin number|passport|driv(?:er'?s|ing) licen[cs]e|health card|national id|tax id|itin|government id|id number";
+const BANK_NAMES = "bank|account number|acct|routing|transit number|institution number|iban|swift|bic code|sort code";
+// Text that ends in a sensitive name and its "is", ":" or "no.".
+const AFTER_NAME = new RegExp(`\\b(?:${[CVC_NAMES, CARD_NAMES, PIN_NAMES, SIGN_IN_NAMES, ID_NAMES, BANK_NAMES].join("|")})\\b(?:[\\s:=#-]|\\b(?:is|was|no|number)\\b\\.?)*$`);
 
 const TRANSCRIPT_DIGITS: Array<[RegExp, string]> = [
-  [nearDigits("cvc|cvv2?|cvn|cid|csc|security code|card code|card verification|digits on the back|back of (?:the|your|my) card"), "a card security code"],
-  [nearDigits("card number|credit card|debit card|card ending|card no|(?:my|your|the) card|visa|mastercard|master card|amex|american express|discover"), "card details"],
-  [/\b(exp(iry|iration)?( date)?)\b.{0,12}\d{1,2}\s*\/\s*\d{2,4}/, "card details"],
-  [nearDigits("pin(?: code| number)?", 12), "a PIN"],
-  [nearDigits("(?:one|1)[- ]time (?:code|password)|otp|2fa|two[- ]factor|verification code|login code|sign ?in code"), "a sign in secret"],
-  [nearDigits("ssn|social security|social insurance|sin number|passport|driv(?:er'?s|ing) licen[cs]e|health card|national id|tax id|itin|government id|id number", 25), "a government ID"],
-  [nearDigits("bank|account number|acct|routing|transit number|institution number|iban|swift|bic code|sort code"), "bank details"],
+  [nearDigits(CVC_NAMES), "a card security code"],
+  [nearDigits(CARD_NAMES), "card details"],
+  [EXPIRY, "card details"],
+  [nearDigits(PIN_NAMES, 16), "a PIN"],
+  [nearDigits(SIGN_IN_NAMES), "a sign in secret"],
+  [nearDigits(ID_NAMES, 25), "a government ID"],
+  [nearDigits(BANK_NAMES), "bank details"],
 ];
 const TRANSCRIPT_VALUES: Array<[RegExp, string]> = [
   [valueRe("pass ?(?:word|code|phrase)s?|pwd|user ?names?|log ?ins?|credentials"), "a password"],
@@ -225,8 +246,9 @@ const TRANSCRIPT_VALUES: Array<[RegExp, string]> = [
   [valueRe("api key|secret key|private key|access token|seed phrase|recovery phrase|recovery codes?"), "a secret key"],
 ];
 // A key or token on its own: Stripe style secret keys, or a long mix of
-// letters and digits.
-const KEY_TOKEN = /\b(?:sk|rk)_(?:live|test)_\w{6,}|\b(?=\w*\d\w*\d)(?=\w*[a-z])\w{24,}\b/;
+// letters and digits with a stretch of 20 or more that no underscore
+// breaks, so a slug like "sony_wh1000xm5_black_edition" is not one.
+const KEY_TOKEN = /\b(?:sk|rk)_(?:live|test)_\w{6,}|\b(?=\w*\d\w*\d)(?=\w*[a-z])(?=\w*?[a-z0-9]{20})\w{24,}\b/;
 // An address is blanked in the turn (EMAIL on the text as said); one the
 // blanking misses (look-alike letters, a full-width @) drops the turn.
 const EMAIL = /[\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi;
@@ -243,9 +265,11 @@ export function redactRule(text: string, role: "user" | "assistant" = "user"): s
   const f = fold(clean(text));
   if (luhnCard(f)) return "card number";
   if (FOLDED_EMAIL.test(fold(clean(text).replace(EMAIL, " x ")))) return "email";
+  // A long number as the address's name ("123456789@x.com") is not hidden by blanking it.
+  if ((f.match(EMAIL) || []).some((e) => longNumber(e.slice(0, e.indexOf("@")), 6))) return "long number";
   const g = blankNotId(f.replace(EMAIL, " x "));
   if (longNumber(g, 6)) return "long number";
-  const digits = TRANSCRIPT_DIGITS.find(([re]) => digitCount(g.match(re)?.[1] ?? "") >= 3);
+  const digits = TRANSCRIPT_DIGITS.find(([re]) => re.test(g));
   if (digits) return digits[1];
   const given = TRANSCRIPT_VALUES.find(([re]) => givenValue(g, re));
   if (given) return given[1];
