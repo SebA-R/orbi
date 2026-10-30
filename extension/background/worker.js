@@ -85,9 +85,11 @@ async function closeIfAgentTab(tabId, flag) {
 // frame in a normal tab goes on to Orbi's "Can't reach this site" page
 // (errpage.js), where Space to talk works.
 const errorPages = createErrorPages({ loadSettings });
-chrome.webRequest.onErrorOccurred.addListener((d) => errorPages.onRequestError(d), ERROR_FILTER);
 // navigate and tabs_create report a page that did not load as a failure.
-chrome.webRequest.onErrorOccurred.addListener((d) => tabs.onMainFrameError(d), ERROR_FILTER);
+chrome.webRequest.onErrorOccurred.addListener((d) => {
+  errorPages.onRequestError(d);
+  tabs.onMainFrameError(d);
+}, ERROR_FILTER);
 chrome.tabs.onUpdated.addListener((tabId, change, tab) => void errorPages.onTabUpdated(tabId, change, tab).catch(() => {}));
 chrome.tabs.onRemoved.addListener((tabId) => void errorPages.forget(tabId));
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {

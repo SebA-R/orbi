@@ -70,19 +70,33 @@ export const ERR = {
 export const REQUEST_TIMEOUT_MS = 30_000;
 // type goes key by key at a typist's cadence with page checks around every
 // key (router.js guardChar), so long text needs more than the flat timeout.
-// Generous per character: a request that times out while the extension is
-// still typing leaves the agent free to retry over it.
+// Generous per character. A type that times out anyway is stopped, and its
+// error says how much went in, so a retry types only the rest.
 export const TYPE_MS_PER_CHAR = 250;
 // dismiss_overlay can try two paced clicks and an Escape, each with a settle.
 export const DISMISS_TIMEOUT_MS = 60_000;
-// Under the 90 s browser tool timeout (exttools.ts, session.ts), so this
-// timer fires first and sends actions_stop: text too long for it stops
-// part way instead of typing on behind a retry.
+// Under the 90 s browser tool timeout (exttools.ts, session.ts), with the
+// stop's answer (TYPE_STOP_WAIT_MS) on top, so this timer fires first and
+// sends actions_stop: text too long for it stops part way instead of
+// typing on behind a retry.
 export const MAX_REQUEST_TIMEOUT_MS = 85_000;
+export const TYPE_STOP_WAIT_MS = 3_000;
 // Paced actions the extension keeps playing after the server gives up on
 // them: a timeout sends actions_stop so nothing keeps going behind a retry
-// (or presses a button after the caller was told it failed).
+// (or presses a button after the caller was told it failed). Only the timed
+// out request's tab stops (timedOut, its tabId), not another tab's action.
 const STOP_ON_TIMEOUT: ReadonlySet<string> = new Set(["type", "click", "scroll", "dismiss_overlay", "press_protected", "press_unlocked"]);
+
+// The error for a type the server stopped part way: how much went in, from
+// actions_stop's answer, so the agent does not type all of it again.
+export function typeTimeoutMessage(timeoutMs: number, typing: unknown): string {
+  const t = (typing && typeof typing === "object" ? typing : {}) as { typed?: unknown; of?: unknown };
+  const head = `type timed out after ${timeoutMs} ms and was stopped`;
+  if (Number.isInteger(t.typed) && Number.isInteger(t.of)) {
+    return `${head} after ${t.typed} of ${t.of} characters. Those are in the field: type only the rest, or clear the field before typing it all again.`;
+  }
+  return `${head} part way; some of the text may be in the field. Check the field and type only what is missing; do not type it all again.`;
+}
 
 // The default timeout for a request: the flat one, plus time per character
 // for type and more headroom for dismiss_overlay.
@@ -239,9 +253,19 @@ export class ExtBridge extends EventEmitter<ExtBridgeEvents> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        // The extension may still be playing it: stop it before anyone retries.
-        if (STOP_ON_TIMEOUT.has(method) && ws === this.current) this.call("actions_stop", {}, 5_000).catch(() => {});
-        reject(new ExtError(ERR.TIMEOUT, `${method} timed out after ${timeoutMs} ms`));
+        const timedOut = new ExtError(ERR.TIMEOUT, `${method} timed out after ${timeoutMs} ms`);
+        if (!STOP_ON_TIMEOUT.has(method) || ws !== this.current) return reject(timedOut);
+        // The extension may still be playing it: stop it, on its tab only,
+        // before anyone retries.
+        const stop = this.call<{ typing?: unknown }>("actions_stop", { timedOut: true, ...(Number.isInteger(params.tabId) ? { tabId: params.tabId } : {}) }, method === "type" ? TYPE_STOP_WAIT_MS : 5_000);
+        if (method !== "type") {
+          stop.catch(() => {});
+          return reject(timedOut);
+        }
+        stop.then(
+          (r) => reject(new ExtError(ERR.TIMEOUT, typeTimeoutMessage(timeoutMs, r?.typing))),
+          () => reject(new ExtError(ERR.TIMEOUT, typeTimeoutMessage(timeoutMs, null)))
+        );
       }, timeoutMs);
       this.pending.set(id, { ws, method, resolve, reject, timer });
       try {

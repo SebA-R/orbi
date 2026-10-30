@@ -787,23 +787,25 @@
       frames.push(el);
       var inner = sub.activeElement;
       if (!inner || inner === sub.body || inner === sub.documentElement) {
-        return done(editableDoc(sub) ? { kind: "other", payment: false, text: true } : { kind: "none", payment: false, nothing: true });
+        return done(editableDoc(sub) ? { kind: "other", payment: false, text: true, multiline: true } : { kind: "none", payment: false, nothing: true });
       }
       el = inner;
     }
     if (!el || el === document.body || el === document.documentElement) {
-      return done(editableDoc(document) ? { kind: "other", payment: false, text: true } : { kind: "none", payment: false, nothing: true });
+      return done(editableDoc(document) ? { kind: "other", payment: false, text: true, multiline: true } : { kind: "none", payment: false, nothing: true });
     }
     var tag = el.tagName;
     if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
-      return done({ kind: el.isContentEditable ? "other" : "none", payment: false, text: !!el.isContentEditable }, el);
+      return done({ kind: el.isContentEditable ? "other" : "none", payment: false, text: !!el.isContentEditable, multiline: !!el.isContentEditable }, el);
     }
     var k = kindOf(el);
     // text: a field that takes typed characters, so a key press there only
     // types (watchable typing sends key events only then).
     var text = !el.disabled && !el.readOnly && (tag === "TEXTAREA" ||
       (tag === "INPUT" && /^(text|search|email|url|tel|number)$/.test(String(el.type || "text").toLowerCase())));
-    return done({ kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el), text: text }, el);
+    // multiline: a newline there is a line break (a textarea or an editor),
+    // not a submit.
+    return done({ kind: k, payment: k.indexOf("cc-") === 0 || !!Mask.isPaymentField(el), password: isPassword(el), text: text, multiline: text && tag === "TEXTAREA" }, el);
   }
 
   // ---------------------------------------------------------- page_context

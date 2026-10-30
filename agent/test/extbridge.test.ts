@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as proto from "../../extension/lib/protocol.js";
-import { CLIENT_ID_RE, CLOSE, DISMISS_TIMEOUT_MS, ERR, EXT_NAME, ExtError, INTERNAL, MAX_REQUEST_TIMEOUT_MS, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS, STALE_AFTER_MS, TOOLS, TYPE_MS_PER_CHAR, parseClientId, requestTimeoutFor } from "../extbridge.ts";
+import { CLIENT_ID_RE, CLOSE, DISMISS_TIMEOUT_MS, ERR, EXT_NAME, ExtError, INTERNAL, MAX_REQUEST_TIMEOUT_MS, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS, STALE_AFTER_MS, TOOLS, TYPE_MS_PER_CHAR, TYPE_STOP_WAIT_MS, parseClientId, requestTimeoutFor } from "../extbridge.ts";
 // @ts-ignore: plain JS module from the extension
 import { BridgeClient } from "../../extension/lib/bridge.js";
 import { WebSocket } from "ws";
@@ -110,7 +110,7 @@ test("requestTimeoutFor: type scales with the text, dismiss_overlay gets headroo
   assert.equal(requestTimeoutFor("type", { text: "a".repeat(100) }), REQUEST_TIMEOUT_MS + 100 * TYPE_MS_PER_CHAR);
   // Never past the 90 s tool timeout, so the bridge's own timeout (and its
   // actions_stop) always comes first.
-  assert.ok(MAX_REQUEST_TIMEOUT_MS < 90_000);
+  assert.ok(MAX_REQUEST_TIMEOUT_MS + TYPE_STOP_WAIT_MS < 90_000);
   // Counted in characters, not UTF-16 units.
   assert.equal(requestTimeoutFor("type", { text: "😀😀" }), REQUEST_TIMEOUT_MS + 2 * TYPE_MS_PER_CHAR);
   assert.equal(requestTimeoutFor("type", { text: "a".repeat(100_000) }), MAX_REQUEST_TIMEOUT_MS);
@@ -134,6 +134,24 @@ test("call: a timed-out paced action sends actions_stop; other methods do not", 
       ext.requests.map((r) => r.method),
       ["tabs_context", "type", "actions_stop", "press_protected", "actions_stop"]
     );
+    // Scoped to the timed-out request's tab, not every tab's paced action.
+    assert.deepEqual(ext.requests.filter((r) => r.method === "actions_stop").map((r) => r.params), [{ timedOut: true, tabId: 1 }, { timedOut: true, tabId: 1 }]);
+    ext.close();
+  } finally {
+    await b.stop();
+  }
+});
+
+test("call: a timed-out type says how much went in, so a retry does not type it twice", async () => {
+  const b = await startBridge();
+  try {
+    let typing: unknown = { typed: 12, of: 40 };
+    const ext = new FakeExt(b.url, (method) => (method === "actions_stop" ? { ok: true, typing } : NO_REPLY));
+    await ext.open();
+    await assert.rejects(b.bridge.call("type", { text: "x".repeat(40) }, 50), (e: any) => e.code === ERR.TIMEOUT && /after 12 of 40 characters/.test(e.message) && /only the rest/.test(e.message));
+    assert.deepEqual(ext.requests.at(-1), { method: "actions_stop", params: { timedOut: true } });
+    typing = undefined;
+    await assert.rejects(b.bridge.call("type", { tabId: 2, text: "abc" }, 50), (e: any) => e.code === ERR.TIMEOUT && /part way/.test(e.message) && /do not type it all again/.test(e.message));
     ext.close();
   } finally {
     await b.stop();

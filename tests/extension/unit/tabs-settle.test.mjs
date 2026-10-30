@@ -113,3 +113,27 @@ test("a #fragment change (an in-page anchor) is no move: not navigated, no rende
   tab = { id: 4, url: "https://www.etsy.com/app#/cart", title: "App", status: "complete" };
   assert.equal((await actAndSettle(4, async () => (fire({ url: "https://www.etsy.com/app#/checkout" }), { ok: true }), { windowMs: 2_000, renderMs: 40 })).navigated, true);
 });
+
+test("a load already under way before the action is not its doing: not navigated, no long wait", async () => {
+  tab = { id: 4, url: "https://www.etsy.com/c/mugs", pendingUrl: "https://www.etsy.com/c/mugs", title: "Mugs", status: "loading" };
+  const t0 = Date.now();
+  const r = await actAndSettle(4, async () => {
+    // The earlier load's own updates: still loading, then done.
+    fire({ status: "loading" });
+    setTimeout(() => fire({ status: "complete" }), 10);
+    return { ok: true };
+  }, { windowMs: 60, timeoutMs: 5_000 });
+  delete tab.pendingUrl;
+  assert.equal(r.navigated, false);
+  assert.ok(Date.now() - t0 < 1_000, "no wait for the earlier load");
+  // A new load after that one finished still counts.
+  tab = { id: 4, url: "https://www.etsy.com/c/mugs", pendingUrl: "https://www.etsy.com/c/mugs", title: "Mugs", status: "loading" };
+  const r2 = await actAndSettle(4, async () => {
+    fire({ status: "complete" });
+    delete tab.pendingUrl;
+    setTimeout(() => fire({ status: "loading", url: "https://www.etsy.com/c/cups" }), 10);
+    setTimeout(() => fire({ status: "complete", title: "Cups" }), 40);
+    return { ok: true };
+  }, { windowMs: 80, timeoutMs: 2_000 });
+  assert.deepEqual(r2, { ok: true, navigated: true, url: "https://www.etsy.com/c/cups", title: "Cups" });
+});
