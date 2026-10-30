@@ -978,11 +978,13 @@ export class Session {
     extBridge.call("actions_stop", {}, 5_000).catch(() => {});
   }
 
-  private say(text: string, kind = "line") {
+  // byModel: the line came from the model's turn (its words, or a
+  // question one of its tools asks: request_unlock, askYes, desktop ask).
+  private say(text: string, kind = "line", byModel = kind === "say" || kind === "reply") {
     if (this.muted) return this.unspoken(text);
     timing.mark("first_speech", { once: true, detail: kind });
-    // Only the model's own words ("say", "reply") are tagged with it.
-    if (memoryOn()) this.log?.add("assistant", text, undefined, kind === "say" || kind === "reply" ? this.by : undefined);
+    // Only lines from the model's turn are tagged with it.
+    if (memoryOn()) this.log?.add("assistant", text, undefined, byModel ? this.by : undefined);
     this.send({ type: "agent_text", text });
   }
 
@@ -1423,7 +1425,7 @@ export class Session {
         return said("declined, nothing was pressed. The user interrupted before the question was asked.");
       }
       this.cancelMemoryAsk();
-      this.say(d.question);
+      this.say(d.question, "line", true);
       const answer = await new Promise<string | null>((resolve) => {
         this.awaitingAnswer = this.answerSlot(signal, resolve);
       });
@@ -1579,7 +1581,7 @@ export class Session {
     if (this.muted) return { yes: false, why: "The user interrupted before the question was asked." };
     if (this.awaitingAnswer || this.state.confirmation?.state === "pending") return { yes: false, why: "Another question is waiting for the user's answer. Ask again later." };
     this.turnAsked = true;
-    this.say(question);
+    this.say(question, "line", true);
     const answer = await new Promise<string | null>((resolve) => {
       const done = this.answerSlot(signal, (t) => {
         if (this.memoryAsk === done) this.memoryAsk = null;
@@ -2051,7 +2053,7 @@ export class Session {
         // A memory question still waiting gives way, as for request_unlock.
         if (this.muted || (this.awaitingAnswer && this.awaitingAnswer !== this.memoryAsk) || this.state.confirmation?.state === "pending") return null;
         this.cancelMemoryAsk();
-        this.say(question);
+        this.say(question, "line", true);
         return new Promise<string | null>((resolve) => {
           this.awaitingAnswer = this.answerSlot(signal, resolve);
         });

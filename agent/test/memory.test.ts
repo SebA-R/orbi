@@ -644,3 +644,67 @@ test("transcript: review cases, both ways", () => {
   ]) assert.equal(redactRule(t, "assistant"), null, t);
   assert.equal(redactTurn("Write to (seb@example.com) please"), "Write to ((an email address)) please");
 });
+
+test("transcript: second review, secrets the scrubber missed and talk it must keep", () => {
+  const drop: Array<[string, string]> = [
+    ["exp 12/27", "card details"],
+    ["the expiry is 12/27", "card details"],
+    ["expiration 11/28", "card details"],
+    ["my password is, um, hunter2", "a password"],
+    ["password is... hunter2", "a password"],
+    ["my PIN for card 1 is 4821", "a PIN"],
+    ["cvv for card 2 is 123", "a card security code"],
+    ["card no. 4821", "card details"],
+    ["acct. 12345", "bank details"],
+    ["PIN no. 1234", "a PIN"],
+    ["set a password of hunter2", "a password"],
+    ["use a passcode of 4417", "a password"],
+    ["otp is 12:34:56", "long number"],
+    ["verification code 12:34", "a sign in secret"],
+    ["pin 12:34", "a PIN"],
+    ["my account number is 12345.67", "long number"],
+    ["my sin is 123456789@x.com", "long number"],
+    ["the key is sk-proj-AbC123dEf456GhI789jKl012mNo345", "a secret key"],
+    ["token a3f9c2e1b4d5f6a7b8c9d0e1f2a3b4c5", "a secret key"],
+  ];
+  for (const [t, rule] of drop) {
+    assert.equal(redactRule(t), rule, t);
+    assert.equal(redactTurn(t), REDACTED, t);
+  }
+  for (const t of [
+    "$10 $20 $30 $40 $50 $60 $30",
+    "$10 $20 $30 $40 $50 $60 $70",
+    "Prices: $12.99, $15.49, $22.00",
+    "sony_wh1000xm5_black_edition",
+    "your order 4821 shipped yesterday",
+    "order #58213 is on its way",
+    "pick up at 3:30",
+    "It arrives October 29, 2026.",
+    "Meet me at 10:30 on 10/29/2026",
+    "the deal ends 12/31",
+    "I'll charge your card $190.00",
+    "Your password is, of course, safe with me.",
+  ]) {
+    assert.equal(redactRule(t, "assistant"), null, t);
+    assert.equal(redactRule(t, "user"), null, t);
+  }
+  assert.equal(redactTurn("write to 123456789@x.com"), REDACTED);
+  assert.equal(redactTurn("write to seb2026@x.com"), "write to (an email address)");
+});
+
+test("transcript: a question a tool asks is tagged with the model, a fixed line is not", async () => {
+  const { s, log } = setup();
+  (s as any).by = { provider: "claude", model: "claude-opus-5-5" };
+  await s.userText("I want a blue hoodie, find me one");
+  const p = s.remember({ fact: "you want a blue hoodie" });
+  await tick();
+  (s as any).say("Sorry, something went wrong on my side.");
+  await s.userText("yes please");
+  await p;
+  const said = log.recent(Date.now()).filter((t) => t.role === "assistant").map(({ text, model }) => ({ text, model }));
+  assert.deepEqual(said, [
+    { text: "Want me to remember that you want a blue hoodie?", model: "claude-opus-5-5" },
+    { text: "Sorry, something went wrong on my side.", model: undefined },
+  ]);
+  s.close();
+});
