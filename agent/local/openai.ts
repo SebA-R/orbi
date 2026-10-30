@@ -15,7 +15,7 @@
 // reasoning model such as qwen3 otherwise spends its num_predict thinking
 // before every tool call).
 
-import { parseLocalModel } from "./config.ts";
+import { DEFAULT_KEEP_ALIVE, parseLocalModel } from "./config.ts";
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 export type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -123,6 +123,8 @@ export type ChatRequest = {
   contextTokens?: number;
   // Ollama only: let a reasoning model think first (off by default).
   think?: boolean;
+  // Ollama only: keep_alive (config.ts envLocalKeepAlive); null sends none.
+  keepAlive?: string | number | null;
   // At most this many tokens in the answer (default REPLY_TOKENS).
   maxTokens?: number;
   fetch?: Fetch;
@@ -131,7 +133,7 @@ export type ChatRequest = {
 // What the server said a step cost, when it said: tokens in the prompt
 // (cachedTokens of them reused from the request before, on Ollama), tokens
 // out, and where the time went (ms).
-export type ChatStats = { promptTokens?: number; cachedTokens?: number; outputTokens?: number; promptMs?: number; outputMs?: number; loadMs?: number; totalMs?: number };
+export type ChatStats = { promptTokens?: number; cachedTokens?: number; outputTokens?: number; promptMs?: number; outputMs?: number; loadMs?: number };
 
 // thinkRefused: think was asked for but the model cannot think, so the
 // step ran without it (the caller stops asking).
@@ -140,16 +142,6 @@ export type ChatReply = { content: string; toolCalls: ToolCall[]; stats: ChatSta
 export const DEFAULT_CONTEXT_TOKENS = 16_384;
 // The longest answer a step may give.
 export const REPLY_TOKENS = 1_024;
-// How long Ollama keeps the model loaded after a request (its default is
-// 5 minutes, so a pause in shopping would pay the load again).
-// CLEARCART_LOCAL_KEEP_ALIVE changes it ("-1": always, "0": unload at once);
-// when only OLLAMA_KEEP_ALIVE is set, the server's own setting is left alone.
-export const KEEP_ALIVE = "30m";
-function keepAlive(env: NodeJS.ProcessEnv = process.env): { keep_alive?: string | number } {
-  const v = env.CLEARCART_LOCAL_KEEP_ALIVE?.trim();
-  if (v) return { keep_alive: /^-?\d+$/.test(v) ? Number(v) : v };
-  return env.OLLAMA_KEEP_ALIVE?.trim() ? {} : { keep_alive: KEEP_ALIVE };
-}
 const rootOf = (baseUrl: string) => baseUrl.replace(/\/v1$/, "");
 
 // "ollama" when the server answers Ollama's /api/version, "openai" when it
@@ -197,9 +189,10 @@ function ollamaMessages(messages: ChatMessage[]) {
 }
 
 // One model step. Throws LocalModelError, or the abort reason when `signal`
-// fired first (the caller checks signal.aborted).
-export async function chat(r: ChatRequest): Promise<ChatReply> {
-  const timeout = AbortSignal.timeout(r.timeoutMs);
+// fired first (the caller checks signal.aborted). deadline: when the step's
+// timeoutMs runs out (a retry without think shares the first try's).
+export async function chat(r: ChatRequest, deadline = Date.now() + r.timeoutMs): Promise<ChatReply> {
+  const timeout = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
   const signal = AbortSignal.any([r.signal, timeout]);
   const ollama = r.flavor === "ollama";
   const body = ollama
@@ -209,7 +202,7 @@ export async function chat(r: ChatRequest): Promise<ChatReply> {
         ...(r.tools.length ? { tools: r.tools } : {}),
         stream: false,
         think: r.think ?? false,
-        ...keepAlive(),
+        ...(r.keepAlive === null ? {} : { keep_alive: r.keepAlive ?? DEFAULT_KEEP_ALIVE }),
         options: { num_ctx: r.contextTokens ?? DEFAULT_CONTEXT_TOKENS, temperature: 0.3, num_predict: r.maxTokens ?? REPLY_TOKENS },
       }
     : {
@@ -244,7 +237,7 @@ export async function chat(r: ChatRequest): Promise<ChatReply> {
   }
   if (!res.ok) {
     // An Ollama model that cannot think refuses think: true; ask again without it.
-    if (ollama && r.think && /does not support thinking/i.test(text)) return { ...(await chat({ ...r, think: false })), thinkRefused: true };
+    if (ollama && r.think && /does not support thinking/i.test(text)) return { ...(await chat({ ...r, think: false }, deadline)), thinkRefused: true };
     throw httpError(res.status, text, r.model);
   }
   let json: any;
@@ -264,15 +257,17 @@ export async function chat(r: ChatRequest): Promise<ChatReply> {
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
 const ms = (ns: unknown) => (num(ns) === undefined ? undefined : Math.round((ns as number) / 1e6));
 
+const defined = (s: ChatStats): ChatStats => Object.fromEntries(Object.entries(s).filter(([, v]) => v !== undefined));
+
 // Ollama's counts and durations (nanoseconds) for one /api/chat answer.
+// prompt_eval_count is the whole prompt, prompt_eval_cached_count of it
+// read from cache (older servers leave that out).
 function ollamaStats(j: any): ChatStats {
-  const out: ChatStats = { promptTokens: num(j?.prompt_eval_count), cachedTokens: num(j?.prompt_eval_cached_count), outputTokens: num(j?.eval_count), promptMs: ms(j?.prompt_eval_duration), outputMs: ms(j?.eval_duration), loadMs: ms(j?.load_duration), totalMs: ms(j?.total_duration) };
-  return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined));
+  return defined({ promptTokens: num(j?.prompt_eval_count), cachedTokens: num(j?.prompt_eval_cached_count), outputTokens: num(j?.eval_count), promptMs: ms(j?.prompt_eval_duration), outputMs: ms(j?.eval_duration), loadMs: ms(j?.load_duration) });
 }
 
 function openaiStats(j: any): ChatStats {
-  const out: ChatStats = { promptTokens: num(j?.usage?.prompt_tokens), cachedTokens: num(j?.usage?.prompt_tokens_details?.cached_tokens), outputTokens: num(j?.usage?.completion_tokens) };
-  return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined));
+  return defined({ promptTokens: num(j?.usage?.prompt_tokens), cachedTokens: num(j?.usage?.prompt_tokens_details?.cached_tokens), outputTokens: num(j?.usage?.completion_tokens) });
 }
 
 const BAD_RESPONSE = "Your local model sent an answer I couldn't read. Try again, or pick another model in Orbi settings.";

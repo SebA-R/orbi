@@ -27,7 +27,7 @@ import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
 import { desktopBridge } from "./desktop/bridge.ts";
 import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
 import { DESKTOP_TOOL_NAMES, desktopToolDefinitions, type DesktopHost } from "./desktop/tools.ts";
-import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envLocalThink, envProviderSettings, type ProviderSettings } from "./local/config.ts";
+import { backendKey, CLAUDE_DEFAULTS, describeBackend, envLocalContext, envLocalKeepAlive, envLocalThink, envProviderSettings, type ProviderSettings } from "./local/config.ts";
 import { localQuery, sdkToolServer, stdioToolServer, type Scaffold } from "./local/query.ts";
 import { isInjectionLine, looksLikeReasoning, pageData, REMOVED_LINE } from "./local/harden.ts";
 import { withContext, type PageContext } from "./context.ts";
@@ -198,6 +198,16 @@ export function currentProvider(): ProviderSettings {
 function localContext(): number | undefined {
   try {
     return envLocalContext();
+  } catch {
+    return undefined;
+  }
+}
+
+// CLEARCART_LOCAL_KEEP_ALIVE, or the default when unset or bad (server.ts
+// refuses to start on a bad one).
+function localKeepAlive(): string | number | null | undefined {
+  try {
+    return envLocalKeepAlive();
   } catch {
     return undefined;
   }
@@ -1993,6 +2003,7 @@ export class Session {
               model: p.localModel,
               vision: p.localVision,
               contextTokens: localContext(),
+              keepAlive: localKeepAlive(),
               // Ollama: load the model and process the rules and tools now,
               // not when the user first speaks.
               warmUp: true,
