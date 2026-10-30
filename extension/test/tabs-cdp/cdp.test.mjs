@@ -252,6 +252,17 @@ test("a detach during an attach in flight waits for it, so the tab is not left a
   assert.equal(c._attached.has(tabId), false);
 });
 
+test("a detach during a send's attach wins: the send fails and does not attach again", async () => {
+  _resetForTests({ settle: true });
+  Object.assign(_barTiming, { wait: 30, settle: 30, poll: 5 });
+  const s = type({ tabId, text: "x" });
+  await detach(tabId);
+  await assert.rejects(s, /detached/);
+  assert.equal(isAttached(tabId), false);
+  assert.equal(c._attached.has(tabId), false);
+  assert.equal(c._calls.filter((x) => x[0] === "attach").length, 1, "no re-attach after the detach");
+});
+
 test("a fresh attach with no bar (--silent-debugger-extension-api) answers false", async () => {
   _resetForTests({ settle: true });
   Object.assign(_barTiming, { wait: 30, settle: 30, poll: 5 });

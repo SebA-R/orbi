@@ -98,6 +98,14 @@ test("click and key answer through tabs.actAndSettle: the press's result plus wh
   assert.deepEqual(seen, [7, 3]);
 });
 
+test("a key that stays in the page (Tab, Escape, arrows) skips the settle window; Enter and shortcuts keep it", async () => {
+  const opts = [];
+  const actAndSettle = async (tabId, act, o) => (opts.push(o.windowMs), { ...(await act()), navigated: false });
+  const { router } = fakes({ tabsExtra: { actAndSettle } });
+  for (const key of ["Tab", "Shift+Tab", "Escape", "ArrowDown", "Enter", " ", "Alt+ArrowLeft", "g"]) await router.route("key", { tabId: 3, key });
+  assert.deepEqual(opts, [0, 0, 0, 0, undefined, undefined, undefined, undefined]);
+});
+
 test("a CDP click that failed after the press went down never falls back to a DOM click", async () => {
   const f = fakes({ cdpClickPressed: true });
   await assert.rejects(f.router.route("click", { ref: "ref_4" }), { code: "internal" });

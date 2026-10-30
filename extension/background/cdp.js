@@ -125,7 +125,13 @@ async function barSettled(tabId) {
   return last !== first;
 }
 
+// Explicit detaches per tab, so a send() whose command then finds the tab
+// detached fails instead of attaching again: the detach wins.
+const detaches = new Map(); // tabId -> count
+const detachCount = (tabId) => detaches.get(tabId) || 0;
+
 export async function detach(tabId) {
+  detaches.set(tabId, detachCount(tabId) + 1);
   // An attach in flight finishes first, so it is not left attached.
   const busy = attaching.get(tabId);
   if (busy) await busy.catch(() => {});
@@ -143,6 +149,7 @@ export async function detachAll() {
 // Listener bodies for the worker to register at top level.
 export function onTabRemoved(tabId) {
   attached.delete(tabId);
+  detaches.delete(tabId);
   noClip.delete(tabId);
 }
 
@@ -151,11 +158,14 @@ export function onDetach(source) {
 }
 
 export async function send(tabId, method, params = {}) {
+  const gen = detachCount(tabId);
   await attach(tabId);
   try {
     return await api().debugger.sendCommand({ tabId }, method, params);
   } catch (e) {
     if (!/not attached/i.test(message(e))) throw new BridgeError(ERR.INTERNAL, `${method} failed: ${message(e)}`);
+    // Detached by detach() since this call began: it stays detached.
+    if (detachCount(tabId) !== gen) throw new BridgeError(ERR.INTERNAL, `${method} failed: the debugger was detached`);
     // Detached behind our back (e.g. user dismissed the banner): retry once.
     attached.delete(tabId);
     await attach(tabId);
@@ -388,6 +398,7 @@ export async function screenshot({ tabId } = {}) {
 export function _resetForTests({ settle = false } = {}) {
   attached.clear();
   attaching.clear();
+  detaches.clear();
   noClip.clear();
   settleOnAttach = settle;
 }

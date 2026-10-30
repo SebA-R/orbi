@@ -22,7 +22,7 @@ import { createSdkMcpServer, query, tool, type HookCallback, type HookEvent, typ
 import { z } from "zod";
 
 import { callBrowserTool, evalInTab, resultText } from "./bridge.ts";
-import { extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
+import { ERR as EXT_ERR, ExtError, extBridge, extMode, TOOLS as EXT_TOOLS } from "./extbridge.ts";
 import { createExtToolsServer, extToolDefinitions } from "./exttools.ts";
 import { desktopBridge } from "./desktop/bridge.ts";
 import { DESKTOP_PROMPT } from "./desktop/prompt.ts";
@@ -277,6 +277,8 @@ type Tab = { tabId: number; url?: string };
 type Lookup = (host: string) => Promise<Array<{ address: string }>>;
 
 const DNS_TIMEOUT_MS = 1500;
+// Controls the hint lists after an action (session hint, controlsOn).
+const CONTROLS_MAX = 15;
 const BROWSER_TOOL_TIMEOUT_MS = 90_000;
 // request_checkout waits on a person; give it room.
 const CLEARCART_TOOL_TIMEOUT_MS = 10 * 60_000;
@@ -1140,8 +1142,17 @@ export class Session {
   // Loads `url` (or "back") in a tab and returns where it ended up. Our
   // extension's navigate reports that (and refuses a landing it does not
   // allow); the OCIC one does not, so list again.
+  // A load that failed (net_error) still landed somewhere, an error page:
+  // ask the tab, as navigate answered before it reported the failure.
   async navTab(tabId: number, url: string): Promise<string | null> {
-    if (extMode()) return (await extBridge.call<{ url?: string }>("navigate", { url, tabId }))?.url ?? null;
+    if (extMode()) {
+      try {
+        return (await extBridge.call<{ url?: string }>("navigate", { url, tabId }))?.url ?? null;
+      } catch (e) {
+        if (!(e instanceof ExtError) || e.code !== EXT_ERR.NET_ERROR) throw e;
+        return (await extBridge.call<{ url?: string }>("tab_info", { tabId }, 5_000))?.url ?? null;
+      }
+    }
     await callBrowserTool("navigate", { url, tabId });
     return (await this.listTabs()).find((t) => t.tabId === tabId)?.url ?? null;
   }
@@ -1878,8 +1889,11 @@ export class Session {
     const acting = new Set(["click", "type", "key", "form_input", "navigate", "tabs_create", "scroll", "dismiss_overlay"].map(b).concat([C + "request_unlock"], ["desktop_open_app", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll"].map((t) => D + t)));
     // The last page the hint reported per tab (origin and path), so a
     // result that does not say whether it navigated lists the page's
-    // controls only when it moved.
+    // controls only when it moved. And the controls it last read there, so
+    // a click or Enter that opened a drawer, a dialog or results without a
+    // new address lists only the controls that came with them.
     const seenUrl = new Map<number, string>();
+    const seenControls = new Map<number, Set<string>>();
     return {
       drop,
       describe,
@@ -1930,14 +1944,27 @@ export class Session {
         // loaded ({ url, title }).
         if (!isError && /^(click|key|navigate|tabs_create|request_unlock)$/.test(short) && (tabId != null || short === "tabs_create") && !/^(declined|Not pressed|That control is not locked)/.test(text)) {
           let t: { tabId?: number; url?: string; title?: string; navigated?: boolean } | null = null;
+          let read = false;
           try {
             // The result's own JSON line (page tools come wrapped in page-data markers).
             const line = text.split("\n").find((l) => l.startsWith("{"));
-            if (line) t = JSON.parse(line);
+            if (line) {
+              t = JSON.parse(line);
+              read = true;
+            }
           } catch {}
+          // Unreadable (the page-data guard cut it, or replaced it for a
+          // title that read like instructions): only its tab, if that shows.
+          if (!read) {
+            const m = /"tabId":(\d+)/.exec(text);
+            t = m ? { tabId: Number(m[1]) } : null;
+          }
           const opened = short === "navigate" || short === "tabs_create";
-          // tabs_create without a url opened a blank tab: nothing to say.
-          if (opened && typeof t?.url !== "string") return null;
+          // A readable answer with no url: a blank tab (tabs_create without
+          // a url) or a page Orbi may not use. Nothing to say.
+          if (opened && read && typeof t?.url !== "string") return null;
+          // A new tab whose id did not come through: no telling which it is.
+          if (short === "tabs_create" && typeof t?.tabId !== "number") return null;
           const on = opened && typeof t?.tabId === "number" ? t.tabId : tabId;
           if (on == null) return null;
           if (opened) t = { ...t, navigated: true };
@@ -1951,14 +1978,18 @@ export class Session {
           const swept = SWEPT_NOTE.test(text);
           // A settled answer without a url is a page Orbi may not use:
           // nothing about it goes to the model.
-          if (!swept && typeof t?.navigated === "boolean" && typeof t.url !== "string") return null;
-          // A DOM-fallback click has no settled fields: the press already
-          // waited, so ask the tab. So too when the tab sweep (it runs
-          // before this hint) sent a tab back from where the result says.
+          if (!swept && read && typeof t?.navigated === "boolean" && typeof t.url !== "string") return null;
+          // No url to go on: a result that could not be read (above), or one
+          // with no settled fields (an older extension). Every press the
+          // extension answers has already settled (router.js settled), so
+          // ask the tab. So too when the tab sweep (it runs before this
+          // hint) sent a tab back from where the result says.
           if (typeof t?.url !== "string" || swept) {
             const navigated = t?.navigated;
             const now = await extBridge.call<{ url?: string; title?: string }>("tab_info", { tabId: on }, 5_000).catch(() => null);
-            t = now && { ...now, navigated };
+            // tab_info gives the full address of a tab Orbi opened, even on
+            // a blocked site: nothing about one of those goes to the model.
+            t = now && !siteBlockReason(now.url, sitePolicy()) ? { ...now, navigated } : null;
           }
           if (!t?.url) return null;
           const title = String(t.title ?? "").slice(0, 80);
@@ -1968,7 +1999,17 @@ export class Session {
           } catch {}
           const changed = typeof t.navigated === "boolean" ? t.navigated : seenUrl.get(on) !== where;
           seenUrl.set(on, where);
-          const controls = changed ? await this.controlsOn(on) : [];
+          // A click or Enter that stayed on the page: the controls it brought
+          // (a cart drawer, a dialog, results), none when it brought none.
+          // One read_page per such press; the list stays bounded.
+          const pressed = short === "click" || (short === "key" && /^(enter|return)$/i.test(String(args.key ?? "").trim()));
+          let controls: string[] = [];
+          if (changed || pressed) {
+            const all = await this.controlLines(on);
+            const before = seenControls.get(on);
+            seenControls.set(on, new Set(all));
+            controls = (changed || !before ? all : all.filter((l) => !before.has(l))).slice(0, CONTROLS_MAX);
+          }
           return `Now on: ${title && !isInjectionLine(title) ? `${JSON.stringify(title)}, ` : ""}${where}${controls.length ? `\nOn this page:\n${pageData(controls.join("\n"), 1_500)}` : ""}`;
         }
         if (short === "find" && /"matches":\[\]/.test(text)) {
@@ -2019,6 +2060,12 @@ export class Session {
   // Those named in the user's words come first, then fields and buttons,
   // then links: a store's header links would fill the list otherwise.
   private async controlsOn(tabId: number | null, roles?: RegExp): Promise<string[]> {
+    return (await this.controlLines(tabId, roles)).slice(0, CONTROLS_MAX);
+  }
+
+  // Every interactive control on the page as controlsOn lists them, the
+  // ones the user's words name first.
+  private async controlLines(tabId: number | null, roles?: RegExp): Promise<string[]> {
     if (!extMode()) return [];
     const page = await extBridge.call<{ tree?: string }>("read_page", { ...(tabId != null ? { tabId } : {}), filter: "interactive", maxNodes: 150 }, 10_000).catch(() => null);
     const want = new Set(this.localWords.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !/^(the|and|for|with|click|press|please|now|then|this|that|here|into|from|your|you)$/.test(w)));
@@ -2029,7 +2076,7 @@ export class Session {
       const named = m[2].toLowerCase().split(/[^a-z0-9]+/).some((w) => w.length >= 3 && [...want].some((x) => w.startsWith(x) || x.startsWith(w)));
       all.push({ line: `${m[1]} "${m[2]}" [${m[3]}]${/\[locked\]/.test(l) ? " [locked]" : ""}`, rank: named ? 0 : m[1] === "link" ? 2 : 1, i: all.length });
     }
-    return all.sort((a, b) => a.rank - b.rank || a.i - b.i).slice(0, 15).map((x) => x.line);
+    return all.sort((a, b) => a.rank - b.rank || a.i - b.i).map((x) => x.line);
   }
 
   // The ref of the locked control on the tab whose name is label, from the

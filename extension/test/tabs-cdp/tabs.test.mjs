@@ -250,6 +250,24 @@ test("tabsCreate: a redirect to a blocked site is refused, like navigate", async
   assert.equal(c._tabs.get(tabId).url, `${SHOP}/`);
 });
 
+test("tabsCreate: a slow page with no address yet is not refused, and tells nothing; a blocked pending one is refused", async () => {
+  const c = fresh({ local: { browseMode: "allowlist", allowlist: [SHOP] } });
+  const get = c.tabs.get.bind(c.tabs);
+  let shape = null;
+  c.tabs.get = async (id) => {
+    const t = await get(id);
+    return shape && t.url !== "about:blank" ? { ...t, ...shape(t) } : t;
+  };
+  shape = () => ({ url: "" });
+  assert.deepEqual(Object.keys(await tabsCreate({ url: `${SHOP}/slow` })), ["tabId"]);
+  // Only the pending address known yet: checked like the address.
+  shape = (t) => ({ url: "", pendingUrl: t.url, status: "loading" });
+  const r = await tabsCreate({ url: `${SHOP}/slow` });
+  assert.equal(r.url, `${SHOP}/slow`);
+  shape = () => ({ url: "", pendingUrl: "https://evil.example/x", status: "loading" });
+  await assert.rejects(tabsCreate({ url: `${SHOP}/slow` }), (e) => e.code === ERR.NOT_ALLOWED && /evil\.example/.test(e.message));
+});
+
 test("navigate and tabsCreate fail with NET_ERROR when the page did not load", async () => {
   const c = fresh();
   const down = "https://down.example/";
@@ -264,6 +282,12 @@ test("navigate and tabsCreate fail with NET_ERROR when the page did not load", a
   onMainFrameError({ type: "main_frame", frameId: 0, tabId, url: `${SHOP}/c`, error: "net::ERR_ABORTED" });
   patchLoads(c, { fail: { [`${SHOP}/d`]: "net::ERR_ABORTED" } });
   assert.equal((await navigate({ tabId, url: `${SHOP}/d` })).url, `${SHOP}/d`);
+  // Only network errors: a blocked request, a certificate warning or a
+  // cache miss (form resubmission) is not a site that could not be reached.
+  for (const error of ["net::ERR_BLOCKED_BY_CLIENT", "net::ERR_BLOCKED_BY_ADMINISTRATOR", "net::ERR_CERT_AUTHORITY_INVALID", "net::ERR_CACHE_MISS"]) {
+    patchLoads(c, { fail: { [`${SHOP}/f`]: error } });
+    assert.equal((await navigate({ tabId, url: `${SHOP}/f` })).url, `${SHOP}/f`, error);
+  }
   // A subframe's failure is not the page's.
   patchLoads(c);
   onMainFrameError({ type: "sub_frame", frameId: 3, tabId, url: `${SHOP}/e`, error: "net::ERR_CONNECTION_REFUSED" });
