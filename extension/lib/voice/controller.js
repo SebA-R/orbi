@@ -63,7 +63,7 @@
 //   onAgentState("open" | "closed") the agent socket: a turn in progress
 //            when it closes gets no reply (the server hands it off), so
 //            thinking ends; counts restart on the new socket. Words sent
-//            while it is down are queued and counted for the next one.
+//            while it is down (or closing) are queued and counted for the next one.
 //   BUSY_WATCHDOG_MS without any message from the agent (statuses count)
 //            while thinking on busy: stop waiting, so it never thinks forever.
 //   standby  the agent server gave the conversation to another Orbi
@@ -205,16 +205,19 @@ export class VoiceController {
 
   #sendUserText(text, turn = null) {
     this.awaitingReply = true;
-    if (this.agentOpen) this.sentSeq++;
-    else this.queuedSeq++;
     this.#armWatchdog();
     this.muted = false; // a fresh turn: its replies are spoken
     this.readParts = []; // a fresh turn: nothing read yet
+    let wrote;
     if (this.wallClock) {
       const t = turn ? { releasedAt: turn.releasedAt, stopAt: turn.stopAt, finalAt: turn.finalAt } : {};
       this.timingOpen = true;
-      this.agent.send({ type: "user_text", text, timing: t });
-    } else this.agent.send({ type: "user_text", text });
+      wrote = this.agent.send({ type: "user_text", text, timing: t });
+    } else wrote = this.agent.send({ type: "user_text", text });
+    // Counted where it went: a socket still open here but already closing
+    // queues it for the next one (agent-session.js send returns false).
+    if (this.agentOpen && wrote !== false) this.sentSeq++;
+    else this.queuedSeq++;
     this.emit({ type: RT.VOICE_FINAL, text });
     this.emit({ type: RT.SUBTITLE, speaker: "user", text, final: true });
     this.#settle();
@@ -651,7 +654,7 @@ export class VoiceController {
   }
 
   onAgentMessage(m) {
-    if (this.watchdog != null || (this.busyAware && this.awaitingReply)) this.#armWatchdog(); // any message is a heartbeat
+    this.#armWatchdog(); // any message is a heartbeat
     switch (m.type) {
       case "busy": {
         this.busyAware = true;

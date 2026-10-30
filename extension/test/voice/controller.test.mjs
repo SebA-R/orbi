@@ -242,11 +242,15 @@ test("AgentSession queues while closed, flushes on open, parses messages and rec
   const got = [];
   const timers = [];
   const s = new AgentSession({ url: () => "ws://localhost:5050/session", onMessage: (m) => got.push(m), WebSocketImpl: FakeWS, setTimer: (fn, ms) => timers.push({ fn, ms }) });
-  s.send({ type: "user_text", text: "hello" });
+  assert.equal(s.send({ type: "user_text", text: "hello" }), false, "queued");
   const ws = FakeWS.all[0];
   assert.equal(ws.url, "ws://localhost:5050/session");
   ws.open();
   assert.deepEqual(ws.sent, ['{"type":"user_text","text":"hello"}']);
+  assert.equal(s.send({ type: "interrupt" }), true, "written");
+  ws.readyState = 2; // closing
+  assert.equal(s.send({ type: "user_text", text: "again" }), false, "queued for the next socket");
+  ws.sent.length = 0;
   ws.onmessage({ data: '{"type":"agent_text","text":"Hi"}' });
   ws.onmessage({ data: "not json" });
   assert.deepEqual(got, [{ type: "agent_text", text: "Hi" }]);
@@ -655,6 +659,22 @@ test("busy: the agent socket closing mid-turn ends thinking; words sent while do
   busy(r, true, 1);
   busy(r, false, 1);
   assert.equal(r.c.state, "idle", "the queued words were the new socket's first");
+});
+
+test("busy: words sent while the socket is closing count on the next socket, not this one", () => {
+  const r = opened();
+  r.agent.send = function (m) { this.sent.push(m); return false; }; // closing: queued
+  r.c.typed("find socks");
+  r.c.onAgentState("closed");
+  r.c.onAgentState("open"); // the queued words go out first
+  r.agent.send = function (m) { this.sent.push(m); return true; };
+  busy(r, true, 1);
+  r.c.typed("wool ones");
+  busy(r, false, 1); // the first words' turn ending
+  assert.equal(r.c.state, "thinking", "an off for the older words is stale");
+  busy(r, true, 2);
+  busy(r, false, 2);
+  assert.equal(r.c.state, "idle");
 });
 
 test("busy: no word from the agent for BUSY_WATCHDOG_MS stops thinking; any message pushes it back", () => {

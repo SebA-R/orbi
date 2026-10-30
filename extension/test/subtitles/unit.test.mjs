@@ -408,7 +408,9 @@ test("a busy state whose idle never came stops keeping the card up after a few m
   const click = () => t.window.document.body.dispatchEvent(new t.window.MouseEvent("pointerdown", { bubbles: true, clientX: 20, clientY: 20 }));
   click();
   assert.ok(t.visible());
-  now += 181000;
+  now += 120000;
+  t.send({ type: "voice.state", state: "thinking" }); // said again (a replay): not a new start
+  now += 61000;
   click();
   assert.equal(t.visible(), false);
 });

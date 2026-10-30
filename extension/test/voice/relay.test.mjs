@@ -340,6 +340,26 @@ test("a page loading in the talking tab mid-turn gets the state and recent lines
   ]);
 });
 
+test("a load completing again in the same document (a frame, a same-page navigation) replays nothing", async () => {
+  const { relay, state, chromeApi } = make({ activeTab: 3 });
+  let doc = "doc-1";
+  chromeApi.scripting = { executeScript: async () => [{ frameId: 0, documentId: doc }] };
+  relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 }, frameId: 0, documentId: "doc-1" });
+  await relay.idle();
+  relay.onMessage({ type: RT.SUBTITLE, speaker: "user", text: "find socks", final: true, from: "offscreen" });
+  relay.onMessage({ type: RT.VOICE_STATE, state: "thinking", from: "offscreen" });
+  await new Promise((r) => setTimeout(r, 0));
+  state.tabSent.length = 0;
+  await relay.onTabUpdated(3, { status: "complete" }); // an ad frame loaded
+  assert.deepEqual(state.tabSent, [], "the page that pressed the key has the card");
+  doc = "doc-2"; // a link followed
+  await relay.onTabUpdated(3, { status: "complete" });
+  assert.deepEqual(state.tabSent.map((x) => x.m.type), [RT.VOICE_STATE, RT.SUBTITLE]);
+  state.tabSent.length = 0;
+  await relay.onTabUpdated(3, { status: "complete" });
+  assert.deepEqual(state.tabSent, [], "replayed once per document");
+});
+
 test("an idle tab's load replays nothing", async () => {
   const { relay, state } = make({ activeTab: 3 });
   relay.onMessage({ type: RT.PTT_START }, { tab: { id: 3 } });
