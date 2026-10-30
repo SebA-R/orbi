@@ -210,6 +210,120 @@ test("a Locked click the user asked for is followed by request_unlock at once an
   }
 });
 
+test("after a click or navigate the hint uses the extension's result: no wait or tab_info, controls only when the page changed", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "find", args: { query: "jackets" } }] };
+    if (n === 2) return { calls: [{ name: "click", args: { ref: "ref_4" } }] };
+    if (n === 3) return { calls: [{ name: "click", args: { ref: "ref_8" } }] };
+    if (n === 4) return { calls: [{ name: "navigate", args: { url: `${SHOP}/c/coats` } }] };
+    return { text: "Done." };
+  });
+  let clicks = 0;
+  const br = useBrowser((method) => {
+    const t = tabs(method);
+    if (t) return t;
+    if (method === "find") return { matches: [{ ref: "ref_4", role: "link", name: "Jackets" }, { ref: "ref_8", role: "button", name: "Size M" }] };
+    if (method === "rect") return { x: 1, y: 1, width: 10, height: 10 };
+    if (method === "click") return ++clicks === 1 ? { ok: true, via: "cdp", navigated: true, url: `${SHOP}/c/jackets`, title: "Jackets" } : { ok: true, via: "cdp", navigated: false, url: `${SHOP}/c/jackets`, title: "Jackets" };
+    if (method === "read_page") return { tree: '- button "Size M" [ref_8]\n- link "Coats" [ref_9]' };
+    if (method === "navigate") return { tabId: 7, url: `${SHOP}/c/coats`, title: "Coats" };
+    return {};
+  });
+  const r = localSession(model.url);
+  try {
+    (r.s as any).state.lastTabId = 7;
+    r.s.userText("open jackets and pick size m");
+    await until(() => r.spoken().length > 0, "the reply");
+    const first = toolMessages(model.requests[2]).at(-1).content;
+    assert.match(first, /"navigated":true/);
+    assert.match(first, /Now on: "Jackets", https:\/\/www\.etsy\.com\/c\/jackets\nOn this page:/);
+    assert.match(first, /button "Size M" \[ref_8\]/);
+    const second = toolMessages(model.requests[3]).at(-1).content;
+    assert.match(second, /Now on: "Jackets", https:\/\/www\.etsy\.com\/c\/jackets/);
+    assert.doesNotMatch(second, /On this page/, "same page: no controls list");
+    const third = toolMessages(model.requests[4]).at(-1).content;
+    assert.match(third, /Now on: "Coats", https:\/\/www\.etsy\.com\/c\/coats\nOn this page:/, "navigate: from its own result, with the new page's controls");
+    const names = br.calls.map((c) => c[0]);
+    assert.ok(!names.slice(names.indexOf("click")).includes("tab_info"), `no tab_info after an action: ${JSON.stringify(names)}`);
+    assert.equal(br.calls.filter((c) => c[0] === "read_page").length, 2, "read_page only after the click that navigated and after navigate");
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("a click the tab sweep sent back: the hint asks the tab where it is, not the result", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "find", args: { query: "jackets" } }] };
+    if (n === 2) return { calls: [{ name: "click", args: { ref: "ref_4" } }] };
+    return { text: "Done." };
+  });
+  let at = `${SHOP}/c/jackets`;
+  const br = useBrowser((method, p) => {
+    if (method === "agent_tabs") return { tabs: [{ tabId: 7, url: at }] };
+    if (method === "find") return { matches: [{ ref: "ref_4", role: "link", name: "Jackets" }] };
+    if (method === "rect") return { x: 1, y: 1, width: 10, height: 10 };
+    if (method === "click") {
+      at = `${SHOP}/checkout`;
+      return { ok: true, via: "cdp", navigated: true, url: at, title: "Checkout" };
+    }
+    if (method === "navigate" && p.url === "back") return { tabId: 7, url: (at = `${SHOP}/c/jackets`), title: "Jackets" };
+    if (method === "tab_info") return { url: at, title: "Jackets" };
+    if (method === "read_page") return { tree: '- link "Coats" [ref_9]' };
+    return {};
+  });
+  const r = localSession(model.url);
+  try {
+    (r.s as any).state.lastTabId = 7;
+    r.s.userText("open jackets");
+    await until(() => r.spoken().length > 0, "the reply");
+    const out = toolMessages(model.requests[2]).at(-1).content;
+    assert.match(out, /was sent back/);
+    assert.match(out, /Now on: "Jackets", https:\/\/www\.etsy\.com\/c\/jackets\nOn this page:/, "where the tab is after the sweep, with its controls (the page loaded again)");
+    assert.doesNotMatch(out, /Now on: "Checkout"/);
+    assert.ok(br.calls.some((c) => c[0] === "tab_info"));
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
+test("request_unlock: the hint uses where the press landed, so a post back to the same path still lists the new controls", async () => {
+  const model = await fakeModel((_b, n) => {
+    if (n === 1) return { calls: [{ name: "navigate", args: { url: `${SHOP}/signin` } }] };
+    if (n === 2) return { calls: [{ name: "find", args: { query: "sign in" } }] };
+    if (n === 3) return { calls: [{ name: "request_unlock", args: { ref: "ref_31", label: "Sign in" } }] };
+    return { text: "Done." };
+  });
+  const br = useBrowser((method, p) => {
+    const t = tabs(method);
+    if (t) return t;
+    if (method === "tab_info") return { url: `${SHOP}/signin`, title: "Sign in" };
+    if (method === "navigate") return { tabId: 7, url: `${SHOP}/signin`, title: "Sign in" };
+    if (method === "find") return { matches: [{ ref: "ref_31", role: "button", name: "Sign in", locked: true }] };
+    if (method === "lock_info") return { locked: true, kind: "account", label: "Sign in", cls: "account", password: false };
+    if (method === "lock_arm") return { nonce: "n1" };
+    if (method === "press_unlocked") return { via: "cdp", ref: p.ref, navigated: true, url: `${SHOP}/signin`, title: "Welcome back" };
+    if (method === "read_page") return { tree: '- link "Your account" [ref_40]' };
+    return {};
+  });
+  const r = localSession(model.url);
+  try {
+    (r.s as any).state.lastTabId = 7;
+    r.s.userText("sign in");
+    await until(() => br.calls.filter((c) => c[0] === "read_page").length === 2, `the controls after navigate and after the press ${JSON.stringify(br.calls)} ${JSON.stringify(r.statuses())}`);
+    const names = br.calls.map((c) => c[0]);
+    assert.ok(!names.slice(names.indexOf("press_unlocked")).includes("tab_info"), `no tab_info after the press: ${JSON.stringify(names)}`);
+    assert.ok(r.statuses().includes('unlocked once: account "Sign in" (user asked)'));
+  } finally {
+    await r.stop();
+    br.restore();
+    await model.close();
+  }
+});
+
 test("Danger mode lifts nothing on a local model, and the user hears so once", async () => {
   const model = await fakeModel(() => ({ text: "Hi." }));
   const br = useBrowser((m) => tabs(m) ?? {});

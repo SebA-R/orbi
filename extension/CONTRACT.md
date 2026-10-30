@@ -75,7 +75,7 @@ Bridge `INTERNAL` methods for paying: `card_state { tabId }` → `{ fields, fill
 ### C. Server bridge (agent, TypeScript)
 
 - `agent/extbridge.ts`: attaches a WebSocket endpoint at `/ext` to the existing HTTP server; accepts one extension at a time (newest wins); handshake per `lib/protocol.js` (reply `welcome`); `call(method, params, timeoutMs?)` → result or throws; `connected()`; events for connect/disconnect.
-- `agent/exttools.ts`: in-process MCP server (Agent SDK `createSdkMcpServer` + `tool`) named `browser` exposing the TOOLS with zod schemas; `click` takes `{ tabId?, ref }` (server calls `rect` then `click`) or `{ tabId?, x, y }`.
+- `agent/exttools.ts`: in-process MCP server (Agent SDK `createSdkMcpServer` + `tool`) named `browser` exposing the TOOLS with zod schemas; `click` takes `{ tabId?, ref }` (server calls `rect` then `click`) or `{ tabId?, x, y }`. The bridge's `click`, `key` and `press_unlocked` answer their result plus `{ navigated, url?, title? }` once the page settles (`tabs.actAndSettle`: a load that starts within 500 ms is waited for, up to 8 s, and an interrupt ends the wait; `tabs_create` with a url answers `{ tabId, url, title }`); url is origin and path only, and is left out on a page Orbi may not use.
 - `CLEARCART_BROWSER=ext` makes `session.ts` use `exttools` instead of the open-claude-in-chrome stdio MCP server, and `pay.ts` use `call("card_state")`, `call("order_buttons")`, `call("fill_card")` and `lock_arm` + `press_protected` on the order button; default (unset) keeps today's path untouched. Guard/sweep use `call("tab_info")` and `tabs_context`.
 - Test with a fake extension (a ws client in the test) — no browser needed.
 
