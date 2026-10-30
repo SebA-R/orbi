@@ -290,6 +290,37 @@ test("remember mid-task: the question waits for the reply after the task, and a 
   o.s.userText("no");
   assert.match(text(await p), /^Not saved/);
   o.s.close();
+
+  // The fact said in a reply that asks something else: a yes is for that.
+  const q = setup();
+  q.s.userText("buy me black pants under fifty dollars");
+  browse(q.s);
+  await q.s.remember({ fact: "you like slim fits" });
+  q.s.onSdkMessage(reply("I picked the slim ones since you like slim fits. Want a matching belt too?"));
+  q.s.onSdkMessage(result());
+  q.s.userText("yes");
+  const pq = q.s.remember({ fact: "you like slim fits" });
+  await tick();
+  assert.equal(q.spoken().at(-1), "Want me to remember that you like slim fits?", "asked, not saved on the belt's yes");
+  q.s.userText("no");
+  assert.match(text(await pq), /^Not saved/);
+  q.s.close();
+
+  // Offered in one window, a yes in another saves nothing without asking.
+  const h = setup();
+  h.s.userText("buy me black pants under fifty dollars");
+  browse(h.s);
+  await h.s.remember({ fact: "you like slim fits" });
+  h.s.onSdkMessage(reply("Added the Smart Ankle Pants to your cart. Want me to remember that you like slim fits?"));
+  h.s.onSdkMessage(result());
+  h.s.handOff();
+  h.s.userText("yes");
+  const ph = h.s.remember({ fact: "you like slim fits" });
+  await tick();
+  assert.equal(h.spoken().at(-1), "Want me to remember that you like slim fits?");
+  h.s.userText("no");
+  assert.match(text(await ph), /^Not saved/);
+  h.s.close();
 });
 
 test("remember mid-task in Guided mode asks as before (the Stop hook is off there)", async () => {

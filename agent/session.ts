@@ -905,6 +905,9 @@ export class Session {
     const pending = this.awaitingAnswer;
     this.awaitingAnswer = null;
     this.passwordAsk = null;
+    // A remember offer was heard there, not here.
+    this.offeredFact = null;
+    this.factYes = null;
     this.lastUser = noWords();
     this.prevUser = noWords();
     pending?.(null);
@@ -1667,7 +1670,7 @@ export class Session {
     if (from) {
       from.saves++;
       how = isRememberAsk(from.text) ? "asked" : "told";
-    } else if (this.factYes && this.factYes.toLowerCase() === text.toLowerCase()) {
+    } else if (this.factYes && this.factYes.toLowerCase() === text.toLowerCase() && !this.mem.replacing(text)) {
       // The reply after the task asked to remember it, and they said yes.
       this.factYes = null;
       how = "confirmed";
@@ -2305,11 +2308,14 @@ export class Session {
       const last = this.held.join(" ");
       if (this.held.length) this.say(last, "reply");
       this.held = [];
-      // A fact held back mid-task that this reply asks to remember.
       const fact = this.deferredFact;
-      if (fact && !this.muted && /\?["'\u201d\u2019)\]]?\s*$/.test(last) && fold(last).includes(fold(fact))) this.offeredFact = fact;
       const ended = this.endedTurns(m);
       this.turnWords.splice(0, ended);
+      // A fact held back mid-task that this reply asks to remember: only
+      // when the reply ends on that very question and no other turn is
+      // waiting, so a yes meant for something else never saves it.
+      const offer = fact ? new RegExp(`want me to remember that ${escapeRe(fold(fact))}\\s*\\?\\s*$`) : null;
+      this.offeredFact = offer && !this.muted && !this.turnWords.length && offer.test(fold(last).replace(/["'\u201d\u2019)\]]+\s*$/, "")) ? fact : null;
       this.newTurn();
       this.turnsOpen = Math.max(0, this.turnsOpen - ended);
       this.turnsEnded += ended;
@@ -2454,6 +2460,7 @@ export class Session {
 }
 
 const shortName = (name: string) => name.replace(B, "").replace(C, "");
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Text with its spacing made plain, to match a reply block by block.
 const squash = (t: string) => t.replace(/\s+/g, " ").trim();
 
